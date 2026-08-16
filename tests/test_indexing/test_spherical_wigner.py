@@ -536,6 +536,28 @@ class TestMathematicaTables:
         record_property("wigner_D_321_delta", f"{delta:.3e}")
         assert delta <= self.tolerance
 
+    def test_wigner_uppercase_d_keeps_the_sign_of_a_zero_component(self):
+        # wigner.hpp line 438 multiplies a std::complex<Real> by a
+        # Real, which libstdc++ scales componentwise, so a slot with
+        # sin(total) == 0.0 and d < 0 has imaginary part -0.0. The
+        # complex(cos, sin) * d form promotes d to a complex number
+        # and uses the four multiplication rule instead, which gives
+        # +0.0 on 23 of 9464 sampled slots, all with k == m == 0
+        checked = 0
+        for j in range(1, 6):
+            for beta in (1.1, 2.0, 2.9, -0.7):
+                d = _wigner.wigner_d(j, 0, 0, math.cos(beta), beta < 0.0)
+                if not d < 0.0:
+                    continue
+                # alpha and gamma are zero, so total == 0 and
+                # sin(total) is +0.0
+                got = _wigner.wigner_D(j, 0, 0, np.array([0.0, beta, 0.0]))
+                assert got.real == d, (j, beta)
+                assert got.imag == 0.0, (j, beta)
+                assert math.copysign(1.0, got.imag) < 0.0, (j, beta)
+                checked += 1
+        assert checked >= 8
+
 
 class TestSymmetries:
     """The identities of ``wigner.hpp`` lines 301-315.
@@ -624,6 +646,29 @@ class TestSymmetries:
             assert _wigner.wigner_d(j, m, k, t, False) == (
                 sign * _wigner.wigner_d(j, k, m, t, False)
             ), (j, k, m, t)
+
+    @pytest.mark.parametrize("beta", [4.0, -4.0, 7.0, -7.0, -0.6, 1.1, math.pi + 0.5])
+    def test_wigner_uppercase_d_wraps_beta(self, beta):
+        # D takes cos(beta) and signbit(beta) separately, so without
+        # the [-pi, pi] wrap of sht_xcorr.hpp lines 895-899 a beta
+        # outside the principal interval silently transposes the two
+        # orders through equation 5, an O(1) error (measured up to
+        # 1.20 at beta = 2 pi - 0.6). rotate_harmonics has its own
+        # wrap test; this is the same guard on the scalar D
+        alpha, gamma = 0.3, -1.1
+        wrapped = _euler.wrap_beta(beta)
+        negative = math.copysign(1.0, wrapped) < 0.0
+        for j, k, m in [(3, 2, 1), (4, -3, 2), (5, 1, -4), (2, 0, 2), (6, -5, -2)]:
+            got = _wigner.wigner_D(j, k, m, np.array([alpha, beta, gamma]))
+            total = alpha * m + gamma * k
+            expected = _wigner.wigner_d(j, k, m, math.cos(wrapped), negative) * complex(
+                math.cos(total), math.sin(total)
+            )
+            assert got == pytest.approx(expected, abs=8 * EPS), (j, k, m, beta)
+            # 2 pi periodicity, exact on the wrapped form and broken
+            # by the unwrapped one whenever the shift crosses zero
+            shifted = _wigner.wigner_D(j, k, m, np.array([alpha, beta + TWO_PI, gamma]))
+            assert shifted == pytest.approx(got, abs=8 * EPS), (j, k, m, beta)
 
     @pytest.mark.parametrize("interpreted", [False, True], ids=["njit", "py_func"])
     @pytest.mark.parametrize(
@@ -930,6 +975,41 @@ class TestBetaTables:
             _wigner.wigner_d_table_factors(bandwidth)
         with pytest.raises(ValueError):
             _wigner.wigner_d_half_pi_table(bandwidth, False)
+
+    @pytest.mark.parametrize("bandwidth", [0, -1])
+    def test_pre_table_bandwidth_below_one_raises(self, bandwidth):
+        # the other three constructors are covered by
+        # test_bandwidth_below_one_raises, which cannot take
+        # wigner_d_table_pre because it needs its factor tables.
+        # bandwidth 0 is the case that pins the guard: at -1 the NaN
+        # allocation itself refuses the negative dimensions
+        factors = _wigner.wigner_d_table_factors(1)
+        with pytest.raises(ValueError):
+            _wigner.wigner_d_table_pre(bandwidth, 0.5, False, *factors)
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_pre_table_rejects_factors_of_another_bandwidth(self, index):
+        # the kernel reads w_jkm[k, m, i] without bounds checking
+        # (numba.config.BOUNDSCHECK is off), so an undersized factor
+        # table is silently out of bounds rather than an error:
+        # measured |table - wigner_d_table| of 3.4e140 at bandwidth 6
+        # with the factors of bandwidth 3, and no exception raised
+        bandwidth = 6
+        factors = list(_wigner.wigner_d_table_factors(bandwidth))
+        factors[index] = _wigner.wigner_d_table_factors(3)[index]
+        with pytest.raises(ValueError):
+            _wigner.wigner_d_table_pre(bandwidth, 0.3, False, *factors)
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_pre_table_rejects_single_precision_factors(self, index):
+        # a float32 factor table specialises the kernel silently and
+        # costs 5.4e-8 against wigner_d_table, which the bitwise
+        # assertions of this file would never see
+        bandwidth = 8
+        factors = list(_wigner.wigner_d_table_factors(bandwidth))
+        factors[index] = factors[index].astype(np.float32)
+        with pytest.raises(ValueError):
+            _wigner.wigner_d_table_pre(bandwidth, 0.3, False, *factors)
 
     @pytest.mark.parametrize("cos_beta", [1.5, -1.5, 2.0])
     def test_a_cosine_outside_the_unit_interval_raises(self, cos_beta):
@@ -1593,6 +1673,37 @@ class TestKernels:
         w = _wigner._w_jkm(7, 3, 2)
         assert kernel(w, 7, 3, 2, 0.3) == _py_func(kernel)(w, 7, 3, 2, 0.3)
 
+    @pytest.mark.parametrize(
+        "args",
+        [
+            (3, 5, 2, 0.3),  # j < k, the NaN guard
+            (3, 3, 2, 0.3),  # j == k, the seed alone
+            (4, 3, 2, 0.3),  # j == k + 1, the second term
+            (7, 3, 2, -0.3),  # t < 0, the type 2 coefficients
+            (7, 3, 2, 0.0),  # t == 0, the type 1 coefficients
+        ],
+    )
+    def test_wigner_d_core_py_func_covers_every_branch(self, args):
+        # the single row of the parametrize table above enters the
+        # t > 0 arm of a full recursion only, so the early returns
+        # and the two other coefficient types are never taken in the
+        # interpreted path
+        kernel = _wigner._wigner_d_core
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        compiled = kernel(*args)
+        interpreted = _py_func(kernel)(*args)
+        if np.isnan(compiled):
+            assert np.isnan(interpreted), args
+        else:
+            assert compiled == interpreted, args
+
+    @pytest.mark.parametrize("args", [(7, -3, -2), (7, 3, -2), (7, -3, 2), (7, 3, 2)])
+    def test_wigner_d_sign_py_func_covers_every_branch(self, args):
+        # equations 6, 7, 8 and the identity fall-through
+        kernel = _wigner.wigner_d_sign
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        assert kernel(*args) == _py_func(kernel)(*args)
+
     def test_wigner_d_py_func_equals_the_compiled_kernel(self):
         assert hasattr(_wigner.wigner_d, "py_func"), "kernel must be @njit-decorated"
         rng = np.random.default_rng(0)
@@ -1623,6 +1734,29 @@ class TestKernels:
         interpreted = np.full((bandwidth, bandwidth, bandwidth, 2), np.nan)
         _wigner._wigner_d_table_kernel(bandwidth, t, False, compiled)
         _py_func(_wigner._wigner_d_table_kernel)(bandwidth, t, False, interpreted)
+        assert np.array_equal(compiled, interpreted, equal_nan=True)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["_wigner_d_table_kernel", "_wigner_d_table_pre_kernel"],
+    )
+    def test_table_kernel_py_func_covers_the_other_branches(self, name):
+        # the runs above use negative_beta=False and a positive t, so
+        # the interpreted path never takes the sign swap of equation
+        # 9 nor the "not is_type_0" arms of the two recursions
+        kernel = getattr(_wigner, name)
+        assert hasattr(kernel, "py_func"), f"{name} must be @njit-decorated"
+        bandwidth = 8
+        t = math.cos(2.5)  # negative, so is_type_0 is False
+        assert t < 0
+        shape = (bandwidth, bandwidth, bandwidth, 2)
+        compiled = np.full(shape, np.nan)
+        interpreted = np.full(shape, np.nan)
+        extra = ()
+        if name.endswith("pre_kernel"):
+            extra = _wigner.wigner_d_table_factors(bandwidth)
+        kernel(bandwidth, t, True, compiled, *extra)
+        _py_func(kernel)(bandwidth, t, True, interpreted, *extra)
         assert np.array_equal(compiled, interpreted, equal_nan=True)
 
     def test_factor_kernel_py_func_equals_the_compiled_kernel(self):

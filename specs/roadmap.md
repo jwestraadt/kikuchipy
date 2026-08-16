@@ -41,9 +41,11 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [ ] Tests: header parse, read->write field/CRC equality, pack/unpack all branches, EMSphInx binaries accept our `.sht` (local-gated), mp2sht parity, `kp.load(".sht")`, bandwidth warning
 
 ## Phase 3 -- `sht-wigner-d`
-- [ ] `_wigner.py` (d(pi/2) table, dTable(beta), dTablePre, scalar `wigner_d`, `wigner_D`, `rotate_harmonics`, derivative helpers `wigner_d_prime`/`wigner_d_prime2`); reference-table module `src/kikuchipy/data/emsphinx/wigner_reference_tables.py` (the Mathematica tables of `test/sht/wigner.cpp`)
-- [ ] `_euler.py` (`zyz_to_quaternion` etc.; explicit port of `test/xtal/rotations.cpp:288-318`; Bunge equivalence test to 1e-14)
-- [ ] Tests: Mathematica tables from `test/sht/wigner.cpp`, table vs scalar, rotate composition/identity; table-based derivative formulas of `sht_xcorr.hpp:1009-1041` pinned in `test_spherical_wigner.py` against `wigner_d_prime`/`wigner_d_prime2` (Phase 7 copies them)
+- [x] `_wigner.py` (d(pi/2) table, dTable(beta), dTablePre, scalar `wigner_d`, `wigner_D`, `rotate_harmonics`, derivative helpers `wigner_d_prime`/`wigner_d_prime2`); reference-table module `src/kikuchipy/data/emsphinx/wigner_reference_tables.py` (the Mathematica tables of `test/sht/wigner.cpp`)
+- [x] `_euler.py` (`zyz_to_quaternion` etc.; explicit port of `test/xtal/rotations.cpp:288-318`; Bunge equivalence test to 1e-14)
+- [x] Tests: Mathematica tables from `test/sht/wigner.cpp`, table vs scalar, rotate composition/identity; table-based derivative formulas of `sht_xcorr.hpp:1009-1041` pinned in `test_spherical_wigner.py` against `wigner_d_prime`/`wigner_d_prime2` (Phase 7 copies them)
+- [x] Adversarial review (fidelity bitwise vs compiled C++, conventions, 56-mutation bug injection) and fixes; coverage 100 %
+- [ ] Signed commits pushed; PR opened into fork `develop`
 
 ## Phase 4 -- `spherical-cross-correlation`
 - [ ] `_xcorr.py`: `SphericalCrossCorrelator`, `NormalizedSphericalCrossCorrelator` (Huhle `rDen`), spectrum kernel, 27-neighbourhood + glide, tri-quadratic interpolation, index<->euler (note: `extractBunge` (`sht_xcorr.hpp:594-649`) uses the reversed ZYZ->Bunge offsets; if ported, use `_euler.bunge_to_zyz` and record the deviation)

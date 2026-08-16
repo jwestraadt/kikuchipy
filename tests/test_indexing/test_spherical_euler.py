@@ -349,6 +349,26 @@ class TestZyzToQuaternion:
         assert not np.signbit(qu).any()
 
     @pytest.mark.parametrize(
+        "zyz, expected",
+        [
+            ((0.0, math.pi - 2e-9, 0.0), (0.0, 0.0, 1.0, 0.0)),
+            ((0.0, math.pi - 2e-9, math.pi), (0.0, 1.0, 0.0, 0.0)),
+        ],
+    )
+    def test_near_pi_rotations_use_the_r_eps_threshold(self, zyz, expected):
+        # zyz2qu() and orientAxis() both compare against rEps
+        # (1.49e-8) and never thr (2.2e-15), and beta = pi exactly
+        # cannot tell the two apart: there c = cos(beta / 2) is
+        # 6.1e-17, so w and z fall below both. At beta = pi - 2e-9
+        # the first case puts |w| = 1.0e-9 and the second
+        # |z| = 1.0e-9 into the band between them, where thr would
+        # skip the pi branch of zyz2qu() (giving (1e-9, -0, -1, -0))
+        # and the equator branch of orientAxis() respectively
+        qu = _euler.zyz_to_quaternion(zyz)
+        assert np.array_equal(qu, np.asarray(expected))
+        assert not np.signbit(qu).any()
+
+    @pytest.mark.parametrize(
         "shape_in, shape_out", [((3,), (4,)), ((7, 3), (7, 4)), ((2, 5, 3), (2, 5, 4))]
     )
     def test_zyz_to_quaternion_shapes(self, shape_in, shape_out):
@@ -363,6 +383,18 @@ class TestZyzToQuaternion:
     def test_zyz_to_quaternion_casts_to_float64(self):
         qu = _euler.zyz_to_quaternion(np.zeros(3, dtype=np.float32))
         assert qu.dtype == np.float64
+
+    @pytest.mark.parametrize("bad", [1.0, np.float64(0.0)])
+    def test_a_zero_dimensional_input_raises(self, bad):
+        # the zero dimensional guard of the shared shape check, which
+        # would otherwise be an IndexError from shape[-1] instead of
+        # the documented ValueError
+        with pytest.raises(ValueError):
+            _euler.zyz_to_quaternion(bad)
+        with pytest.raises(ValueError):
+            _euler.quaternion_to_zyz(bad)
+        with pytest.raises(ValueError):
+            _euler.zyz_to_bunge(bad)
 
 
 class TestQuaternionToZyz:
@@ -550,6 +582,45 @@ class TestKernels:
         _py_func(_euler._quaternion_to_zyz_single)(qu[0], single_interpreted)
         assert np.array_equal(single_compiled, single_interpreted)
         assert np.array_equal(single_compiled, compiled[0])
+
+    @pytest.mark.parametrize(
+        "zyz, expected",
+        [
+            ((0.0, math.pi, 0.0), (0.0, 0.0, 1.0, 0.0)),
+            ((0.0, math.pi, math.pi), (0.0, 1.0, 0.0, 0.0)),
+        ],
+    )
+    def test_zyz_to_quaternion_py_func_takes_the_pi_branch(self, zyz, expected):
+        # the random triples above never come within rEps of a pi
+        # rotation, so the |w| <= rEps branch of zyz2qu() and the
+        # orientAxis() call it guards are otherwise never run in the
+        # interpreted path
+        kernel = _euler._zyz_to_quaternion_single
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        compiled = np.empty(4)
+        interpreted = np.empty(4)
+        kernel(np.asarray(zyz), compiled)
+        _py_func(kernel)(np.asarray(zyz), interpreted)
+        assert np.array_equal(compiled, interpreted)
+        assert np.array_equal(interpreted, np.asarray(expected))
+        assert not np.signbit(interpreted).any()
+
+    @pytest.mark.parametrize(
+        "qu, beta",
+        [((1.0, 0.0, 0.0, 0.0), 0.0), ((0.0, 1.0, 0.0, 0.0), math.pi)],
+    )
+    def test_quaternion_to_zyz_py_func_takes_the_degenerate_branches(self, qu, beta):
+        # both arms of the chi <= thr block of qu2zyz(), which the
+        # random quaternions above never reach
+        kernel = _euler._quaternion_to_zyz_single
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        compiled = np.empty(3)
+        interpreted = np.empty(3)
+        kernel(np.asarray(qu), compiled)
+        _py_func(kernel)(np.asarray(qu), interpreted)
+        assert np.array_equal(compiled, interpreted)
+        assert interpreted[1] == beta
+        assert interpreted[2] == 0.0
 
 
 class TestConstants:

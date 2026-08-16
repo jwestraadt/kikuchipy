@@ -116,6 +116,7 @@ Quaternions are ``(w, x, y, z)`` with ``pijk = +1``
 
 import math
 
+from numba import njit
 import numpy as np
 from orix.quaternion import Rotation
 
@@ -127,16 +128,52 @@ _EPS = float(np.finfo(np.float64).eps)
 _R_EPS = math.sqrt(_EPS)
 _THR = 10 * _EPS
 
-# Full turn, EMSphInx' xtal::Constants<Real>::pi2
+# Full and quarter turn, EMSphInx' xtal::Constants<Real>::pi2 and
+# ::pi_2 (``include/xtal/constants.hpp``, lines 81-82); the quarter
+# turn is the ZYZ to Bunge offset of zyz_to_bunge()
 _TWO_PI = 2 * math.pi
+_PI_2 = math.pi / 2
+
+
+# ------------------------------ Helpers ----------------------------- #
+
+
+def _as_float64(values: np.ndarray, size: int, name: str) -> np.ndarray:
+    """Return an array-like as 64-bit floats with a checked shape.
+
+    Parameters
+    ----------
+    values
+        Array-like expected to have shape ``(..., size)``.
+    size
+        Required length of the last dimension, three for Euler angle
+        triples and four for quaternions.
+    name
+        Parameter name to use in the error message.
+
+    Returns
+    -------
+    array
+        ``values`` as an array of 64-bit floating point data type.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` is zero-dimensional or its last dimension is
+        not ``size``.
+    """
+    array = np.asarray(values, dtype=np.float64)
+    if array.ndim < 1 or array.shape[-1] != size:
+        raise ValueError(
+            f"{name} must have shape (..., {size}), but has shape {array.shape}"
+        )
+    return array
 
 
 # --------------------------- Angle utility -------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _wrap_beta(beta: float) -> float:
     """Return the middle ZYZ Euler angle wrapped into [-pi, pi].
 
@@ -168,7 +205,13 @@ def _wrap_beta(beta: float) -> float:
     and returns ``-0.0`` for ``-0.0``, which is the behaviour the
     negative zero test pins.
     """
-    raise NotImplementedError
+    # numpy's fmod, since Numba has no math.fmod, see the Notes
+    wrapped = np.fmod(beta, _TWO_PI)
+    if wrapped > math.pi:
+        wrapped -= _TWO_PI
+    elif wrapped < -math.pi:
+        wrapped += _TWO_PI
+    return wrapped
 
 
 def wrap_beta(beta: float) -> float:
@@ -192,15 +235,13 @@ def wrap_beta(beta: float) -> float:
     :mod:`kikuchipy.indexing._spherical._wigner` call, so that there
     is a single implementation of the wrap.
     """
-    raise NotImplementedError
+    return float(_wrap_beta(float(beta)))
 
 
 # ------------------------ ZYZ and quaternions ----------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _orient_axis(ax: np.ndarray) -> None:
     """Canonicalize the axis of a rotation by pi, in place.
 
@@ -222,12 +263,26 @@ def _orient_axis(ax: np.ndarray) -> None:
     was zeroed), and ``(1, 0, 0)`` when both ``y`` and ``z`` are
     zero.
     """
-    raise NotImplementedError
+    if abs(ax[2]) < _R_EPS:
+        # z is zero, so the axis is on the equator
+        ax[2] = 0.0
+        if abs(ax[1]) < _R_EPS:
+            # y and z are zero, so use (1, 0, 0), not (-1, 0, 0)
+            ax[1] = 0.0
+            ax[0] = 1.0
+        else:
+            # renormalize, since z was zeroed, and keep the +y half
+            mag = math.copysign(math.sqrt(ax[0] * ax[0] + ax[1] * ax[1]), ax[1])
+            ax[0] /= mag
+            ax[1] /= mag
+    elif math.copysign(1.0, ax[2]) < 0.0:
+        # z is non-zero, so use the northern hemisphere
+        ax[0] = -ax[0]
+        ax[1] = -ax[1]
+        ax[2] = -ax[2]
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _zyz_to_quaternion_single(zyz: np.ndarray, qu: np.ndarray) -> None:
     """Write one ZYZ Euler triple as a quaternion, in place.
 
@@ -260,12 +315,29 @@ def _zyz_to_quaternion_single(zyz: np.ndarray, qu: np.ndarray) -> None:
     normalizes, ``zyz2qu()`` does not; the trigonometric form is
     already unit length to rounding).
     """
-    raise NotImplementedError
+    c = math.cos(zyz[1] / 2)
+    s = math.sin(zyz[1] / 2)
+    # gamma +- alpha, the reverse of the ZXZ eu2qu() operand order
+    sigma = (zyz[2] + zyz[0]) / 2
+    delta = (zyz[2] - zyz[0]) / 2
+    qu[0] = c * math.cos(sigma)
+    qu[1] = -(s * math.sin(delta))
+    qu[2] = -(s * math.cos(delta))
+    qu[3] = -(c * math.sin(sigma))
+    if math.copysign(1.0, qu[0]) < 0.0:
+        # signbit(w), so that -0.0 flips too, restricting the
+        # rotation angle to [0, pi]
+        qu[0] = -qu[0]
+        qu[1] = -qu[1]
+        qu[2] = -qu[2]
+        qu[3] = -qu[3]
+    if abs(qu[0]) <= _R_EPS:
+        # the rotation is by pi, whose axis is ambiguous
+        qu[0] = 0.0
+        _orient_axis(qu[1:])
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _zyz_to_quaternion_2d(zyz2d: np.ndarray) -> np.ndarray:
     """Return quaternions of a two-dimensional array of ZYZ triples.
 
@@ -285,12 +357,14 @@ def _zyz_to_quaternion_2d(zyz2d: np.ndarray) -> np.ndarray:
     -----
     Calls :func:`_zyz_to_quaternion_single` per row.
     """
-    raise NotImplementedError
+    n = zyz2d.shape[0]
+    qu2d = np.empty((n, 4), dtype=np.float64)
+    for i in range(n):
+        _zyz_to_quaternion_single(zyz2d[i], qu2d[i])
+    return qu2d
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _quaternion_to_zyz_single(qu: np.ndarray, eu: np.ndarray) -> None:
     """Write one quaternion as ZYZ Euler angles, in place.
 
@@ -325,12 +399,38 @@ def _quaternion_to_zyz_single(qu: np.ndarray, eu: np.ndarray) -> None:
     (``beta = 0``) or ``(alpha - gamma) % (2 pi)`` (``beta = pi``),
     not the C ``fmod``, which is negative whenever the difference is.
     """
-    raise NotImplementedError
+    w = qu[0]
+    x = qu[1]
+    y = qu[2]
+    z = qu[3]
+    q03 = w * w + z * z
+    q12 = x * x + y * y
+    chi = math.sqrt(q03 * q12)
+    if chi <= _THR:
+        if q12 <= _THR:
+            # a rotation about z alone
+            eu[0] = math.atan2(-2.0 * w * z, w * w - z * z)
+            eu[1] = 0.0
+        else:
+            # a rotation by pi about an axis on the equator
+            eu[0] = math.atan2(-2.0 * x * y, y * y - x * x)
+            eu[1] = math.pi
+        eu[2] = 0.0
+    else:
+        # atan2 is magnitude independent, so chi is not divided out
+        y1 = y * z
+        y2 = -(x * w)
+        x1 = -(y * w)
+        x2 = -(x * z)
+        eu[0] = math.atan2(y1 - y2, x1 - x2)
+        eu[1] = math.atan2(2.0 * chi, q03 - q12)
+        eu[2] = math.atan2(y1 + y2, x1 + x2)
+    for i in range(3):
+        if eu[i] < 0.0:
+            eu[i] += _TWO_PI
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _quaternion_to_zyz_2d(qu2d: np.ndarray) -> np.ndarray:
     """Return ZYZ triples of a two-dimensional array of quaternions.
 
@@ -350,7 +450,11 @@ def _quaternion_to_zyz_2d(qu2d: np.ndarray) -> np.ndarray:
     -----
     Calls :func:`_quaternion_to_zyz_single` per row.
     """
-    raise NotImplementedError
+    n = qu2d.shape[0]
+    zyz2d = np.empty((n, 3), dtype=np.float64)
+    for i in range(n):
+        _quaternion_to_zyz_single(qu2d[i], zyz2d[i])
+    return zyz2d
 
 
 def zyz_to_quaternion(zyz: np.ndarray) -> np.ndarray:
@@ -387,7 +491,9 @@ def zyz_to_quaternion(zyz: np.ndarray) -> np.ndarray:
     to 8.6e-16, which is the evidence for the Bunge offsets of
     :func:`zyz_to_bunge`.
     """
-    raise NotImplementedError
+    zyz = _as_float64(zyz, 3, "zyz")
+    zyz2d = np.ascontiguousarray(zyz.reshape(-1, 3))
+    return _zyz_to_quaternion_2d(zyz2d).reshape(zyz.shape[:-1] + (4,))
 
 
 def quaternion_to_zyz(qu: np.ndarray) -> np.ndarray:
@@ -420,7 +526,9 @@ def quaternion_to_zyz(qu: np.ndarray) -> np.ndarray:
     :func:`_quaternion_to_zyz_single` for the branches and what they
     return when only ``alpha +- gamma`` is determined.
     """
-    raise NotImplementedError
+    qu = _as_float64(qu, 4, "qu")
+    qu2d = np.ascontiguousarray(qu.reshape(-1, 4))
+    return _quaternion_to_zyz_2d(qu2d).reshape(qu.shape[:-1] + (3,))
 
 
 # --------------------------- ZYZ and Bunge -------------------------- #
@@ -466,7 +574,8 @@ def zyz_to_bunge(zyz: np.ndarray) -> np.ndarray:
     are inconsistent with ``zyz2qu()`` in the same file. They are
     never used on the EMSphInx indexing path and are not ported.
     """
-    raise NotImplementedError
+    zyz = _as_float64(zyz, 3, "zyz")
+    return zyz + np.array([_PI_2, 0.0, -_PI_2])
 
 
 def bunge_to_zyz(eu: np.ndarray) -> np.ndarray:
@@ -485,15 +594,20 @@ def bunge_to_zyz(eu: np.ndarray) -> np.ndarray:
         ZYZ Euler angles ``(phi1 - pi/2, Phi, phi2 + pi/2)`` in
         radians in an array of shape ``(..., 3)`` and 64-bit floating
         point data type. The shift is affine and the angles are not
-        wrapped, so this is the exact inverse of
-        :func:`zyz_to_bunge`.
+        wrapped, so this inverts :func:`zyz_to_bunge` up to the
+        rounding of the two shifts: ``(x + pi/2) - pi/2`` is one unit
+        in the last place away from ``x`` for a large fraction of
+        doubles (38138 of 100000 random triples, worst 4.44e-16),
+        while ``beta`` is untouched by both maps and comes back
+        bitwise.
 
     Raises
     ------
     ValueError
         If the last dimension of ``eu`` is not three.
     """
-    raise NotImplementedError
+    eu = _as_float64(eu, 3, "eu")
+    return eu + np.array([-_PI_2, 0.0, _PI_2])
 
 
 # -------------------------- ZYZ and orix ---------------------------- #
@@ -539,7 +653,7 @@ def rotation_from_zyz(zyz: np.ndarray) -> Rotation:
     sample frame is pinned by the forward projection test of Phase 5.
     If that test flips it, the flip happens here and nowhere else.
     """
-    raise NotImplementedError
+    return ~Rotation(zyz_to_quaternion(zyz))
 
 
 def rotation_to_zyz(rotation: Rotation) -> np.ndarray:
@@ -564,4 +678,4 @@ def rotation_to_zyz(rotation: Rotation) -> np.ndarray:
     periodicity of the angles and the degeneracy of ``beta = 0`` and
     ``beta = pi``, where only ``alpha +- gamma`` is determined.
     """
-    raise NotImplementedError
+    return quaternion_to_zyz((~rotation).data)

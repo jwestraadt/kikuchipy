@@ -35,8 +35,8 @@
 # - ``dTablePreBuild(jMax, pE, pW, pB)`` (lines 678-691)
 # - ``dTable(jMax, table, trans)``, the pi/2 table (lines 699-761)
 # - ``rotateHarmonics(bw, alm, blm, zyz)`` (lines 769-799)
-# - ``dPrime(j, k, m, t, nB)`` (lines 813-822)
-# - ``dPrime2(j, k, m, t, nB)`` (lines 836-852)
+# - ``dPrime(j, k, m, t, nB)`` (lines 814-822)
+# - ``dPrime2(j, k, m, t, nB)`` (lines 837-852)
 #
 # The wrap of beta into [-pi, pi] which ``rotate_harmonics()`` and
 # ``wigner_D()`` apply is from ``Correlator::derivatives()``
@@ -186,6 +186,13 @@ branch and the C++ is wrong by up to 2.2. The scalar functions and
 :func:`wigner_d_table` take ``(cos_beta, negative_beta)`` as the C++
 does and cannot wrap, so their callers must.
 
+**The derivatives have an open beta domain.**
+:func:`wigner_d_prime` and :func:`wigner_d_prime2` divide by
+``sin(beta)`` and raise ``ZeroDivisionError`` at
+``|cos_beta| == 1``, in the compiled kernel as in its ``py_func``,
+where the C++ returns an IEEE infinity or NaN. Phase 7's Newton
+refinement must keep ``beta`` off ``0`` and ``pi``.
+
 **Memory.** A beta table is ``2 bw^3`` doubles and the ``pi/2`` table
 ``bw^3``: 5.0 / 10.9 / 23.1 / 63 MB at ``bw`` 68 / 88 / 113 / 158,
 and 906 MB at ``bw`` 384. A :func:`wigner_d_table_pre` caller holds
@@ -205,14 +212,21 @@ consumer. It is pinned by a named test rather than hidden
 :cite:`lenthe2019spherical`.
 """
 
+import math
+
+from numba import njit
 import numpy as np
+
+from kikuchipy.indexing._spherical._euler import _wrap_beta
+
+# Value of every undefined table slot and of every scalar call whose
+# degree is smaller than the largest absolute order
+_NAN = math.nan
 
 # --------------------- Recursion coefficients ----------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _u_jkm_0(j: int, k: int, m: int, tc: float) -> float:
     """Return the recursion coefficient ``u_{j,k,m}`` for beta < pi/2.
 
@@ -229,12 +243,10 @@ def _u_jkm_0(j: int, k: int, m: int, tc: float) -> float:
         ``-tc * ((j - 1) * j) - (k * m - (j - 1) * j)``, Fukushima
         equation 13 (``include/sht/wigner.hpp``, line 210).
     """
-    raise NotImplementedError
+    return -tc * ((j - 1) * j) - (k * m - (j - 1) * j)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _u_jkm_1(j: int, k: int, m: int) -> int:
     """Return the recursion coefficient ``u_{j,k,m}`` at beta = pi/2.
 
@@ -250,12 +262,10 @@ def _u_jkm_1(j: int, k: int, m: int) -> int:
         ``-k * m`` in 64-bit integer arithmetic
         (``include/sht/wigner.hpp``, line 211).
     """
-    raise NotImplementedError
+    return -k * m
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _u_jkm_2(j: int, k: int, m: int, t: float) -> float:
     """Return the recursion coefficient ``u_{j,k,m}`` for beta > pi/2.
 
@@ -272,12 +282,10 @@ def _u_jkm_2(j: int, k: int, m: int, t: float) -> float:
         ``t * ((j - 1) * j) - k * m``
         (``include/sht/wigner.hpp``, line 212).
     """
-    raise NotImplementedError
+    return t * ((j - 1) * j) - k * m
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _v_jkm(j: int, k: int, m: int) -> float:
     """Return the recursion coefficient ``v_{j,k,m}``.
 
@@ -294,12 +302,11 @@ def _v_jkm(j: int, k: int, m: int) -> float:
         product inside the square root is formed in 64-bit integer
         arithmetic before the cast, as the C++ ``Real(...)`` does.
     """
-    raise NotImplementedError
+    product = (j + k - 1) * (j - k - 1) * (j + m - 1) * (j - m - 1)
+    return math.sqrt(float(product)) * j
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _w_jkm(j: int, k: int, m: int) -> float:
     """Return the recursion coefficient ``w_{j,k,m}``.
 
@@ -321,12 +328,11 @@ def _w_jkm(j: int, k: int, m: int) -> float:
     overflows 32-bit integers from ``k`` about 215 onwards. 64-bit
     integers are good to a degree of about 55 000.
     """
-    raise NotImplementedError
+    product = (j + k) * (j - k) * (j + m) * (j - m)
+    return 1.0 / (math.sqrt(float(product)) * (j - 1))
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_jkm_0(j: int, k: int, m: int, tc: float) -> float:
     """Return the recursion coefficient ``a_{j,k,m}`` for beta < pi/2.
 
@@ -345,12 +351,10 @@ def _a_jkm_0(j: int, k: int, m: int, tc: float) -> float:
         The association is the C++ one and must not be changed, see
         :func:`_b_jkm`.
     """
-    raise NotImplementedError
+    return _w_jkm(j, k, m) * (_u_jkm_0(j, k, m, tc) * (2 * j - 1))
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_jkm_1(j: int, k: int, m: int) -> float:
     """Return the recursion coefficient ``a_{j,k,m}`` at beta = pi/2.
 
@@ -365,12 +369,10 @@ def _a_jkm_1(j: int, k: int, m: int) -> float:
         ``w_jkm(j, k, m) * (u_jkm_1(j, k, m) * (2 * j - 1))``
         (``include/sht/wigner.hpp``, line 245).
     """
-    raise NotImplementedError
+    return _w_jkm(j, k, m) * (_u_jkm_1(j, k, m) * (2 * j - 1))
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_jkm_2(j: int, k: int, m: int, t: float) -> float:
     """Return the recursion coefficient ``a_{j,k,m}`` for beta > pi/2.
 
@@ -387,12 +389,10 @@ def _a_jkm_2(j: int, k: int, m: int, t: float) -> float:
         ``w_jkm(j, k, m) * (u_jkm_2(j, k, m, t) * (2 * j - 1))``
         (``include/sht/wigner.hpp``, line 246).
     """
-    raise NotImplementedError
+    return _w_jkm(j, k, m) * (_u_jkm_2(j, k, m, t) * (2 * j - 1))
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_jkm_0_pre(w: float, j: int, k: int, m: int, tc: float) -> float:
     """Return ``a_{j,k,m}`` for beta < pi/2 from a precomputed ``w``.
 
@@ -412,12 +412,10 @@ def _a_jkm_0_pre(w: float, j: int, k: int, m: int, tc: float) -> float:
         ``w * (u_jkm_0(j, k, m, tc) * (2 * j - 1))``
         (``include/sht/wigner.hpp``, line 258).
     """
-    raise NotImplementedError
+    return w * (_u_jkm_0(j, k, m, tc) * (2 * j - 1))
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_jkm_2_pre(w: float, j: int, k: int, m: int, t: float) -> float:
     """Return ``a_{j,k,m}`` for beta > pi/2 from a precomputed ``w``.
 
@@ -446,12 +444,10 @@ def _a_jkm_2_pre(w: float, j: int, k: int, m: int, t: float) -> float:
     u_jkm_1(j, k, m)`` exactly in floating point, so the type 1
     branch never reaches a precomputed coefficient.
     """
-    raise NotImplementedError
+    return w * (_u_jkm_2(j, k, m, t) * (2 * j - 1))
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _b_jkm(j: int, k: int, m: int) -> float:
     """Return the recursion coefficient ``b_{j,k,m}``.
 
@@ -473,12 +469,10 @@ def _b_jkm(j: int, k: int, m: int) -> float:
     to break the bitwise equality of the tables and the scalar
     function that the tests assert.
     """
-    raise NotImplementedError
+    return _w_jkm(j, k, m) * _v_jkm(j, k, m)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _u_km_0(k: int, m: int, tc: float) -> float:
     """Return the seed coefficient ``u_{k,m}`` for beta < pi/2.
 
@@ -495,12 +489,10 @@ def _u_km_0(k: int, m: int, tc: float) -> float:
         ``-tc * (k + 1) - (m - 1 - k)``, Fukushima equation 23
         (``include/sht/wigner.hpp``, line 276).
     """
-    raise NotImplementedError
+    return -tc * (k + 1) - (m - 1 - k)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _u_km_1(k: int, m: int) -> float:
     """Return the seed coefficient ``u_{k,m}`` at beta = pi/2.
 
@@ -515,12 +507,10 @@ def _u_km_1(k: int, m: int) -> float:
     u
         ``-m`` (``include/sht/wigner.hpp``, line 277).
     """
-    raise NotImplementedError
+    return float(-m)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _u_km_2(k: int, m: int, t: float) -> float:
     """Return the seed coefficient ``u_{k,m}`` for beta > pi/2.
 
@@ -536,12 +526,10 @@ def _u_km_2(k: int, m: int, t: float) -> float:
     u
         ``t * (k + 1) - m`` (``include/sht/wigner.hpp``, line 278).
     """
-    raise NotImplementedError
+    return t * (k + 1) - m
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_km_0(k: int, m: int, tc: float) -> float:
     """Return the seed coefficient ``a_{k,m}`` for beta < pi/2.
 
@@ -558,12 +546,11 @@ def _a_km_0(k: int, m: int, tc: float) -> float:
         ``sqrt((2k+1) / ((k+m+1)(k-m+1))) * u_km_0(k, m, tc)``,
         Fukushima equation 22 (``include/sht/wigner.hpp``, line 287).
     """
-    raise NotImplementedError
+    scale = math.sqrt(float(2 * k + 1) / ((k + m + 1) * (k - m + 1)))
+    return scale * _u_km_0(k, m, tc)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_km_1(k: int, m: int) -> float:
     """Return the seed coefficient ``a_{k,m}`` at beta = pi/2.
 
@@ -578,12 +565,11 @@ def _a_km_1(k: int, m: int) -> float:
         ``sqrt((2k+1) / ((k+m+1)(k-m+1))) * u_km_1(k, m)``
         (``include/sht/wigner.hpp``, line 288).
     """
-    raise NotImplementedError
+    scale = math.sqrt(float(2 * k + 1) / ((k + m + 1) * (k - m + 1)))
+    return scale * _u_km_1(k, m)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _a_km_2(k: int, m: int, t: float) -> float:
     """Return the seed coefficient ``a_{k,m}`` for beta > pi/2.
 
@@ -600,12 +586,11 @@ def _a_km_2(k: int, m: int, t: float) -> float:
         ``sqrt((2k+1) / ((k+m+1)(k-m+1))) * u_km_2(k, m, t)``
         (``include/sht/wigner.hpp``, line 289).
     """
-    raise NotImplementedError
+    scale = math.sqrt(float(2 * k + 1) / ((k + m + 1) * (k - m + 1)))
+    return scale * _u_km_2(k, m, t)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _e_km(k: int, m: int) -> float:
     """Return the seed coefficient ``e_{k,m}``.
 
@@ -624,15 +609,16 @@ def _e_km(k: int, m: int) -> float:
         ``d^k_{k,m}(pi/2) = 2^-k e_km`` exactly, since the power of
         two is exact.
     """
-    raise NotImplementedError
+    e_im = 1.0  # e_mm
+    for i in range(m + 1, k + 1):
+        e_im *= math.sqrt(float(i * (2 * i - 1)) / (2 * (i + m) * (i - m))) * 2
+    return e_im  # e_km
 
 
 # ------------------------ Scalar d and D ---------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _wigner_d_core(j: int, k: int, m: int, t: float) -> float:
     """Return ``d^j_{k,m}(beta)`` for the reduced index range.
 
@@ -665,12 +651,53 @@ def _wigner_d_core(j: int, k: int, m: int, t: float) -> float:
     (which reaches about 1e71), so the product underflows to exactly
     ``0.0`` for large ``k + m`` at large ``beta``.
     """
-    raise NotImplementedError
+    if j < k:
+        return _NAN
+
+    # determine if beta is < (0), > (2), or = (1) to pi/2
+    tc = 1.0 - t
+
+    # powers of cos/sin of beta / 2, always positive since 0 <= beta
+    # <= pi at this point
+    c2 = math.sqrt((1.0 + t) / 2)
+    s2 = math.sqrt((1.0 - t) / 2)
+    cn = c2 ** float(k + m)  # equation 20 for n = k + m
+    sn = s2 ** float(k - m)  # equation 20 for n = k - m
+
+    # first term of the three term recursion, equation 18
+    d_kkm = cn * sn * _e_km(k, m)
+    if j == k:
+        return d_kkm
+
+    # second term of the three term recursion, equation 19
+    if t > 0:
+        a_km = _a_km_0(k, m, tc)
+    elif t < 0:
+        a_km = _a_km_2(k, m, t)
+    else:
+        a_km = _a_km_1(k, m)
+    d_k1km = d_kkm * a_km
+    if j == k + 1:
+        return d_k1km
+
+    # recursively compute by degree to j, equation 10
+    d_ikm = d_k1km
+    d_i2km = d_kkm
+    d_i1km = d_k1km
+    for i in range(k + 2, j + 1):
+        if t > 0:
+            a_jkm = _a_jkm_0(i, k, m, tc)
+        elif t < 0:
+            a_jkm = _a_jkm_2(i, k, m, t)
+        else:
+            a_jkm = _a_jkm_1(i, k, m)
+        d_ikm = a_jkm * d_i1km - _b_jkm(i, k, m) * d_i2km
+        d_i2km = d_i1km
+        d_i1km = d_ikm
+    return d_ikm
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def wigner_d(j: int, k: int, m: int, cos_beta: float, negative_beta: bool) -> float:
     """Return the Wigner (lowercase) d function ``d^j_{k,m}(beta)``.
 
@@ -724,12 +751,35 @@ def wigner_d(j: int, k: int, m: int, cos_beta: float, negative_beta: bool) -> fl
     >>> wigner_d(1, 2, 0, 0.5, False)
     nan
     """
-    raise NotImplementedError
+    # reduce to 0 <= m <= k <= j and beta >= 0 with equations 5-9,
+    # accumulating the signs instead of recursing
+    t = cos_beta
+    sign = 1.0
+    if negative_beta:  # equation 5
+        k, m = m, k
+    if k < 0 and m < 0:  # equation 6
+        if (k - m) % 2 != 0:
+            sign = -sign
+        k = -k
+        m = -m
+    elif m < 0:  # equation 7
+        if (j + k) % 2 != 0:
+            sign = -sign
+        m = -m
+        t = -t
+    elif k < 0:  # equation 8
+        if (j + m) % 2 != 0:
+            sign = -sign
+        k = -k
+        t = -t
+    if k < m:  # equation 9
+        if (k - m) % 2 != 0:
+            sign = -sign
+        k, m = m, k
+    return _wigner_d_core(j, k, m, t) * sign
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def wigner_d_half_pi(j: int, k: int, m: int) -> float:
     """Return ``d^j_{k,m}(pi/2)``.
 
@@ -756,12 +806,50 @@ def wigner_d_half_pi(j: int, k: int, m: int) -> float:
     agrees with ``wigner_d(j, k, m, 0.0, False)`` only to rounding
     (7.2e-16 over a ``bw`` 15 table), not bitwise.
     """
-    raise NotImplementedError
+    # reduce to 0 <= m <= k <= j, where pi - beta == beta collapses
+    # equations 7 and 8 onto the same value
+    sign = 1.0
+    if k < 0 and m < 0:
+        if (k - m) % 2 != 0:
+            sign = -sign
+        k = -k
+        m = -m
+    elif m < 0:
+        if (j + k + 2 * m) % 2 != 0:
+            sign = -sign
+        m = -m
+    elif k < 0:
+        if (j + 2 * k + 3 * m) % 2 != 0:
+            sign = -sign
+        k = -k
+    if k < m:
+        if (k - m) % 2 != 0:
+            sign = -sign
+        k, m = m, k
+
+    if j < k:
+        return _NAN
+
+    # first two terms of the three term recursion, equations 18-19
+    d_kkm = 2.0 ** float(-k) * _e_km(k, m)
+    if j == k:
+        return d_kkm * sign
+    d_k1km = d_kkm * _a_km_1(k, m)
+    if j == k + 1:
+        return d_k1km * sign
+
+    # recursively compute by degree to j, equation 10
+    d_ikm = d_k1km
+    d_i2km = d_kkm
+    d_i1km = d_k1km
+    for i in range(k + 2, j + 1):
+        d_ikm = _a_jkm_1(i, k, m) * d_i1km - _b_jkm(i, k, m) * d_i2km
+        d_i2km = d_i1km
+        d_i1km = d_ikm
+    return d_ikm * sign
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def wigner_d_sign(j: int, k: int, m: int) -> int:
     """Return the sign relating ``d^j_{k,m}`` to ``d^j_{|k|,|m|}``.
 
@@ -787,12 +875,16 @@ def wigner_d_sign(j: int, k: int, m: int) -> int:
     The relation holds at ``pi/2`` only, where ``pi - beta == beta``
     collapses equations 7 and 8 onto the same table slot.
     """
-    raise NotImplementedError
+    if k < 0 and m < 0:  # equation 6
+        return 1 if (k - m) % 2 == 0 else -1
+    elif m < 0:  # equation 7
+        return 1 if (j + k) % 2 == 0 else -1
+    elif k < 0:  # equation 8
+        return 1 if (j + m) % 2 == 0 else -1
+    return 1
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def wigner_D(j: int, k: int, m: int, zyz: np.ndarray) -> complex:
     """Return the Wigner (uppercase) D function ``D^j_{k,m}(zyz)``.
 
@@ -807,7 +899,9 @@ def wigner_D(j: int, k: int, m: int, zyz: np.ndarray) -> complex:
     zyz
         Passive ZYZ Euler angles ``(alpha, beta, gamma)`` in radians
         in an array of shape ``(3,)`` and 64-bit floating point data
-        type.
+        type. A 32-bit array is accepted by Numba, which compiles a
+        separate specialization for it, but costs about 3e-8 of
+        accuracy: this kernel has no Python wrapper to widen it.
 
     Returns
     -------
@@ -823,16 +917,26 @@ def wigner_D(j: int, k: int, m: int, zyz: np.ndarray) -> complex:
     (``include/sht/sht_xcorr.hpp``, lines 895-899) before ``cos`` and
     ``signbit`` are taken, so that the result is periodic in ``beta``
     as the mathematics requires.
+
+    The real and imaginary parts are scaled separately because the
+    C++ ``std::complex<Real> * Real`` of line 438 scales
+    componentwise. Written as ``complex(...) * d`` instead, both
+    Numba and CPython promote ``d`` to a complex number and use the
+    four multiplication form, which turns the ``-0.0`` of a slot
+    with ``sin(total) == 0.0`` and ``d < 0`` into ``+0.0`` (23 of
+    9464 sampled slots, all with ``k == m == 0``).
     """
-    raise NotImplementedError
+    beta = _wrap_beta(zyz[1])
+    total = zyz[0] * m + zyz[2] * k
+    d = wigner_d(j, k, m, math.cos(beta), math.copysign(1.0, beta) < 0.0)
+    # componentwise, as C++ scales a complex by a real
+    return complex(math.cos(total) * d, math.sin(total) * d)
 
 
 # --------------------------- Table kernels -------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _wigner_d_table_kernel(
     bandwidth: int, t: float, negative_beta: bool, table: np.ndarray
 ) -> None:
@@ -870,12 +974,87 @@ def _wigner_d_table_kernel(
     (``2 * bandwidth`` each) and read at ``k + m`` and ``k - m``,
     with the roles of the two exchanged for the ``-t`` slot.
     """
-    raise NotImplementedError
+    # which branch is needed, grouping beta == pi/2 with beta < pi/2,
+    # and the cosine and sine of the half angle
+    is_type_0 = not (math.copysign(1.0, t) < 0.0)
+    tc = 1.0 - t
+    tc_n = 1.0 + t  # tc for -t
+    c2 = math.sqrt(tc_n / 2)
+    s2 = math.sqrt(tc / 2)
+    t0 = tc if is_type_0 else t
+    t_n = -t if is_type_0 else tc_n
+
+    # integer powers of c2 and s2, equation 20
+    pc2 = np.empty(bandwidth * 2)
+    ps2 = np.empty(bandwidth * 2)
+    for i in range(bandwidth * 2):
+        pc2[i] = c2 ** float(i)
+        ps2[i] = s2 ** float(i)
+
+    for k in range(bandwidth):
+        for m in range(k + 1):
+            # sign change for swapping k and m, equation 9
+            sign = 1.0
+            sign_n = 1.0 if (k - m) % 2 == 0 else -1.0
+            if negative_beta:
+                sign, sign_n = sign_n, sign
+
+            cn = pc2[k + m]
+            sn = ps2[k - m]
+            cn_n = ps2[k + m]
+            sn_n = pc2[k - m]
+
+            # first term of the three term recursion, equation 18
+            ekm = _e_km(k, m)
+            d_kkm = cn * sn * ekm
+            d_kkm_n = cn_n * sn_n * ekm
+            table[k, m, k, 0] = d_kkm * sign
+            table[m, k, k, 0] = d_kkm * sign_n
+            table[k, m, k, 1] = d_kkm_n * sign
+            table[m, k, k, 1] = d_kkm_n * sign_n
+
+            if k + 1 < bandwidth:
+                # second term of the recursion, equation 19
+                if is_type_0:
+                    a_km = _a_km_0(k, m, t0)
+                    a_km_n = _a_km_2(k, m, t_n)
+                else:
+                    a_km = _a_km_2(k, m, t0)
+                    a_km_n = _a_km_0(k, m, t_n)
+                d_k1km = d_kkm * a_km
+                d_k1km_n = d_kkm_n * a_km_n
+                table[k, m, k + 1, 0] = d_k1km * sign
+                table[m, k, k + 1, 0] = d_k1km * sign_n
+                table[k, m, k + 1, 1] = d_k1km_n * sign
+                table[m, k, k + 1, 1] = d_k1km_n * sign_n
+
+                if k + 2 < bandwidth:
+                    # recursively compute by degree, equation 10
+                    d_i2km = d_kkm
+                    d_i1km = d_k1km
+                    d_i2km_n = d_kkm_n
+                    d_i1km_n = d_k1km_n
+                    for i in range(k + 2, bandwidth):
+                        if is_type_0:
+                            a_jkm = _a_jkm_0(i, k, m, t0)
+                            a_jkm_n = _a_jkm_2(i, k, m, t_n)
+                        else:
+                            a_jkm = _a_jkm_2(i, k, m, t0)
+                            a_jkm_n = _a_jkm_0(i, k, m, t_n)
+                        b_ikm = _b_jkm(i, k, m)
+                        d_ikm = a_jkm * d_i1km - b_ikm * d_i2km
+                        d_i2km = d_i1km
+                        d_i1km = d_ikm
+                        d_ikm_n = a_jkm_n * d_i1km_n - b_ikm * d_i2km_n
+                        d_i2km_n = d_i1km_n
+                        d_i1km_n = d_ikm_n
+                        table[k, m, i, 0] = d_i1km * sign
+                        table[m, k, i, 0] = d_i1km * sign_n
+                        table[k, m, i, 1] = d_i1km_n * sign
+                        table[m, k, i, 1] = d_i1km_n * sign_n
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _wigner_d_table_factors_kernel(
     bandwidth: int, e_km: np.ndarray, w_jkm: np.ndarray, b_jkm: np.ndarray
 ) -> None:
@@ -900,12 +1079,15 @@ def _wigner_d_table_factors_kernel(
     Port of ``dTablePreBuild()`` (``include/sht/wigner.hpp``, lines
     678-691).
     """
-    raise NotImplementedError
+    for k in range(bandwidth):
+        for m in range(k + 1):
+            e_km[k, m] = _e_km(k, m)
+            for i in range(k + 2, bandwidth):
+                w_jkm[k, m, i] = _w_jkm(i, k, m)
+                b_jkm[k, m, i] = _b_jkm(i, k, m)
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _wigner_d_table_pre_kernel(
     bandwidth: int,
     t: float,
@@ -940,12 +1122,88 @@ def _wigner_d_table_pre_kernel(
     ``b_jkm`` read from the tables instead of recomputed, and gives
     bitwise identical results.
     """
-    raise NotImplementedError
+    # which branch is needed, grouping beta == pi/2 with beta < pi/2,
+    # and the cosine and sine of the half angle
+    is_type_0 = not (math.copysign(1.0, t) < 0.0)
+    tc = 1.0 - t
+    tc_n = 1.0 + t  # tc for -t
+    c2 = math.sqrt(tc_n / 2)
+    s2 = math.sqrt(tc / 2)
+    t0 = tc if is_type_0 else t
+    t_n = -t if is_type_0 else tc_n
+
+    # integer powers of c2 and s2, equation 20
+    pc2 = np.empty(bandwidth * 2)
+    ps2 = np.empty(bandwidth * 2)
+    for i in range(bandwidth * 2):
+        pc2[i] = c2 ** float(i)
+        ps2[i] = s2 ** float(i)
+
+    for k in range(bandwidth):
+        for m in range(k + 1):
+            # sign change for swapping k and m, equation 9
+            sign = 1.0
+            sign_n = 1.0 if (k - m) % 2 == 0 else -1.0
+            if negative_beta:
+                sign, sign_n = sign_n, sign
+
+            cn = pc2[k + m]
+            sn = ps2[k - m]
+            cn_n = ps2[k + m]
+            sn_n = pc2[k - m]
+
+            # first term of the three term recursion, equation 18
+            ekm = e_km[k, m]
+            d_kkm = cn * sn * ekm
+            d_kkm_n = cn_n * sn_n * ekm
+            table[k, m, k, 0] = d_kkm * sign
+            table[m, k, k, 0] = d_kkm * sign_n
+            table[k, m, k, 1] = d_kkm_n * sign
+            table[m, k, k, 1] = d_kkm_n * sign_n
+
+            if k + 1 < bandwidth:
+                # second term of the recursion, equation 19
+                if is_type_0:
+                    a_km = _a_km_0(k, m, t0)
+                    a_km_n = _a_km_2(k, m, t_n)
+                else:
+                    a_km = _a_km_2(k, m, t0)
+                    a_km_n = _a_km_0(k, m, t_n)
+                d_k1km = d_kkm * a_km
+                d_k1km_n = d_kkm_n * a_km_n
+                table[k, m, k + 1, 0] = d_k1km * sign
+                table[m, k, k + 1, 0] = d_k1km * sign_n
+                table[k, m, k + 1, 1] = d_k1km_n * sign
+                table[m, k, k + 1, 1] = d_k1km_n * sign_n
+
+                if k + 2 < bandwidth:
+                    # recursively compute by degree, equation 10
+                    d_i2km = d_kkm
+                    d_i1km = d_k1km
+                    d_i2km_n = d_kkm_n
+                    d_i1km_n = d_k1km_n
+                    for i in range(k + 2, bandwidth):
+                        w = w_jkm[k, m, i]
+                        b_ikm = b_jkm[k, m, i]
+                        if is_type_0:
+                            a_jkm = _a_jkm_0_pre(w, i, k, m, t0)
+                            a_jkm_n = _a_jkm_2_pre(w, i, k, m, t_n)
+                        else:
+                            a_jkm = _a_jkm_2_pre(w, i, k, m, t0)
+                            a_jkm_n = _a_jkm_0_pre(w, i, k, m, t_n)
+                        d_ikm = a_jkm * d_i1km - b_ikm * d_i2km
+                        d_i2km = d_i1km
+                        d_i1km = d_ikm
+                        d_ikm_n = a_jkm_n * d_i1km_n - b_ikm * d_i2km_n
+                        d_i2km_n = d_i1km_n
+                        d_i1km_n = d_ikm_n
+                        table[k, m, i, 0] = d_i1km * sign
+                        table[m, k, i, 0] = d_i1km * sign_n
+                        table[k, m, i, 1] = d_i1km_n * sign
+                        table[m, k, i, 1] = d_i1km_n * sign_n
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _wigner_d_half_pi_table_kernel(
     bandwidth: int, table: np.ndarray, transpose: bool
 ) -> None:
@@ -970,12 +1228,53 @@ def _wigner_d_half_pi_table_kernel(
     closed form ``2^-k e_km`` and fills the mirror slot with the
     ``(-1)^(k-m)`` sign of equation 9.
     """
-    raise NotImplementedError
+    # compute d^j_{k,m} for k >= m >= 0 and fill the mirror slot with
+    # the (-1)^(k-m) sign of equation 9
+    for k in range(bandwidth):
+        for m in range(k + 1):
+            km = (k - m) % 2 == 0
+
+            # d^k_{k,m} from the closed form, equation 18
+            d_kkm = 2.0 ** float(-k) * _e_km(k, m)
+            d_kmk = d_kkm if km else -d_kkm
+            if transpose:
+                table[m, k, k] = d_kkm
+                table[k, m, k] = d_kmk
+            else:
+                table[k, m, k] = d_kkm
+                table[m, k, k] = d_kmk
+            if k + 1 == bandwidth:
+                continue
+
+            # d^{k+1}_{k,m} from the recursion, equation 19
+            d_k1km = d_kkm * _a_km_1(k, m)
+            d_k1mk = d_k1km if km else -d_k1km
+            if transpose:
+                table[m, k, k + 1] = d_k1km
+                table[k, m, k + 1] = d_k1mk
+            else:
+                table[k, m, k + 1] = d_k1km
+                table[m, k, k + 1] = d_k1mk
+            if k + 2 == bandwidth:
+                continue
+
+            # higher degrees from the three term recursion, eq 10
+            d_j1km = d_k1km
+            d_j2km = d_kkm
+            for j in range(k + 2, bandwidth):
+                d_jkm = _a_jkm_1(j, k, m) * d_j1km - _b_jkm(j, k, m) * d_j2km
+                d_jmk = d_jkm if km else -d_jkm
+                if transpose:
+                    table[m, k, j] = d_jkm
+                    table[k, m, j] = d_jmk
+                else:
+                    table[k, m, j] = d_jkm
+                    table[m, k, j] = d_jmk
+                d_j2km = d_j1km
+                d_j1km = d_jkm
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _rotate_harmonics_kernel(
     alm: np.ndarray,
     alpha: float,
@@ -997,7 +1296,12 @@ def _rotate_harmonics_kernel(
         angle, as returned by :func:`wigner_d_table`.
     out
         Zeroed array of shape ``(bw, bw)`` and 128-bit complex data
-        type to accumulate ``blm[m, l]`` into.
+        type to accumulate ``blm[m, l]`` into. It **must not alias**
+        ``alm``: the C++ accumulates into a ``almRot`` temporary
+        "in case alm == blm" (line 772) and copies at the end, while
+        this kernel accumulates into ``out`` directly, so an aliased
+        buffer is read after it has been written. The one caller,
+        :func:`rotate_harmonics`, passes a fresh zeroed array.
 
     Notes
     -----
@@ -1018,7 +1322,29 @@ def _rotate_harmonics_kernel(
     survives every group theoretic identity, so it is caught only by
     the tests which pin ``D`` itself.
     """
-    raise NotImplementedError
+    bandwidth = alm.shape[0]
+    for m in range(bandwidth):
+        exp_m_gamma = complex(math.cos(gamma * m), math.sin(gamma * m))
+        for n in range(bandwidth):
+            exp_n_alpha = complex(math.cos(alpha * n), math.sin(alpha * n))
+            for j in range(max(m, n), bandwidth):
+                a_n = alm[n, j] * exp_n_alpha
+                rr = exp_m_gamma.real * a_n.real
+                ri = exp_m_gamma.real * a_n.imag
+                ir = exp_m_gamma.imag * a_n.real
+                ii = exp_m_gamma.imag * a_n.imag
+
+                # exp_m_gamma * a_n and exp_m_gamma * conj(a_n), the
+                # +n and -n terms of the sum
+                vp = complex(rr - ii, ir + ri)
+                vc = complex(rr + ii, ir - ri)
+
+                dmn0 = table[m, n, j, 0]  # d^j_{m,n}(     beta)
+                dmn1 = table[m, n, j, 1]  # d^j_{m,n}(pi - beta)
+                out[m, j] += vp * dmn0
+                if n > 0:
+                    sign = 1.0 if (j + m + n) % 2 == 0 else -1.0
+                    out[m, j] += vc * (dmn1 * sign)
 
 
 # ------------------------- Table wrappers --------------------------- #
@@ -1070,7 +1396,13 @@ def wigner_d_table(bandwidth: int, cos_beta: float, negative_beta: bool) -> np.n
     of 1.39 ms at ``bw`` 68). Use :func:`wigner_d_table_pre` with
     ``out=`` to reuse a buffer when a table is needed repeatedly.
     """
-    raise NotImplementedError
+    if bandwidth < 1:
+        raise ValueError("`bandwidth` must be at least one")
+    if not -1.0 <= cos_beta <= 1.0:
+        raise ValueError("`cos_beta` must be in [-1, 1]")
+    table = np.full((bandwidth, bandwidth, bandwidth, 2), np.nan)
+    _wigner_d_table_kernel(bandwidth, float(cos_beta), bool(negative_beta), table)
+    return table
 
 
 def wigner_d_table_factors(
@@ -1109,7 +1441,13 @@ def wigner_d_table_factors(
     holds them in its own constants, as
     ``include/sht/sht_xcorr.hpp`` lines 360-370 do.
     """
-    raise NotImplementedError
+    if bandwidth < 1:
+        raise ValueError("`bandwidth` must be at least one")
+    e_km = np.full((bandwidth, bandwidth), np.nan)
+    w_jkm = np.full((bandwidth, bandwidth, bandwidth), np.nan)
+    b_jkm = np.full((bandwidth, bandwidth, bandwidth), np.nan)
+    _wigner_d_table_factors_kernel(bandwidth, e_km, w_jkm, b_jkm)
+    return e_km, w_jkm, b_jkm
 
 
 def wigner_d_table_pre(
@@ -1132,8 +1470,11 @@ def wigner_d_table_pre(
     negative_beta
         Whether ``beta`` is negative, i.e. ``signbit(beta)``.
     e_km, w_jkm, b_jkm
-        The three tables of :func:`wigner_d_table_factors` for the
-        same ``bandwidth``.
+        The three tables of :func:`wigner_d_table_factors` built for
+        the same ``bandwidth``. Their shapes and data type are
+        checked, since the kernel reads them without bounds checking
+        (Numba's ``BOUNDSCHECK`` is off) and an undersized table is
+        therefore silently out of bounds rather than an error.
     out
         Buffer to write into. If not given, a NaN filled array is
         allocated. **All undefined slots of a given buffer must
@@ -1142,7 +1483,11 @@ def wigner_d_table_pre(
         never writes them. The check is a tripwire on two
         representative slots rather than a full scan, so an
         ``np.empty()`` buffer is rejected but a partially poisoned
-        one is not.
+        one is not. The buffer is caller owned **per thread**: every
+        kernel is ``nogil=True``, so two threads writing one buffer
+        interleave and leave a table which matches neither beta. One
+        buffer per Newton refinement is the intended re-use, one
+        buffer for a thread pool is not.
 
     Returns
     -------
@@ -1154,11 +1499,13 @@ def wigner_d_table_pre(
     Raises
     ------
     ValueError
-        If ``bandwidth`` is smaller than one, ``|cos_beta| > 1``, or
-        ``out`` has the wrong shape or data type, is not
-        C-contiguous, or has a non-NaN value in one of the two
-        representative undefined slots ``out[bandwidth - 1, 0, 0, 0]``
-        and ``out[0, bandwidth - 1, 0, 1]`` (checked for
+        If ``bandwidth`` is smaller than one, ``|cos_beta| > 1``, any
+        of ``e_km``, ``w_jkm`` and ``b_jkm`` was not built for
+        ``bandwidth`` or is not 64-bit floating point, or ``out`` has
+        the wrong shape or data type, is not C-contiguous, or has a
+        non-NaN value in one of the two representative undefined
+        slots ``out[bandwidth - 1, 0, 0, 0]`` and
+        ``out[0, bandwidth - 1, 0, 1]`` (checked for
         ``bandwidth >= 2``, since ``bandwidth == 1`` has no undefined
         slot).
 
@@ -1168,8 +1515,58 @@ def wigner_d_table_pre(
     575-671). Reusing ``out`` is what Phase 7's Newton refinement
     does, one call per iteration, which is why the NaN fill is not
     repeated.
+
+    The C++ forms its own flat index ``k jMax^2 + m jMax + i`` into
+    the factor tables, so a ``jMax`` smaller than the bandwidth they
+    were built for reads them at the wrong stride
+    (``include/sht/sht_xcorr.hpp`` line 913 passes ``mBW`` to tables
+    built at ``bw`` on line 369; every call site currently has
+    ``mBW == bw``). This port indexes ``w_jkm[k, m, i]`` through the
+    arrays' own strides and so would not reproduce that read, which
+    is why the tables must match ``bandwidth`` here.
     """
-    raise NotImplementedError
+    if bandwidth < 1:
+        raise ValueError("`bandwidth` must be at least one")
+    if not -1.0 <= cos_beta <= 1.0:
+        raise ValueError("`cos_beta` must be in [-1, 1]")
+    # the kernel reads the factors without bounds checking, so an
+    # undersized table is out of bounds rather than an error
+    for name, factor, factor_shape in (
+        ("e_km", e_km, (bandwidth, bandwidth)),
+        ("w_jkm", w_jkm, (bandwidth,) * 3),
+        ("b_jkm", b_jkm, (bandwidth,) * 3),
+    ):
+        if (
+            getattr(factor, "shape", None) != factor_shape
+            or getattr(factor, "dtype", None) != np.float64
+        ):
+            raise ValueError(
+                f"`{name}` must have shape {factor_shape} and a 64-bit floating "
+                "point data type, i.e. come from "
+                "`wigner_d_table_factors(bandwidth)`"
+            )
+    shape = (bandwidth, bandwidth, bandwidth, 2)
+    if out is None:
+        table = np.full(shape, np.nan)
+    else:
+        table = out
+        if table.shape != shape:
+            raise ValueError(f"`out` must have shape {shape}")
+        if table.dtype != np.float64:
+            raise ValueError("`out` must have a 64-bit floating point data type")
+        if not table.flags.c_contiguous:
+            raise ValueError("`out` must be C-contiguous")
+        # tripwire on two slots the kernel never writes, which are
+        # undefined for every bandwidth of at least two
+        if bandwidth >= 2 and not (
+            np.isnan(table[bandwidth - 1, 0, 0, 0])
+            and np.isnan(table[0, bandwidth - 1, 0, 1])
+        ):
+            raise ValueError("all undefined slots of `out` must already be NaN")
+    _wigner_d_table_pre_kernel(
+        bandwidth, float(cos_beta), bool(negative_beta), table, e_km, w_jkm, b_jkm
+    )
+    return table
 
 
 def wigner_d_half_pi_table(bandwidth: int, transpose: bool) -> np.ndarray:
@@ -1206,7 +1603,11 @@ def wigner_d_half_pi_table(bandwidth: int, transpose: bool) -> np.ndarray:
     exact transposes of each other, and within one layout
     ``table[k, m, j] == (-1)^(k-m) table[m, k, j]``.
     """
-    raise NotImplementedError
+    if bandwidth < 1:
+        raise ValueError("`bandwidth` must be at least one")
+    table = np.full((bandwidth, bandwidth, bandwidth), np.nan)
+    _wigner_d_half_pi_table_kernel(bandwidth, table, bool(transpose))
+    return table
 
 
 def rotate_harmonics(alm: np.ndarray, zyz: np.ndarray) -> np.ndarray:
@@ -1267,15 +1668,28 @@ def rotate_harmonics(alm: np.ndarray, zyz: np.ndarray) -> np.ndarray:
     >>> round(float(blm[0, 0].real), 12)
     1.0
     """
-    raise NotImplementedError
+    coefficients = np.ascontiguousarray(alm, dtype=np.complex128)
+    if coefficients.ndim != 2 or coefficients.shape[0] != coefficients.shape[1]:
+        raise ValueError("`alm` must be two-dimensional and square")
+    angles = np.asarray(zyz, dtype=np.float64)
+    if angles.shape != (3,):
+        raise ValueError("`zyz` must have three elements")
+
+    beta = _wrap_beta(float(angles[1]))
+    table = wigner_d_table(
+        coefficients.shape[0], math.cos(beta), math.copysign(1.0, beta) < 0.0
+    )
+    blm = np.zeros_like(coefficients)
+    _rotate_harmonics_kernel(
+        coefficients, float(angles[0]), float(angles[2]), table, blm
+    )
+    return blm
 
 
 # --------------------------- Derivatives ---------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def wigner_d_prime(
     j: int, k: int, m: int, cos_beta: float, negative_beta: bool
 ) -> float:
@@ -1290,7 +1704,9 @@ def wigner_d_prime(
     m
         Second order.
     cos_beta
-        ``cos(beta)``, which must be in [-1, 1].
+        ``cos(beta)``, which must be in (-1, 1). The end points are
+        excluded: ``csc(beta)`` is infinite at ``beta = 0`` and
+        ``beta = pi``, see Raises.
     negative_beta
         Whether ``beta`` is negative, i.e. ``signbit(beta)``.
 
@@ -1301,22 +1717,46 @@ def wigner_d_prime(
         ``D[WignerD[{j, k, m}, beta], beta]``, or NaN when
         ``j < max(|k|, |m|)``.
 
+    Raises
+    ------
+    ZeroDivisionError
+        If ``|cos_beta| == 1``, i.e. at ``beta = 0`` or
+        ``beta = pi``, where the ``csc`` prefactor divides by zero.
+        The C++ divides in C and returns the IEEE ``+-inf`` or NaN
+        there, while Numba's default ``error_model="python"`` raises,
+        as the ``py_func`` does. Changing the error model would alter
+        the provenance of every other value, so the domain is
+        documented rather than widened; a Newton refinement which can
+        land on a pole must keep ``beta`` off it.
+
     Notes
     -----
     Port of ``dPrime()`` (``include/sht/wigner.hpp``, lines
-    813-822). The NaN for undefined indices is produced by an
+    814-822). The NaN for undefined indices is produced by an
     explicit guard rather than by ``sqrt()`` of a negative number, a
     recorded deviation with an identical result: Numba's
     ``math.sqrt`` returns NaN for a negative argument while Python's
     raises ``ValueError``, so the compiled kernel and its
     ``py_func`` would otherwise disagree.
     """
-    raise NotImplementedError
+    if j < max(abs(k), abs(m)):
+        return _NAN
+
+    # prefactor, the same for all j, k and m at a given beta
+    t = cos_beta
+    csc = 1.0 / math.sqrt(1.0 - t * t) * (-1.0 if negative_beta else 1.0)
+
+    d0_term = wigner_d(j, k, m, t, negative_beta) * (t * k - m) * csc
+    if j == k:
+        d1_term = 0.0
+    else:
+        d1_term = wigner_d(j, k + 1, m, t, negative_beta) * math.sqrt(
+            float((j - k) * (j + k + 1))
+        )
+    return d0_term - d1_term
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def wigner_d_prime2(
     j: int, k: int, m: int, cos_beta: float, negative_beta: bool
 ) -> float:
@@ -1331,7 +1771,9 @@ def wigner_d_prime2(
     m
         Second order.
     cos_beta
-        ``cos(beta)``, which must be in [-1, 1].
+        ``cos(beta)``, which must be in (-1, 1). The end points are
+        excluded: ``csc(beta)`` is infinite at ``beta = 0`` and
+        ``beta = pi``, see Raises.
     negative_beta
         Whether ``beta`` is negative, i.e. ``signbit(beta)``.
 
@@ -1342,10 +1784,22 @@ def wigner_d_prime2(
         ``D[WignerD[{j, k, m}, beta], {beta, 2}]``, or NaN when
         ``j < max(|k|, |m|)``.
 
+    Raises
+    ------
+    ZeroDivisionError
+        If ``|cos_beta| == 1``, i.e. at ``beta = 0`` or
+        ``beta = pi``, where the ``csc`` prefactor divides by zero.
+        The C++ divides in C and returns the IEEE ``+-inf`` or NaN
+        there, while Numba's default ``error_model="python"`` raises,
+        as the ``py_func`` does. Changing the error model would alter
+        the provenance of every other value, so the domain is
+        documented rather than widened; a Newton refinement which can
+        land on a pole must keep ``beta`` off it.
+
     Notes
     -----
     Port of ``dPrime2()`` (``include/sht/wigner.hpp``, lines
-    836-852), with the same explicit NaN guard as
+    837-852), with the same explicit NaN guard as
     :func:`wigner_d_prime` and one further recorded deviation: the
     C++ evaluates ``d2Coef = rjk * sqrt((j-k-1)(j+k+2))``
     unconditionally at line 845 and then discards it in the
@@ -1363,4 +1817,27 @@ def wigner_d_prime2(
     ``include/sht/sht_xcorr.hpp`` lines 1009-1041, which the Phase 3
     tests pin against this one.
     """
-    raise NotImplementedError
+    if j < max(abs(k), abs(m)):
+        return _NAN
+
+    # prefactor, the same for all j, k and m at a given beta
+    t = cos_beta
+    csc = 1.0 / math.sqrt(1.0 - t * t) * (-1.0 if negative_beta else 1.0)
+
+    rjk = math.sqrt(float((j - k) * (j + k + 1)))
+    d0_coefficient = (t * t * k * k + t * m * (1 - 2 * k) + (m * m - k)) * csc * csc
+    d1_coefficient = rjk * (t * (1 + 2 * k) - 2 * m) * csc
+
+    d0_term = wigner_d(j, k, m, t, negative_beta) * d0_coefficient
+    if k >= j:
+        d1_term = 0.0
+    else:
+        d1_term = wigner_d(j, k + 1, m, t, negative_beta) * d1_coefficient
+    if k + 1 >= j:
+        # the C++ forms d2Coef unconditionally, whose radicand is
+        # negative on every defined slot with k == j
+        d2_term = 0.0
+    else:
+        d2_coefficient = rjk * math.sqrt(float((j - k - 1) * (j + k + 2)))
+        d2_term = wigner_d(j, k + 2, m, t, negative_beta) * d2_coefficient
+    return d0_term - d1_term + d2_term

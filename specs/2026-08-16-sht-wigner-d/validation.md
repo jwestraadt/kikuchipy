@@ -373,3 +373,239 @@ measurement does not need the (unwritten) implementation.
   further action.
 
 (implementation results follow)
+
+### 2026-08-16 -- `_wigner.py` implementation, measured
+
+The implementation of `src/kikuchipy/indexing/_spherical/_wigner.py`
+(30 Numba kernels plus five wrappers, `_wrap_beta` imported from
+`_euler.py`; `_a_jkm_1_pre` omitted as planned). This machine, Python
+3.13.12, numpy 2.5.2, scipy 1.18.0, numba 0.67.0, orix 0.15.0. Every
+number below is a `record_property` of the run unless stated.
+
+- **Test suites, all green.** `test_spherical_wigner.py` alone: 276
+  passed, 42 skipped (`-n 0`, 2.5-3.7 s after the Numba cache is
+  warm). With `test_spherical_euler.py`: 354 passed, 42 skipped at
+  `-n 0` (7.4 s) and at `-n 4` (9.4 s). Phase 1 trio
+  (`test_spherical_sht.py`, `_grid.py`, `_fft.py`): 341 passed, 507
+  skipped at `-n 0` (16.2 s) and `-n 4` (75.3 s). **Weekly**
+  `uv run pytest --weekly tests/test_indexing/test_spherical_wigner.py
+  -n 4 -q`: **318 passed in 12.63 s** (19.8 s wall including
+  interpreter start). `--doctest-modules
+  src/kikuchipy/indexing/_spherical`: 4 passed, of which two are the
+  `wigner_d` and `rotate_harmonics` examples (Numba dispatchers are
+  collected by doctest). `pre-commit run --files _wigner.py`: ruff and
+  ruff-format pass, GPL licence header check passes. No test was
+  changed.
+- **Mathematica tables** (`2 eps = 4.44e-16`): worst `|delta|` per
+  case `[pi/2 special, pi/2, pi/3, -pi/3, 2pi/3, -2pi/3]` =
+  `[1.110e-16, 3.331e-16, 3.331e-16, 3.331e-16, 3.331e-16,
+  3.331e-16]` -- the drafting transcription's figures reproduced
+  exactly. `dSign`: 165 defined triples compared, 0 mismatches.
+  `D^3_{2,1}(pi/3, pi/2, pi/6)`: 1.110e-16.
+- **Derivative tables** (`24 eps = 5.33e-15`): `d'` 9.992e-16 and
+  `d''` 3.553e-15 at both `pi/3` and `2pi/3` and for both negative
+  beta twins -- again the drafting figures exactly. The four `k == j`
+  slots of `wigner_d_prime2` are finite for the dispatcher **and**
+  its `py_func` (`0.0`, `-0.6123724356957947`, `-1.299038105676658`,
+  `0.421875`), so the guarded `d2Coef` is the shipped form.
+- **Tables are bitwise equal to the scalar function on this
+  machine**, with zero margin, everywhere asserted: `bw` 1, 2, 3, 15,
+  32 for both `nB` at `beta = 0.9708055194` (default suite), and
+  weekly at `bw` 68 / 88 / 113 for `beta in {0.9708055194, 0.3, 2.5,
+  pi/2, 1e-3, pi - 1e-3}` and both `nB` -- **0 mismatches of 214 268
+  (bw 68), 462 088 (88) and 974 738 (113) compared slots** in each of
+  the 12 combinations per bandwidth. `wigner_d_table_pre` is bitwise
+  equal to `wigner_d_table` (also re-checked outside the suite at
+  `bw` 40 for seven betas and both `nB`: 0 mismatches), the `pi/2`
+  table is bitwise equal to `wigner_d_half_pi` (re-checked at `bw`
+  68: 0 of 107 134 slots), the transposed `pi/2` table is the exact
+  transpose, and the `negative_beta` swap identity holds exactly at
+  `bw` 68. `wigner_d_half_pi_table(15, False)` vs
+  `wigner_d_table(15, 0.0, False)[..., 0]`: 7.216e-16 (not bitwise,
+  different seed formula, as expected).
+- **Independent bitwise cross-check** (not part of the suite): a
+  faithful *recursive* Python transcription of `wigner.hpp` `d()`,
+  `d(j,k,m)`, `dPrime()` and `dPrime2()` agrees with the shipped
+  iterative reduction **bit for bit**: 0 of 8000 random
+  `wigner_d(j <= 59, |k|, |m| <= j + 2, t, nB)` calls (NaN slots
+  included), 0 of the 20 x 45 x 45 `wigner_d_half_pi` block, and 0 of
+  3000 random calls for each derivative.
+- **High degree**: unitarity `|sum_m d^2 - 1|` = 8.882e-16 (`j` 15),
+  3.997e-15 (63), 7.772e-15 (127), 3.042e-14 (511). Closed form
+  (`gammaln` + `eval_jacobi`, log space) relative: worst 6.704e-13 at
+  `(511, 511, 0)`, `beta` 2.5; 5.800e-13 at `(511, 400, 300)`,
+  `beta` 0.9708; 9.050e-14 at `(300, 250, 200)`, 2.5; all others
+  <= 6.5e-14. Underflow pin: `wigner_d(511, 400, 300, cos 2.5,
+  False)` is exactly `0.0` against a true `-1.209068e-184`.
+- **Weekly closed-form scan** (log-space oracle): `j = 511`, stride 7,
+  2775 points -- `beta` 2.5 zeroes **646** points, largest true
+  `|d|` zeroed **5.323e-143**, worst relative agreement 2.148e-10;
+  `beta` 3.0 zeroes 676, largest 2.376e-139, worst rel 1.364e-12;
+  `beta` 0.9708 zeroes none, worst rel 3.458e-12. `j = 127`, stride
+  3, 946 points -- 2.5 and 3.0 zero none (worst rel 4.564e-11 and
+  9.144e-13), 3.13 zeroes 103 (largest 3.092e-280, worst rel
+  7.273e-12), `pi - 1e-3` zeroes 91 (largest 3.446e-276, worst rel
+  3.060e-10). **The zeroed counts are larger than the drafting
+  numbers (379 / 50 / 38 / 20) because the drafting scan used the
+  direct-product closed form, which underflows on the same slots and
+  hides them; the log-space oracle of the shipped test sees them.**
+  The largest zeroed value is unchanged at `beta` 2.5 (5.3e-143) and
+  every assertion (`< 1e-130`, `rel <= 1e-8`) passes, so the pinned
+  limitation is confirmed, only more completely counted.
+- **`rotate_harmonics` direction**: brute force `sum_n a^l_n
+  wigner_D(l, m, n, zyz)` agrees to 4.965e-16 - 1.066e-15 over `bw`
+  6 and 8 and the four `zyz` (worst 1.066e-15 at `bw` 8,
+  `beta = 0`); the transposed sum differs by more than 0.1 for the
+  three `beta != 0` cases. `sph_harm_y` pointwise oracle: 5.312e-14,
+  2.900e-13, 1.625e-13 for the three `zyz` (bound 1e-12, thinnest
+  margin 3.4x). Through Phase 1's transform on `ring_number >= 4`:
+  1.301e-13, 1.092e-13, 1.046e-13 (bound 1e-11). Weekly
+  `analyze`-in-the-loop round trip: 7.550e-15, 7.203e-15, 5.884e-15.
+- **Ni master pattern** (`dim` 101, `bw` 50): 4-fold about z
+  2.229e-15 for both `(0, 0, pi/2)` and `(pi/2, 0, 0)`, 2-fold about
+  x 2.292e-15, 2-fold about `[110]` 3.179e-15, 3-fold about `[111]`
+  **7.917e-2**, 90 deg about `[111]` (the non-symmetry control)
+  **3.945e-1** -- the drafting values reproduced to three digits.
+- **Derivatives against 5-point finite differences** (`h = 1e-3`,
+  `j < 15`): 3.788e-9 / 1.749e-8 (`d'`/`d''`) at `beta = +-0.9708`
+  and 4.221e-9 / 1.964e-8 at `+-2.5`. **Phase 7 formula pinning** at
+  `bw` 15: `d1P` 8.882e-16, `d1N` 2.331e-15 (0.9708) / 3.109e-15
+  (2.5), `d2P` 2.842e-14, `d2N` 2.842e-14 (0.9708) / 5.684e-14
+  (2.5), identical for the negative betas -- inside `abs 1e-12` with
+  a 17x margin.
+- **Timings and memory** (`record_property`, one call each after a
+  warm-up, so they are indicative rather than best-of-N):
+
+  | `bw` | `wigner_d_table` incl. NaN fill | `np.full(nan)` alone | `wigner_d_table_pre(out=)` | `wigner_d_table_factors` | `wigner_d_half_pi_table(True)` | table MB | `pi/2` MB | additive peak `4 bw^3` MB |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 68 | 1.2 ms | 0.88 ms | 0.2 ms | 1.2 ms | 0.7 ms | 5.0 | 2.5 | 10.1 |
+  | 88 | 2.5 ms | 1.83 ms | 0.5 ms | 2.5 ms | 1.6 ms | 10.9 | 5.5 | 21.9 |
+  | 113 | 5.2 ms | 3.90 ms | 0.9 ms | 5.2 ms | 3.3 ms | 23.1 | 11.5 | 46.3 |
+  | 158 (weekly) | 15.4 ms | 10.45 ms | 3.0 ms | 15.1 ms | 11.5 ms | 63.1 | 31.6 | 126.2 |
+
+  `rotate_harmonics` end to end (table allocation, recursion and
+  summation): 1.7 ms at `bw` 68 and 3.7 ms at `bw` 88. **`bw` 384**
+  (measured outside the suite, single process): the beta table is
+  **906.0 MB**, `np.full(nan)` 174.8 ms, the recursion kernel 64.3
+  ms and the rotation loop 69.4 ms, i.e. **`rotate_harmonics` costs
+  about 0.31 s and 906 MB at `bw` 384**; the `pi/2` table is 453.0
+  MB in 132.9 ms. The `out=` path is 5-6x cheaper than a fresh
+  `wigner_d_table` at every bandwidth (0.2 ms against 1.2 ms at `bw`
+  68), which is the measured backing for the caller-owned NaN
+  invariant.
+- **Coverage** of `_wigner.py` is **94.93 %** (23 of 454 statements
+  missed), just under the 95 % of the Manual list. Every missed line
+  is a branch arm reached only through the *compiled* dispatcher and
+  never through a `py_func` call: the `t < 0` and `t == 0` arms of
+  `_wigner_d_core` (the `py_func` is exercised at `t = 0.3` only),
+  the three sign branches of `wigner_d_sign` (`py_func` called once,
+  at `k < 0`), the `negative_beta` swap and the `not is_type_0` arms
+  of the two table kernels (their `py_func` runs use
+  `negative_beta=False` and a positive `t`), and the
+  `bandwidth < 1` guard of `wigner_d_table_pre` (the `ValueError`
+  test covers the other three constructors). Raising it would need a
+  test change, which was out of scope here; the branches themselves
+  are covered by the compiled path of the bitwise table tests.
+
+### 2026-08-16 -- adversarial review fixes, measured
+
+Three read-only reviews (fidelity against a compiled
+`EMSphInx@60f3517`, conventions/robustness, and a 56-mutation
+bug-injection run) were applied to `_wigner.py`; `_euler.py` needed
+no implementation change and is byte identical to the pre-review
+file. This machine, Python 3.13.12, numpy 2.5.2, scipy 1.18.0,
+numba 0.67.0, orix 0.15.0.
+
+- **`wigner_D` returned `+0.0` where the C++ returns `-0.0`.**
+  `wigner.hpp` line 438 is `std::complex<Real>(cos, sin) * d` with a
+  real `d`, which libstdc++ scales componentwise, while
+  `complex(cos, sin) * d` in Numba and CPython promotes `d` and uses
+  the four multiplication form: `imag = cos * 0.0 + sin * d`, i.e.
+  `+0.0` instead of `-0.0`. Measured by the fidelity review as **23
+  of 9464 sampled slots**, all with `k == m == 0` (so `total == 0`)
+  and `d < 0`; the magnitudes were already bitwise equal. Now
+  `complex(math.cos(total) * d, math.sin(total) * d)`, which the
+  review re-measured as **23 -> 0 mismatches** with nothing else
+  changed. Pinned by `TestMathematicaTables::
+  test_wigner_uppercase_d_keeps_the_sign_of_a_zero_component`
+  (13 slots over `j` 1-5 and four betas), which fails on the old
+  form.
+- **`wigner_d_table_pre` validated `out` but not the factor
+  tables.** `numba.config.BOUNDSCHECK` is off, so `w_jkm[k, m, i]`
+  past the end is silent UB: measured, `wigner_d_table_factors(3)`
+  fed to `wigner_d_table_pre(6, 0.3, False, ...)` returns without
+  error at `max |pre - wigner_d_table| = 3.44e140` (the fidelity
+  review measured 4.3e222 at other arguments, and the conventions
+  review a ~2 MB overread from a 64-byte buffer at `bandwidth` 128),
+  and float32 factors silently specialise the kernel at
+  `max abs 5.44e-8`. The three arrays are now checked for shape and
+  `float64` after the `bandwidth` and `cos_beta` guards, and the
+  `Raises` section lists them. The C++ `dTablePre()` has the same
+  hazard, so this is a robustness addition, not a fidelity
+  deviation. Pinned by `TestBetaTables::
+  test_pre_table_rejects_factors_of_another_bandwidth` and
+  `::test_pre_table_rejects_single_precision_factors` (three cases
+  each, one per array); all six fail with the check removed.
+- **The derivatives raise inside their documented domain.** At
+  `cos_beta = +-1` the `csc` prefactor divides by zero and both
+  `wigner_d_prime` and `wigner_d_prime2` raise `ZeroDivisionError`,
+  in the compiled kernel (Numba's default `error_model="python"`) as
+  in the `py_func`, verified for all four combinations, where the
+  C++ returns an IEEE infinity or NaN. The documented domain is now
+  the open interval `(-1, 1)` with a `Raises` section naming the
+  deviation, and the module docstring repeats it for Phase 7. The
+  error model was **not** changed: that would alter the provenance
+  of every other value for no consumer benefit.
+- **Three latent Phase 4/7 hazards documented**, none of which is a
+  behaviour change: `_rotate_harmonics_kernel`'s `out` must not
+  alias `alm` (the C++ allocates an `almRot` temporary "in case
+  alm == blm" at `wigner.hpp` line 772 and copies at the end, while
+  the port accumulates into `out` directly; its one caller passes a
+  fresh `np.zeros_like`); a `wigner_d_table_pre` `out=` buffer is
+  caller owned **per thread**, since every kernel is `nogil=True`
+  (measured: 8 threads sharing one buffer leave a table matching
+  neither beta); and `sht_xcorr.hpp` line 913 passes `mBW` to
+  `dTablePre()` with factor tables built at `bw` on line 369, which
+  the C++ would read at the wrong stride if `mBW < bw` while this
+  port indexes through the arrays' own strides -- every C++ call
+  site currently has `mBW == bw`, and the new factor check makes the
+  divergence impossible to hit silently here.
+- Citations corrected: the `dPrime` and `dPrime2` templates start at
+  `wigner.hpp` **814** and **837**, not 813 and 836 (those are the
+  last `@note` lines); every other cited range starts at its
+  `template` line and was verified exact. `wigner_D`'s docstring now
+  also records that a float32 `zyz` compiles its own specialisation
+  at about 3e-8 of accuracy, since the kernel has no Python wrapper
+  to widen it.
+- **Coverage is now 100 %** of `_wigner.py` (457 statements),
+  `_euler.py` (114) and `src/kikuchipy/data/emsphinx/` (19), i.e.
+  **590 of 590** -- the `>= 95 %` Manual gate, which was 94.72 %
+  before the bug-injection tests and 94.89 % after them. The 30
+  missed statements were all branch arms reached only through the
+  *compiled* dispatcher, which the gate's "(kernels via `.py_func`)"
+  wording asks for. They are closed by five additive tests (no
+  existing test was modified):
+  `TestKernels::test_wigner_d_core_py_func_covers_every_branch`
+  (`j < k`, `j == k`, `j == k + 1`, `t < 0`, `t == 0`),
+  `::test_wigner_d_sign_py_func_covers_every_branch` (equations 6,
+  7, 8 and the fall-through),
+  `::test_table_kernel_py_func_covers_the_other_branches`
+  (`negative_beta=True` and `t = cos(2.5) < 0` for both table
+  kernels, i.e. the equation 9 sign swap and the `not is_type_0`
+  arms), and in `test_spherical_euler.py`
+  `TestKernels::test_zyz_to_quaternion_py_func_takes_the_pi_branch`
+  (the `|w| <= rEps` branch and the `_orient_axis` call it guards)
+  and `::test_quaternion_to_zyz_py_func_takes_the_degenerate_branches`
+  (both arms of the `chi <= thr` block).
+- **Suites, all green after the fixes.** `test_spherical_wigner.py`
+  with `test_spherical_euler.py`: **389 passed, 42 skipped** at
+  `-n 0` (6.9 s) and at `-n 4` (12.0 s), up from 367 passed (354
+  before the bug-injection tests). With the Phase 1 trio
+  (`test_spherical_sht.py`, `_grid.py`, `_fft.py`): **730 passed,
+  549 skipped** at `-n 0` (41.2 s) and `-n 4` (100.7 s). Weekly
+  (`--weekly`, both Phase 3 files, `-n 4`): **431 passed** in
+  20.3 s. `--doctest-modules src/kikuchipy/indexing/_spherical`:
+  4 passed. `pre-commit run --files` on the two implementation and
+  the two test files: ruff, ruff-format and the GPL licence header
+  all pass. No comment or docstring line exceeds 72 characters in
+  either implementation file (checked by tokenizing, not grep).
