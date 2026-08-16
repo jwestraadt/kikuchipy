@@ -53,3 +53,59 @@ All Phase 1 boxes in `specs/roadmap.md` ticked, default suite green on Windows (
 
 ## Recorded results
 (filled in during implementation)
+
+### 2026-08-16 -- amended tolerances (adversarial reference measurements)
+
+A faithful NumPy reference of `EMSphInx/include/sht/square_sht.hpp` was built and
+every numeric assertion of the Phase 1 tests measured against it. The tolerances
+below are amended; each entry gives the amended tolerance and the measurement
+that motivates it. No other spec text is changed.
+
+- Lambert round trip (`test_lambert_round_trip_is_scale_free_accurate` and the
+  weekly `test_lambert_round_trip_sweep`): the scale-free
+  `max |delta| / max |alm_in| < 1e-11` is reachable only for `dim <= 129`.
+  Measured 3.9e-13 (bw 16), 7.9e-13 (bw 64), 3.6e-9 (bw 100, `dim` 201) and
+  2.9e-6 (bw 128, `dim` 257). The bound is now `dim`-dependent: **1e-11 for
+  `dim <= 129`, 1e-8 for `dim <= 201`, 1e-5 above** -- measured, then pinned with
+  roughly one order of magnitude of margin. The weekly sweep now uses the same
+  bound instead of the C++ round-trip tolerances.
+- Legendre analyze oracle, `m % 4 != 0`
+  (`test_legendre_analyze_returns_one_for_a_single_harmonic`): the "other
+  entries" bound is raised from 1e-10 to **1e-8**. Worst measured other entry
+  8.6e-10, at `(l, m) = (9, 5)` in `(m, l) = (5, 67)`, from the
+  `m_lim = min(bw, 4y + 1)` truncation on ring 1. The diagonal keeps 1e-10.
+  Lambert measured 2.7e-11 at `(12, 8)` and keeps 1e-10 for both checks.
+- Legendre analyze oracle, `m % 4 == 0` (the Nyquist ring case, renamed
+  `test_legendre_analyze_nyquist_orders_stay_below_1e_10`): **tightened from 1e-6
+  to 1e-10** for the diagonal and the other entries alike. The defect is
+  quadratic in `analyze`, so at bw 68, `dim` 71 the measured diagonal error is
+  1e-16 .. 6e-16 and the worst other entry 2.8e-12.
+- Lambert `analyze(ones, ones)` (`test_lambert_analyze_of_one_gives_sqrt_four_pi`):
+  the "others" bound is relaxed from 1e-10 to **1e-9 for the `dim` 201 case
+  only** (measured 5.98e-11, a 1.7x margin against 1e-10). `dim` 65 keeps 1e-10,
+  and `alm[0, 0]` keeps `abs 1e-10` on both.
+- Legendre weights vs `leggauss`
+  (`test_legendre_weights_are_gauss_legendre_with_a_halved_equator`): the
+  relative tolerances are replaced by **absolute** ones, since the smallest
+  Gauss-Legendre weights at `dim` 401 are themselves of order 1e-5. Measured
+  worst differences at `dim` 401: 9.1e-15 for the bulk weights (now `rtol=0`,
+  `atol=1e-13`) and 1.35e-15 for the halved equator weight (now `abs=1e-14`).
+- Synthesize oracle: the compared pixels are masked to the rings which carry the
+  order, `4 * y >= m`, because `synthesize()` writes order `m` only where
+  `m < m_lim(y) = min(bw, 4y + 1)`; the Nyquist ring `y == m // 4` of orders
+  `m % 4 == 0` stays excluded on top of that, and the mask is now applied on the
+  Legendre layout too. With the extended mask all eight `(l, m)` pairs agree to
+  1e-16 .. 7e-15 on both layouts, well inside the unchanged 1e-11 (Lambert) and
+  1e-10 (Legendre) bounds.
+
+Assertions added or sharpened at the same time, none of which relaxes a spec
+tolerance: every Lambert weight set must reproduce the Chebyshev moment system it
+is solved from, `A[j, i] = T_j(2 x_i^2 - 1)` against
+`b_j = int_0^1 T_j(2 x^2 - 1) dx = 1, -1/(4 j^2 - 1)`, to `atol` 1e-10 for `dim`
+in {33, 65}; the dual-path tests patch `numba_ring_dft_max_dim` on the class
+*before* constructing each transformer and assert the two report a different
+`uses_numba_ring_dft` (a new property on `SphericalHarmonicTransform`); every
+`.py_func` test first asserts that the kernel carries a `py_func`, so an
+implementation without `@njit` fails loudly; the bw 384 timing case is
+`@pytest.mark.weekly`; and all recorded determinations use the `record_property`
+fixture instead of `print`.
