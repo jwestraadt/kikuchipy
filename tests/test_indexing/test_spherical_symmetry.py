@@ -272,6 +272,17 @@ class TestCandidateSpaceGroups:
                 0
             ] == _symmetry.space_group_for_point_group(name)
 
+    @pytest.mark.parametrize(
+        "name, space_group", sorted(_symmetry.AXIS_ALIAS_SPACE_GROUPS.items())
+    )
+    def test_the_eight_aliases_give_their_tabulated_space_group(
+        self, name, space_group
+    ):
+        # orix never returns these names, so _space_groups_by_name
+        # has no entry for them and the table is the only source
+        assert _symmetry.candidate_space_groups(name) == (space_group,)
+        assert _symmetry.space_group_for_point_group(name) == space_group
+
     def test_an_unknown_name_raises(self):
         with pytest.raises(ValueError):
             _symmetry.candidate_space_groups("112/m")

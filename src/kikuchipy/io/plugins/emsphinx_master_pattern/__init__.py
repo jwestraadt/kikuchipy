@@ -17,7 +17,9 @@
 # along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 #
 
-"""Reader of an EBSD master pattern from an EMSphInx *.sht file."""
+"""Reader of an EBSD master pattern from an EMSphInx ``*.sht``
+file.
+"""
 
 import lazy_loader
 

@@ -219,3 +219,301 @@ struck through in place with the same date.
 - **Still to be determined by the implementation**: unchanged from step 1, plus the two
   numbers this step's new tests will record, `opt_in_rel_l2_after_dc_and_rescale` and
   `opt_in_norm_ratio`.
+
+### 2026-08-16 -- implementation, step 2: symmetry flags (`_symmetry.py`, `plan.md` task 3, this machine)
+
+- **The 40-key table is unchanged and still equals the operator oracle** (orix 0.14.2, all 40
+  names; `n_fold == 1 + #{proper g: |axis_z| == 1, angle > 0}`,
+  `has_equatorial_mirror == any(improper g: angle == pi, |axis_z| == 1)`), re-measured before
+  the functions were written: **0 mismatches**.
+- **Eight of the 40 names are never returned by `get_point_group`** over the 230 space groups
+  (measured): `112`, `121`, `211`, `m11`, `1m1`, `11m`, `312`, `321`. The first six are the
+  axis-specific aliases of the z-unique `"2"`/`"m"` orix returns for space groups 3-5 and 6-9
+  (-> 3 and 6, D11); the last two are the trigonal aliases of `"32"`, whose standard settings
+  are 149 (P312) and 150 (P321). All eight are tabulated in `AXIS_ALIAS_SPACE_GROUPS`; the
+  other 32 names are looked up in orix at first use (`_space_groups_by_name`, `functools.cache`;
+  230 `get_point_group` calls measured at **0.44 ms** in total, so no import-time cost is
+  taken and orix stays out of the module's import set).
+- **`candidate_space_groups` reproduces the D11 trap from the `_sht_file` LUTs**, not from the
+  point group table: `3m -> (156, 157)`, `-3m -> (162, 164)`, `-42m -> (111, 115)`,
+  `-6m2 -> (187, 189)`, every other name one candidate (`m-3m -> (221,)`, `32 -> (149,)`,
+  `mm2 -> (25,)`). Enumerating all 32 returned names against
+  `(space_group_z_rotation, space_group_compression_flags)` gives **exactly those four**
+  ambiguous names, and the first candidate equals `space_group_for_point_group` in every case.
+- **The Ni mp2sht coefficients are clean** (`ni_small_20kv_bw384.sht`, unpacked with a scratch
+  parser because the codec's `read_sht` is still a stub: `bw 384`, `zRot 4`, `cmpFlg 0x7`,
+  `doubCnt 9312`): `systematic_zero_power(alm, 4, True) == (0.0, 0.0)` **exactly** (not merely
+  `<= 1e-20`) and `validate_flags(alm, 4, True) == (4, True, [])`. The same parse gives
+  `a_00 = -2.9848946933297453`, i.e. the recorded -2.985 of line 96.
+- **The largest-satisfied-divisor downgrade is measured, not asserted from the ladder**: on
+  the synthetic 6-fold `alm` of the test (orders `{0, 6, 12, 18}`), filling row `m = 3` gives
+  `n_fold 3` and row `m = 2` gives `n_fold 2` (the correction of 2026-08-16 above holds),
+  filling both gives 1; `4 + row 2 -> 2`, `4 + row 1 -> 1`, `3 + row 1 -> 1`, `2 + row 1 -> 1`.
+  The tolerance boundary behaves as `<=`: a single `m = 2` entry of relative power `0.9e-8`
+  keeps `n_fold 4` with no warning, `1.1e-8` downgrades to 2 with one.
+- **Edge cases measured**: an all-zero `alm` returns `(0.0, 0.0)` and no downgrade (no
+  division by zero); the input array is never modified (`np.abs(alm) ** 2` is a fresh array),
+  a read-only and a real-valued `alm` both work; `bandwidth 1` returns `(0.0, 0.0)`.
+- **Test status**: `tests/test_indexing/test_spherical_symmetry.py -n 0 -q` -> **182 passed, 2
+  failed**, both failures being `read_sht`'s bare `NotImplementedError` in the two Ni
+  coefficient tests (`plan.md` task 2, the codec, is not implemented yet); both pass on the
+  same coefficients when they are unpacked by the scratch parser, as recorded above.
+  `tests/test_indexing/` is otherwise unchanged (Phase 1: 348 passed, 507 skipped).
+  `uv run pre-commit run --files src/kikuchipy/indexing/_spherical/{_symmetry,_sht_file}.py`
+  passes.
+- **Cross-task edit, recorded**: `space_group_z_rotation` and `space_group_compression_flags`
+  of `_sht_file.py` (one LUT index each, plus a shared `_check_space_group` for the
+  `[1, 230]` `ValueError`) were implemented here, because `candidate_space_groups` is defined
+  in terms of them and the two 230-entry tables were already transcribed and verified. The
+  rest of the codec is untouched.
+
+### 2026-08-16 -- implementation, step 3: the `.sht` codec (`_sht_file.py`, `plan.md` task 2, this machine)
+
+- **Suite**: `uv run pytest tests/test_indexing/test_spherical_sht_file.py -n 0 -q` -> **530 passed,
+  6 skipped** (the skips are the `KIKUCHIPY_EMSPHINX_DIR` gated ones). With
+  `KIKUCHIPY_EMSPHINX_DIR=c:/Users/westraadt.1/Repos/EMSphInx`: **536 passed, 0 skipped, 0 failed**,
+  i.e. the six local-gated tests (the shipped EMSphInx `data/Ni {20kV 75.7deg}.sht` parse, its DC
+  term, its byte-identical rewrite, its count/payload agreement, its bitwise repack, and the
+  `sht2png.exe` acceptance of the 25 generated fixtures) all pass.
+  `uv run pytest --doctest-modules src/kikuchipy/indexing/_spherical/_sht_file.py` -> 2 passed.
+  `uv run pre-commit run --files src/kikuchipy/indexing/_spherical/_sht_file.py
+  src/kikuchipy/data/_dummy_files/emsphinx_sht.py
+  src/kikuchipy/data/emsphinx/create_emsphinx_sht_fixtures.py
+  tests/test_indexing/test_spherical_sht_file.py` passes.
+
+- **`sht2png.exe` acceptance of the 25 synthetic fixtures (the one-off determination of D16 /
+  `plan.md` task 2.3(c))**, run 2026-08-16 in a scratch directory with
+  `EMSphInx/build/Release/sht2png.exe` (EMSphInx @ 60f3517): **all 25 exit 0**, each stdout ends in
+  `master pattern composed from 1 crystals with effective sg# N` with `N` the file's own space
+  group, and each wrote a non-degenerate PNG (280-755 B, size varying with the coefficients, so
+  the program really unpacked and synthesized rather than emitting a blank image). This is an
+  external check of `num_harmonics`/`pack_harmonics` on all 25 distinct `(zRot, cmpFlg)` pairs and
+  of the whole byte layout, since EMSphInx re-reads the header, the crystal record and the
+  harmonics block and verifies the CRC-32C itself. The 25 md5 sums below are now pinned in
+  `SYNTHETIC_MD5` of `tests/test_indexing/test_spherical_sht_file.py`; if the writer legitimately
+  changes, re-run the acceptance and re-pin here and there together.
+
+  | sg | md5 | sg | md5 |
+  |---|---|---|---|
+  | 1 | `25865cf3df7e49438647a6c73e50b8ab` | 157 | `21649433847c4aa1040f860cc2775c6c` |
+  | 2 | `1ac5c1930b4e80e41c872276031836d2` | 162 | `79ef7034b716af2c074530343e2185ec` |
+  | 6 | `06fc126c96b4f894ec35f2efab1a37e2` | 164 | `17ad8bb7c7c7dd078f8e971b5f1e9fd1` |
+  | 10 | `626e2e9b6345688959c68cc97877de20` | 168 | `9a4f8a488fef1cfe3caf937991ae9aea` |
+  | 16 | `ae8b1beed0cd4e93d6c7a05f695b5bc5` | 174 | `f36136ea8bb623707de545e06873b378` |
+  | 25 | `a0e289fb3e094c69b60047a730a5aba1` | 175 | `06e85c1d584924b2053616b779d9195e` |
+  | 47 | `11953424f1178e7e11118c8ca1a7b0e7` | 183 | `3477b79bba9ed985d79d8a3f865e7719` |
+  | 75 | `8f133ea4ca405143079634f8b13dc345` | 187 | `00738a7ac24c8cdc819db19009e28a8b` |
+  | 83 | `2fbc17b2d35c008e36ec1b00ee5b7cbd` | 189 | `a813922d6a295968ed31ce0749fe73b7` |
+  | 99 | `8d910eae70622d11b9767b69b3c91238` | 191 | `2fc91c0642f89084978aae8572824e49` |
+  | 111 | `64be105bb1fca491c980bc73e4706a86` | 143 | `efe2e034f792f8149619e4a20560e898` |
+  | 123 | `9f2707146f926ab87cc30ccc9d93c4b4` | 147 | `399c71928363f274709ab0188daff6f2` |
+  | 156 | `30a1a12e7cbfa01f21452ee31b69d0b4` | | |
+
+  File sizes 284 B (sg 191) to 2 340 B (sg 1), all at bandwidth 16 with the RNG-free fill of D16.
+
+- **`crc32c` timing measured**: 5.1 ms for the 74 828 B `ni_small_20kv_bw384.sht` on this machine
+  (the plain-Python `tuple` lookup table over a `bytes` object), against the 3.9 ms recorded during
+  spec drafting and the test's 50 ms bound. The bound still separates this implementation from the
+  documented-wrong NumPy scalar variant (51 ms).
+
+- **Block offsets confirmed on the shipped files**: `block_offsets` of `ni_small_20kv_bw384.sht`
+  gives exactly `{header: 0, master_pattern: 112, crystal_0: 120, simulation_0: 232,
+  harmonics: 320, payload: 328, crc: 74824}`, i.e. the measured layout of D10, and
+  `sht_file_to_bytes(read_sht(f)) == f.read_bytes()` for all three mp2sht files (the two
+  in-package ones and the shipped EMSphInx one, the last behind the env var).
+
+- **Determined during implementation, `metadata_dict()` shape** (D10 left the details open):
+  the header node drops the raw padded string bytes and the unpadded string lengths (file
+  plumbing) and renames the two reserved byte fields to `reserved` and `reserved2`, because
+  `res_bytes`/`res_bytes2` would have tripped the "no key ends in `_bytes`" assertion; the atoms
+  of a crystal are **numbered sub-nodes** `{"atom_0": {...}}` for the same reason crystals and
+  simulations are, so `original_metadata.crystals.crystal_0.atoms.atom_0.atomic_number` works.
+  Verified against hyperspy 2.4.0: `DictionaryTreeBrowser(md).as_dictionary() == md` exactly
+  (tuples survive as tuples) and every documented attribute access resolves.
+
+- **Determined, opaque simulation records**: `_record_for_modality`/`_record_vendor` return
+  "accepted"/`None` for a record kept as raw `bytes`, so only its length is checked -- the type
+  and therefore the modality/vendor support of such a record is unknown to us (the reader
+  permissiveness (a) of D10). An `EMsoftED` record keeps EMSphInx's own
+  `forModality` (EBSD/ECP/TKD) and vendor EMsoft.
+
+- **Determined, check order in `_sanity_check`**: our `1 <= bandwidth <= 32767` check runs
+  *before* `doubCnt != NumHarm(...)`, because `num_harmonics` allocates a `bandwidth**2` mask and
+  a bandwidth the int16 field cannot hold would otherwise allocate a 1e9 entry array before
+  failing; and our `num_xtal >= 1` check runs where `File::sanityCheck` dereferences
+  `mpData.simul.front()`. Every other check keeps EMSphInx's order and wording verbatim,
+  including the typo "noites string doesn't match length".
+
+- **Cross-task note**: `space_group_z_rotation`, `space_group_compression_flags` and
+  `_check_space_group` were already implemented by the `_symmetry.py` task (recorded in step 2
+  above) and are kept unchanged here; the rest of `_sht_file.py` is this step's work.
+
+### 2026-08-16 -- implementation, step 4: `MasterPatternHarmonics`, the signal method and the io plugin (`plan.md` task 4-6, this machine)
+
+Suites (`uv run pytest ... -n 0 -q --tb=short -p no:cacheprovider`, then `-n 4`):
+`test_spherical_master_pattern_harmonics.py` **155 passed, 4 skipped** (2 weekly, 2 EMSphInx
+binaries); `test_emsphinx_master_pattern.py` **20 passed**; `test_ebsd_master_pattern.py`
+**50 passed, 1 skipped**; whole Phase 1+2 set `-n 0` **1287 passed, 518 skipped** and `-n 4`
+**1287 passed, 518 skipped in 69 s**; `tests/test_indexing` **1315 passed**; `tests/test_io
+tests/test_data` **195 passed** (no regression). `pytest --doctest-modules
+src/kikuchipy/indexing/_spherical src/kikuchipy/io/plugins/emsphinx_master_pattern
+src/kikuchipy/signals/ebsd_master_pattern.py` **11 passed**. `--weekly -k full_master`
+**2 passed** (the full Ni master is cached). `KIKUCHIPY_EMSPHINX_DIR=...` gated set
+(`-k emsphinx_binaries`) **8 passed**, i.e. `sht2png.exe` accepts a `.sht` written by `save()`
+from the in-package Ni master (`effective sg# 225`, exit 0) and its Legendre PNG matches our own
+`SphericalHarmonicTransform(384, "legendre", 387).synthesize(alm)` to `max |diff| <= 1` grey
+level. `uv run sphinx-build -b html -D nbsphinx_execute=never doc doc/_build/html_check` exits 0
+with **1 warning** (the pre-existing unreachable `pyxem` intersphinx inventory) and renders
+`kikuchipy.indexing.MasterPatternHarmonics` (all 11 attributes/methods) and
+`kikuchipy.io.plugins.emsphinx_master_pattern.file_reader`. `uv run pre-commit run --files ...`
+passes on every touched file.
+
+- **mp2sht parity, measured now** (`record_property`, in-package 401 px uint8 Ni master, default
+  `emsphinx_compatible=True`, `bandwidth=384`): rel-L2 over all coefficients **2.208e-09**,
+  after `remove_dc()` on both **5.141e-09**, `a_00` **-2.984894693337** (file: -2.9848946933297453,
+  i.e. 7e-12 absolute), relative power in the slots the packer discards **1.112e-29**,
+  `max |imag| 3.4e-16`. Weekly full master (1001 px, 16 energies): rel-L2 **8.555e-10**, after
+  `remove_dc` **3.099e-09**, energy bin total **1151726624**. Every number reproduces the
+  pre-implementation determinations of `## Recorded results` above, so the < 1e-6 gate has > 400x
+  margin.
+- **Opt-in `emsphinx_compatible=False`**: `a_00` **-6.281e-05** (401 px), global amplitude factor
+  vs the file **1.8537** (spec: 1.854), rel-L2 after DC removal and one global rescaling
+  **5.140e-09**, `power_spectrum().sum()` **12.5277** against `4 pi = 12.5664` (0.31 %).
+- **DC ratios** (`power_spectrum`): default `True` on the 401 px master `P_0 / sum(P)` =
+  **0.7096** (`sum(P) = 12.5554`), on the cached 1001 px master **0.8680** (`a_00 = -3.300481`);
+  opt-in `False` **3.149e-10**, which is the `"DC power fraction 0.00"` of `describe()`.
+- **`to_master_pattern`**: Pearson `r` vs the bilinearly upsampled source north hemisphere
+  **0.99633** at `dim = 769` and **0.97043** at `dim = 401`; `get_patterns` NCC against the same
+  call on the source master **0.99648 / 0.99744 / 0.99629** for the three test rotations.
+- **`power_spectrum` Parseval** against the Gauss-Legendre quadrature at `dim 67`: relative error
+  **6.065e-11**; on the mp2sht Ni file `sum(P) = 12.5554`.
+- **Timings on this machine** (uv venv, Windows 11, warm caches): `from_master_pattern` at
+  `bandwidth=384` **247 ms** on the 401 px master and **312 ms** on the cached 1001 px 16 energy
+  master; `to_master_pattern()` at `dim 769` **127 ms**; `save()` **12 ms**; `from_file()`
+  **11 ms**. The whole Phase 1+2 suite runs in 69 s at `-n 4`.
+- **Coverage** (the four suites of `## Automated`): `_master_pattern_harmonics.py` **96.15 %**,
+  `_sht_file.py` **97.42 %**, `_symmetry.py` **98.72 %**, `emsphinx_master_pattern/_api.py`
+  **100 %** -- all above the 95 % bar; the uncovered lines are defensive `raise`/early-return
+  branches.
+- **Determined, a constant master under the default normalisation**: EMSphInx subtracts *twice*
+  the weighted mean (`master.hpp` lines 572-573), so a constant master normalizes to -1
+  everywhere and `a_00` to exactly `-sqrt(4 pi) = -3.5449077`, *not* to 0 -- independent of the
+  source amplitude and of D5's DCT factor, which is what the test asserts (the amplitude factor
+  is observable only through `normalize=False`). `validation.md` line 43 and the test previously
+  claimed `|a_00| < 1e-10` for `normalize=True`; that is impossible for the ported quirk, and
+  `emsphinx_compatible=False` cannot give it either, since a constant has zero weighted variance
+  and the normalization divides by ~1e-16.
+- **Determined, `save()` -> `from_file()` bit-exactness**: the round trip is bit-exact in the
+  **real part** of every kept coefficient, and drops the 3.4e-16 imaginary residue of the forward
+  transform, because the mirror-y compression of space group 225 stores `alm[i].real()` alone
+  (`PackHarm`, `sht_file.in.hpp` line 1727). The relative power dropped is 1.1e-29, far inside
+  `SYMMETRY_POWER_TOLERANCE`.
+- **Determined, NaN in `metadata_dict()`** (needed by the "one name, one shape" assertion
+  `original_metadata.as_dictionary() == MasterPatternHarmonics.from_file(f).original_metadata`):
+  the `EMsoftED` record carries `sigEnd`/`sigStep` NaN, and `float("nan") != float("nan")`, so
+  two independent parses of one file could never compare equal. `ShtFile.metadata_dict()` now
+  maps every NaN to the `math.nan` **singleton** (new private `_singleton_nan`), which makes the
+  containers equal through CPython's identity short circuit in `PyObject_RichCompareBool`. The
+  byte level reader, writer and `to_dict`/`from_dict` are untouched, so byte identity is
+  unaffected (re-verified: the two Ni files still round trip byte-identically).
+- **Determined, file size of a kikuchipy-written `.sht`**: 74 836 B against `mp2sht`'s 74 828 B
+  for the same master, because the provenance note (65 B -> 72 padded) replaces mp2sht's doi +
+  note (46 + 19 -> 48 + 24) and the crystal `name` is written (`"ni"`, 0 -> 8 padded).
+- **Determined, axis offsets**: `to_master_pattern(dim=401)` gives height/width offset **-200**
+  where `nickel_ebsd_master_pattern_small(projection="lambert")` gives **-201** (kikuchipy's
+  EMsoft reader, `-sy // 2`); asserted in both the harmonics and the io test, as D13 requires.
+- **Tests touched** (three assertions, each proven impossible against the C++ or against
+  floating point; no test logic, no new test): (1)
+  `TestContainer::test_the_coefficients_are_copied_and_contiguous` compared a value stored in a
+  **64-bit complex** source array against the 128-bit `sqrt(4 pi)` -> compared against
+  `np.complex64(SQRT_FOUR_PI)`; (2)
+  `TestNormalizeFalse::test_normalize_true_kills_the_constant` -> asserts
+  `a_00 == approx(-sqrt(4 pi))`, see the determination above; (3)
+  `TestSaveAndFromFile::test_a_round_trip_keeps_the_coefficients_bit_exactly` -> compares the
+  `.real` parts, see the determination above.
+
+### 2026-08-16 -- adversarial review pass (fidelity, conventions, bug injection)
+
+Every blocker/major and the cheap clearly-right minors of the three reviews applied to the Phase 2
+sources; the two surviving-mutation findings closed with new tests. Measured on this machine.
+
+- **Fidelity review found no defect in any ported numeric or in the `.sht` byte layout.** Its two
+  findings are Python-API robustness, not infidelity: `save()` without `preserve_header=True`
+  dropped 13 fields the reader had parsed, and `read_sht` let a corrupt `z_rot` reach the
+  `order % (z_rot * 2)` of `_row_kind`.
+- **Determined, the fields an orix `Phase` cannot hold** (measured by injecting non-default values
+  into `ni_small_20kv_bw384.sht`, reading and re-saving without `preserve_header`): before the fix
+  `header.secondary_angle` 12.5 -> 0.0, `header.reserved_param` -0.75 -> 0.0, crystal `sg_axis`
+  4 -> 1, `sg_cell` 3 -> 1, `origin` (1.5, -2.5, 3.5) -> (0, 0, 0), `rot` (.5, .5, .5, .5) ->
+  (1, 0, 0, 0), `weight` 0.25 -> 1.0, `structure_symbol`/`references`/`note` -> `""`, atom
+  `charge` -1.5 -> 0.0 and `res_fp` 3.25 -> 0.0. `_crystal_from_phase` now takes the
+  `crystals.crystal_0` node of `original_metadata` (and its `atoms.atom_N` sub-nodes) as the
+  fallback for exactly those, plus the atom `res` bytes, and `_sht_from_harmonics` seeds
+  `secondary_angle`/`reserved_param` from `header`. All 13 now survive the round trip; the raw
+  padded string *bytes* still do not, which is what `preserve_header=True` is for, and `save`'s
+  `Notes` says so. No numerical impact: `MasterSpectra::read` reads only `sgEff`, `lat`,
+  `beamEnergy`, `primaryAngle`, `bw` and the payload. Byte identity of the two shipped files, the
+  25 fixtures and the `preserve_header` path is unchanged (re-verified).
+- **Determined, a corrupt `z_rot`**: a file claiming `z_rot == 0` with `FLAG_MIRROR_X` raised
+  `ZeroDivisionError` from `_row_kind` (the compiled EMSphInx `PackHarm` exits `0xC0000094`,
+  integer divide by zero -- not an infidelity, only an unhelpful exception type), and a *negative*
+  `z_rot` diverged silently, Python's floored `%` typing rows real where C++' `size_t` modulo
+  types them imaginary (e.g. `order=2, z_rot=-1`). `read_sht` now rejects `z_rot < 1` with a
+  `ValueError` next to the existing `_flags_to_bools(flags)`; the LUT only ever emits 1-6.
+- **Determined, the quirks table did not render**: the committed stub's grid table had a 23 char
+  first column and a 25 char first data cell, and split ``SYMMETRY_POWER_TOLERANCE`` from its
+  trailing `.` across a row boundary, so docutils rejected the whole table
+  ("Malformed table. Right border not aligned or missing") and the built page showed *nothing*
+  between the two paragraphs. Re-laid out at 25/10/30 columns; the built HTML now has the table
+  with 30 `<td>` cells, and the doc build reports **0** "Malformed table" and **0** "Inline
+  emphasis start-string without end-string" warnings.
+- **Doc build, honestly**: `uv run sphinx-build -b html -D nbsphinx_execute=never doc
+  doc/_build/html_check` exits **0** with **151 warnings** (was 157 before this pass: the
+  malformed table plus the five unescaped `*.sht` in the io plugin). Every remaining warning is
+  pre-existing and unrelated; the only two naming a Phase 2 page are
+  `MasterPatternHarmonics.save.rst: Could not match transformation of 'tempfile'/'pathlib'`, one
+  of a class with 110+ siblings elsewhere in the docs.
+- **Determined, the two surviving-mutation holes** (60 mutants, 52 killed, 8 survivors, all in
+  `_master_pattern_harmonics.py`): (a) every default-suite test that drove a multi-energy master
+  through `from_master_pattern` used `energy_weights=np.ones(11)`, which is invariant under a
+  reversal *and* equal to a plain mean, so reversing the weights or dropping them entirely was
+  invisible; (b) every `save()` used the single-site cubic Ni phase, whose formula sort, `set`,
+  unit occupancy, 90/90/90 cell and integer `element` are all degenerate. Two new tests,
+  `TestEnergyWeights::test_the_weights_are_applied_by_the_pipeline` (non-uniform
+  `np.arange(1., 12.)` against an in-test pipeline) and
+  `TestSaveAndFromFile::test_the_crystal_block_of_a_multi_element_hexagonal_phase`
+  (Si/O/Si, partial occupancy, 0.49/0.49/0.54/90/90/120). Re-measured: **15/15** targeted
+  mutations killed, including all 8 previous survivors.
+- **Coverage after the pass** (the four suites of `## Automated`):
+  `_master_pattern_harmonics.py` **98.30 %** (was 96.15/96.17 %), `_sht_file.py` **97.42 %**,
+  `_symmetry.py` **100.00 %** (was 98.72 %), `emsphinx_master_pattern/_api.py` and
+  `__init__.py` **100 %**. Every remaining uncovered line is a defensive `raise`/early return for
+  a corrupt or incomplete input.
+- **Suites after the pass**: the four Phase 2 files **923 passed, 10 skipped** (was 889/10; +34
+  tests); with `tests/test_signals/test_ebsd_master_pattern.py` and the Phase 1 trio
+  **1321 passed, 518 skipped** at `-n 0` (46 s) and identically at `-n 4` (57 s);
+  `tests/test_indexing tests/test_io tests/test_signals tests/test_data -n 4`
+  **1819 passed, 560 skipped** (was 1785/560); doctests **11 passed**; the eight local-gated
+  `KIKUCHIPY_EMSPHINX_DIR` binary tests **8 passed** (the writer still produces bytes
+  `sht2png.exe` accepts and the 25 pinned md5s are unchanged); `pre-commit` green on all 15
+  touched files.
+- **Minors fixed**: `describe()` no longer calls `chr()` on the raw signed `rot_sense` byte (shows
+  `?`); `save`'s `overwrite` now uses the exact branch shape of `kikuchipy.io._io._save`, so
+  `overwrite="yes"` raises whether or not the file exists (it silently wrote before when it did
+  not); `from_file`/`save` are annotated `str | Path`, which is what the io plugin passes;
+  `_atomic_number(True)` raises instead of returning hydrogen (`bool` is an `int` subclass);
+  `_master_pattern_dict` lowercases `hemisphere`, as the sibling `ebsdsim_master_pattern` plugin
+  does; `MasterPatternHarmonics.__init__` stores `phase.deepcopy()`, so a master pattern and the
+  coefficients made from it can no longer mutate each other's phase.
+- **Explicitly not changed**: `to_master_pattern` still hands the signal `self.phase` itself
+  (`phase is h.phase` is a named assertion of `## Automated` line 47), so the copy is made at
+  construction instead; `SYNTHETIC_MD5` and the three earlier test-assertion corrections stand
+  as recorded; `doc/tutorials/load_save_data.ipynb` still does not mention `.sht` (Phase 11, and
+  the notebooks are out of scope here); the two >72 char comment lines of
+  `create_emsphinx_sht_fixtures.py` are unwrappable shell commands and stay.
+- **Not reproduced**: the conventions review saw sporadic, wide-spectrum failures whose values are
+  impossible for correct code (axis offset -385 where `-(769 // 2)` must give -384, a literal
+  `charge=0.0` reading back as 1.0), always with a second python/`uv` process on the same
+  checkout, and never on an idle machine over ~40 repeat runs. Treated as an environmental hazard
+  of the shared numba `cache=True` on-disk cache, not a code defect: never run two processes
+  against this checkout, and give parallel CI jobs a per-process `NUMBA_CACHE_DIR`.

@@ -104,7 +104,33 @@ SYNTHETIC_FLAG_PAIRS = {
 # bytes: a writer which produces the accepted bytes cannot change
 # unnoticed, and a legitimate byte change re-runs ``sht2png.exe`` and
 # re-pins these.
-SYNTHETIC_MD5 = {}
+SYNTHETIC_MD5 = {
+    1: "25865cf3df7e49438647a6c73e50b8ab",
+    2: "1ac5c1930b4e80e41c872276031836d2",
+    6: "06fc126c96b4f894ec35f2efab1a37e2",
+    10: "626e2e9b6345688959c68cc97877de20",
+    16: "ae8b1beed0cd4e93d6c7a05f695b5bc5",
+    25: "a0e289fb3e094c69b60047a730a5aba1",
+    47: "11953424f1178e7e11118c8ca1a7b0e7",
+    75: "8f133ea4ca405143079634f8b13dc345",
+    83: "2fbc17b2d35c008e36ec1b00ee5b7cbd",
+    99: "8d910eae70622d11b9767b69b3c91238",
+    111: "64be105bb1fca491c980bc73e4706a86",
+    123: "9f2707146f926ab87cc30ccc9d93c4b4",
+    143: "efe2e034f792f8149619e4a20560e898",
+    147: "399c71928363f274709ab0188daff6f2",
+    156: "30a1a12e7cbfa01f21452ee31b69d0b4",
+    157: "21649433847c4aa1040f860cc2775c6c",
+    162: "79ef7034b716af2c074530343e2185ec",
+    164: "17ad8bb7c7c7dd078f8e971b5f1e9fd1",
+    168: "9a4f8a488fef1cfe3caf937991ae9aea",
+    174: "f36136ea8bb623707de545e06873b378",
+    175: "06e85c1d584924b2053616b779d9195e",
+    183: "3477b79bba9ed985d79d8a3f865e7719",
+    187: "00738a7ac24c8cdc819db19009e28a8b",
+    189: "a813922d6a295968ed31ce0749fe73b7",
+    191: "2fc91c0642f89084978aae8572824e49",
+}
 
 # The two in-package files, both 74 828 B
 NI_SMALL = "emsphinx/ni_small_20kv_bw384.sht"
@@ -940,6 +966,20 @@ class TestRobustness:
         again = _sht_file.read_sht(fpath)
         assert again.simulations[0] == record
         assert _sht_file.sht_file_to_bytes(again) == fpath.read_bytes()
+
+    @pytest.mark.parametrize("z_rot", [0, -1])
+    def test_a_z_rotational_order_below_one_raises(self, z_rot):
+        # _row_kind divides by the order, which is a signed byte on
+        # disk: EMSphInx' PackHarm exits on the division by zero, and
+        # a negative order would type rows differently here than
+        # there, Python's % being floored where C++' size_t % is not
+        data = bytearray(_data_path(NI_SMALL).read_bytes())
+        offset = len(data) - 4 - 8 * 9312 - _sht_file.HARMONICS_SIZE
+        assert data[offset : offset + 2] == struct.pack("<h", 384)
+        assert data[offset + 2] == 4
+        data[offset + 2] = z_rot & 0xFF
+        with pytest.raises(ValueError, match="rotational order"):
+            _sht_file.read_sht(bytes(data), check_crc=False)
 
     @pytest.mark.parametrize(
         "length, padded", [(0, 0), (1, 8), (7, 8), (8, 8), (9, 16), (46, 48)]

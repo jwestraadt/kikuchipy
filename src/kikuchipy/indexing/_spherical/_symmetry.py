@@ -76,9 +76,12 @@ developers, not for users.
 
 from __future__ import annotations
 
+from functools import cache
 from typing import TYPE_CHECKING
 
 import numpy as np
+
+from kikuchipy.indexing._spherical import _sht_file
 
 if TYPE_CHECKING:  # pragma: no cover
     from orix.quaternion import Symmetry
@@ -155,6 +158,41 @@ and ``has_equatorial_mirror`` is whether any improper element is a two
 fold about z, i.e. a mirror plane perpendicular to z.
 """
 
+AXIS_ALIAS_SPACE_GROUPS: dict[str, int] = {
+    # Monoclinic: orix returns the z-unique "2" and "m" for space
+    # groups 3-5 and 6-9, so these axis specific aliases are never
+    # returned and get the space group of their z-unique twin
+    "112": 3,
+    "121": 3,
+    "211": 3,
+    "11m": 6,
+    "1m1": 6,
+    "m11": 6,
+    # Trigonal: orix returns "32" for space groups 149-155, of which
+    # 149 is P312 and 150 is P321
+    "312": 149,
+    "321": 150,
+}
+"""Space group of the eight point group names
+:func:`orix.quaternion.symmetry.get_point_group` never returns.
+
+The other 32 names of :data:`Z_ROTATION_ORDER_AND_MIRROR` are exactly
+the names it does return, so their space groups are looked up in orix
+itself (:func:`_space_groups_by_name`) instead of being tabulated
+here.
+"""
+
+_DIVISOR_LADDER: dict[int, tuple[int, ...]] = {
+    1: (),
+    2: (1,),
+    3: (1,),
+    4: (2, 1),
+    6: (3, 2, 1),
+}
+"""Proper divisors of every z rotational order in decreasing order,
+i.e. the order in which :func:`validate_flags` tries them.
+"""
+
 SYMMETRY_POWER_TOLERANCE: float = 1e-8
 """Largest relative power allowed in coefficients a symmetry says are
 systematic zeros.
@@ -165,6 +203,61 @@ Shared by the construction guard of
 two cannot disagree.  A relative power of ``1e-8`` is a relative
 amplitude of about ``1e-4``.  Comparisons are ``<=``.
 """
+
+
+# --------------------------- Private helpers ------------------------ #
+
+
+def _check_name(name: str) -> None:
+    """Raise if a point group name is unknown.
+
+    Parameters
+    ----------
+    name
+        Point group name.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is not a key of
+        :data:`Z_ROTATION_ORDER_AND_MIRROR`.  The message lists the
+        known names.
+    """
+    if name not in Z_ROTATION_ORDER_AND_MIRROR:
+        known = ", ".join(sorted(Z_ROTATION_ORDER_AND_MIRROR))
+        raise ValueError(
+            f"Point group name {name!r} is unknown, it must be one of: {known}"
+        )
+
+
+@cache
+def _space_groups_by_name() -> dict[str, tuple[int, ...]]:
+    """Return the space groups of every point group name orix
+    returns.
+
+    Returns
+    -------
+    space_groups
+        The space group numbers, in increasing order, of every name
+        :func:`orix.quaternion.symmetry.get_point_group` returns for
+        the 230 space groups, e.g. ``(221, ..., 230)`` for
+        ``"m-3m"``.  32 of the 40 names of
+        :data:`Z_ROTATION_ORDER_AND_MIRROR` are keys, the other eight
+        being the aliases of :data:`AXIS_ALIAS_SPACE_GROUPS`.
+
+    Notes
+    -----
+    Computed from orix once, on first use.  orix is imported here and
+    not at the top of the module, so that importing this module costs
+    no more than importing NumPy.  The returned dictionary is cached
+    and must not be modified.
+    """
+    from orix.quaternion.symmetry import get_point_group
+
+    space_groups: dict[str, list[int]] = {}
+    for number in range(1, 231):
+        space_groups.setdefault(get_point_group(number).name, []).append(number)
+    return {name: tuple(numbers) for name, numbers in space_groups.items()}
 
 
 # ---------------------------- Functions ----------------------------- #
@@ -201,7 +294,11 @@ def point_group_flags(name_or_symmetry: str | Symmetry | None) -> tuple[int, boo
     :attr:`orix.crystal_map.Phase.point_group` is for a phase without
     a space group, gives the safe ``(1, False)``.
     """
-    raise NotImplementedError
+    if name_or_symmetry is None:
+        return Z_ROTATION_ORDER_AND_MIRROR["1"]
+    name = getattr(name_or_symmetry, "name", name_or_symmetry)
+    _check_name(name)
+    return Z_ROTATION_ORDER_AND_MIRROR[name]
 
 
 def space_group_for_point_group(name: str) -> int:
@@ -233,9 +330,16 @@ def space_group_for_point_group(name: str) -> int:
     :func:`orix.quaternion.symmetry.get_point_group` never returns
     (``"112"``, ``"121"``, ``"211"``, ``"m11"``, ``"1m1"``,
     ``"11m"``) map to the space group of their z-unique twin, i.e. 3
-    and 6.
+    and 6, and the two trigonal aliases (``"312"``, ``"321"``) to
+    their standard settings 149 (P312) and 150 (P321).  They are
+    tabulated in :data:`AXIS_ALIAS_SPACE_GROUPS`; every other name is
+    looked up in orix.
     """
-    raise NotImplementedError
+    _check_name(name)
+    space_groups = _space_groups_by_name().get(name)
+    if space_groups is None:
+        return AXIS_ALIAS_SPACE_GROUPS[name]
+    return space_groups[0]
 
 
 def candidate_space_groups(name: str) -> tuple[int, ...]:
@@ -268,8 +372,28 @@ def candidate_space_groups(name: str) -> tuple[int, ...]:
     --------
     kikuchipy.indexing._spherical._sht_file.space_group_z_rotation
     kikuchipy.indexing._spherical._sht_file.space_group_compression_flags
+
+    Notes
+    -----
+    The first candidate is always the space group of
+    :func:`space_group_for_point_group`, so a caller which only has a
+    point group can use that one and offer the others, e.g. when the
+    packing of the coefficients turns out to be lossy.  The eight
+    aliases of :data:`AXIS_ALIAS_SPACE_GROUPS` give their one
+    tabulated space group.
     """
-    raise NotImplementedError
+    _check_name(name)
+    space_groups = _space_groups_by_name().get(name)
+    if space_groups is None:
+        return (AXIS_ALIAS_SPACE_GROUPS[name],)
+    lowest: dict[tuple[int, int], int] = {}
+    for number in space_groups:
+        pair = (
+            _sht_file.space_group_z_rotation(number),
+            _sht_file.space_group_compression_flags(number),
+        )
+        lowest.setdefault(pair, number)
+    return tuple(sorted(lowest.values()))
 
 
 def systematic_zero_power(
@@ -305,7 +429,26 @@ def systematic_zero_power(
     (:data:`SYMMETRY_POWER_TOLERANCE`) guard both construction and
     saving, so that the two cannot disagree.
     """
-    raise NotImplementedError
+    power = np.abs(alm) ** 2
+    # Only the non-negative orders are stored, so every m > 0 row
+    # stands for itself and its m < 0 twin
+    power[1:] *= 2
+    total = power.sum()
+    if total == 0:
+        return 0.0, 0.0
+
+    rotation_power = 0.0
+    orders = np.arange(alm.shape[0])
+    if n_fold > 1:
+        rotation_power = float(power[orders % n_fold != 0].sum() / total)
+
+    mirror_power = 0.0
+    if has_equatorial_mirror:
+        degrees = np.arange(alm.shape[1])
+        odd = (orders[:, np.newaxis] + degrees[np.newaxis, :]) % 2 == 1
+        mirror_power = float(power[odd].sum() / total)
+
+    return rotation_power, mirror_power
 
 
 def validate_flags(
@@ -347,4 +490,38 @@ def validate_flags(
     would otherwise carry a wrong two fold and mirror into the
     correlator with no error at all.
     """
-    raise NotImplementedError
+    rotation_power, mirror_power = systematic_zero_power(
+        alm, n_fold, has_equatorial_mirror
+    )
+    warnings: list[str] = []
+
+    validated_n_fold = n_fold
+    if n_fold > 1 and rotation_power > SYMMETRY_POWER_TOLERANCE:
+        # The ladder ends in 1, whose set of systematic zeros is
+        # empty, so a divisor is always found
+        for divisor in _DIVISOR_LADDER[n_fold]:
+            divisor_power, _ = systematic_zero_power(alm, divisor, False)
+            if divisor_power <= SYMMETRY_POWER_TOLERANCE:
+                validated_n_fold = divisor
+                break
+        warnings.append(
+            f"The coefficients carry a relative power of {rotation_power:.3e} "
+            f"in the orders m % {n_fold} != 0, which the {n_fold} fold "
+            "rotation about z of the point group says are zero (tolerance "
+            f"{SYMMETRY_POWER_TOLERANCE}); n_fold is downgraded to "
+            f"{validated_n_fold}, the largest divisor of {n_fold} the "
+            "coefficients satisfy"
+        )
+
+    validated_mirror = bool(has_equatorial_mirror)
+    if validated_mirror and mirror_power > SYMMETRY_POWER_TOLERANCE:
+        validated_mirror = False
+        warnings.append(
+            f"The coefficients carry a relative power of {mirror_power:.3e} "
+            "in the entries with odd l + m, which the equatorial mirror "
+            "plane of the point group says are zero (tolerance "
+            f"{SYMMETRY_POWER_TOLERANCE}); has_equatorial_mirror is set to "
+            "False"
+        )
+
+    return validated_n_fold, validated_mirror, warnings

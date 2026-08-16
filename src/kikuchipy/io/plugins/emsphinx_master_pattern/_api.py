@@ -31,7 +31,7 @@ def file_reader(
     hemisphere: HEMISPHERE = "both",
     lazy: bool = False,
 ) -> list[dict]:
-    """Read an EBSD master pattern from an EMSphInx *.sht file.
+    """Read an EBSD master pattern from an EMSphInx ``*.sht`` file.
 
     The file holds the master pattern as spherical harmonic
     coefficients, which are synthesized onto a square Lambert grid.
@@ -41,7 +41,8 @@ def file_reader(
     Parameters
     ----------
     filename
-        Path to the *.sht file, version 1.1 of the SHTfile format.
+        Path to the ``*.sht`` file, version 1.1 of the SHTfile
+        format.
     dim
         Odd side length of the square Lambert grid, at least three.
         If not given, ``2 * bandwidth + 1`` is used, the grid whose
@@ -79,4 +80,16 @@ def file_reader(
         If ``(dim - 1) // 2`` is smaller than the file's bandwidth, in
         which case the coefficients are band limited to that degree.
     """
-    raise NotImplementedError
+    from kikuchipy.indexing._spherical._master_pattern_harmonics import (
+        MasterPatternHarmonics,
+        _master_pattern_dict,
+    )
+
+    fpath = Path(filename)
+    harmonics = MasterPatternHarmonics.from_file(fpath)
+    signal_dict = _master_pattern_dict(harmonics, dim, hemisphere)
+    signal_dict["metadata"]["General"] = {
+        "title": fpath.stem,
+        "original_filename": fpath.name,
+    }
+    return [signal_dict]

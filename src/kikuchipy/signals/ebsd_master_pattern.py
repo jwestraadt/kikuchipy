@@ -389,7 +389,19 @@ class EBSDMasterPattern(KikuchiMasterPattern):
         >>> h.bandwidth
         32
         """
-        raise NotImplementedError
+        from kikuchipy.indexing._spherical._master_pattern_harmonics import (
+            MasterPatternHarmonics,
+        )
+
+        return MasterPatternHarmonics.from_master_pattern(
+            self,
+            bandwidth=bandwidth,
+            energy_weights=energy_weights,
+            normalize=normalize,
+            emsphinx_compatible=emsphinx_compatible,
+            beam_energy=beam_energy,
+            sample_tilt=sample_tilt,
+        )
 
     def _is_suitable_for_projection(self, raise_if_not: bool = False) -> bool:
         """Check whether the master pattern is suitable for projection

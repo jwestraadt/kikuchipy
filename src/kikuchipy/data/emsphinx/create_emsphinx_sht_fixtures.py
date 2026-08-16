@@ -63,7 +63,11 @@ Neither executable writes template files to the current directory.
 """
 
 import argparse
+import hashlib
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 
 DEFAULT_EMSPHINX_DIR = Path("C:/Users/westraadt.1/Repos/EMSphInx")
 """Default EMSphInx checkout, this machine."""
@@ -97,7 +101,23 @@ def repack_uncompressed(source: Path, destination: Path) -> Path:
     1 199 136 B with md5 ``b58bece63152a9b5e4c53f5e8899fef7`` and is
     not committed.
     """
-    raise NotImplementedError
+    import h5py
+
+    source = Path(source)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(source, "r") as fi, h5py.File(destination, "w") as fo:
+
+        def copy(name, obj):
+            if isinstance(obj, h5py.Group):
+                fo.require_group(name)
+            else:
+                dataset = fo.create_dataset(name, data=obj[()], dtype=obj.dtype)
+                for key, value in obj.attrs.items():
+                    dataset.attrs[key] = value
+
+        fi.visititems(copy)
+    return destination
 
 
 def run_mp2sht(emsphinx_dir: Path, source: Path, destination: Path) -> Path:
@@ -125,7 +145,24 @@ def run_mp2sht(emsphinx_dir: Path, source: Path, destination: Path) -> Path:
     RuntimeError
         If ``mp2sht`` exits non-zero.
     """
-    raise NotImplementedError
+    program = _program(emsphinx_dir, "mp2sht")
+    source = Path(source)
+    if not source.is_file():
+        raise FileNotFoundError(f"the master pattern {source} does not exist")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [str(program), str(source), str(destination)],
+        capture_output=True,
+        text=True,
+        cwd=str(destination.parent),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"mp2sht failed on {source} with exit code {result.returncode}: "
+            f"{result.stdout} {result.stderr}"
+        )
+    return destination
 
 
 def run_sht2png(emsphinx_dir: Path, source: Path, destination: Path) -> str:
@@ -153,7 +190,21 @@ def run_sht2png(emsphinx_dir: Path, source: Path, destination: Path) -> str:
         If ``sht2png`` exits non-zero, i.e. it does not accept the
         file.
     """
-    raise NotImplementedError
+    program = _program(emsphinx_dir, "sht2png")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [str(program), str(source), str(destination)],
+        capture_output=True,
+        text=True,
+        cwd=str(destination.parent),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"sht2png did not accept {source}, exit code "
+            f"{result.returncode}: {result.stdout} {result.stderr}"
+        )
+    return result.stdout
 
 
 def accept_synthetic_files(emsphinx_dir: Path, directory: Path) -> dict[int, str]:
@@ -180,7 +231,22 @@ def accept_synthetic_files(emsphinx_dir: Path, directory: Path) -> dict[int, str
         If ``sht2png`` refuses a file or does not print the expected
         effective space group.
     """
-    raise NotImplementedError
+    from kikuchipy.data._dummy_files.emsphinx_sht import create_synthetic_sht_files
+
+    directory = Path(directory)
+    files = create_synthetic_sht_files(directory / "synthetic")
+    md5_sums = {}
+    for space_group, fpath in sorted(files.items()):
+        stdout = run_sht2png(
+            emsphinx_dir, fpath, directory / f"sg{space_group:03d}.png"
+        )
+        expected = f"effective sg# {space_group}"
+        if expected not in stdout:
+            raise RuntimeError(
+                f"sht2png did not print {expected!r} for {fpath}: {stdout}"
+            )
+        md5_sums[space_group] = _md5(fpath)
+    return md5_sums
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -196,7 +262,98 @@ def main(argv: list[str] | None = None) -> int:
     exit_code
         0 on success.
     """
-    raise NotImplementedError
+    arguments = _parse_args(argv)
+    emsphinx_dir = arguments.emsphinx_dir
+    full_master = arguments.full_master
+    if full_master is None:
+        full_master = (
+            arguments.cache_dir
+            / "develop"
+            / "data"
+            / "ebsd_master_pattern"
+            / "ni_mc_mp_20kv.h5"
+        )
+    output_dir = arguments.output_dir
+    tmp_dir = arguments.tmp_dir
+    remove_tmp_dir = tmp_dir is None
+    if remove_tmp_dir:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="kikuchipy_sht_"))
+    tmp_dir = Path(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # (a) the in-package master, repacked without compression
+        repacked = repack_uncompressed(
+            arguments.in_package_master, tmp_dir / "ni_small_uncompressed.h5"
+        )
+        print(f"repacked {arguments.in_package_master} -> {repacked}")
+        print(f"  md5 {_md5(repacked)}")
+
+        # (b) the two shipped .sht fixtures
+        for source, name in (
+            (repacked, "ni_small_20kv_bw384.sht"),
+            (full_master, "ni_20kv_bw384.sht"),
+        ):
+            written = run_mp2sht(emsphinx_dir, source, output_dir / name)
+            print(f"mp2sht {source} -> {written}")
+
+        # (c) the 25 synthetic files, accepted by sht2png
+        md5_sums = accept_synthetic_files(emsphinx_dir, tmp_dir)
+        print("synthetic .sht md5 sums, to pin in the test and record")
+        print("in validation.md:")
+        for space_group, md5_sum in sorted(md5_sums.items()):
+            print(f"    {space_group}: {md5_sum!r},")
+
+        # (d) the md5 sums of the two shipped files, for _registry.py
+        print("shipped .sht md5 sums, for _registry.py:")
+        for name in ("ni_20kv_bw384.sht", "ni_small_20kv_bw384.sht"):
+            print(f'    "emsphinx/{name}": "md5:{_md5(output_dir / name)}",')
+    finally:
+        if remove_tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    return 0
+
+
+def _program(emsphinx_dir: Path, name: str) -> Path:
+    """Return the path of an EMSphInx program.
+
+    Parameters
+    ----------
+    emsphinx_dir
+        EMSphInx checkout.
+    name
+        Program name without a suffix.
+
+    Returns
+    -------
+    program
+        Path of the executable.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the program is not built.
+    """
+    directory = Path(emsphinx_dir) / "build" / "Release"
+    for candidate in (directory / f"{name}.exe", directory / name):
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"{name} is not built in {directory}")
+
+
+def _md5(fpath: Path) -> str:
+    """Return the md5 sum of a file.
+
+    Parameters
+    ----------
+    fpath
+        Path of the file.
+
+    Returns
+    -------
+    md5_sum
+        Hexadecimal md5 sum.
+    """
+    return hashlib.md5(Path(fpath).read_bytes()).hexdigest()
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:

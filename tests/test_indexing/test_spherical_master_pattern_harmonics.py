@@ -288,7 +288,9 @@ class TestContainer:
         assert harmonics.alm.flags.c_contiguous
         assert harmonics.alm is not alm
         alm[0, 0] = 0
-        assert harmonics.alm[0, 0] == SQRT_FOUR_PI
+        # The source array is 64-bit complex, so it never held the
+        # 128-bit complex sqrt(4 pi) to begin with
+        assert harmonics.alm[0, 0] == np.complex64(SQRT_FOUR_PI)
 
     def test_the_bandwidth_is_the_side_length(self):
         assert MasterPatternHarmonics(np.zeros((17, 17), np.complex128)).bandwidth == 17
@@ -308,6 +310,19 @@ class TestContainer:
     def test_a_bandwidth_below_one_raises(self):
         with pytest.raises(ValueError):
             MasterPatternHarmonics(np.zeros((0, 0), dtype=np.complex128))
+
+    def test_the_phase_is_copied(self):
+        # kikuchipy's readers give every signal its own phase, so a
+        # master pattern and the coefficients made from it must not
+        # be able to mutate each other's
+        phase = Phase(name="ni", space_group=225)
+        alm = np.zeros((4, 4), dtype=np.complex128)
+        alm[0, 0] = 1
+        harmonics = MasterPatternHarmonics(alm, phase=phase)
+        assert harmonics.phase is not phase
+        phase.name = "other"
+        assert harmonics.phase.name == "ni"
+        assert harmonics.phase.space_group.number == 225
 
 
 class TestResizeLambert:
@@ -608,6 +623,36 @@ class TestEnergyWeights:
         )
         assert harmonics.bandwidth == 4
 
+    def test_the_weights_are_applied_by_the_pipeline(
+        self, emsoft_ebsd_master_pattern_file
+    ):
+        # np.ones(11) is invariant under a reversal and equal to a
+        # plain mean, so only a non-uniform weight set proves that
+        # the weights reach the data
+        master = kp.load(
+            emsoft_ebsd_master_pattern_file,
+            projection="lambert",
+            hemisphere="both",
+        )
+        bandwidth = 4
+        given = np.arange(1.0, 12.0)
+        harmonics = MasterPatternHarmonics.from_master_pattern(
+            master, bandwidth=bandwidth, energy_weights=given, normalize=False
+        )
+        weights = given / given.sum()
+        data = np.asarray(master.data, dtype=np.float64)
+        north = np.tensordot(weights, data[0], axes=(0, 0))
+        south = np.tensordot(weights, data[1], axes=(0, 0))
+        dim_legendre = _grid.default_dim(bandwidth, "legendre")
+        dim_scaled = int(round(np.sqrt(2) * dim_legendre))
+        north = _mph._resize_lambert(north, dim_scaled)
+        south = _mph._resize_lambert(south, dim_scaled)
+        north, south = _mph._to_legendre(north, south, dim_legendre)
+        expected = _sht.SphericalHarmonicTransform(
+            bandwidth, "legendre", dim_legendre
+        ).analyze(north, south)
+        assert np.array_equal(harmonics.alm, expected)
+
 
 class TestIntegerMultiSiteGuard:
     @staticmethod
@@ -781,7 +826,11 @@ class TestNormalizeFalse:
             beam_energy=20.0,
             sample_tilt=70.0,
         )
-        assert abs(harmonics.alm[0, 0]) < 1e-10
+        # The default emsphinx_compatible=True subtracts *twice* the
+        # weighted mean (master.hpp lines 572-573), so a constant
+        # master normalizes to -1 everywhere and a_00 to -sqrt(4 pi),
+        # independent of the source amplitude and of D5's factor
+        assert harmonics.alm[0, 0].real == pytest.approx(-SQRT_FOUR_PI, rel=1e-10)
 
     def test_the_equal_side_early_return_leaves_the_amplitude_alone(self):
         # bandwidth 12: dim_leg 15, dim_scaled round(sqrt(2) * 15) = 21
@@ -1077,6 +1126,16 @@ class TestToMasterPattern:
         with pytest.raises(ValueError):
             transform.analyze(np.ones((769, 769)), np.ones((769, 769)))
 
+    def test_the_hemisphere_is_case_insensitive(self):
+        # As in the ebsdsim_master_pattern plugin
+        harmonics = _antisymmetric_harmonics()
+        upper = harmonics.to_master_pattern(dim=11, hemisphere="Upper")
+        assert upper.hemisphere == "upper"
+        assert np.array_equal(
+            upper.data,
+            harmonics.to_master_pattern(dim=11, hemisphere="upper").data,
+        )
+
 
 class TestSaveAndFromFile:
     def test_a_round_trip_keeps_the_coefficients_bit_exactly(self, tmp_path):
@@ -1089,7 +1148,11 @@ class TestSaveAndFromFile:
         # empty selections and pass
         assert np.count_nonzero(kept) == _sht_file.num_harmonics(384, 4, 0x7)
         assert np.count_nonzero(kept) == 9312
-        assert np.array_equal(again.alm[kept], from_master.alm[kept])
+        # The mirror-y compression stores the real part alone
+        # (PackHarm, sht_file.in.hpp line 1727), so the round trip is
+        # bit-exact in the real part and drops the 3e-16 imaginary
+        # residue of the forward transform
+        assert np.array_equal(again.alm[kept].real, from_master.alm[kept].real)
 
     def test_a_round_trip_keeps_the_metadata(self, tmp_path):
         from_master = _ni_harmonics_bw384()
@@ -1427,6 +1490,176 @@ class TestSaveAndFromFile:
         harmonics.save(tmp_path / "noext")
         assert (tmp_path / "noext.sht").is_file()
 
+    def test_a_round_trip_keeps_the_fields_the_phase_cannot_hold(self, tmp_path):
+        # An orix Phase cannot represent these, so without
+        # preserve_header they can only reach the new file through
+        # original_metadata
+        sht = _sht_file.read_sht(_data_path(NI_SMALL))
+        sht.header.secondary_angle = 12.5
+        sht.header.reserved_param = -0.75
+        crystal = sht.crystals[0]
+        crystal.sg_axis = 4
+        crystal.sg_cell = 3
+        crystal.origin = (1.5, -2.5, 3.5)
+        crystal.rot = (0.5, 0.5, 0.5, 0.5)
+        crystal.weight = 0.25
+        for name, value in (
+            ("structure_symbol", "A1"),
+            ("references", "doi:x"),
+            ("note", "xtal note"),
+        ):
+            setattr(crystal, name, value)
+            setattr(crystal, f"{name}_bytes", None)
+            setattr(crystal, f"{name}_len", None)
+        crystal.atoms[0].charge = -1.5
+        crystal.atoms[0].res_fp = 3.25
+        source = tmp_path / "injected.sht"
+        _sht_file.write_sht(source, sht)
+
+        fpath = tmp_path / "again.sht"
+        MasterPatternHarmonics.from_file(source).save(fpath)
+
+        written = _sht_file.read_sht(fpath)
+        assert written.header.secondary_angle == pytest.approx(12.5)
+        assert written.header.reserved_param == pytest.approx(-0.75)
+        new = written.crystals[0]
+        assert (new.sg_set, new.sg_axis, new.sg_cell) == (1, 4, 3)
+        assert new.origin == pytest.approx((1.5, -2.5, 3.5))
+        assert new.rot == pytest.approx((0.5, 0.5, 0.5, 0.5))
+        assert new.weight == pytest.approx(0.25)
+        assert new.structure_symbol == "A1"
+        assert new.references == "doi:x"
+        assert new.note == "xtal note"
+        assert new.atoms[0].charge == pytest.approx(-1.5)
+        assert new.atoms[0].res_fp == pytest.approx(3.25)
+
+    def test_an_instance_without_a_file_gets_the_format_defaults(self, tmp_path):
+        # The other side of the fallback: nothing to carry over
+        alm = np.zeros((8, 8), dtype=np.complex128)
+        alm[0, 0] = 1
+        harmonics = MasterPatternHarmonics(
+            alm,
+            phase=Phase(name="ni", space_group=225),
+            beam_energy=20.0,
+            sample_tilt=70.0,
+        )
+        fpath = tmp_path / "plain.sht"
+        harmonics.save(fpath)
+        written = _sht_file.read_sht(fpath)
+        crystal = written.crystals[0]
+        assert written.header.secondary_angle == 0
+        assert written.header.reserved_param == 0
+        assert (crystal.sg_set, crystal.sg_axis, crystal.sg_cell) == (1, 1, 1)
+        assert crystal.origin == (0, 0, 0)
+        assert crystal.rot == (1, 0, 0, 0)
+        assert crystal.weight == 1
+        assert crystal.structure_symbol == ""
+        assert crystal.references == ""
+        assert crystal.note == ""
+
+    def test_preserve_header_takes_a_new_doi_and_notes(self, tmp_path):
+        # The one path which drops the raw padded bytes of the two
+        # header strings and re-encodes them
+        source = _data_path(NI_SMALL)
+        harmonics = MasterPatternHarmonics.from_file(source)
+        fpath = tmp_path / "strings.sht"
+        harmonics.save(fpath, preserve_header=True, doi="10.0/x", notes="hi")
+        written = _sht_file.read_sht(fpath)
+        original = _sht_file.read_sht(source)
+        assert written.header.doi == "10.0/x"
+        assert written.header.doi_len == 6
+        assert len(written.header.doi_bytes) == 8
+        assert written.header.notes == "hi"
+        assert written.header.note_len == 2
+        assert len(written.header.notes_bytes) == 8
+        # Everything else is still the source file's
+        assert written.header.software_version == original.header.software_version
+        assert np.array_equal(written.harmonics.packed, original.harmonics.packed)
+
+    def test_overwrite_true_replaces_an_existing_file(self, tmp_path):
+        harmonics = _ni_harmonics_bw384()
+        fpath = tmp_path / "ni.sht"
+        fpath.write_bytes(b"not an sht file")
+        harmonics.save(fpath, overwrite=True)
+        assert _sht_file.read_sht(fpath).sg_eff == 225
+
+    def test_overwrite_false_still_writes_a_new_file(self, tmp_path):
+        # As in kikuchipy.io._io._save: overwrite only decides what
+        # happens to a file which is already there
+        harmonics = _ni_harmonics_bw384()
+        fpath = tmp_path / "new.sht"
+        harmonics.save(fpath, overwrite=False)
+        assert _sht_file.read_sht(fpath).sg_eff == 225
+
+    @pytest.mark.parametrize("exists", [False, True])
+    def test_an_invalid_overwrite_raises(self, exists, tmp_path):
+        harmonics = _ni_harmonics_bw384()
+        fpath = tmp_path / "ni.sht"
+        if exists:
+            fpath.write_bytes(b"not an sht file")
+        with pytest.raises(ValueError, match="overwrite"):
+            harmonics.save(fpath, overwrite="yes")
+        assert fpath.exists() == exists
+
+    def test_the_crystal_block_of_a_multi_element_hexagonal_phase(self, tmp_path):
+        from diffpy.structure import Atom, Lattice, Structure
+
+        # Two elements out of order with a duplicate, a non-cubic
+        # cell and a partial occupancy: the single site cubic nickel
+        # phase exercises none of them
+        atoms = [
+            Atom(atype="Si", xyz=(0.0, 0.0, 0.0), occupancy=0.5),
+            Atom(atype="O", xyz=(0.25, 0.0, 0.0), occupancy=1.0),
+            Atom(atype="Si", xyz=(0.5, 0.0, 0.0), occupancy=0.5),
+        ]
+        structure = Structure(
+            lattice=Lattice(0.49, 0.49, 0.54, 90, 90, 120), atoms=atoms
+        )
+        alm = np.zeros((8, 8), dtype=np.complex128)
+        alm[0, 0] = 1
+        harmonics = MasterPatternHarmonics(
+            alm,
+            phase=Phase(name="quartz", space_group=1, structure=structure),
+            beam_energy=20.0,
+            sample_tilt=70.0,
+        )
+        fpath = tmp_path / "quartz.sht"
+        harmonics.save(fpath)
+        crystal = _sht_file.read_sht(fpath).crystals[0]
+        # The unique symbols in ascending atomic number, O then Si
+        assert crystal.formula == "OSi"
+        assert [atom.atomic_number for atom in crystal.atoms] == [14, 8, 14]
+        assert [atom.occupancy for atom in crystal.atoms] == pytest.approx(
+            [0.5, 1.0, 0.5]
+        )
+        assert crystal.lat == pytest.approx((0.49, 0.49, 0.54, 90, 90, 120))
+
+
+class TestCrystalHelpers:
+    """The two helpers of the crystal block ``save`` builds."""
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [(-0.25, 18.0), (1.25, 6.0), (-0.75, 6.0), (2.0, 0.0), (-1 / 6, 20.0)],
+    )
+    def test_a_coordinate_outside_the_unit_cell_wraps(self, value, expected):
+        assert _mph._coordinate_in_24ths(value) == pytest.approx(expected, rel=1e-6)
+
+    @pytest.mark.parametrize(
+        "element, expected", [(28, 28), ("Ni", 28), ("28", 28), ("Ni2+", 28), ("h", 1)]
+    )
+    def test_the_atomic_number_of_an_element(self, element, expected):
+        assert _mph._atomic_number(element) == expected
+
+    def test_a_boolean_is_not_an_atomic_number(self):
+        # bool is an int subclass, so True must not read as hydrogen
+        with pytest.raises(ValueError, match="atomic number"):
+            _mph._atomic_number(True)
+
+    def test_an_unknown_element_raises(self):
+        with pytest.raises(ValueError, match="atomic number"):
+            _mph._atomic_number("Xx")
+
 
 class TestResizeRemoveDcAndPower:
     def test_growing_then_shrinking_is_the_identity(self):
@@ -1566,6 +1799,13 @@ class TestDescribeAndRepr:
         text = repr(MasterPatternHarmonics(np.zeros((4, 4), np.complex128)))
         assert "bw = 4" in text
         assert "None" in text
+
+    def test_a_rotation_sense_outside_the_code_points(self):
+        # The field is a signed byte on disk and is not sanity
+        # checked on read, so describe() must survive any value
+        harmonics = MasterPatternHarmonics.from_file(_data_path(NI_SMALL))
+        harmonics.original_metadata["master_pattern"]["rot_sense"] = -1
+        assert "rotations are ? with pijk = 1" in harmonics.describe()
 
 
 class TestRotate:
