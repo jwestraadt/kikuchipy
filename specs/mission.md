@@ -17,7 +17,7 @@ indexing tutorials.
 
 | EMSphInx program | kikuchipy equivalent |
 |---|---|
-| `mp2sht` | `EBSDMasterPattern.get_spherical_harmonics()` / `kp.indexing.MasterPatternHarmonics.from_master_pattern()`, `.save()` to `.sht` |
+| `mp2sht` | `EBSDMasterPattern.get_spherical_harmonics()` / `kp.indexing.MasterPatternHarmonics.from_master_pattern()`, `.save()` to `.sht` (a `.sht` written by kikuchipy carries `softwareVersion kp<version>` and a provenance `notes` string) |
 | `.sht` files (SHTdatabase) | `kp.load("*.sht")` → `EBSDMasterPattern` (io plugin `emsphinx_master_pattern`); `MasterPatternHarmonics.from_file()` |
 | `IndexEBSD` | `EBSD.spherical_indexing()`, `kp.indexing.SphericalIndexer`, `EBSD.refine_orientation_spherical()` |
 | `MasterXcorr` | `kp.indexing.find_pseudo_symmetry_operators()` (+ psymfile read/write, stereogram plot) |
@@ -45,7 +45,7 @@ multi-crystal `.sht` files, big-endian `.sht`, `.sht` versions other than 1.1.
 ## Legal status (recorded 2026-08-16)
 
 - EMSphInx headers: "GPL v2 or (at your option) any later version", © 2019 De Graef Group, CMU, author W. C. Lenthe → may be conveyed under GPL-3.0-or-later. Required: keep the notice (incl. the CMU CTTEC commercial-licence contact), add the modification notice required by GPLv2 §2(a) / GPLv3 §5(a) ("changed by …, date").
-- `.sht` codec: SHTfile repo `https://github.com/EMsoft-org/SHTfile` @ `e49ad6b`, **BSD-3-Clause** — copyright + conditions + disclaimer reproduced verbatim; no GPL relicensing claim.
+- `.sht` codec: SHTfile repo `https://github.com/EMsoft-org/SHTfile` @ `e49ad6b`, **BSD-3-Clause** — `_sht_file.py` is shipped BSD-3-Clause with the notice (copyright + conditions + disclaimer) verbatim (kikuchipy's BSD hook); it imports nothing GPL-derived; no GPL relicensing claim.
 - FFTW (GPL) is not used; `scipy.fft` (BSD-3) instead. miniz (MIT) not needed.
 - Patent: EMSphInx README says "the central indexing algorithm is covered by a provisional patent application". The Google Patents queries run on 2026-08-16 (archived with query strings, counts and hits in `specs/_research/patent-search-2026-08-16.md`) surfaced **no granted or published patent** on this algorithm; the only filings surfaced for inventor Lenthe were 2024 Gatan/EDAX applications (WO2025184557A1, US20260002896A1) on other subjects. A 2019 provisional that was converted would have published by ~2021. This is a negative result from a bounded search, not proof; the residual uncertainty is flagged to the pyxem maintainers (issue + `pyxem.team@gmail.com`) before any upstream merge, and fork work proceeds.
 - kikuchipy policy (`doc/dev/licensing_considerations.rst`): GPL-derived code may not be imported from BSD-3 files; every PR states that BSD opt-out is impossible for EMSphInx-derived modules.

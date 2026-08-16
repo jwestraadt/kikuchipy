@@ -34,20 +34,20 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#2)
 
 ## Phase 2 -- `sht-master-spectra-and-file`
-- [ ] `_master_pattern_harmonics.py`: public `kp.indexing.MasterPatternHarmonics` (`from_master_pattern`, `from_file`, `save` = `.sht` writer, `resize`, `remove_dc`, `power_spectrum`, `describe`) -- `MasterSpectra` port; `toLegendre` DCT regrid; weighted normalisation with compat quirk; `accum_e` energy weights; symmetry LUTs (38 groups, validated against `orix.quaternion.symmetry._groups`, names confirmed on orix 0.12.1); bandwidth-vs-resolution warning
+- [ ] `_master_pattern_harmonics.py`: public `kp.indexing.MasterPatternHarmonics` (`from_master_pattern`, `from_file`, `save` = `.sht` writer, `to_master_pattern` (direct Lambert synthesis, needed by `kp.load`), `resize`, `remove_dc`, `power_spectrum`, `describe`) -- `MasterSpectra` port; `toLegendre` DCT regrid; weighted normalisation with compat quirk (default `emsphinx_compatible=True`, parity-first); `accum_e` energy weights; symmetry LUTs (the 38 `_groups` names + the `'2'`/`'m'` aliases returned by `get_point_group`, validated against `orix.quaternion.symmetry._groups`, names confirmed on orix 0.12.1); bandwidth-vs-resolution warning; Phase 1 amendment: lazy `quadrature_weights` in `_sht.py` (Lambert synthesis at any odd `dim`, the Sneeuw guard moves to `analyze`)
 - [ ] `_sht_file.py` (BSD-3 SHTfile codec; generic modality/simMetaSize; NotImplementedError paths)
 - [ ] io plugin `emsphinx_master_pattern`; `EBSDMasterPattern.get_spherical_harmonics`
-- [ ] Data: `ni_20kv_bw384.sht` (mp2sht.exe, sig 70), `ni_small_20kv_bw384.sht`, synthetic per-(zRot, cmpFlg) fixtures
+- [ ] Data: `ni_20kv_bw384.sht`, `ni_small_20kv_bw384.sht` (mp2sht.exe, sig 70; the latter from an uncompressed repack because `mp2sht.exe` lacks HDF5 deflate); synthetic per-(zRot, cmpFlg) fixtures generated at test time (`_dummy_files/emsphinx_sht.py`, md5s pinned after `sht2png.exe` acceptance)
 - [ ] Tests: header parse, read->write field/CRC equality, pack/unpack all branches, EMSphInx binaries accept our `.sht` (local-gated), mp2sht parity, `kp.load(".sht")`, bandwidth warning
 
 ## Phase 3 -- `sht-wigner-d`
-- [ ] `_wigner.py` (d(pi/2) table, dTable(beta), dTablePre, scalar `wigner_d`, `rotate_harmonics`, derivative helpers)
+- [ ] `_wigner.py` (d(pi/2) table, dTable(beta), dTablePre, scalar `wigner_d`, `wigner_D`, `rotate_harmonics`, derivative helpers `wigner_d_prime`/`wigner_d_prime2`); reference-table module `src/kikuchipy/data/emsphinx/wigner_reference_tables.py` (the Mathematica tables of `test/sht/wigner.cpp`)
 - [ ] `_euler.py` (`zyz_to_quaternion` etc.; explicit port of `test/xtal/rotations.cpp:288-318`; Bunge equivalence test to 1e-14)
-- [ ] Tests: Mathematica tables from `test/sht/wigner.cpp`, table vs scalar, rotate composition/identity
+- [ ] Tests: Mathematica tables from `test/sht/wigner.cpp`, table vs scalar, rotate composition/identity; table-based derivative formulas of `sht_xcorr.hpp:1009-1041` pinned in `test_spherical_wigner.py` against `wigner_d_prime`/`wigner_d_prime2` (Phase 7 copies them)
 
 ## Phase 4 -- `spherical-cross-correlation`
-- [ ] `_xcorr.py`: `SphericalCrossCorrelator`, `NormalizedSphericalCrossCorrelator` (Huhle `rDen`), spectrum kernel, 27-neighbourhood + glide, tri-quadratic interpolation, index<->euler
-- [ ] Tests: `sht_xcorr.cpp` ports (random pairs, symmetric groups, wedge mask), Ni master autocorrelation -> identity + 24 cubic ops, timing baseline at bw 53/68/88
+- [ ] `_xcorr.py`: `SphericalCrossCorrelator`, `NormalizedSphericalCrossCorrelator` (Huhle `rDen`), spectrum kernel, 27-neighbourhood + glide, tri-quadratic interpolation, index<->euler (note: `extractBunge` (`sht_xcorr.hpp:594-649`) uses the reversed ZYZ->Bunge offsets; if ported, use `_euler.bunge_to_zyz` and record the deviation)
+- [ ] Tests: `sht_xcorr.cpp` ports (random pairs, symmetric groups, wedge mask), Ni master autocorrelation -> identity + 24 cubic ops, timing baseline at bw 53/68/88; normalised correlator with the Ni master in both `emsphinx_compatible` settings against a known rotation: argmax misorientation within the grid/refinement tolerance, score difference recorded (the D7 gate of Phase 2)
 
 ## Phase 5 -- `spherical-back-projection`
 - [ ] `_back_projection.py` (`SphericalBackProjector` gather LUT, DCT rescaler, DCT IQ, window mask, `mlm`, `flm2`/`rDen`, single-PC guard)
@@ -58,20 +58,20 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 ## Phase 6 -- `spherical-indexing-ebsd`
 - [ ] `_indexer.py` (`SphericalIndexer`, per-pattern failure handling), `EBSD.spherical_indexing` (dask `map_blocks`, info message, masks, multi-phase, `n_best`), benchmark
 - [ ] Public `kp.indexing.fast_bandwidths()` exported in `indexing/__init__.pyi` (ShtWisdom stand-in)
-- [ ] Tests: `nickel_ebsd_small` coarse vs stored xmap (median < 1.5 deg, >= 8/9 < 3 deg), lazy/verbose/mask/error paths, hard floor >= 2 pat/s/core, memory measured
+- [ ] Tests: `nickel_ebsd_small` coarse vs stored xmap (median < 1.5 deg, >= 8/9 < 3 deg), lazy/verbose/mask/error paths, hard floor >= 2 pat/s/core, memory measured; `IndexEBSD.exe` parity runs use the default `emsphinx_compatible=True`
 
 ## Phase 7 -- `spherical-refinement`
 - [ ] Analytic derivatives + Newton (`_derivatives`, `_refine_peak`, Cholesky 3x3, saddle rejection, degeneracy fallbacks), normalised refine, `refine=True` default, `EBSD.refine_orientation_spherical`
-- [ ] Tests: `sht_xcorr.cpp` refine ports, saddle/beta=0, `nickel_ebsd_small` refined all < 1 deg + score increase, weekly `nickel_ebsd_large`
+- [ ] Tests: `sht_xcorr.cpp` refine ports, saddle/beta=0, `nickel_ebsd_small` refined all < 1 deg + score increase, weekly `nickel_ebsd_large`; `IndexEBSD.exe` parity runs use the default `emsphinx_compatible=True`
 
 ## Phase 8 -- `spherical-pseudo-symmetry`
 - [ ] `_pseudo_symmetry.py` (`find_pseudo_symmetry_operators`, MasterXcorr port incl. two-phase mode, optional volume + stereogram), `pseudo_symmetry_ops` in indexer, psymfile read/write
 - [ ] Tests: Ni autocorrelation peaks subset of Oh, `exclude_symmetry` empty, synthetic 3-fold/6-fold, wrong op -> index 0, local hcp masters skip-if-absent
 
 ## Phase 9 -- `sht-visualisation-and-interop`
-- [ ] sht2png equivalents (`to_master_pattern`, `plot_power_spectrum`, `describe`), `SphericalBackProjector.plot`, xcorr volume plot
+- [ ] sht2png equivalents (stereographic option, `plot_power_spectrum`, `.plot()` conveniences -- `to_master_pattern` and `describe` ship in Phase 2), `SphericalBackProjector.plot`, xcorr volume plot (note: `extractBunge` (`sht_xcorr.hpp:594-649`) uses the reversed ZYZ->Bunge offsets; if ported, use `_euler.bunge_to_zyz` and record the deviation)
 - [ ] `write_emsphinx_patterns` (PatternRepack contract in tech-stack.md), EBSPDims probe in `oxford_binary`, `EMSphInxNamelist` read/write (port of `test/util/nml.cpp` round trip), Sphinx-Gallery example
-- [ ] Tests: describe values, stereographic r > 0.98, IndexEBSD.exe reads a repacked file (local-gated), namelist round trip; out-of-scope list confirmed in mission.md
+- [ ] Tests: stereographic r > 0.98, IndexEBSD.exe reads a repacked file (local-gated), namelist round trip; out-of-scope list confirmed in mission.md
 
 ## Phase 10 -- `spherical-indexing-emsphinx-regression`
 - [ ] `create_emsphinx_reference.py` (pinned to 60f3517), `.npz` refs in-package, bidirectional tests (their binaries on our files; ours vs their `.ang/.h5`), `nregions in {0, 4, 10}`, two `delta` values

@@ -105,6 +105,8 @@ eu=(3.216,0.980,3.453) -> orix [ 0.86604205  0.46716181 -0.05569717 -0.16920061]
 > ```
 > So in Python: `Rotation.from_euler(np.column_stack([zyz[:,0]-np.pi/2, zyz[:,1], zyz[:,2]+np.pi/2]))`.
 > Direct closed form `zyz2qu` at `rotations.hpp:973-989`: `qu = [c cosσ, −s sinδ, −s cosδ, −c sinσ]` with `σ=(eu[2]+eu[0])/2`, `δ=(eu[2]−eu[0])/2` (note the swapped x/y and reversed δ vs ZXZ).
+>
+> **Erratum (2026-08-16, `specs/2026-08-16-sht-wigner-d/requirements.md`)**: the `zyz2eu`/`eu2zyz` lines above quote EMSphInx' `rotations.hpp:1025-1039`, whose offsets are **reversed** relative to `zyz2qu` (EMSphInx' own `test/xtal/rotations.cpp:296-310` builds `zyz = (phi1 − π/2, Φ, phi2 + π/2)` and asserts `zyz2qu(zyz) == eu2qu(eu)`; probe: `zyz2qu(zyz) == from_euler((α + π/2, β, γ − π/2))` to 8.6e-16 on 1000 triples). The correct relation is `bunge = (α + π/2, β, γ − π/2)` (`_euler.zyz_to_bunge`/`bunge_to_zyz`, Phase 3), so the Python line above must read `Rotation.from_euler(np.column_stack([zyz[:,0]+np.pi/2, zyz[:,1], zyz[:,2]-np.pi/2]))`; `zyz2eu`/`eu2zyz` are never ported.
 
 ### 1.3 Output-chain caveat from the indexer
 
@@ -120,6 +122,8 @@ for(j=1..3) res[i].qu[j] = -res[i].qu[j];                 // conjugate: crystal-
 eu_bunge = np.stack([zyz[...,0]-np.pi/2, zyz[...,1], zyz[...,2]+np.pi/2], -1)
 rot = ~Rotation.from_euler(eu_bunge)      # note the ~ (conjugate)  ... times quNp if ever re-enabled
 ```
+
+**Erratum (2026-08-16)**: `eu_bunge` above must use `zyz[...,0]+np.pi/2` and `zyz[...,2]-np.pi/2` (see the erratum in 1.2 and `specs/2026-08-16-sht-wigner-d/requirements.md`; Phase 3's `_euler.rotation_from_zyz` is `~Rotation(zyz_to_quaternion(zyz))`); the `~` conjugation is unchanged.
 
 ### 1.4 Representation-by-representation map
 
