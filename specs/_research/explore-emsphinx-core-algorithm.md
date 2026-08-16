@@ -480,6 +480,8 @@ nh[k][n][m] = xc[inds_k[k]*slP*slP + inds_n[n]*slP + inds_m[m]]
 
 `extractBunge(zxz)` (`:595-649`) — repacks `xc` into a ZXZ (Bunge) cube with origin at 0, `phi1` fastest, `phi2` middle, `Phi` slowest (`ZYZ -> ZXZ` is `phi1 = alpha - pi/2`, `Phi = beta`, `phi2 = gamma + pi/2`). Contains a documented half-pixel shift.
 
+**Erratum (2026-08-16, `specs/2026-08-16-sht-wigner-d/requirements.md`)**: the `ZYZ -> ZXZ` offsets quoted above are EMSphInx' reversed `zyz2eu` relation (`rotations.hpp:1025-1039`) as `extractBunge` uses it; the relation consistent with `zyz2qu` and with `test/xtal/rotations.cpp:296-310` is `phi1 = alpha + pi/2`, `Phi = beta`, `phi2 = gamma - pi/2` (`_euler.zyz_to_bunge`, Phase 3). A port of `extractBunge` (Phase 4/9) must use `_euler.bunge_to_zyz` and record the deviation.
+
 ### 3.5 Peak finding
 
 `findPeak()` (`:862-876`): plain argmax over the whole `xc` array (`slP*slP*bwP` entries).
