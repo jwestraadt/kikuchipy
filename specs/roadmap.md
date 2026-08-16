@@ -31,7 +31,7 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] `_sht.py`: `SphericalHarmonicTransform` with dual-path `analyze`/`synthesize`
 - [x] Tests: single-harmonic analyze/synthesize oracles vs `sph_harm_y`; signed Condon-Shortley confirmation; EMSphInx `square_sht.cpp` round trip (Lambert at 1e-11 scale-free); weights (`sum(w_hat)=1`, Legendre == Gauss-Legendre with halved equator, Lambert guard at dim 401); grid/ring/solid-angle invariants; Ni master m-3m structural zeros (real data); `fast_size` invariants + 13-smooth minimality
 - [x] Adversarial review (fidelity vs compiled C++, conventions, 21-mutation bug injection) and fixes; coverage 100 %
-- [ ] Signed commits pushed; PR opened into fork `develop`
+- [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#2)
 
 ## Phase 2 -- `sht-master-spectra-and-file`
 - [ ] `_master_pattern_harmonics.py`: public `kp.indexing.MasterPatternHarmonics` (`from_master_pattern`, `from_file`, `save` = `.sht` writer, `resize`, `remove_dc`, `power_spectrum`, `describe`) -- `MasterSpectra` port; `toLegendre` DCT regrid; weighted normalisation with compat quirk; `accum_e` energy weights; symmetry LUTs (38 groups, validated against `orix.quaternion.symmetry._groups`, names confirmed on orix 0.12.1); bandwidth-vs-resolution warning
