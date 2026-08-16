@@ -25,7 +25,7 @@ Wigner d -- Mathematica tables (port of `wigner.cpp:112-394`, `testDjkm`)
 - `wigner_D(3, 2, 1, (pi/3, pi/2, pi/6)) == D_3_2_1` to `abs <= 2 eps` (`:372-390`; measured 1.1e-16).
 
 Wigner d -- symmetries, edge cases, high degree
-- Identities of `wigner.hpp:301-315` on 200 random `(j, k, m, t)` (`j <= 40`, `|k|, |m| <= j`, `t` uniform in `(-1, 1)`), each **exact**: `wigner_d(j, k, m, t, True) == wigner_d(j, m, k, t, False)`; `wigner_d(j, -k, -m, t, False) == (-1)^(k-m) wigner_d(j, k, m, t, False)`; `wigner_d(j, k, -m, t, False) == (-1)^(j+k) wigner_d(j, k, m, -t, False)`; `wigner_d(j, -k, m, t, False) == (-1)^(j+m) wigner_d(j, k, m, -t, False)`; `wigner_d(j, m, k, t, False) == (-1)^(k-m) wigner_d(j, k, m, t, False)`; `wigner_d(j, k, m, t, nB)` is NaN iff `j < max(|k|, |m|)` (also for `wigner_d_half_pi`, `wigner_d_prime`, `wigner_d_prime2`, and for `j < 0`).
+- Identities of `wigner.hpp:301-315` on 200 random `(j, k, m, t)` (`j <= 40`, `|k|, |m| <= j`, `t` uniform in `(-1, 1)`), each ~~**exact**~~ **exact when `k != 0` and `m != 0`, otherwise `abs <= 8 eps`** (corrected 2026-08-16: the three identities marked below are exact only when both orders are non-zero -- see Recorded results): `wigner_d(j, k, m, t, True) == wigner_d(j, m, k, t, False)`; `wigner_d(j, -k, -m, t, False) == (-1)^(k-m) wigner_d(j, k, m, t, False)`; `wigner_d(j, k, -m, t, False) == (-1)^(j+k) wigner_d(j, k, m, -t, False)`; `wigner_d(j, -k, m, t, False) == (-1)^(j+m) wigner_d(j, k, m, -t, False)`; `wigner_d(j, m, k, t, False) == (-1)^(k-m) wigner_d(j, k, m, t, False)`; `wigner_d(j, k, m, t, nB)` is NaN iff `j < max(|k|, |m|)` (also for `wigner_d_half_pi`, `wigner_d_prime`, `wigner_d_prime2`, and for `j < 0`).
 - `t = +1`: `wigner_d(j, k, m, 1.0, nB) == (k == m)` to `abs 1e-14` for `j <= 8`, both `nB` (`0 ** 0 = 1`; the recursion reproduces `P_l(1) = 1` only to rounding: measured 1.0e-15), no NaN; `t = -1`: `wigner_d(j, k, m, -1.0, False) == (-1)^(j+k) (m == -k)` to `abs 1e-14` (measured 1.0e-15); `wigner_d_table(8, +-1.0, False)` has no NaN in a defined slot.
 - Unitarity `sum_{m=-j}^{j} wigner_d(j, k, m, t, False)^2 == 1` to `abs 1e-12` for `j in {15, 63, 127, 511}`, `k in {0, j // 2, j}`, `t = cos(0.9708055194)` (measured `<= 3.1e-14` at `j = 511`).
 - Closed form (Fukushima eq. 1 with `scipy.special.eval_jacobi` and `gammaln`; no version gate) for `(j, k, m) in {(1, 1, 0), (2, 2, 1), (5, 3, 1), (15, 10, 4), (63, 40, 20), (127, 100, 90), (300, 250, 200), (511, 0, 0), (511, 511, 0)}` at `beta in {0.9708055194, 2.5}` and `(511, 400, 300)` at `0.9708055194`: `rel <= 1e-10` (measured worst 6.4e-13; the values span 1e-115 .. 1e-1); int64 sanity: all finite for `j = 511`.
@@ -47,8 +47,8 @@ Wigner d -- tables (port of `wigner.cpp:405-555`, `testTables(15)`)
 - Composition: `rotate_harmonics(rotate_harmonics(alm, z1), z2) == rotate_harmonics(alm, quaternion_to_zyz((Q2 * Q1).data))` to `abs 1e-12` (measured 2.0e-15) **and** the other order `Q1 * Q2` differs by more than 0.1 (a guard against a symmetric mistake), for three random `(z1, z2)` pairs.
 - Structure: per-degree power `|b^l_0|^2 + 2 sum_{m>0} |b^l_m|^2` equals that of `alm` to `rel 1e-12` (measured 5.3e-15); `blm[0, :]` imaginary part `<= 1e-14` (1.7e-16); entries of the input with `l < m` do not change the output (fill them with garbage first) and the output has them exactly zero; the output is a new array (input untouched); non-square or 1-D `alm` and a `zyz` of the wrong shape raise `ValueError`.
 - **Brute-force `wigner_D` sum (dependency-free, runs on the CI "oldest" job)**: `rotate_harmonics(alm, zyz)[m, l] == sum_{n=-l}^{l} a^l_n wigner_D(l, m, n, zyz)` with `a^l_{-n} = (-1)^n conj(a^l_n)`, at `bw in {6, 8}` for `zyz in {(0.7, 1.1, -2.3), (-2.0, -0.6, 1.3), (0.4, pi, -1.0), (2.5, 0.0, 0.3)}` (positive, negative, `pi` and zero `beta`), `abs <= 1e-13` (measured worst 9.0e-16 at `bw` 8, 5.7e-16 at `bw` 6, 1.4e-15 for `beta = 0`); guard: the transposed sum `sum_n a^l_n wigner_D(l, n, m, zyz)` differs by more than 0.1 for the three `beta != 0` cases (measured 0.45-2.7; at `beta = 0` the two coincide, which is why that case is not a guard). This is the assertion that kills the transposed `dBeta[n, m, j]` read of the kernel (an inner automorphism, invisible to every identity above and to the Ni fixture) when the scipy oracle below is skipped.
-- **Direction oracle** (`pytest.importorskip("scipy", minversion="1.15")` for `sph_harm_y`): with `f(n) = sum_l sum_m [alm]` evaluated by `sph_harm_y` (real function, `m > 0` doubled), `bw` 16, 200 random unit directions `n`, `R = Rotation(zyz_to_quaternion(zyz))`: `eval(rotate_harmonics(alm, zyz), n) == eval(alm, ((~R) * Vector3d(n)).data)` and `== eval(alm, n @ R.to_matrix()[0])` (i.e. `A n` with `A = R.to_matrix().T`) to `abs 1e-12` (measured 1.9e-14); the wrong direction `eval(alm, (R * Vector3d(n)).data)` differs by more than 1 (guard).
-- **Through Phase 1's transform** (same `importorskip`): `sht = SphericalHarmonicTransform(32, "lambert")` (`dim` 65), `alm` random at `bw` 16 zero-padded to 32, `north, south = sht.synthesize(rotate_harmonics(alm, zyz))` equals `eval(alm, ((~R) * Vector3d(normals)).data)` on `_grid.normals(65, "lambert")` (north) and its southern mirror (`z` negated) **on the pixels with `_grid.ring_number(65) >= 4`** (i.e. `4 y >= 15`, the highest order present -- Phase 1's Lambert `synthesize` writes order `m` on ring `y` only for `m < min(bw, 4y + 1)`, so rings 1-3 are not pointwise evaluations of the series -- measured 9.8e-4 / 6.5e-7 / 2.3e-10 on rings 1 / 2 / 3, so an unmasked whole-grid comparison fails at 9.8e-4 (the drafting text's `abs 1e-10` conflated this with the round trip, which inverts the same truncation); the mask is the rule Phase 1's own synthesize oracle adopted) to **`abs 1e-11`** (measured 1.9e-13 north / 9.3e-14 south for `zyz = (0.7, 1.1, -2.3)`, 1.7e-13 for `(-2.0, -0.6, 1.3)`, 3.5e-14 for `(0.4, pi, -1.0)`, of which 1.8e-13 is the `sph_harm_y`/orix pointwise evaluation itself over 4225 directions and 2.5e-14 the transform; function scale 13.9); guard: the wrong direction `eval(alm, (R * Vector3d(normals)).data)` differs by more than 1 on the same pixels (measured 14.8). Weekly variant with `analyze` in the loop (no `sph_harm_y`, whole grid): `sht.analyze(*sht.synthesize(rotate_harmonics(alm, zyz)))` vs `rotate_harmonics(alm, zyz)` to `abs 1e-11` (measured 4.4e-15, 9.1e-15, 5.6e-15 for the three `zyz`; the round trip inverts the same per-ring truncation).
+- **Direction oracle** (`pytest.importorskip("scipy", minversion="1.15")` for `sph_harm_y`): with `f(n) = sum_l sum_m [alm]` evaluated by `sph_harm_y` (real function, `m > 0` doubled), `bw` 16, 200 random unit directions `n`, `R = Rotation(zyz_to_quaternion(zyz))`: `eval(rotate_harmonics(alm, zyz), n) == eval(alm, ((~R) * Vector3d(n)).data)` and `== eval(alm, n @ R.to_matrix()[0])` (i.e. `A n` with `A = R.to_matrix().T`) to `abs 1e-12` (measured ~~1.9e-14~~ 5.3e-14 / 2.9e-13 / 1.6e-13 for the three `zyz` of the test; corrected 2026-08-16: 1.9e-14 was the first case only, the thinnest margin is 3.4x -- see Recorded results); the wrong direction `eval(alm, (R * Vector3d(n)).data)` differs by more than 1 (guard, ~~all three~~ asserted on the two `zyz` with `beta != pi` only; corrected 2026-08-16: `(0.4, pi, -1.0)` is an involution, `w == 0.0`, so `R * n == (~R) * n` bit for bit and the guard is vacuous there).
+- **Through Phase 1's transform** (same `importorskip`): `sht = SphericalHarmonicTransform(32, "lambert")` (`dim` 65), `alm` random at `bw` 16 zero-padded to 32, `north, south = sht.synthesize(rotate_harmonics(alm, zyz))` equals `eval(alm, ((~R) * Vector3d(normals)).data)` on `_grid.normals(65, "lambert")` (north) and its southern mirror (`z` negated) **on the pixels with `_grid.ring_number(65) >= 4`** (i.e. `4 y >= 15`, the highest order present -- Phase 1's Lambert `synthesize` writes order `m` on ring `y` only for `m < min(bw, 4y + 1)`, so rings 1-3 are not pointwise evaluations of the series -- measured 9.8e-4 / 6.5e-7 / 2.3e-10 on rings 1 / 2 / 3, so an unmasked whole-grid comparison fails at 9.8e-4 (the drafting text's `abs 1e-10` conflated this with the round trip, which inverts the same truncation); the mask is the rule Phase 1's own synthesize oracle adopted) to **`abs 1e-11`** (measured 1.9e-13 north / 9.3e-14 south for `zyz = (0.7, 1.1, -2.3)`, 1.7e-13 for `(-2.0, -0.6, 1.3)`, 3.5e-14 for `(0.4, pi, -1.0)`, of which 1.8e-13 is the `sph_harm_y`/orix pointwise evaluation itself over 4225 directions and 2.5e-14 the transform; function scale 13.9); guard: the wrong direction `eval(alm, (R * Vector3d(normals)).data)` differs by more than 1 on the same pixels (measured 14.8; ~~all three~~ asserted on the two `zyz` with `beta != pi` only -- corrected 2026-08-16, same involution reason as the bullet above). Weekly variant with `analyze` in the loop (no `sph_harm_y`, whole grid): `sht.analyze(*sht.synthesize(rotate_harmonics(alm, zyz)))` vs `rotate_harmonics(alm, zyz)` to `abs 1e-11` (measured 4.4e-15, 9.1e-15, 5.6e-15 for the three `zyz`; the round trip inverts the same per-ring truncation).
 - Real data (Ni master, `kp.data.nickel_ebsd_master_pattern_small(projection="lambert", hemisphere="both")`, `mp.data[:, ::4, ::4]`, `dim` 101, `SphericalHarmonicTransform(50, "lambert", dim=101)`): relative change `||rotate_harmonics(alm, z) - alm|| / ||alm||` for the 4-fold about z (`z = (0, 0, pi/2)` and `(pi/2, 0, 0)`), the 2-fold about x (`quaternion_to_zyz(Rotation.from_axes_angles(Vector3d.xvector(), pi).data)`, which is the `beta = pi` branch: `(pi, pi, 0)`) and the 2-fold about `[110]` **`< 1e-12`** (measured 2.2e-15, 2.3e-15, 3.2e-15; exact grid symmetries; the `beta = pi` cases exercise table slot 1 at `t = -1`); the 3-fold about `[111]` (`from_axes_angles([1, 1, 1], 2 pi / 3)`) is **recorded** and asserted `< 0.2` (measured 7.92e-2 -- aliasing of the non-band-limited uint8 image, whose grid is not 3-fold invariant), while a 90 deg rotation about `[111]` (not a symmetry) is asserted `> 0.3` (measured 0.394) as the discriminating control.
 
 Derivatives (port of `wigner.cpp:563-868`, `testDerivatives`, and Phase 7 pinning)
@@ -63,7 +63,7 @@ Euler (`_euler.py`; port of `test/xtal/rotations.cpp:288-318`)
 - `_emsphinx_eu2qu(eu) == Rotation.from_euler(eu).data` **bitwise** on the 1000 random triples (measured 0.0), pinning `explore-emsphinx-xtal-util-vs-orix.md` 1.2.
 - `quaternion_to_zyz(zyz_to_quaternion(zyz))`: re-converted quaternion equals the original to `abs 1e-14` (measured 8.9e-16) and the angles agree mod `2 pi` to `abs 1e-13`; ranges `[0, 2 pi) x [0, pi] x [0, 2 pi)`; degenerate (both branches of `qu2zyz`, 2000 random `(a, g)` pairs each): `beta = 0 -> ((a + g) % (2 pi), 0.0, 0.0)` and `beta = pi -> ((a - g) % (2 pi), pi, 0.0)` with **Python modulo** (into `[0, 2 pi)`, as the `+2 pi` wrap of `rotations.hpp:1019` does -- not `math.fmod`, which is negative whenever `a < g`: `fmod(1 - 2, 2 pi) = -1.0` where the port returns `5.283185307179586`), the first component to `abs 1e-14` measured against `exp(1j * alpha)` or mod `2 pi` (measured 8.9e-16 on both branches; `atan2` does not round-trip exactly, 978/2000 resp. 479/2000 pairs differ in the last bit), `beta` and `gamma` **exact** (`== 0.0` / `== pi`, `== 0.0`; measured exact in 2000/2000), `beta in {1e-9, 1e-7, pi - 1e-7, pi - 1e-9}` round trip to `abs 1e-14` in quaternion space (general branch, measured `<= 2.2e-16`); `q` and `-q` give the same angles; a `(..., 5)` input raises `ValueError`.
 - `zyz_to_quaternion`: `w >= 0` for all inputs (also `signbit`-clean, i.e. never `-0.0`, on the random triples and the grid); pi rotations through `orientAxis` (`w` set to exactly `0.0`, all four components `signbit`-clean): `(0, pi, 0) -> (0, 0, 1, 0)`, `(pi/2, pi, pi/2) -> (0, 0, 1, 0)`, `(0.3, pi, 0.3) -> (0, 0, 1, 0)` (`+y` half of the equator), `(0, pi, pi) -> (0, 1, 0, 0)` and `(pi, pi, 0) -> (0, 1, 0, 0)` (`+x` rule when `y = z = 0`), asserted exactly (measured exact with the transcription); a `(..., 2)` input raises `ValueError`; shapes `(3,) -> (4,)`, `(n, 3) -> (n, 4)`, `(a, b, 3) -> (a, b, 4)`.
-- `zyz_to_bunge((0, 0, 0)) == (pi/2, 0, -pi/2)`, `bunge_to_zyz(zyz_to_bunge(x)) == x` exactly, no wrapping.
+- `zyz_to_bunge((0, 0, 0)) == (pi/2, 0, -pi/2)`, `bunge_to_zyz(zyz_to_bunge(x)) == x` ~~exactly~~ to `abs <= 1e-15` with `beta` bitwise (corrected 2026-08-16: `(x + pi/2) - pi/2` differs from `x` for 38138 of 100000 random triples, worst 4.44e-16, so no "pure affine, no wrapping" implementation passes an exact assertion -- see Recorded results), no wrapping.
 - `rotation_from_zyz(zyz).data == (~Rotation(zyz_to_quaternion(zyz))).data` exactly; `== (~Rotation.from_euler(zyz_to_bunge(zyz))).data` to `abs 1e-14`; `rotation_to_zyz(rotation_from_zyz(zyz)) == zyz` mod `2 pi` to `abs 1e-13`; shapes `(3,) -> Rotation (1,)`, `(n, 3) -> (n,)`, `(a, b, 3) -> (a, b)`; the docstring states the sign is provisional until Phase 5.
 - `wrap_beta`: `4.0 -> 4 - 2 pi`, `-4.0 -> 2 pi - 4`, `7.0 -> 7 - 2 pi`, `pi -> pi`, `-pi -> -pi`, `0.0 -> 0.0`, `-0.0 -> -0.0` (`signbit`), `1.0 -> 1.0` (all to `abs 1e-15` or exact where stated).
 
@@ -254,5 +254,122 @@ settle them (this machine, same library versions):
   composition, all bitwise decisions, the C++ tolerances and their margins, the
   Ni fixture values, `northPoleQuat` identity, `rEps`/`thr`, the reference-table
   plan and hand-checked literals.
+
+### 2026-08-16 -- test-suite critic findings, re-measured
+
+Ten findings on the (failing) Phase 3 test suite, each re-measured here
+with an independent faithful transcription of `wigner.hpp` `d()` and
+with orix, on this machine. Library drift from the drafting
+measurements above: **orix 0.15.0** (not 0.14.2), numpy 2.5.2, scipy
+1.18.0, **numba 0.67.0** (not 0.65.1), Python 3.13.12.
+
+- **Symmetry identities 6, 7, 8 are not exact.** `d^j_{k,-0}` *is*
+  `d^j_{k,0}`, so when `k == 0` or `m == 0` one side of the identity
+  fails to trip the reduction branch it is meant to trip and the two
+  sides run the recursion at `t` and at `-t`. Over 20000 random
+  `(j, k, m, t)` draws (`j <= 40`): eq 6 408 inexact, eq 7 219, eq 8
+  205, worst `|delta| = 7.216e-16 = 3.25 eps`; **0 inexact draws have
+  both orders non-zero**. Eqs 5 and 9 are exact (0 of 20000). With the
+  test's own `seed=0`/200 cases all three fail (3 / 2 / 1 cases, e.g.
+  `(18, -3, 0, 0.05862432)` and `(11, 0, 7, 0.25301292)`). Frozen: `==`
+  when `k != 0 and m != 0`, else `abs <= 8 eps` (2.5x margin).
+- **`bunge_to_zyz(zyz_to_bunge(x))` is one ulp off.** `(x + pi/2)
+  - pi/2 != x` in float64 for **38138 of 100000** random triples,
+  worst 4.44e-16. `beta` is untouched by both maps and is still
+  asserted bitwise. Frozen: `abs <= 1e-15`.
+- **The wrong-direction guards are vacuous at `zyz = (0.4, pi, -1.0)`.**
+  That rotation has `w == 0.0` (`zyz_to_quaternion` sets it exactly,
+  through the `|w| <= rEps` branch), i.e. an involution, so
+  `max |R n - (~R) n| = 0.0` (2.36e-16 with orix' own unrounded `w`),
+  against 1.902 and 1.571 for `(0.7, 1.1, -2.3)` and
+  `(-2.0, -0.6, 1.3)`. Both guards (pointwise and through the Phase 1
+  transform) now run on those two `zyz` only; the positive assertions
+  still run on all three.
+- **Direction oracle margins:** 5.3e-14 / 2.9e-13 / 1.6e-13 for the
+  three `zyz` against the `abs 1e-12` bound (thinnest margin 3.4x).
+  Kept at 1e-12 (the spec's bound); the figure is recorded per case by
+  `record_property`.
+- **The NaN guard of `wigner_d_prime`/`wigner_d_prime2` was untested.**
+  Deleting `if j < max(|k|, |m|): return nan` from either left the
+  whole suite green: the compiled kernel still returns NaN through
+  Numba's `sqrt(-2)`, only the `py_func` raises (`ValueError: math
+  domain error` at `(j, k, m) = (0, 1, 0)`). The NaN-pattern test is
+  now parametrised over the dispatcher **and** its `py_func`.
+- **`np.allclose(..., rtol=1e-12)` kept the default `atol=1e-8`.** The
+  per-degree powers span 0.075-25.2, so the effective bound was 1e-8
+  absolute, 1e5 weaker than the spec's `rel 1e-12` (measured 5.3e-15);
+  a uniform +1e-9 perturbation passed. Now `atol=0`.
+- **`< 0` instead of `signbit` is an EQUIVALENT mutation**, not an
+  untested one: `w = cos(beta/2) * cos(sigma)` can never be `+-0.0` in
+  float64 (`|cos(x)| >= 6.12e-17` for every double `x`; the closest
+  double to `pi/2` gives exactly that, the next one 2.83e-16, and the
+  product of two such factors cannot underflow), and `zyz2qu` sets
+  `qu[0] = +0.0` in its `|w| <= rEps` branch anyway. Recorded in
+  `plan.md` 4.1 and dropped from the kill list.
+- Minor: `test_derivatives_match_mathematica` asserted `not
+  isnan(got)` but not `not isnan(want)`, so a finite value on an
+  undefined slot passed through `max(worst, nan) == worst`; both
+  `KERNEL_NAMES` literals are now asserted equal to the modules' real
+  `CPUDispatcher` members, so a kernel added during the implementation
+  cannot escape the flag and `py_func` tests.
+- **Numba has no `math.fmod` in nopython mode** (`Unknown attribute
+  'fmod' of type Module(math)`, on 0.67.0 here as on 0.65.1), so
+  `_wrap_beta` must use `np.fmod`, which is the C `fmod` and preserves
+  `-0.0`. Noted in the `_wrap_beta` docstring. The flag test needs no
+  change on 0.67: `targetoptions` is still
+  `{'nogil': True, 'nopython': True, 'boundscheck': None}` and
+  `type(kernel._cache).__name__` is still `FunctionCache`.
+
+### 2026-08-16 -- test-skeleton determinations
+
+Resolved while writing the failing suite; re-verified here where the
+measurement does not need the (unwritten) implementation.
+
+- **orix is 0.15.0 on this machine**, not the 0.14.2 of the drafting
+  measurements. `Rotation.from_euler` still defaults to
+  `direction="lab2crystal"` and the test-local `_emsphinx_eu2qu` is
+  still **bitwise** equal to it (max diff 0.0 on 1000 triples), so
+  `explore-emsphinx-xtal-util-vs-orix.md` 1.2 still holds.
+- **The closed-form oracle must be evaluated in log space.** Written
+  as the direct product `exp(pre) * c2**(k+m) * s2**(k-m) *
+  eval_jacobi(...)` it underflows exactly where the recursion does and
+  returns `-0.0` at `(511, 400, 300)`/`beta = 2.5` instead of the
+  recorded `-1.209e-184` (`c2 ** 700 == 0.0` kills it too). Combining
+  the prefactor, both half-angle powers and `log|jacobi|` in log space
+  reproduces `-1.209067502248811e-184` exactly, so the underflow pin
+  test compares the recursion's `0.0` against a genuinely independent
+  value. The helper reproduces `D_PI_3`/`D_2PI_3` to 3.3e-16/4.7e-16.
+- **`min(max|q - q'|, max|q + q'|)` is per quaternion, not global.**
+  Taken globally it is `min(2.0, 2.0) = 2.0` on both grids and can
+  never pass `10 eps`. Per quaternion, then maxed over the grid:
+  **2.833e-16** at `n = 25` and at `n = 15` (the spec's 9.4e-16 was a
+  different aggregation; both pass `10 eps = 2.22e-15`).
+- **Sign-flip counts reproduce exactly:** **2402 of 60025** at
+  `n = 25` and **814 of 12615** at `n = 15`, recorded by
+  `record_property`.
+- **`beta = pi` degenerate `alpha`: 1.13e-15** over 2000 pairs, not
+  the 8.9e-16 of the drafting run. Still inside the spec's `abs
+  1e-14`, so the tolerance is kept.
+- **`beta = pi - 1e-9` is not the "general branch".** `zyz2qu`'s
+  `|w| <= rEps` test fires (`w ~ 4.8e-10 < 1.49e-8`), the quaternion
+  is collapsed to an exact pi rotation and `qu2zyz` takes its
+  `beta = pi` branch. The near-degenerate test therefore asserts only
+  the quaternion-space round trip (`< 1e-14`, measured 0.0-3.3e-16)
+  and not which branch is taken.
+- `out=np.empty(...)` is nondeterministic (it may hand back NaN in the
+  two tripwire slots), so the rejection test writes `0.0` into exactly
+  those slots first and additionally tests `np.zeros(...)`.
+- `_a_jkm_1_pre` is omitted (plan 3.1 lists only `_0_pre`/`_2_pre`):
+  the table kernels group type 1 with type 0 via
+  `isType0 = !signbit(t)`, so it is unreachable. 30 kernels in
+  `_wigner.py`, 6 in `_euler.py`.
+- `e_km` is `(bw, bw)`, matching "Table layouts"; the C++ allocates
+  `bw^3` for `pE` but uses only `bw^2`.
+- The weekly closed-form scan strides are `k in range(0, j+1, stride)`,
+  `m in range(0, k+1, stride)`, giving exactly the 2775 (`j = 511`,
+  stride 7) and 946 (`j = 127`, stride 3) point counts recorded above.
+- `fukushima2016wigner` already exists in `doc/user/bibliography.bib`
+  (added by the specs commit `1235bc58`), so plan amendment 5 needs no
+  further action.
 
 (implementation results follow)
