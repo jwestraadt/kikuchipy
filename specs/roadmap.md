@@ -8,7 +8,9 @@ when every box is ticked, and the next phase's `plan.md` is drafted only then. T
 gate list for every code phase is: plan approved -> spec recorded -> failing tests
 committed -> implementation -> adversarial review + fixes -> pre-commit clean ->
 CHANGELOG entry -> PR opened -> PR merged. Documentation-only phases (Phase 0)
-skip the failing-tests and CHANGELOG gates.
+skip the failing-tests and CHANGELOG gates; phases with no user-facing change
+(e.g. Phase 1, private code only) skip the CHANGELOG gate. A phase's definition
+of done ends at "PR opened"; "PR merged" is tracked here.
 
 ## Phase 0 -- `spherical-indexing-constitution` (spec `2026-08-16-constitution`)
 - [x] Sync fork `develop` with `upstream/develop`, stash/restore local notebook edits, delete stray `IndexEBSD.nml`
@@ -24,9 +26,10 @@ skip the failing-tests and CHANGELOG gates.
 - [x] Signed commit pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#1)
 
 ## Phase 1 -- `sht-square-grid-transform`
-- [ ] `_grid.py`: square<->sphere maps, `legendre_normals`, ring tables (`readRing` port), `ring_solid_angles`, `quadrature_weights` (`computeWeightsSkip` port), `fast_size`; public `kp.indexing.fast_bandwidths()` wrapper
+- [ ] `_grid.py`: square<->sphere maps, `legendre_normals`, ring tables (`readRing` port), `ring_solid_angles`, `lambert_solid_angles`, `quadrature_weights` (`computeWeightsSkip` port)
+- [ ] `_fft.py`: `fast_size` (verbatim `fastSize` port), `fast_bandwidths` (private until Phase 6)
 - [ ] `_sht.py`: `SphericalHarmonicTransform` with dual-path `analyze`/`synthesize`
-- [ ] Tests: EMSphInx `square_sht.cpp` round trip; `sum(w_hat)=1`; constant -> `sqrt(4 pi)`; Condon-Shortley determination vs `sph_harm_y`; Ni master m-3m systematic zeros (real data); `fast_size == fastSize` for n in [16, 1100]
+- [ ] Tests: single-harmonic analyze/synthesize oracles vs `sph_harm_y`; signed Condon-Shortley confirmation; EMSphInx `square_sht.cpp` round trip (Lambert at 1e-11 scale-free); weights (`sum(w_hat)=1`, Legendre == Gauss-Legendre with halved equator, Lambert guard at dim 401); grid/ring/solid-angle invariants; Ni master m-3m structural zeros (real data); `fast_size` invariants + 13-smooth minimality
 
 ## Phase 2 -- `sht-master-spectra-and-file`
 - [ ] `_master_pattern_harmonics.py`: public `kp.indexing.MasterPatternHarmonics` (`from_master_pattern`, `from_file`, `save` = `.sht` writer, `resize`, `remove_dc`, `power_spectrum`, `describe`) -- `MasterSpectra` port; `toLegendre` DCT regrid; weighted normalisation with compat quirk; `accum_e` energy weights; symmetry LUTs (38 groups, validated against `orix.quaternion.symmetry._groups`, names confirmed on orix 0.12.1); bandwidth-vs-resolution warning
@@ -52,6 +55,7 @@ skip the failing-tests and CHANGELOG gates.
 
 ## Phase 6 -- `spherical-indexing-ebsd`
 - [ ] `_indexer.py` (`SphericalIndexer`, per-pattern failure handling), `EBSD.spherical_indexing` (dask `map_blocks`, info message, masks, multi-phase, `n_best`), benchmark
+- [ ] Public `kp.indexing.fast_bandwidths()` exported in `indexing/__init__.pyi` (ShtWisdom stand-in)
 - [ ] Tests: `nickel_ebsd_small` coarse vs stored xmap (median < 1.5 deg, >= 8/9 < 3 deg), lazy/verbose/mask/error paths, hard floor >= 2 pat/s/core, memory measured
 
 ## Phase 7 -- `spherical-refinement`

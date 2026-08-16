@@ -1,0 +1,44 @@
+# Phase 1 -- `sht-square-grid-transform`: plan
+
+Branch `sht-square-grid-transform` off `develop` (7065d66c). Models: this plan
+and the spec on Fable 5 (xhigh, ultracode); tests, implementation, adversarial
+review and fixes by Opus 5 agents (xhigh, ultracode). Every task group is
+independently reviewable; the order below is the implementation order. Tests
+are written (failing) before the code they exercise.
+
+## 0. Constitution amendments (same commit as this spec)
+1. `specs/roadmap.md`: gate list -- "Phase 0 and phases with no user-facing change skip the CHANGELOG gate; the DoD of a phase ends at 'PR opened', 'PR merged' is tracked here"; Phase 1 box -- `fast_size`/`fast_bandwidths` live in `_fft.py` (private); the public `kp.indexing.fast_bandwidths()` box moves to Phase 6.
+2. `specs/tech-stack.md`: replace "a 401-px Lambert master supports bw <= 200" with the Lambert numerical limit (`dim <~ 275`) and "master patterns are regridded to Legendre before analysis (Phase 2)"; add `workers=1` to the `scipy.fft` rule already there; add the numba-cache warm-up note (`-n 0` before `-n 4`).
+
+## 1. Package skeleton and FFT sizing
+1. `src/kikuchipy/indexing/_spherical/__init__.py`: private-package docstring (nothing here is public API yet), GPL header only.
+2. `src/kikuchipy/indexing/_spherical/_fft.py`: `fast_size(n: int) -> int` (verbatim port of `fft.hpp:438-491`, pure Python; `n <= 16 -> max(1, n)`; `n < 0 -> ValueError`; numpydoc `Examples`), `fast_bandwidths(bandwidth_min: int = 16, bandwidth_max: int = 512) -> np.ndarray`.
+3. Tests `tests/test_indexing/test_spherical_fft.py`: (a) invariants for `n in range(0, 1101)`: `fast_size(n) >= max(1, n)` and the result is 13-smooth (trial division); (b) `fast_size(n) == smallest 13-smooth >= n` (brute force) for `n in range(0, 1101)` -- if the transcription ever disagrees, record the counter-example in `validation.md` and pin that `n` to a fixture generated once by a C++ driver against `EMSphInx/include/util/fft.hpp` (parity wins); (c) spot values `105, 175, 245, 315 -> themselves`, `109 -> 110`, `17 -> 18`, `0 -> 1`, `16 -> 16`; (d) `fast_bandwidths(16, 512)` contains the union of `nml.hpp:298` and `:415` lists (at least 32, 38, 41, 53, 63, 68, 74, 88, 95, 113, 122, 123, 158), excludes 55, and every returned `bw` satisfies `fast_size(2*bw - 1) == 2*bw - 1`; (e) `ValueError` for `n < 0`.
+
+## 2. Square grids (`_grid.py`)
+1. `square_to_sphere(xy)`, `sphere_to_square(v)`: Rosca maps for `X, Y in [0, 1]`, numba kernels + array wrappers (`square_sht.hpp:591-642`), raising for `max(|2X-1|, |2Y-1|) > 1 + eps`.
+2. `lambert_cos_latitudes(dim)` (integer recursion), `legendre_roots(n)` (`leggauss` non-negative half, descending, exact `0.0` last for odd `n`; docstring: only odd `n` reproduces EMSphInx), `legendre_cos_latitudes(dim)` (`[1, roots(dim-2)...]`), `cos_latitudes(dim, layout)`.
+3. `lambert_normals(dim)`, `legendre_normals(dim)` -> `(dim, dim, 3)` (`square_sht.hpp:665-675, 823-869`), `normals(dim, layout)`.
+4. `ring_number(dim)` -> `(dim, dim)` int64 (Chebyshev distance); `ring_indices(dim)` -> `(offsets (Nt+1,) int64, flat (dim*dim,) int64)`, port of `readRing`/`writeRing` (`:942-1014`): ring `y` occupies `flat[offsets[y]:offsets[y+1]]`, `offsets[0] == 0`, `offsets[y+1] - offsets[y] == max(1, 8y)`, `offsets[-1] == dim*dim`; slot 0 is the pixel `(row=dim//2, col=dim//2 + y)` (azimuth 0), slot 1 is `(row=dim//2 + 1, col=dim//2 + y)` (counter-clockwise).
+5. `ring_solid_angles(dim, layout)` -> `(Nt,)` (`:1105-1138`) and `lambert_solid_angles(dim)` -> `(dim, dim)` (Mazonka per-pixel, `:681-736`; needed by Phase 2's weighted master normalisation).
+6. `quadrature_weights(dim, layout)` -> `(Nw, Nt)` with `Nw = (dim-2)//4 + 1`: `computeWeightsSkip` port (`:1022-1063`) -- Chebyshev system `A[j, i] = T_j(2 lat_i^2 - 1)`, `b = [1, -1/(4j^2-1)...]`, `numpy.linalg.solve`, two-sided precision guard, skipped ring re-inserted as 0, then `w_y = 4 pi w_hat_y / N_phi(y)`; Legendre: solve `skip = 0` once and replicate.
+7. Helpers: `validate_dim(dim)`, `default_dim(bandwidth, layout)`, `max_bandwidth(dim, layout)`, `n_rings(dim)`, `n_grid_points(dim) = 2*dim*dim - 4*(dim-1)` (sphere-wide unique count).
+8. Tests `tests/test_indexing/test_spherical_grid.py` -- exact assertions in `validation.md`: unit normals; asymmetric axis probes (`normals(dim, "lambert")[j, i] == square_to_sphere(i/(dim-1), j/(dim-1))` at `(i, j) in {(1, 0), (0, 1), (dim-1, 1)}`); Legendre normals share azimuths with Lambert normals and have `z == cos_latitudes[ring]`; round trip and the two `_lambert2vector`/`_vector2lambert` affine maps; ring index coverage/order/slot identities; ring solid-angle invariant; Lambert pixel solid angles (pole `~ 2/pi`, ring `>= 1` within 6 %, sum invariant `rtol 1e-6`); weights (`sum(w_hat) == 1`, `w_hat[k, k] == 0`, scaling, Legendre == Gauss-Legendre with halved equator to 1e-14, guard succeeds at `dim 201` and raises at `dim 401`, smallest tripping `dim` recorded); Legendre roots vs bisection transcription; `.py_func` variants for every kernel.
+
+## 3. Discrete SHT (`_sht.py`)
+1. `_alf_recursion_tables(bandwidth)` -> `(amn, bmn)` `(bw, bw)` float64 (`:347-373`).
+2. `_ring_dft_tables(dim, bandwidth)` -> ragged cos/sin tables (flat + offsets) for `m < min(bw, 4y+1)` per ring; memoised per `(dim, bandwidth)`.
+3. Kernels (`@njit(cache=True, nogil=True)`, no `parallel`): `_analyze_numba(...)`, `_synthesize_numba(...)`, and a shared Legendre-recursion kernel used by the Python helpers `_analyze_rfft`/`_synthesize_rfft` (ring transforms via `scipy.fft.rfft`/`irfft(..., workers=1)`).
+4. `class SphericalHarmonicTransform(bandwidth, layout="legendre", dim=None)` with attributes `dim`, `bandwidth`, `layout`, `n_rings`, `cos_latitudes`, `quadrature_weights`, `ring_offsets`, `ring_indices`; methods `analyze(north, south, bandwidth=None) -> alm`, `synthesize(alm) -> (north, south)`, `__repr__`; class attribute `numba_ring_dft_max_dim = 131` selecting the path (tests may override); input validation (shapes `(dim, dim)`, `bandwidth <= self.bandwidth`, odd `dim`); numpydoc `Examples` on `analyze`.
+5. Docstring freezes: layout of `alm`, negative-`m` rule, `a_00 = sqrt(4 pi)`, "matches `scipy.special.sph_harm_y` incl. Condon-Shortley", the two normalisation sentences, the Legendre `m % 4 == 0` Nyquist property, `:cite:` to `reinecke2011libpsht`, `schaeffer2013efficient`, `sneeuw1994global`, `rosca2010new`, `lenthe2019spherical`.
+6. Tests `tests/test_indexing/test_spherical_sht.py`: single-harmonic **analyze** oracle and **synthesize** oracle against `sph_harm_y` (the analyze-only and synthesize-only checks that catch a wrong `(-1)^m`, clockwise rings, slot offset, transposed `alm`, wrong weight set, reversed latitudes); signed Condon-Shortley confirmation on `Re Y_l^m`; round trip (port of `square_sht.cpp:90-148` with `np.random.default_rng(0).uniform(-1, 1)` real and imaginary parts, `l >= m`, `m == 0` real, `l < m` zero -- the C++ RNG is not portable and parity of the draw is not required) for Legendre `bw in {4, 5, 8, 15, 16, 31, 32, 53, 63, 64, 68, 88, 113, 127, 128, 129, 158}` at the C++ tolerances and Lambert `bw in {4, 8, 15, 16, 32, 63, 64, 100, 128}` at a scale-free `1e-11`; full C++ sweeps `@pytest.mark.weekly`; constant function; dual-path agreement (forced), `analyze(bandwidth=k)` bitwise `== [:k, :k]`; real data (below); `.py_func` variants; timing baseline recorded.
+
+## 4. Real-data test
+1. `kp.data.nickel_ebsd_master_pattern_small(projection="lambert", hemisphere="both")` -> `mp.data[:, ::2, ::2]` (exact centred Lambert sub-grid, `dim = 201`, `bw = 100`) -> `SphericalHarmonicTransform(100, "lambert", dim=201).analyze(north, south)`: m-3m structural zeros `m % 4 != 0` with relative power `< 1e-25`; antisymmetric branch alive (`analyze(north, 0.5*south)` odd-`(l+m)` power `> 1e-3 * total`, while `analyze(north, south)` gives exactly 0); DC/Parseval determinations vs `lambert_solid_angles` (recorded; loose `rel < 1e-2` guard against gross normalisation errors).
+
+## 5. Adversarial review and fixes
+1. Ultracode workflow (Opus 5): reviewers refute `_grid.py`/`_sht.py`/`_fft.py` line-by-line against `square_sht.hpp`/`fft.hpp` and the spec (index order, `(-1)^m` placement, weight indexing `wy[(m//4)*Nt + y]`, ring slot order, `mLim = min(bw, 4y+1)`, `synthesize` zeroing above `bw`, FFT normalisation, guard thresholds), plus a kikuchipy-conventions reviewer (headers, numpydoc, lazy imports, numba flags, tests) and a test-quality reviewer with bug injection (do the tests fail for each named bug class?).
+2. Fix, re-run tests, `pre-commit run --files ...`.
+
+## 6. Commit and PR
+1. Signed commits (spec + constitution amendments; tests first; implementation; fixes); tick `specs/roadmap.md` Phase 1 boxes; push; PR into fork `develop` with the template, stating GPL-only licensing.
