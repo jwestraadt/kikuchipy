@@ -196,7 +196,7 @@ class TestDimensionValidation:
             (3, 2, 10),
             (9, 5, 130),
             (11, 6, 202),
-            (201, 101, 79402),
+            (201, 101, 80002),
             (401, 201, 320002),
         ],
     )
@@ -237,6 +237,11 @@ class TestDimensionValidation:
         self, dim, layout, bandwidth
     ):
         assert _grid.max_bandwidth(dim, layout) == bandwidth
+
+    @pytest.mark.parametrize("bandwidth", [0, -1])
+    def test_default_dim_raises_below_bandwidth_one(self, bandwidth):
+        with pytest.raises(ValueError, match="must be at least one"):
+            _grid.default_dim(bandwidth, "legendre")
 
     @pytest.mark.parametrize(
         "function",
@@ -295,9 +300,16 @@ class TestSquareLambertMapping:
         )
         rng = np.random.default_rng(0)
         xy = rng.uniform(0, 1, size=(100, 2))
+        # The square centre is the pole branch, which random points
+        # never reach
+        xy = np.vstack([xy, [0.5, 0.5]])
         compiled = _grid._square_to_sphere_kernel(xy)
         interpreted = _py_func(_grid._square_to_sphere_kernel)(xy)
         assert np.allclose(compiled, interpreted, atol=1e-15)
+        assert np.array_equal(interpreted[-1], [0.0, 0.0, 1.0])
+        outside = np.array([[2.0, 0.5]])
+        with pytest.raises(ValueError):
+            _py_func(_grid._square_to_sphere_kernel)(outside)
 
     def test_sphere_to_square_kernel_py_func_equals_the_compiled_kernel(self):
         assert hasattr(_grid._sphere_to_square_kernel, "py_func"), (
@@ -306,9 +318,29 @@ class TestSquareLambertMapping:
         rng = np.random.default_rng(0)
         v = rng.normal(size=(100, 3))
         v /= np.linalg.norm(v, axis=1, keepdims=True)
+        # Both poles are the |z| == 1 branch, which random unit
+        # vectors never reach
+        v = np.vstack([v, [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
         compiled = _grid._sphere_to_square_kernel(v)
         interpreted = _py_func(_grid._sphere_to_square_kernel)(v)
         assert np.allclose(compiled, interpreted, atol=1e-15)
+        assert np.array_equal(interpreted[-2:], [[0.5, 0.5], [0.5, 0.5]])
+
+
+class TestKernelCompileOptions:
+    @pytest.mark.parametrize(
+        "name", ["_square_to_sphere_kernel", "_sphere_to_square_kernel"]
+    )
+    def test_kernels_are_compiled_with_cache_and_nogil(self, name):
+        # Dropping either option leaves every other test passing, so
+        # the private Numba attributes are read directly
+        kernel = getattr(_grid, name)
+        assert kernel.targetoptions.get("nogil") is True, f"{name} needs nogil=True"
+        assert type(kernel._cache).__name__ == "FunctionCache", (
+            f"{name} needs cache=True"
+        )
+        assert not kernel.targetoptions.get("parallel", False)
+        assert not kernel.targetoptions.get("fastmath", False)
 
 
 class TestRingLatitudes:
@@ -316,7 +348,11 @@ class TestRingLatitudes:
     def test_lambert_cos_latitudes_equal_the_closed_form(self, dim):
         cos_lats = _grid.lambert_cos_latitudes(dim)
         y = np.arange(_grid.n_rings(dim))
-        assert np.allclose(cos_lats, 1 - (2 * y / (dim - 1)) ** 2, rtol=1e-15, atol=0)
+        # rtol 1e-14, not 1e-15: the port accumulates the integer
+        # recursion of EMSphInx (one rounding) while the closed form
+        # rounds three times and cancels catastrophically near the
+        # equator, where it is up to 25 ulp (4.3e-15 relative) off
+        assert np.allclose(cos_lats, 1 - (2 * y / (dim - 1)) ** 2, rtol=1e-14, atol=0)
 
     @pytest.mark.parametrize("dim", [9, 33, 101, 201])
     def test_legendre_cos_latitudes_run_from_pole_to_equator(self, dim):
@@ -467,7 +503,11 @@ class TestSolidAngles:
     def test_lambert_pole_pixel_solid_angle_converges_to_two_over_pi(self, dim):
         omega = _grid.lambert_solid_angles(dim)
         pole = omega[dim // 2, dim // 2]
-        assert pole == pytest.approx(2 / np.pi, rel=1e-2)
+        # rel 2e-2, not 1e-2: the convergence is O(1 / (dim - 1) ** 2)
+        # and the exact geodesic quad at dim 11 is 0.646212, i.e.
+        # 1.5 % above 2 / pi (confirmed against an independent
+        # spherical-excess area of the same four corners)
+        assert pole == pytest.approx(2 / np.pi, rel=2e-2)
 
     @pytest.mark.parametrize("dim", [11, 21, 51, 101])
     def test_lambert_non_pole_solid_angles_are_within_six_percent_of_one(self, dim):
@@ -513,7 +553,10 @@ class TestQuadratureWeights:
         assert weights.shape == (n_weights, _grid.n_rings(dim))
         n_phi = np.maximum(1, 8 * np.arange(_grid.n_rings(dim)))
         for skip in range(n_weights):
-            w_hat = _unscaled_weights(dim, layout, skip)
+            # The Legendre layout solves the skip 0 system once and
+            # replicates it (square_sht.hpp lines 376-378), so every
+            # row is the skip 0 set there
+            w_hat = _unscaled_weights(dim, layout, skip if layout == "lambert" else 0)
             assert np.allclose(
                 weights[skip], 4 * np.pi * w_hat / n_phi, rtol=1e-14, atol=0
             ), f"skip = {skip}"
@@ -568,6 +611,28 @@ class TestQuadratureWeights:
     def test_lambert_weights_raise_at_dim_401(self):
         with pytest.raises(ValueError):
             _grid.quadrature_weights(401, "lambert")
+
+    def test_a_negative_weight_residual_also_raises(self, monkeypatch):
+        # EMSphInx tests the signed residual only (square_sht.hpp line
+        # 1057). A large negative residual is equally unusable, so the
+        # port tests the absolute residual, which nothing else pins
+        def fake_solve(a, b):
+            w_hat = np.zeros(b.shape, dtype=np.float64)
+            w_hat[0] = 1 - 10 * WEIGHT_SUM_TOLERANCE
+            return w_hat
+
+        monkeypatch.setattr(np.linalg, "solve", fake_solve)
+        with pytest.raises(ValueError, match="Insufficient precision"):
+            _grid.quadrature_weights(51, "lambert")
+
+    def test_a_negative_residual_of_an_ill_conditioned_grid_raises(self):
+        # Natural data confirmation of the test above: dim 361
+        # skipping ring 16 has a residual of -7.0e-03, i.e. 7.4e+04
+        # times the tolerance, but of the sign a one sided guard lets
+        # through
+        cos_lats = _grid.cos_latitudes(361, "lambert")
+        with pytest.raises(ValueError, match="Insufficient precision"):
+            _grid._ring_weights_skip(361, cos_lats, 16)
 
     def test_smallest_lambert_dim_tripping_the_precision_guard(self, record_property):
         # Recorded determination: the reviewers bracketed the first

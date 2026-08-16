@@ -26,7 +26,7 @@
 #   ``square::DiscreteSHT::Constants::Constants()`` (lines 347-373)
 # - The ring weight set assembly of the same constructor, i.e. one
 #   set per skipped ring for the Lambert layout and the ``skip = 0``
-#   set replicated for the Legendre layout (lines 375-378)
+#   set replicated for the Legendre layout (lines 375-381)
 # - ``square::DiscreteSHT::analyze()`` (lines 414-486)
 # - ``square::DiscreteSHT::synthesize()`` (lines 495-572)
 # - ``square::DiscreteSHT::Legendre()`` and
@@ -64,8 +64,8 @@
 # website: https://www.cmu.edu/cttec/
 #
 # Modified by Johan Westraadt, 2026-08: translated to
-# Python/NumPy/Numba for kikuchipy and conveyed under
-# GPL-3.0-or-later
+# Python/NumPy/Numba for kikuchipy. GPL-2.0-or-later, conveyed
+# under GPL-3.0-or-later
 # #####################################################################
 
 """Discrete spherical harmonic transform on square grids.
@@ -79,7 +79,14 @@ developers, not for users.
     no warning.
 """
 
+from functools import lru_cache
+import math
+
+from numba import njit
 import numpy as np
+from scipy.fft import irfft, rfft
+
+from kikuchipy.indexing._spherical import _grid
 
 # ------------------------- Lookup tables ---------------------------- #
 
@@ -119,7 +126,70 @@ def _alf_recursion_tables(bandwidth: int) -> tuple[np.ndarray, np.ndarray]:
     :class:`SphericalHarmonicTransform` re-applies when weighting
     (``analyze``) or assembling (``synthesize``) the ring spectrum.
     """
-    raise NotImplementedError
+    amn = np.zeros((bandwidth, bandwidth), dtype=np.float64)
+    bmn = np.zeros((bandwidth, bandwidth), dtype=np.float64)
+    # 1 / (4 pi), the constant of the a^m_m calculation
+    k4p = 1 / (np.pi * 4)
+    # prod_(k = 1)^|m| (2 k + 1) / (2 k), which is one for m = 0
+    kamm = 1.0
+    for m in range(bandwidth):
+        amn[m, m] = math.sqrt(kamm * k4p)
+        kamm *= (2 * m + 3) / (2 * m + 2)
+        if m + 1 == bandwidth:
+            break
+        m2 = m * m
+        # n ** 2 and n ** 2 - m ** 2 for n = m + 1
+        n2 = (m + 1) * (m + 1)
+        n2m2 = n2 - m2
+        amn[m, m + 1] = math.sqrt((4 * n2 - 1) / n2m2)
+        for n in range(m + 2, bandwidth):
+            # Reuse the previous n ** 2 - m ** 2 as the new
+            # (n - 1) ** 2 - m ** 2
+            n12m2 = float(n2m2)
+            n2 = n * n
+            n2m2 = n2 - m2
+            amn[m, n] = math.sqrt((4 * n2 - 1) / n2m2)
+            bmn[m, n] = math.sqrt(((2 * n + 1) / (2 * n - 3)) * (n12m2 / n2m2))
+    return amn, bmn
+
+
+@lru_cache(maxsize=4)
+def _ring_dft_tables_cached(
+    dim: int, bandwidth: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the memoized tables of :func:`_ring_dft_tables`.
+
+    Parameters
+    ----------
+    dim
+        Side length of the square grid.
+    bandwidth
+        Bandwidth (exclusive maximum harmonic degree).
+
+    Returns
+    -------
+    offsets, cos_table, sin_table
+        As documented in :func:`_ring_dft_tables`.
+    """
+    n_ring = _grid.n_rings(dim)
+    ring = np.arange(n_ring, dtype=np.int64)
+    n_phi = np.maximum(1, 8 * ring)
+    m_lim = np.minimum(bandwidth, 4 * ring + 1)
+    offsets = np.zeros(n_ring + 1, dtype=np.int64)
+    np.cumsum(m_lim * n_phi, out=offsets[1:])
+    cos_table = np.empty(offsets[-1], dtype=np.float64)
+    sin_table = np.empty(offsets[-1], dtype=np.float64)
+    for y in range(n_ring):
+        orders = np.arange(m_lim[y], dtype=np.int64)[:, np.newaxis]
+        slots = np.arange(n_phi[y], dtype=np.int64)[np.newaxis, :]
+        # The product is reduced modulo N_phi(y) before it is scaled,
+        # so that the tabulated angles stay in [0, 2 pi) and are as
+        # accurate as the argument reduction of an FFT twiddle factor
+        angles = (2 * np.pi / n_phi[y]) * ((orders * slots) % n_phi[y])
+        block = slice(offsets[y], offsets[y + 1])
+        cos_table[block] = np.cos(angles).ravel()
+        sin_table[block] = np.sin(angles).ravel()
+    return offsets, cos_table, sin_table
 
 
 def _ring_dft_tables(
@@ -155,17 +225,20 @@ def _ring_dft_tables(
     The tables are memoised per ``(dim, bandwidth)``, and are used
     only for grids no larger than
     :attr:`SphericalHarmonicTransform.numba_ring_dft_max_dim`, since
-    they grow as ``dim ** 3``.
+    they grow as ``dim ** 3``. At that limit one entry holds about
+    32 MB of cosines and sines and up to four entries are retained
+    for the lifetime of the process, so call
+    ``_ring_dft_tables_cached.cache_clear()`` to release them. Every
+    caller with the same key gets the same arrays, which must
+    therefore not be modified in place.
     """
-    raise NotImplementedError
+    return _ring_dft_tables_cached(int(dim), int(bandwidth))
 
 
 # ---------------------------- Kernels ------------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _analyze_ring_kernel(
     alm: np.ndarray,
     g_sym: np.ndarray,
@@ -212,12 +285,33 @@ def _analyze_ring_kernel(
     This function is optimized with Numba, so care must be taken with
     array shapes and data types.
     """
-    raise NotImplementedError
+    # (1 - x ** 2) ** (|m| / 2), one for m = 0
+    kpmm = 1.0
+    r1x2 = math.sqrt(1.0 - x * x)
+    for m in range(m_lim):
+        gs = g_sym[m]
+        ga = g_asym[m]
+        # P^m_m (Schaeffer equation 13)
+        pmn2 = amn[m, m] * kpmm
+        kpmm *= r1x2
+        alm[m, m] += gs * pmn2
+        if m + 1 == bandwidth:  # P^m_(m + 1) does not exist
+            break
+        # P^m_(m + 1) (Schaeffer equation 14)
+        pmn1 = amn[m, m + 1] * x * pmn2
+        alm[m, m + 1] += ga * pmn1
+        for n in range(m + 2, bandwidth):
+            # P^m_n (Schaeffer equation 15)
+            pmn = amn[m, n] * x * pmn1 - bmn[m, n] * pmn2
+            pmn2 = pmn1
+            pmn1 = pmn
+            if (n + m) % 2 == 0:
+                alm[m, n] += gs * pmn
+            else:
+                alm[m, n] += ga * pmn
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _synthesize_ring_kernel(
     alm: np.ndarray,
     x: float,
@@ -263,12 +357,34 @@ def _synthesize_ring_kernel(
     This function is optimized with Numba, so care must be taken with
     array shapes and data types.
     """
-    raise NotImplementedError
+    f_sym = np.zeros(m_lim, dtype=np.complex128)
+    f_asym = np.zeros(m_lim, dtype=np.complex128)
+    # (1 - x ** 2) ** (|m| / 2), one for m = 0
+    kpmm = 1.0
+    r1x2 = math.sqrt(1.0 - x * x)
+    for m in range(m_lim):
+        # P^m_m (Schaeffer equation 13)
+        pmn2 = amn[m, m] * kpmm
+        kpmm *= r1x2
+        f_sym[m] += alm[m, m] * pmn2
+        if m + 1 == bandwidth:  # P^m_(m + 1) does not exist
+            break
+        # P^m_(m + 1) (Schaeffer equation 14)
+        pmn1 = amn[m, m + 1] * x * pmn2
+        f_asym[m] += alm[m, m + 1] * pmn1
+        for n in range(m + 2, bandwidth):
+            # P^m_n (Schaeffer equation 15)
+            pmn = amn[m, n] * x * pmn1 - bmn[m, n] * pmn2
+            pmn2 = pmn1
+            pmn1 = pmn
+            if (n + m) % 2 == 0:
+                f_sym[m] += alm[m, n] * pmn
+            else:
+                f_asym[m] += alm[m, n] * pmn
+    return f_sym, f_asym
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _analyze_numba(
     north: np.ndarray,
     south: np.ndarray,
@@ -319,12 +435,60 @@ def _analyze_numba(
     This function is optimized with Numba, so care must be taken with
     array shapes and data types.
     """
-    raise NotImplementedError
+    n_ring = cos_lats.size
+    alm = np.zeros((bandwidth, bandwidth), dtype=np.complex128)
+    north_flat = north.ravel()
+    south_flat = south.ravel()
+    for y in range(n_ring):
+        start = ring_offsets[y]
+        n_phi = ring_offsets[y + 1] - start
+        # Orders beyond l + 1 are not needed and orders beyond the
+        # real transform's N_phi(y) / 2 + 1 bins are zero
+        m_lim = min(bandwidth, 4 * y + 1)
+        ring_north = np.empty(n_phi, dtype=np.float64)
+        ring_south = np.empty(n_phi, dtype=np.float64)
+        for p in range(n_phi):
+            index = ring_flat[start + p]
+            ring_north[p] = north_flat[index]
+            ring_south[p] = south_flat[index]
+        # G_(m, y) by direct, unnormalized transform (Reinecke
+        # equation 10), leveraging the real symmetry
+        g_sym = np.empty(m_lim, dtype=np.complex128)
+        g_asym = np.empty(m_lim, dtype=np.complex128)
+        table = dft_offsets[y]
+        for m in range(m_lim):
+            base = table + m * n_phi
+            north_re = 0.0
+            north_im = 0.0
+            south_re = 0.0
+            south_im = 0.0
+            for p in range(n_phi):
+                cos_mp = dft_cos[base + p]
+                sin_mp = dft_sin[base + p]
+                north_re += ring_north[p] * cos_mp
+                north_im -= ring_north[p] * sin_mp
+                south_re += ring_south[p] * cos_mp
+                south_im -= ring_south[p] * sin_mp
+            # The mod 4 comes from the rings having 8 y points and the
+            # real symmetry of the transform; odd orders are negated
+            # to re-apply the Condon-Shortley phase the associated
+            # Legendre function recursion omits
+            weight = weights[m // 4, y]
+            if m % 2 == 1:
+                weight = -weight
+            north_point = complex(north_re * weight, north_im * weight)
+            south_point = complex(south_re * weight, south_im * weight)
+            # Even l + m are symmetric and odd l + m antisymmetric
+            # across the equator
+            g_sym[m] = (north_point + south_point) * 0.5
+            g_asym[m] = (north_point - south_point) * 0.5
+        _analyze_ring_kernel(
+            alm, g_sym, g_asym, cos_lats[y], amn, bmn, bandwidth, m_lim
+        )
+    return alm
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _synthesize_numba(
     alm: np.ndarray,
     dim: int,
@@ -369,7 +533,59 @@ def _synthesize_numba(
     This function is optimized with Numba, so care must be taken with
     array shapes and data types.
     """
-    raise NotImplementedError
+    bandwidth = alm.shape[0]
+    n_ring = cos_lats.size
+    north = np.zeros(dim * dim, dtype=np.float64)
+    south = np.zeros(dim * dim, dtype=np.float64)
+    for y in range(n_ring):
+        start = ring_offsets[y]
+        n_phi = ring_offsets[y + 1] - start
+        m_lim = min(bandwidth, 4 * y + 1)
+        f_sym, f_asym = _synthesize_ring_kernel(
+            alm, cos_lats[y], amn, bmn, bandwidth, m_lim
+        )
+        # F_(m, y) +- F_(m, Nt - 1 - y) -> F_(m, y) and
+        # F_(m, Nt - 1 - y), negating odd orders to re-apply the
+        # Condon-Shortley phase
+        spectrum_north = np.empty(m_lim, dtype=np.complex128)
+        spectrum_south = np.empty(m_lim, dtype=np.complex128)
+        for m in range(m_lim):
+            phase = -1.0 if m % 2 == 1 else 1.0
+            sigma = f_sym[m] * phase
+            delta = f_asym[m] * phase
+            spectrum_north[m] = sigma + delta
+            spectrum_south[m] = sigma - delta
+        # Unnormalized complex to real transform (Reinecke equation
+        # 7). Bins at and beyond m_lim are zero, the zero bin has no
+        # mirror bin and the Nyquist bin of an even length real
+        # transform is its own mirror bin and structurally real
+        ring_north = np.zeros(n_phi, dtype=np.float64)
+        ring_south = np.zeros(n_phi, dtype=np.float64)
+        table = dft_offsets[y]
+        for m in range(m_lim):
+            base = table + m * n_phi
+            if m == 0 or 2 * m == n_phi:
+                north_re = spectrum_north[m].real
+                south_re = spectrum_south[m].real
+                for p in range(n_phi):
+                    cos_mp = dft_cos[base + p]
+                    ring_north[p] += north_re * cos_mp
+                    ring_south[p] += south_re * cos_mp
+            else:
+                north_re = spectrum_north[m].real
+                north_im = spectrum_north[m].imag
+                south_re = spectrum_south[m].real
+                south_im = spectrum_south[m].imag
+                for p in range(n_phi):
+                    cos_mp = dft_cos[base + p]
+                    sin_mp = dft_sin[base + p]
+                    ring_north[p] += 2.0 * (north_re * cos_mp - north_im * sin_mp)
+                    ring_south[p] += 2.0 * (south_re * cos_mp - south_im * sin_mp)
+        for p in range(n_phi):
+            index = ring_flat[start + p]
+            north[index] = ring_north[p]
+            south[index] = ring_south[p]
+    return north.reshape(dim, dim), south.reshape(dim, dim)
 
 
 # ------------------------ scipy.fft helpers ------------------------- #
@@ -420,7 +636,37 @@ def _analyze_rfft(
     into the ring weights. Every :mod:`scipy.fft` call passes
     ``workers=1`` so that Dask threads are not oversubscribed.
     """
-    raise NotImplementedError
+    n_ring = cos_lats.size
+    alm = np.zeros((bandwidth, bandwidth), dtype=np.complex128)
+    north_flat = north.reshape(-1)
+    south_flat = south.reshape(-1)
+    orders = np.arange(bandwidth)
+    # Odd orders are negated to re-apply the Condon-Shortley phase the
+    # associated Legendre function recursion omits
+    phases = np.where(orders % 2 == 1, -1.0, 1.0)
+    for y in range(n_ring):
+        start = ring_offsets[y]
+        stop = ring_offsets[y + 1]
+        index = ring_flat[start:stop]
+        m_lim = min(bandwidth, 4 * y + 1)
+        spectrum_north = rfft(north_flat[index], workers=1)[:m_lim]
+        spectrum_south = rfft(south_flat[index], workers=1)[:m_lim]
+        # The mod 4 comes from the rings having 8 y points and the
+        # real symmetry of the transform
+        weight = weights[orders[:m_lim] // 4, y] * phases[:m_lim]
+        north_point = spectrum_north * weight
+        south_point = spectrum_south * weight
+        _analyze_ring_kernel(
+            alm,
+            (north_point + south_point) * 0.5,
+            (north_point - south_point) * 0.5,
+            cos_lats[y],
+            amn,
+            bmn,
+            bandwidth,
+            m_lim,
+        )
+    return alm
 
 
 def _synthesize_rfft(
@@ -465,7 +711,32 @@ def _synthesize_rfft(
     ``N_phi(y)``). Every :mod:`scipy.fft` call passes ``workers=1`` so
     that Dask threads are not oversubscribed.
     """
-    raise NotImplementedError
+    bandwidth = alm.shape[0]
+    n_ring = cos_lats.size
+    north = np.zeros(dim * dim, dtype=np.float64)
+    south = np.zeros(dim * dim, dtype=np.float64)
+    orders = np.arange(bandwidth)
+    phases = np.where(orders % 2 == 1, -1.0, 1.0)
+    for y in range(n_ring):
+        start = ring_offsets[y]
+        stop = ring_offsets[y + 1]
+        index = ring_flat[start:stop]
+        n_phi = stop - start
+        fft_n = n_phi // 2 + 1
+        m_lim = min(bandwidth, fft_n)
+        f_sym, f_asym = _synthesize_ring_kernel(
+            alm, cos_lats[y], amn, bmn, bandwidth, m_lim
+        )
+        sigma = f_sym * phases[:m_lim]
+        delta = f_asym * phases[:m_lim]
+        # Bins at and beyond the bandwidth carry no data
+        spectrum_north = np.zeros(fft_n, dtype=np.complex128)
+        spectrum_south = np.zeros(fft_n, dtype=np.complex128)
+        spectrum_north[:m_lim] = sigma + delta
+        spectrum_south[:m_lim] = sigma - delta
+        north[index] = irfft(spectrum_north, n_phi, norm="forward", workers=1)
+        south[index] = irfft(spectrum_south, n_phi, norm="forward", workers=1)
+    return north.reshape(dim, dim), south.reshape(dim, dim)
 
 
 # --------------------------- Transformer ---------------------------- #
@@ -566,10 +837,11 @@ class SphericalHarmonicTransform:
     used. The crossover is keyed on grid size and not bandwidth,
     because the ring transform tables grow as ``dim ** 3``.
 
-    The constructor copies this class attribute onto the instance and
-    decides the path once, which :attr:`uses_numba_ring_dft` reports.
-    Tests patch the class attribute before constructing a transformer
-    to force either path.
+    The constructor reads this class attribute once and freezes the
+    decision, which :attr:`uses_numba_ring_dft` reports. Tests patch
+    the class attribute before constructing a transformer to force
+    either path; patching it afterwards has no effect, since the ring
+    transform tables are built by the constructor or not at all.
     """
 
     def __init__(
@@ -578,14 +850,50 @@ class SphericalHarmonicTransform:
         layout: str = "legendre",
         dim: int | None = None,
     ) -> None:
-        raise NotImplementedError
+        if layout not in _grid.LAYOUTS:
+            raise ValueError(
+                f"Square grid layout {layout!r} must be one of {_grid.LAYOUTS}"
+            )
+        bandwidth = int(bandwidth)
+        if bandwidth < 1:
+            raise ValueError(f"Bandwidth {bandwidth} must be at least one")
+        if dim is None:
+            dim = _grid.default_dim(bandwidth, layout)
+        dim = int(dim)
+        max_bandwidth = _grid.max_bandwidth(dim, layout)
+        if bandwidth > max_bandwidth:
+            raise ValueError(
+                f"Bandwidth {bandwidth} cannot exceed the largest bandwidth "
+                f"{max_bandwidth} of the {layout!r} square grid of side length "
+                f"{dim}"
+            )
+
+        self.dim = dim
+        self.bandwidth = bandwidth
+        self.layout = layout
+        self.n_rings = _grid.n_rings(dim)
+        self.cos_latitudes = _grid.cos_latitudes(dim, layout)
+        self.quadrature_weights = _grid.quadrature_weights(dim, layout)
+        self.ring_offsets, self.ring_indices = _grid.ring_indices(dim)
+        self._amn, self._bmn = _alf_recursion_tables(bandwidth)
+
+        # Freeze the path at construction, so that patching the class
+        # attribute afterwards cannot leave a transformer which claims
+        # the Numba path but has no ring transform tables
+        self._uses_numba_ring_dft = dim <= type(self).numba_ring_dft_max_dim
+        if self._uses_numba_ring_dft:
+            tables = _ring_dft_tables(dim, bandwidth)
+            self._dft_offsets, self._dft_cos, self._dft_sin = tables
 
     def __repr__(self) -> str:
         """Return a string with the layout, bandwidth and side length,
         e.g. ``"SphericalHarmonicTransform: legendre, bw = 68,
         dim = 71"``.
         """
-        raise NotImplementedError
+        return (
+            f"{type(self).__name__}: {self.layout}, bw = {self.bandwidth}, "
+            f"dim = {self.dim}"
+        )
 
     @property
     def uses_numba_ring_dft(self) -> bool:
@@ -593,9 +901,10 @@ class SphericalHarmonicTransform:
         path is used, as opposed to the :mod:`scipy.fft` path.
 
         The decision is made once by the constructor, from
-        :attr:`numba_ring_dft_max_dim` and :attr:`dim`.
+        :attr:`numba_ring_dft_max_dim` and :attr:`dim`, and is frozen
+        there.
         """
-        return self.dim <= self.numba_ring_dft_max_dim
+        return self._uses_numba_ring_dft
 
     def analyze(
         self,
@@ -652,7 +961,48 @@ class SphericalHarmonicTransform:
         >>> round(float(alm[0, 0].real), 9)  # sqrt(4 * pi)
         3.544907702
         """
-        raise NotImplementedError
+        if bandwidth is None:
+            bandwidth = self.bandwidth
+        bandwidth = int(bandwidth)
+        if bandwidth < 1 or bandwidth > self.bandwidth:
+            raise ValueError(
+                f"Bandwidth {bandwidth} must be in the closed interval "
+                f"[1, {self.bandwidth}]"
+            )
+        north = np.ascontiguousarray(north, dtype=np.float64)
+        south = np.ascontiguousarray(south, dtype=np.float64)
+        expected = (self.dim, self.dim)
+        if north.shape != expected or south.shape != expected:
+            raise ValueError(
+                f"Hemisphere shapes {north.shape} and {south.shape} must both "
+                f"be {expected}"
+            )
+        if self.uses_numba_ring_dft:
+            return _analyze_numba(
+                north,
+                south,
+                bandwidth,
+                self.cos_latitudes,
+                self.quadrature_weights,
+                self.ring_offsets,
+                self.ring_indices,
+                self._amn,
+                self._bmn,
+                self._dft_offsets,
+                self._dft_cos,
+                self._dft_sin,
+            )
+        return _analyze_rfft(
+            north,
+            south,
+            bandwidth,
+            self.cos_latitudes,
+            self.quadrature_weights,
+            self.ring_offsets,
+            self.ring_indices,
+            self._amn,
+            self._bmn,
+        )
 
     def synthesize(self, alm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return a spherical function from its harmonic coefficients
@@ -684,4 +1034,35 @@ class SphericalHarmonicTransform:
         used: order ``-m`` contributes
         ``(-1) ** m * conj(alm[m, l])``.
         """
-        raise NotImplementedError
+        alm = np.ascontiguousarray(alm, dtype=np.complex128)
+        if alm.ndim != 2 or alm.shape[0] != alm.shape[1]:
+            raise ValueError(
+                f"Coefficient shape {alm.shape} must be square and 2D, i.e. (bw, bw)"
+            )
+        if alm.shape[0] < 1 or alm.shape[0] > self.bandwidth:
+            raise ValueError(
+                f"Coefficient bandwidth {alm.shape[0]} must be in the closed "
+                f"interval [1, {self.bandwidth}]"
+            )
+        if self.uses_numba_ring_dft:
+            return _synthesize_numba(
+                alm,
+                self.dim,
+                self.cos_latitudes,
+                self.ring_offsets,
+                self.ring_indices,
+                self._amn,
+                self._bmn,
+                self._dft_offsets,
+                self._dft_cos,
+                self._dft_sin,
+            )
+        return _synthesize_rfft(
+            alm,
+            self.dim,
+            self.cos_latitudes,
+            self.ring_offsets,
+            self.ring_indices,
+            self._amn,
+            self._bmn,
+        )

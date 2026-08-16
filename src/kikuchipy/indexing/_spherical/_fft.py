@@ -24,7 +24,7 @@
 #   smallest {2, 3, 5, 7, 11, 13}-smooth size (``fastSize()`` in
 #   ``include/util/fft.hpp``, lines 438-491)
 # - The reasonable bandwidth range [16, 512] of the EBSD indexing
-#   name list (``EMsoftNameListHandler`` in
+#   name list (``emsphinx::ebsd::Namelist::sanityCheck()`` in
 #   ``include/modality/ebsd/nml.hpp``, line 635)
 
 # #####################################################################
@@ -59,8 +59,8 @@
 # website: https://www.cmu.edu/cttec/
 #
 # Modified by Johan Westraadt, 2026-08: translated to
-# Python/NumPy/Numba for kikuchipy and conveyed under
-# GPL-3.0-or-later
+# Python/NumPy/Numba for kikuchipy. GPL-2.0-or-later, conveyed
+# under GPL-3.0-or-later
 # #####################################################################
 
 """Fast FFT sizes for the spherical harmonic transform and the
@@ -110,6 +110,15 @@ def fast_size(n: int) -> int:
     zero padding of the spherical cross-correlation must match
     EMSphInx exactly.
 
+    The port is verbatim, so it inherits the one deviation of the C++
+    from its own docstring: the set-product iteration runs
+    ``log2(log2(next power of two))`` rounds and so only forms
+    products of at most that many squarings of the small primes. For
+    ``n`` in ``range(757, 769)`` this cannot reach
+    ``768 = 2 ** 8 * 3`` (nine prime factors) and 770 is returned
+    instead. These are the only such sizes below 1101, and 770 is
+    still 13-smooth, so the transform stays fast.
+
     Examples
     --------
     >>> from kikuchipy.indexing._spherical._fft import fast_size
@@ -124,7 +133,61 @@ def fast_size(n: int) -> int:
     >>> fast_size(109)
     110
     """
-    raise NotImplementedError
+    if n < 0:
+        raise ValueError(f"Minimum transform length {n} cannot be negative")
+
+    # Handle the special/easy cases: FFTW explicitly implements all
+    # FFTs from 1 -> 16
+    if n <= 16:
+        return max(1, n)
+
+    # Start by computing the next power of two up from n
+    # https://graphics.stanford.edu/~seander/bithacks.html
+    v2n = n - 1
+    v2n |= v2n >> 1
+    v2n |= v2n >> 2
+    v2n |= v2n >> 4
+    v2n |= v2n >> 8
+    v2n |= v2n >> 16
+    v2n = (v2n + 1) & 0xFFFFFFFF  # First power of two >= n
+
+    # Now compute the log_2 of v2n. The mask b[i] selects the bits
+    # whose position has bit i set, so OR-ing the flags together spells
+    # out the position of the single set bit of a power of two
+    # https://graphics.stanford.edu/~seander/bithacks.html
+    b = (0xAAAAAAAA, 0xCCCCCCCC, 0xF0F0F0F0, 0xFF00FF00, 0xFFFF0000)
+    log2n = int((v2n & b[0]) != 0)
+    for i in range(4, 0, -1):
+        log2n |= int((v2n & b[i]) != 0) << i
+
+    # Next compute log_2(log_2(v2n)), since we will be squaring in the
+    # last step
+    max_iter = int((log2n & b[0]) != 0)
+    for i in range(4, 0, -1):
+        max_iter |= int((log2n & b[i]) != 0) << i
+
+    # Now compute all combinations of 2^i * 3^j * 5^k... for the fast
+    # (small) primes. The small primes for FFTW are 2, 3, 5, 7, 11 and
+    # 13. i, j, k ... only need to be checked for i < r
+    sizes = {2, 3, 5, 7, 11, 13}
+    # Our initial guess for the smallest fast size is the next power of
+    # two up
+    size_min = v2n
+    for _ in range(max_iter):  # Loop over required iterations
+        sizes_new = set()  # Set to hold new elements to be added
+        for i in sorted(sizes):  # Loop over current elements once
+            for j in sorted(sizes):  # Loop over current elements twice
+                v = i * j  # Compute product of elements
+                # Is this element small enough to care about (smaller
+                # than our current best)?
+                if v < size_min:
+                    if v < n:  # Values less than n are prefactors
+                        sizes_new.add(v)
+                    else:  # Otherwise (>= n) a new best size is found
+                        size_min = v
+        sizes |= sizes_new  # Add our new prefactors
+
+    return size_min
 
 
 def fast_bandwidths(bandwidth_min: int = 16, bandwidth_max: int = 512) -> np.ndarray:
@@ -165,4 +228,18 @@ def fast_bandwidths(bandwidth_min: int = 16, bandwidth_max: int = 512) -> np.nda
     298 and 415), which are the bandwidths this function is validated
     against.
     """
-    raise NotImplementedError
+    if bandwidth_min < 1:
+        raise ValueError(f"Smallest bandwidth {bandwidth_min} must be at least one")
+    if bandwidth_min > bandwidth_max:
+        raise ValueError(
+            f"Smallest bandwidth {bandwidth_min} cannot be greater than the "
+            f"largest bandwidth {bandwidth_max}"
+        )
+
+    bandwidths = [
+        bw
+        for bw in range(bandwidth_min, bandwidth_max + 1)
+        if fast_size(2 * bw - 1) == 2 * bw - 1
+    ]
+
+    return np.array(bandwidths, dtype=np.int64)
