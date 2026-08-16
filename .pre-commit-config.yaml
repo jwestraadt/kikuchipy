@@ -17,7 +17,7 @@
 ## along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 ##
 
-exclude: ^\.github/pull_request_template.md
+exclude: ^(\.github/pull_request_template.md|specs/)
 
 repos:
   # https://docs.astral.sh/ruff/configuration
