@@ -40,7 +40,7 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] Data: `ni_20kv_bw384.sht`, `ni_small_20kv_bw384.sht` (mp2sht.exe, sig 70; the latter from an uncompressed repack because `mp2sht.exe` lacks HDF5 deflate); synthetic per-(zRot, cmpFlg) fixtures generated at test time (`_dummy_files/emsphinx_sht.py`, md5s pinned after `sht2png.exe` acceptance)
 - [x] Tests: header parse, read->write field/CRC equality, pack/unpack all branches, EMSphInx binaries accept our `.sht` (local-gated), mp2sht parity, `kp.load(".sht")`, bandwidth warning
 - [x] Adversarial review (fidelity vs C++/compiled cross-check, conventions, 60-mutation bug injection) and fixes
-- [ ] Signed commits pushed; PR opened into fork `develop`
+- [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#5)
 
 ## Phase 3 -- `sht-wigner-d`
 - [ ] `_wigner.py` (d(pi/2) table, dTable(beta), dTablePre, scalar `wigner_d`, `wigner_D`, `rotate_harmonics`, derivative helpers `wigner_d_prime`/`wigner_d_prime2`); reference-table module `src/kikuchipy/data/emsphinx/wigner_reference_tables.py` (the Mathematica tables of `test/sht/wigner.cpp`)
