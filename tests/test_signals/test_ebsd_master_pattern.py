@@ -1133,6 +1133,59 @@ class TestFitPatternDetectorOrientation:
         assert np.allclose(angles[3], 0.0)
 
 
+class TestGetSphericalHarmonics:
+    """``EBSDMasterPattern.get_spherical_harmonics``, the kikuchipy
+    equivalent of EMSphInx' ``mp2sht``
+    (``specs/2026-08-16-sht-master-spectra-and-file/validation.md``,
+    "Signal method").
+    """
+
+    @staticmethod
+    def _master():
+        return kp.data.nickel_ebsd_master_pattern_small(
+            projection="lambert", hemisphere="both"
+        )
+
+    def test_it_returns_master_pattern_harmonics(self):
+        harmonics = self._master().get_spherical_harmonics(bandwidth=32)
+        assert isinstance(harmonics, kp.indexing.MasterPatternHarmonics)
+        assert harmonics.bandwidth == 32
+
+    def test_it_equals_the_class_method_bit_exactly(self):
+        master = self._master()
+        from_method = master.get_spherical_harmonics(bandwidth=32)
+        from_class = kp.indexing.MasterPatternHarmonics.from_master_pattern(
+            master, bandwidth=32
+        )
+        assert np.array_equal(from_method.alm, from_class.alm)
+
+    def test_the_keywords_are_forwarded(self):
+        master = self._master()
+        default = master.get_spherical_harmonics(bandwidth=32)
+        opt_in = master.get_spherical_harmonics(bandwidth=32, emsphinx_compatible=False)
+        assert not np.array_equal(default.alm, opt_in.alm)
+        assert abs(opt_in.alm[0, 0]) < abs(default.alm[0, 0])
+
+    def test_the_beam_energy_keyword_overrides_the_metadata(self):
+        harmonics = self._master().get_spherical_harmonics(bandwidth=32, beam_energy=15)
+        assert harmonics.beam_energy == 15
+
+    def test_the_metadata_is_used_by_default(self):
+        harmonics = self._master().get_spherical_harmonics(bandwidth=32)
+        assert harmonics.beam_energy == pytest.approx(20.1)
+        assert harmonics.sample_tilt == pytest.approx(70.0)
+
+    def test_the_default_bandwidth_is_the_mp2sht_one(self):
+        import inspect
+
+        signature = inspect.signature(
+            kp.signals.EBSDMasterPattern.get_spherical_harmonics
+        )
+        assert signature.parameters["bandwidth"].default == 384
+        assert signature.parameters["normalize"].default is True
+        assert signature.parameters["emsphinx_compatible"].default is True
+
+
 def index_row_in_array(arr: np.ndarray, row: list[int]) -> int | None:
     """Check if *row* is present in *arr*. If it is, return an integer
     containing the row index of the first occurrence. If the row is not

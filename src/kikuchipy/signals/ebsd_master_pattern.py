@@ -44,6 +44,8 @@ from kikuchipy.signals.util._master_pattern import (
 if TYPE_CHECKING:  # pragma: no cover
     from pyvista import Plotter
 
+    from kikuchipy.indexing import MasterPatternHarmonics
+
 
 class EBSDMasterPattern(KikuchiMasterPattern):
     """Simulated Electron Backscatter Diffraction (EBSD) master pattern.
@@ -327,6 +329,67 @@ class EBSDMasterPattern(KikuchiMasterPattern):
             out = LazyEBSD(simulated, **kwargs_new)
 
         return out
+
+    def get_spherical_harmonics(
+        self,
+        bandwidth: int = 384,
+        energy_weights: np.ndarray | None = None,
+        normalize: bool = True,
+        emsphinx_compatible: bool = True,
+        beam_energy: float | None = None,
+        sample_tilt: float | None = None,
+    ) -> MasterPatternHarmonics:
+        """Return the spherical harmonic coefficients of this master
+        pattern, the equivalent of EMSphInx' ``mp2sht``
+        :cite:`lenthe2019spherical`.
+
+        Parameters
+        ----------
+        bandwidth
+            Bandwidth, i.e. the exclusive maximum harmonic degree, 384
+            by default as in EMSphInx' ``mp2sht``.
+        energy_weights
+            Weight of every energy of the signal. If not given and the
+            signal has an energy axis, they are read from the Monte
+            Carlo results ``EMData/MCOpenCL/accum_e`` of the file this
+            signal was loaded from. Normalized to sum to one.
+        normalize
+            Whether to give the master pattern zero solid angle
+            weighted mean and unit weighted standard deviation before
+            the transform, ``True`` by default.
+        emsphinx_compatible
+            Whether to reproduce EMSphInx' normalization quirks,
+            ``True`` by default. See the ``Notes`` section of
+            :class:`~kikuchipy.indexing.MasterPatternHarmonics`.
+        beam_energy
+            Beam energy in kV. If not given,
+            ``original_metadata.MCCLNameList.EkeV`` is used.
+        sample_tilt
+            Sample tilt in degrees. If not given,
+            ``original_metadata.MCCLNameList.sig`` is used.
+
+        Returns
+        -------
+        harmonics
+            The coefficients, which can be written to an EMSphInx
+            ``*.sht`` file with
+            :meth:`~kikuchipy.indexing.MasterPatternHarmonics.save`.
+
+        See Also
+        --------
+        kikuchipy.indexing.MasterPatternHarmonics.from_master_pattern
+
+        Examples
+        --------
+        >>> import kikuchipy as kp
+        >>> mp = kp.data.nickel_ebsd_master_pattern_small(
+        ...     projection="lambert", hemisphere="both"
+        ... )
+        >>> h = mp.get_spherical_harmonics(bandwidth=32)
+        >>> h.bandwidth
+        32
+        """
+        raise NotImplementedError
 
     def _is_suitable_for_projection(self, raise_if_not: bool = False) -> bool:
         """Check whether the master pattern is suitable for projection

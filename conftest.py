@@ -630,6 +630,37 @@ def ebsdsim_master_pattern_file(tmp_path_factory) -> Generator[Path, None, None]
     yield fpath
 
 
+# ------------------------- EMSphInx formats ------------------------- #
+
+
+@pytest.fixture(scope="session")
+def emsphinx_synthetic_sht_files(tmp_path_factory) -> Generator[Callable, None, None]:
+    """Return a callable giving the 25 synthetic EMSphInx *.sht files,
+    one per distinct ``(z_rot, compression flags)`` pair, keyed on
+    space group.
+
+    The files are written by our own writer
+    (``kikuchipy.data._dummy_files.emsphinx_sht``) into a session
+    scoped temporary directory on the *first call* and cached, not by
+    the fixture itself, for two reasons: only a handful of tests need
+    all 25, and a failure inside the writer then shows up as a test
+    failure rather than as a fixture error.
+    """
+    directory = tmp_path_factory.mktemp("emsphinx_sht")
+    cache: dict[int, Path] = {}
+
+    def files() -> dict[int, Path]:
+        if not cache:
+            from kikuchipy.data._dummy_files.emsphinx_sht import (
+                create_synthetic_sht_files,
+            )
+
+            cache.update(create_synthetic_sht_files(directory))
+        return cache
+
+    yield files
+
+
 # -------------------------- EMsoft formats -------------------------- #
 
 

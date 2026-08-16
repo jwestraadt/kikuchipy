@@ -38,11 +38,11 @@ repos:
     hooks:
       - id: licenseheaders
         name: licenseheaders (BSD-3-Clause)
-        files: ^src/kikuchipy/(_constants\.py|io/plugins/ebsdsim_master_pattern/)
+        files: ^src/kikuchipy/(_constants\.py|io/plugins/ebsdsim_master_pattern/|indexing/_spherical/_sht_file\.py)
         args: ["-t", ".license_bsd.tmpl", "-cy", "-n", "kikuchipy", "-f"]
       - id: licenseheaders
         name: licenseheaders (GPL-3.0-or-later)
-        exclude: ^src/kikuchipy/(_constants\.py|io/plugins/ebsdsim_master_pattern/)
+        exclude: ^src/kikuchipy/(_constants\.py|io/plugins/ebsdsim_master_pattern/|indexing/_spherical/_sht_file\.py)
         args: ["-t", ".license.tmpl", "-cy", "-n", "kikuchipy", "-f"]
 
 # https://pre-commit.ci/#configuration

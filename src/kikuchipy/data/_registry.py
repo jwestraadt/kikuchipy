@@ -26,6 +26,8 @@ _registry_hashes = {
     # In package (relative to the kikuchipy/data directory)
     "kikuchipy_h5ebsd/patterns.h5":                                 "md5:f5e24fc55befedd08ee1b5a507e413ad",
     "emsoft_ebsd_master_pattern/ni_mc_mp_20kv_uint8_gzip_opts9.h5": "md5:807c8306a0d02b46effbcb12bd44cd02",
+    "emsphinx/ni_20kv_bw384.sht":                                   "md5:e69da801904a97c812143f0ed78fc769",
+    "emsphinx/ni_small_20kv_bw384.sht":                             "md5:eef4278b9c48f91f9adbc555f7974d39",
     "nickel_ebsd_large/patterns.h5":                                "md5:51d6bc0f5ff23dcb0c1a8e1f4c52d4d4",
     # From GitHub
     "silicon_ebsd_moving_screen/si_in.h5":                          "md5:d8561736f6174e6520a45c3be19eb23a",

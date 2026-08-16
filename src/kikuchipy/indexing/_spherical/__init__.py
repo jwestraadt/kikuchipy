@@ -34,8 +34,17 @@ Submodules
     Fast FFT sizes and the bandwidths that use them.
 ``_grid``
     Square Lambert and square Legendre grids on the unit sphere.
+``_master_pattern_harmonics``
+    Spherical harmonic coefficients of an EBSD master pattern,
+    read from and written to EMSphInx *.sht files.
 ``_sht``
     Discrete spherical harmonic transform on those grids.
+``_sht_file``
+    The EMSphInx *.sht file format, version 1.1 of SHTfile.  This
+    module is BSD-3-Clause licensed, unlike the rest of this
+    package.
+``_symmetry``
+    Symmetry of the coefficients of a master pattern.
 
 Nothing is imported here on purpose: each submodule is imported
 directly by the code that needs it, keeping the import cost of

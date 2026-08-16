@@ -16,7 +16,7 @@ Local-gated tests skip (with the reason in the skip message) unless `KIKUCHIPY_E
 Required assertions (each is a named test):
 
 `.sht` codec (`test_spherical_sht_file.py`)
-- CRC-32C: `crc32c(b"") == 0`, `crc32c(b"\x00"*8) == 0xEBE76DE3`, `crc32c(b"123456789") == 0xF28417BE` (differs from standard CRC-32C 0xE3069283 -- the SHTfile variant is asserted, not the standard); chaining `crc32c(b, crc32c(a)) == crc32c(a + b)`; the generated 256-entry table equals the literal table of `sht_file.in.hpp:967-1000` for the eight spot entries `LUT[0] == 0`, `LUT[1] == 0x0A5F4D75`, `LUT[2] == 0x14BE9AEA`, `LUT[128] == 0x1EDC6F41`, `LUT[255] == 0x12A28EAD`, `LUT[16] == 0x15DECED9`, `LUT[64] == 0x11B258E1`, `LUT[192] == 0x0F6E37A0` (first entry of the 25th literal row), `LUT[200] == 0x1B5D3F8D` (first entry of the 26th) and `sum(LUT) == 68719476608` (`2**36`; a plain `assert`, determined 2026-08-16); the CRCs of the two in-package Ni files are `0xE3100CFF` (`ni_small_20kv_bw384.sht`) and `0xEA2875D2` (`ni_20kv_bw384.sht`); `crc32c` accepts `bytes`, `bytearray` and `memoryview` with equal results, and its wall time on the 74 828 B shipped file is recorded (`record_property`; measured 3.9 ms with the plain-Python `tuple` LUT, 51 ms with NumPy scalars -- the former is required, D10).
+- CRC-32C: `crc32c(b"") == 0`, `crc32c(b"\x00"*8) == 0xEBE76DE3`, `crc32c(b"123456789") == 0xF28417BE` (differs from standard CRC-32C 0xE3069283 -- the SHTfile variant is asserted, not the standard); chaining `crc32c(b, crc32c(a)) == crc32c(a + b)`; the generated 256-entry table equals the literal table of `sht_file.in.hpp:967-1000` for the eight spot entries `LUT[0] == 0`, `LUT[1] == 0x0A5F4D75`, `LUT[2] == 0x14BE9AEA`, `LUT[128] == 0x1EDC6F41`, `LUT[255] == 0x12A28EAD`, `LUT[16] == 0x15DECED9`, `LUT[64] == 0x11B258E1`, `LUT[192] == 0x0F6E37A0` (first entry of the 25th literal row), `LUT[200] == 0x1B5D3F8D` (first entry of the 26th) and `sum(LUT) == 68719476608` (~~`2**36`~~ **not** `2**36`, which is 68719476736, 128 larger -- corrected 2026-08-16 after re-measuring the generated and the literal table, both 256/256 identical; a plain `assert`, determined 2026-08-16); the CRCs of the two in-package Ni files are `0xE3100CFF` (`ni_small_20kv_bw384.sht`) and `0xEA2875D2` (`ni_20kv_bw384.sht`); `crc32c` accepts `bytes`, `bytearray` and `memoryview` with equal results, and its wall time on the 74 828 B shipped file is recorded (`record_property`; measured 3.9 ms with the plain-Python `tuple` LUT, 51 ms with NumPy scalars -- the former is required, D10).
 - Space-group LUTs: length 230 each; values of `space_group_z_rotation` in `{1, 2, 3, 4, 6}`, of `space_group_compression_flags` in `{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xA}` and never `0x4 | 0x8`; `sum(rot) == 707`, `sum(cmp) == 948`, histogram `{1: 15, 2: 91, 3: 30, 4: 72, 6: 22}`; spot values `1 -> (1, 0x0)`, `2 -> (1, 0x1)`, `6 -> (1, 0x4)`, `10 -> (1, 0x5)`, `16 -> (2, 0x0)`, `25 -> (2, 0x4)`, `47 -> (2, 0x7)`, `75 -> (4, 0x0)`, `83 -> (4, 0x3)`, `111 -> (2, 0x8)`, `115 -> (2, 0x4)`, `123 -> (4, 0x7)`, `143 -> (3, 0x0)`, `156 -> (3, 0x8)`, `157 -> (3, 0x4)`, `164 -> (3, 0x9)`, `174 -> (3, 0x2)`, `187 -> (3, 0xA)`, `189 -> (3, 0x6)`, `225 -> (4, 0x7)`; exactly 25 distinct `(zRot, cmpFlg)` pairs; `sg` outside `[1, 230]` raises `ValueError`. Cross-check against orix for `sg in 16..230`: `rot == 1 + #proper elements about z`, `bool(cmp & 1) == contains_inversion`, `bool(cmp & 2) == improper 2-fold about z`, `bool(cmp & 0xC) == improper 2-fold with axis in the equator`; and for `sg in 3..15` the recorded **disagreement** is asserted (`rot == 1` while orix says 2 for 3-5 and 10-15; for 6-15 the LUT sets `0x4`, a mirror plane *containing* z (b-unique `m` perpendicular to b), where orix's z-unique `Cs`/`C2h` have the mirror plane *perpendicular* to z, i.e. bit `0x2` -- the two mirror kinds are not the same flag) -- the test docstring names the b-unique vs z-unique cause.
 - `num_harmonics(384, 4, 0x7) == 9312` (`96*97`), `num_harmonics(bw, 1, 0) == bw*(bw+1)` (complex, `2 * bw(bw+1)/2`), `num_harmonics(bw, 1, 0x4) == bw*(bw+1)//2` -- these closed forms are the independent pins; and, against the only external oracle for the count, `doub_cnt == num_harmonics(bw, z_rot, flags)` and `len(payload) * 8 == file_size - payload_offset - 4` for **every** `.sht` in the suite (the two shipped Ni files, the shipped EMSphInx file when available, the 25 generated fixtures: 25 distinct flag pairs); `pack_harmonics` output length equals `num_harmonics` for all 25 pairs and `bw in {4, 16, 17}` (self-consistency, recorded as such).
 - Pack/unpack: for each of the 25 pairs at `bw in {16, 17}` with a rule-respecting synthetic `alm` (D16 recipe): `unpack(pack(alm)) == alm` bit-exact and `pack(unpack(p)) == p` bit-exact; branch coverage asserted by construction: pair `(1, 0x0)` writes `2 * count` doubles (complex), `(2, 0x4)` writes `count` doubles that equal the real parts, `(2, 0x8)` writes real parts for `m % 4 == 0` rows and imaginary parts for `m % 4 == 2` rows (checked entry by entry against `alm`), `(4, 0x7)` skips rows `m % 4 != 0`, odd `l` and odd `l + m`; flags `0x0C` raise `ValueError` in all three functions; for the three Ni files `pack(unpack(payload)) == payload` bit-exact and `unpack` gives non-zero entries only at `m % 4 == 0`, even `l`, real values.
@@ -32,13 +32,13 @@ Symmetry (`test_spherical_symmetry.py`)
 - `set(Z_ROTATION_ORDER_AND_MIRROR) == {g.name for g in orix.quaternion.symmetry._groups} | {"2", "m"}` (40 keys); for every key the value equals the operator oracle (`n_fold == 1 + #{proper elements with |axis_z| == 1 and angle > 0}`, `mirror == any(improper element with |axis_z| == 1 and angle == pi)`) computed on the matching `Symmetry` (`_groups` entry, or `C2`/`Cs` for `"2"`/`"m"`); table spot values `"m-3m" -> (4, True)`, `"-4" -> (2, False)`, `"-6" -> (3, True)`, `"-6m2" -> (3, True)`, `"-3m" -> (3, False)`, `"11m" -> (1, True)`, `"1m1" -> (1, False)`, `"112" -> (2, False)`, `"121" -> (1, False)`, `"2" -> (2, False)`, `"m" -> (1, True)`, `"2/m" -> (2, True)`, `"23" -> (2, False)`, `"m-3" -> (2, True)`.
 - `{get_point_group(sg).name for sg in 1..230}` (32 names) is a subset of the keys; `point_group_flags(None) == (1, False)`; `point_group_flags("112/m")` raises `ValueError` listing the known names.
 - `space_group_for_point_group`: `"m-3m" -> 221`, `"432" -> 207`, `"2" -> 3`, `"112" -> 3`, `"121" -> 3`, `"m" -> 6`, `"11m" -> 6`, `"2/m" -> 10`, `"32" -> 149`, `"321" -> 150`, `"312" -> 149`, `"3m" -> 156`, `"-3m" -> 162`, `"-6m2" -> 187`, `"-42m" -> 111`, `"1" -> 1`, `"-1" -> 2`; for the 32 `get_point_group` names `get_point_group(result).name == name`; `candidate_space_groups`: `"3m" -> (156, 157)`, `"-3m" -> (162, 164)`, `"-42m" -> (111, 115)`, `"-6m2" -> (187, 189)` (distinct `(zRot, cmpFlg)` pairs, D11), `"m-3m" -> (221,)`, `"32" -> (149,)` (149/150 share `(3, 0x0)`), `"mm2" -> (25,)`.
-- `validate_flags` (`SYMMETRY_POWER_TOLERANCE == 1e-8`, relative power with `m > 0` doubled): Ni mp2sht coefficients keep `(4, True)` with `systematic_zero_power <= (1e-20, 1e-20)`; a synthetic 4-fold `alm` with row `m = 2` filled -> `n_fold 2` (largest satisfied divisor) and a `UserWarning` matching "n_fold" and "2"; row `m = 1` filled -> `1`; a 6-fold `alm` with row `m = 3` filled -> `2`, with row `m = 2` filled -> `3`, with rows `2` and `3` filled -> `1`; odd `(l+m)` filled -> `(..., False)` and a warning matching "equatorial mirror"; boundary: relative power `0.9e-8` passes, `1.1e-8` fails (`<=`; an exact `1e-8` cannot be constructed in floating point and is not asserted).
+- `validate_flags` (`SYMMETRY_POWER_TOLERANCE == 1e-8`, relative power with `m > 0` doubled): Ni mp2sht coefficients keep `(4, True)` with `systematic_zero_power <= (1e-20, 1e-20)`; a synthetic 4-fold `alm` with row `m = 2` filled -> `n_fold 2` (largest satisfied divisor) and a `UserWarning` matching "n_fold" and "2"; row `m = 1` filled -> `1`; ~~a 6-fold `alm` with row `m = 3` filled -> `2`, with row `m = 2` filled -> `3`~~ a 6-fold `alm` with row `m = 3` filled -> `3`, with row `m = 2` filled -> `2` (corrected 2026-08-16: the two expected values were swapped; the largest divisor of 6 dividing every non-zero order is 3 for `{0, 3, 6, 12, 18}` and 2 for `{0, 2, 6, 12, 18}`, per the `6 -> 3 -> 2 -> 1` ladder of `plan.md` line 49), with rows `2` and `3` filled -> `1`; odd `(l+m)` filled -> `(..., False)` and a warning matching "equatorial mirror"; boundary: relative power `0.9e-8` passes, `1.1e-8` fails (`<=`; an exact `1e-8` cannot be constructed in floating point and is not asserted).
 
 Harmonics (`test_spherical_master_pattern_harmonics.py`)
 - Container: `alm` copied and C-contiguous complex128; non-square, 3-D or non-zero `l < m` input -> `ValueError`; `bandwidth == alm.shape[0]`.
 - `_resize_lambert`: constant `c` -> `c * 2*dim**2/new_dim**2` everywhere with `rtol 1e-12` for `(dim, new_dim) in {(13, 21), (21, 13), (401, 547), (1001, 547)}` (the last on a synthetic 1001 image); the DCT mode `cos(pi*k*(n + 1/2)/dim)` outer product for `k = (2, 3)` at `dim 21 -> 31` equals `2*21**2/31**2` times the same mode evaluated on the 31 grid to `atol 1e-12`; `new_dim == dim` returns the input times exactly 1 (early return, `master.hpp:356`; without it a constant would come back doubled, since the factor is `2*dim**2/new_dim**2 == 2` at `new_dim == dim`); negative control (documented in the test, re-measured 2026-08-16): using `scipy.fft.idctn(type=3)` instead of `dctn(type=3)` does **not** give a constant at all -- for the constant `3.7` on `13 -> 21` the result ranges `3.6e-5 .. 6.4e-3` against the correct `2.836`, with a maximum ratio of exactly `1/new_dim**2` (`= 1/441`, because only `X[0, 0]` is non-zero and `idctn` divides that term by `N**2`), not `1/(2*new_dim)**2` -- and DCT-III is not proportional to the inverse DCT-II in general, so the ratio is only constant for the constant-image probe.
 - `_to_legendre`: constant image -> constant on both hemispheres (1e-14); the plane `f(X, Y) = 0.3 X - 0.7 Y + 0.1` sampled on the 547 grid is reproduced at every Legendre normal of `dim_leg 387` to 1e-12 (bilinear is exact for bilinear functions); an asymmetric probe (`f = X` vs `f = Y`) is *not* symmetric under transposition (row/column order locked: north pixel `(j, i)` with `i > dim/2`, `j == dim/2` samples the source column direction); the same `(X, Y)` is used for north and south (`_to_legendre(f, g)` and `_to_legendre(g, f)` swap outputs exactly).
-- Normalisation: after `_normalize_hemispheres(..., emsphinx_compatible=False)` (opt-in) the weighted mean is 0 (`abs 1e-12`) and the weighted variance 1 (`rel 1e-12`) with the correctly halved weights; with `True` (default) the weighted mean is `-mu` (i.e. the pattern was shifted by `2 mu`, `rel 1e-10`) and the corner weight is `omega_eq / 4`, the other border weights `omega_eq / 2`; the two settings differ by a global factor `sqrt(1 + mu^2/sigma^2)` and a shift (rel 1e-10).
+- Normalisation: after `_normalize_hemispheres(..., emsphinx_compatible=False)` (opt-in) the weighted mean is 0 (`abs 1e-12`) and the weighted variance 1 (`rel 1e-12`) with the correctly halved weights; with `True` (default) the weighted mean is `-mu` (i.e. the pattern was shifted by `2 mu`, `rel 1e-10`) and the corner weight is `omega_eq / 4`, the other border weights `omega_eq / 2`; ~~the two settings differ by a global factor `sqrt(1 + mu^2/sigma^2)` and a shift (rel 1e-10)~~ the two settings satisfy `plain == compat * (sigma_c / sigma_p) + (2 mu_c - mu_p) / sigma_p` exactly (1e-12) with the scalars each returns, and their *coefficients* agree after `remove_dc` and one global rescaling (rel-L2 < 1e-8 on the Ni master) (corrected 2026-08-16: the two settings weight the corners differently, `omega/4` against `omega/2`, so `mu_c != mu_p` and the short form `(compat + mu/sigma) * sqrt(1 + mu_p^2/sigma_p^2) == plain` is only true to 3.3e-4, max rel 0.30, not 1e-10).
 - **`normalize=False` through the public keyword** (`test_normalize_false_reproduces_emsphinx_amplitude`): on the 13 px `master_patterns.h5` (`energy_weights=np.ones(11)`, `bandwidth=4`: `dim_leg 7`, `dim_scaled 10`, crop branch) `from_master_pattern(..., normalize=False).alm` equals `SphericalHarmonicTransform(4, "legendre", 7).analyze(*_to_legendre(north, south, 7))` computed in the test from the energy-weighted hemispheres bit-exactly (same code path, no normalisation step); on a synthetic constant master (`c = 5`, 21 px, both hemispheres, `bandwidth=8`: `dim_leg 11`, `dim_scaled 16`) `normalize=False` gives `a_00 == sqrt(4 pi) * c * 2*21**2/16**2` to `rel 1e-10` and all other coefficients `< 1e-10` (D5's amplitude factor is observable only here) -- while `normalize=True` gives `|a_00| < 1e-10`; and the same 21 px constant master at `bandwidth=12` (`dim_leg 15`, `dim_scaled = round(sqrt(2) * 15) = 21 == dim`, the early-return branch) returns `a_00 == sqrt(4 pi) * c` to `rel 1e-12` (the input is left unchanged, not doubled -- the `2*dim**2/new_dim**2 == 2` factor never runs).
 - Integer multi-site guard: an `EBSDMasterPattern` of dtype uint8 whose `original_metadata` carries `CrystalData.Natomtypes 2` and `EBSDMasterNameList.combinesites 0` -> `ValueError` matching "combinesites"; the same with `combinesites 1`, or float32 data, or no such keys, passes; the in-package Ni master (`Natomtypes 1`) passes.
 - Energy weights: single-energy master -> `[1.0]`; a temporary HDF5 with `EMData/MCOpenCL/accum_e` of shape `(5, 5, 4)` and counts summing per bin to `[10, 0, 30, 60]`, `Ehistmin 10`, `Ebinsize 1`, energy axis `[10, 11, 12, 13]` -> `[0.1, 0, 0.3, 0.6]`; energy subset `[12, 13]` -> `[1/3, 2/3]`; energy `9` -> `ValueError` (bin out of range); no `accum_e` -> `ValueError` matching "energy_weights"; explicit `[1, 3]` -> `[0.25, 0.75]`; `[-1, 2]` -> `ValueError`; wrong length -> `ValueError`; on the cached full Ni master (weekly) the bin counts equal `[0, 0, 1455, 266084, 5365299, 18896238, 27431857, 34257097, 42689288, 53576717, 68256443, 89645683, 124471882, 191778041, 334039769, 161050771]` (total 1151726624), i.e. weights `counts / 1151726624` (`weights[-1] == approx(0.1398342, rel=1e-6)`, `sum == 1`).
@@ -83,7 +83,7 @@ Made with scratch NumPy transcriptions on top of the Phase 1 code (`_grid`, `_sh
 - **`mp2sht.exe`/`sht2png.exe` usage** (no args, exit 1, no files written to the CWD): `usage: mp2sht.exe inputFile outputFile` (`*.h5` -> `*.spx` legacy name), `usage: sht2png.exe inputFile sqLegOut [sterOut]`.
 - **`mp2sht.exe` cannot read the in-package Ni master** (gzip): `H5Z_pipeline(): required filter 'deflate' is not registered` (HDF5 1.8.20 built without zlib) -> repacked uncompressed with h5py (1 199 136 B, md5 `b58bece63152a9b5e4c53f5e8899fef7`), then `mp2sht.exe` succeeded in **0.22 s** -> `ni_small_20kv_bw384.sht` (74 828 B, md5 `eef4278b9c48f91f9adbc555f7974d39`, CRC `0xE3100CFF`). On the cached 1001 px/16-energy master `mp2sht.exe` took **0.35 s** -> `ni_20kv_bw384.sht` (74 828 B, md5 `e69da801904a97c812143f0ed78fc769`, CRC `0xEA2875D2`). Shipped `EMSphInx/data/Ni {20kV 75.7deg}.sht`: 74 828 B, CRC `0xF2AF93EF`, `primaryAngle 75.7`, `a_00 = -3.2555`; rel-L2 between the full-master fixture and the shipped file 0.052 (different tilt), between the two fixtures 0.198 (uint8 vs float32 source, 1 vs 16 energies).
 - **`sht2png.exe` on `ni_small_20kv_bw384.sht`** (0.22 s): prints `20.1 70`, `file version 1.1`, `written with software version ve49ad6b`, `modality: EBSD`, `beam eng: 20` (int cast of 20.1), `angle 1 : 70`, notes/doi, `master pattern composed from 1 crystals with effective sg# 225`, `rotations are p with pijk = 1`, `simulation data 88 bytes from vendor EMsoft for modality EBSD`, crystal `sg 225 setting 1`, `abc: 0.35236, ...`, `frm: 'Ni'`, `1 atoms: 28: 0 0 0 1 0 0.0035`, `emVers 5_0_0_0`, `sigStart 70`, `sigEnd nan`, `keV 20.1`, `eHistMin 20`, `numSx 201`, `numPx 200`, `latGridType: square lambert`; PNGs `ni_small_leg.png` (118 875 B) and `ni_small_ster.png` (119 750 B) written.
-- **CRC-32C**: the literal table equals the table generated by the commented-out loop with polynomial `0x1EDC6F41` (256/256 entries); `LUT[192] = 0x0F6E37A0` (the 25th literal row starts `0x0f6e37a0, 0x05317ad5, ...`, entries 192-199), `LUT[200] = 0x1B5D3F8D`, `sum(LUT) = 68719476608 = 2**36`; check values `crc32c(b"") = 0`, `crc32c(b"\x00"*8) = 0xEBE76DE3`, `crc32c(b"123456789") = 0xF28417BE`; all three Ni files verify. Timing on the 74 828 B shipped file (this machine, uv venv): plain-Python `tuple` LUT over `bytes` **3.9 ms**; the same loop with `np.uint32` scalars over `np.frombuffer` **51 ms** (13x slower); identical results.
+- **CRC-32C**: the literal table equals the table generated by the commented-out loop with polynomial `0x1EDC6F41` (256/256 entries); `LUT[192] = 0x0F6E37A0` (the 25th literal row starts `0x0f6e37a0, 0x05317ad5, ...`, entries 192-199), `LUT[200] = 0x1B5D3F8D`, `sum(LUT) = 68719476608` (~~`= 2**36`~~ corrected 2026-08-16: `2**36` is 68719476736, 128 larger); check values `crc32c(b"") = 0`, `crc32c(b"\x00"*8) = 0xEBE76DE3`, `crc32c(b"123456789") = 0xF28417BE`; all three Ni files verify. Timing on the 74 828 B shipped file (this machine, uv venv): plain-Python `tuple` LUT over `bytes` **3.9 ms**; the same loop with `np.uint32` scalars over `np.frombuffer` **51 ms** (13x slower); identical results.
 - **Shipped EMSphInx `data/Ni {20kV 75.7deg}.sht` header** (re-parsed 2026-08-16): `softwareVersion b"ve49ad6b"` (exactly 8 bytes, NUL-terminated source string), `beamEnergy 20.0` (**not** 20.1), `primaryAngle 75.69999694824219`, `keV 20.0`, CRC `0xF2AF93EF` recomputed and matching, `doiLen 46` stored in 48 padded bytes all under the CRC.
 - **SHTfile LUTs vs EMSphInx point groups**: `SpaceGroupRot`/`SpaceGroupCmp` reproduced from `SG2PG` + `zRot`/`inversion`/`zMirror`/`mmType` with 0/230 mismatches; vs orix (`get_point_group` operators): 0 mismatches for sg 16-230, and sg 3-15 differ exactly as the b-unique vs z-unique settings predict (`rot` 1 vs 2 for 3-5, 10-15; for 6-15 the LUT sets `0x4`, a mirror plane containing z, where orix's z-unique groups have the mirror perpendicular to z, `0x2`). `sum(rot) = 707`, `sum(cmp) = 948`, `{1: 15, 2: 91, 3: 30, 4: 72, 6: 22}`, 25 distinct pairs with lowest space groups `1, 2, 6, 10, 16, 25, 47, 75, 83, 99, 111, 123, 143, 147, 156, 157, 162, 164, 168, 174, 175, 183, 187, 189, 191`. Point-group names whose space groups span *two* distinct `(zRot, cmpFlg)` pairs (the D11 fallback trap): `3m` (156 `(3, 0x8)` / 157 `(3, 0x4)`), `-3m` (162 `(3, 0x5)` / 164 `(3, 0x9)`), `-42m` (111 `(2, 0x8)` / 115 `(2, 0x4)`), `-6m2` (187 `(3, 0xA)` / 189 `(3, 0x6)`); every other name maps to one pair (`32`: 149 and 150 both `(3, 0x0)`; `mm2`: all `(2, 0x4)`).
 - **HyperSpy `DictionaryTreeBrowser` and lists** (hyperspy 2.4.0): `add_dictionary({"crystals": [{"formula": "Ni"}]})` leaves `om.crystals` a `list` of `dict` (`om.crystals[0].formula` -> `AttributeError`); nested dicts (`om.header.beam_energy`, `om.crystals2.crystal_0.formula`) become nodes -> numbered sub-nodes in `metadata_dict()` (D10).
@@ -99,3 +99,123 @@ Made with scratch NumPy transcriptions on top of the Phase 1 code (`_grid`, `_sh
 - **In-package data facts**: `ni_mc_mp_20kv_uint8_gzip_opts9.h5` has `EMData/MCOpenCL/accum_e (201, 201, 1) int32`, `mLPNH (1, 1, 401, 401) uint8`, `EkeV 20.1`, `sig 70`, `numsx 201`, `npx 200`, `totnum_el 2e9`, `multiplier 1`, `SpaceGroupNumber 225`, `SpaceGroupSetting 1`, `LatticeParameters 0.35236 nm`, `AtomData [0, 0, 0, 1, 0.0035]`, `Atomtypes 28`; the loaded phase is `Lattice(a=0.35236, ...)`, `element 28`, `Bisoequiv 0.35`, `Uisoequiv 0.00443`; `original_metadata` keys `BetheList, EBSDMasterNameList, MCCLNameList, CrystalData` (no `EMData`); `tmp_parameters` = folder/filename/extension. `master_patterns.h5` (tests): `mLPNH (1, 11, 13, 13) float32`, `EkeVs 10..20`, **no `accum_e`**, `Natomtypes 2`, partial `MCCLNameList` (no `omega`, `multiplier`) -> no EMsoftED block on save.
 
 (implementation results to be appended below: re-measured parity numbers, `r` values, timings incl. `crc32c`, the 25 md5s of the generated synthetic fixtures after `sht2png.exe` acceptance -- a `dict[int, str]` keyed on space group, copied verbatim into the test -- and the Phase 4 hand-off note on the D7 gate)
+
+### 2026-08-16 -- implementation, step 1: skeleton, failing test suite, shipped fixtures (this machine)
+
+Tests-first pass (`plan.md` tasks 1-6 skeleton + `validation.md` assertions). Only the Phase 1
+`_sht.py` lazy-weights amendment is implemented; every other body raises `NotImplementedError`.
+
+- **Shipped fixtures regenerated with the exact commands of `plan.md` 2.3(a),(b)** and they
+  reproduce the pre-implementation determinations byte for byte:
+  - repack of `ni_mc_mp_20kv_uint8_gzip_opts9.h5` (h5py, no filters): 1 199 136 B, md5
+    `b58bece63152a9b5e4c53f5e8899fef7` -- **matches** the recorded value.
+  - `mp2sht.exe` on the repack (0.57 s wall incl. process start) ->
+    `src/kikuchipy/data/emsphinx/ni_small_20kv_bw384.sht`: 74 828 B, md5
+    `eef4278b9c48f91f9adbc555f7974d39`, CRC `0xE3100CFF` -- **both match**.
+  - `mp2sht.exe` on the cached `develop/data/ebsd_master_pattern/ni_mc_mp_20kv.h5` (0.32 s) ->
+    `src/kikuchipy/data/emsphinx/ni_20kv_bw384.sht`: 74 828 B, md5
+    `e69da801904a97c812143f0ed78fc769`, CRC `0xEA2875D2` -- **both match**.
+  - Both md5s registered in `src/kikuchipy/data/_registry.py`;
+    `Dataset("emsphinx/<file>").fetch_file_path()` resolves in-package without pooch.
+- **LUT transcriptions verified against the C++ at transcription time** (parsed out of
+  `sht_file.in.hpp` rather than typed): `sum(SpaceGroupRot) = 707`, `sum(SpaceGroupCmp) = 948`,
+  `zRot` histogram `{1: 15, 2: 91, 3: 30, 4: 72, 6: 22}`, 25 distinct `(zRot, cmpFlg)` pairs whose
+  lowest space groups are `1, 2, 6, 10, 16, 25, 47, 75, 83, 99, 111, 123, 143, 147, 156, 157, 162,
+  164, 168, 174, 175, 183, 187, 189, 191` -- all identical to the pre-implementation record. The
+  generated CRC table matches the nine pinned literal entries and sums to ~~`2**36`~~ `68719476608` (corrected 2026-08-16). The 40-key
+  `Z_ROTATION_ORDER_AND_MIRROR` equals the orix operator oracle for all 40 names (orix 0.14.2).
+- **Phase 1 amendment implemented and Phase 1 still green**: `SphericalHarmonicTransform` stores
+  `_quadrature_weights = None` and a cached `quadrature_weights` property; `analyze` reads it,
+  `synthesize` never does. `tests/test_indexing/{test_spherical_grid,test_spherical_sht,
+  test_spherical_fft}.py` -> **348 passed, 507 skipped** (341 before, +7 new
+  `TestLazyQuadratureWeights` tests). `SphericalHarmonicTransform(384, "lambert", 769)` now
+  constructs and synthesizes (`Y^4_6` to 1e-10 on the rings which carry the order), while
+  `analyze` and the property itself raise `ValueError("Insufficient precision ...")`.
+- **Failing suite** (`-n 0 -q`, `KIKUCHIPY_EMSPHINX_DIR` unset): 714 collected;
+  **627 failed, 79 passed, 8 skipped**, *no* collection or fixture errors. Every failure roots in
+  `NotImplementedError`; the only non-`NotImplementedError` assertion messages are the documented
+  consequences of a bare stub (`pytest.raises(..., match=...)` on the two codec
+  `NotImplementedError` messages, and `pytest.warns` reporting "DID NOT WARN" while handling the
+  `NotImplementedError`). The 79 passing tests are exactly the ones asserting the transcribed
+  module data (CRC table, the two 230-entry space group tables, the 40-key symmetry table) and the
+  licence hygiene of `_sht_file.py`. Under `-n 4`: 627 failed, 428 passed, 516 skipped, 67 s.
+- **Gated selections work**: `-k emsphinx_binaries` with `KIKUCHIPY_EMSPHINX_DIR` set selects and
+  runs (does not skip) the 6 local-gated tests; `--weekly -k full_master` selects the 2 full-master
+  parity tests; without the env var the 6 skip with the reason in the message.
+- `pyproject.toml`'s `--ignore-glob=src/kikuchipy/data/emsphinx/*.py` keeps
+  `create_emsphinx_sht_fixtures.py` out of `pytest --doctest-modules src/kikuchipy/data`
+  (8 doctests collected, none from that file).
+- `uv run pre-commit run --files <all 24 new/changed files>`: ruff, ruff-format and both
+  `licenseheaders` hooks **pass**; the BSD hook stamps `_sht_file.py` and the GPL hook excludes it.
+- **Still to be determined by the implementation**: the 25 md5 sums of the synthetic fixtures
+  (`SYNTHETIC_MD5` in `tests/test_indexing/test_spherical_sht_file.py` is an empty dict with a
+  loud assertion message until the one-off `sht2png.exe` acceptance of `plan.md` 2.3(c) can run,
+  which needs the writer), and every measured tolerance of the pipeline tests.
+
+### 2026-08-16 -- implementation, step 1b: test-quality review fixes (this machine)
+
+Every number below was re-measured here, on top of the Phase 1 code, before the
+corresponding test was changed. Three of them contradict sentences written above, which are
+struck through in place with the same date.
+
+- **The CRC table sum is `68719476608`, not `2**36`.** `2**36 == 68719476736`, 128 larger.
+  Re-generated from `0x1EDC6F41` and compared with the module's `_CRC_TABLE`: 256/256
+  entries identical, `sum == 68719476608`. `test_the_table_sum_is_two_to_the_thirty_sixth`
+  could never pass and is now `test_the_table_sum_is_the_recorded_value`, which asserts the
+  value **and** that it differs from `2**36`. Lines 19, 86 and 125 above corrected.
+- **The two 6-fold downgrade cases were swapped.** `_synthetic_alm` is non-zero only at
+  `m in {0, 6, 12, 18}`, so filling row `m = 3` leaves the non-zero orders
+  `{0, 3, 6, 12, 18}`, whose largest divisor of 6 is **3**, and filling row `m = 2` leaves
+  `{0, 2, 6, 12, 18}`, i.e. **2** (measured by enumerating the orders). `plan.md` line 50 and
+  `validation.md` line 35 corrected; the other five parametrisations (`4 -> 2`, `4 -> 1`,
+  `6 + {2, 3} -> 1`, `3 -> 1`, `2 -> 1`) were right.
+- **The per-pixel identity between the two normalisations is false.** With a D7-faithful
+  scratch implementation on `default_rng(3)` noise at `dim_legendre 31`:
+  `mu_c = 0.4949182367610262`, `mu_p = 0.4949808127642096`, `sigma_c = 0.5753695583161661`,
+  `sigma_p = 0.2934128912666275` -- the two settings weight the corners differently
+  (`omega/4` against `omega/2`), so the means are not the same number and
+  `(compat + mu_c/sigma_c) * sqrt(1 + mu_p**2/sigma_p**2)` differs from `plain` by
+  **3.354e-4** absolute, **0.303** relative, against the asserted `rtol = atol = 1e-10`.
+  What *is* exact, because both settings are affine in the input:
+  `plain == compat * (sigma_c/sigma_p) + (2 mu_c - mu_p)/sigma_p` to **5.6e-16** on both
+  hemispheres, which is what the test now asserts (`atol 1e-12`), and it still dies if the
+  mean is subtracted once instead of twice under `emsphinx_compatible=True` (the error would
+  be `mu_c/sigma_p` ~ 1.7). The recorded 5.1e-9 of line 97 is a *coefficient* level number
+  and is now asserted as such by
+  `TestMp2shtParity::test_the_two_settings_agree_after_dc_removal_and_rescaling`: a constant
+  shift of a function on the sphere lives entirely in `a_00`, so after `remove_dc` the two
+  settings differ by the single scalar `sigma_c/sigma_p`; one scalar is fitted from the norm
+  ratio (asserted `== approx(1.854, rel=1e-3)`) and the remaining 9311 coefficients carry the
+  `rel-L2 < 1e-8`. The same run reproduces the two normalisation assertions the suite already
+  made: compatible weighted mean `-0.8601745254118366 == -mu_c/sigma_c` to the last bit,
+  corrected weighted mean `1.3e-16` and variance `1.0000000000000000`.
+- **The row/column lock was blind to the transposition it names.** On the Legendre grid of
+  `dim 31`, `max |X - Y.T| = 1.11e-16` while `max |X - Y| = 1.0`, so
+  `allclose(out_x, out_y.T)` holds for a transposed `(X, Y)` in the bilinear step as well.
+  The test now asserts the **absolute** mapping, `out_x == sphere_to_square(...)[..., 0]` and
+  `out_y == ...[..., 1]` at `atol 1e-12`.
+- **Non-vacuous round trip.** `num_harmonics(384, 4, 0x7) == 9312`, asserted as the non-zero
+  count of the re-read coefficients before the bit-exact comparison, so a writer which stored
+  zeros no longer compares two empty selections.
+- **Hemisphere order.** `nickel_ebsd_master_pattern_small(...).data[0]` is bit-identical to
+  `data[1]`, so every hemisphere assertion against `data[0]`/`data[1]` of the same Ni call is
+  blind to a swap. Both the class and the io plugin now also run on an antisymmetric
+  instance/file (a single `alm[0, 1] = 1`, i.e. `Y_1^0 ~ cos(theta)`): `south == -north` and
+  the centre pixel of the square Lambert grid, which is the pole (`normals(9, "lambert")[4, 4]
+  == [0, 0, 1]`, measured), is positive on the upper and negative on the lower hemisphere.
+- **Coverage of the orix cross-check** widened from `range(16, 231, 7)` (31 of 215 space
+  groups) to all 215, as line 20 asks; the stride was a pure coverage loss, the full range
+  having been run with 0 mismatches.
+- **Failing suite after the fixes** (`-n 0 -q`, `KIKUCHIPY_EMSPHINX_DIR` unset): 899
+  collected in the four new files plus `TestGetSphericalHarmonics`, **815 failed, 81 passed,
+  11 skipped**, no collection or fixture errors. 804 failures are bare `NotImplementedError`;
+  the other 11 are the documented consequences of a bare stub (8 "DID NOT WARN", the two
+  `match=` misses on `read_sht`'s `NotImplementedError`, and one `in ""` on an exception
+  message). The 81 passing are the transcribed-data locks, the licence hygiene, the plugin
+  registration, the signature defaults and the Phase 1 amendment. `-k emsphinx_binaries` with
+  the env var set selects and runs 8 gated tests (6 before, the two new shipped-file ones
+  added). Phase 1 after the change: `test_spherical_{grid,sht,fft}.py` -> **348 passed, 507
+  skipped**, unchanged.
+- **Still to be determined by the implementation**: unchanged from step 1, plus the two
+  numbers this step's new tests will record, `opt_in_rel_l2_after_dc_and_rescale` and
+  `opt_in_norm_ratio`.
