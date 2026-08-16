@@ -21,7 +21,7 @@ skip the failing-tests and CHANGELOG gates.
 - [x] Upstream issue text and maintainer email drafted (`specs/2026-08-16-constitution/upstream-issue.md`) -- sent only after the user approves
 - [x] Adversarial review of the constitution (3 critics) and fixes applied
 - [x] `doc/user/bibliography.bib` parses under pybtex and the 9 entries render in `doc/_build/html/user/bibliography.html` (Sphinx build exit 0; no `:cite:` yet)
-- [ ] Signed commit(s) pushed; PR opened into fork `develop`
+- [x] Signed commit pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#1)
 
 ## Phase 1 -- `sht-square-grid-transform`
 - [ ] `_grid.py`: square<->sphere maps, `legendre_normals`, ring tables (`readRing` port), `ring_solid_angles`, `quadrature_weights` (`computeWeightsSkip` port), `fast_size`; public `kp.indexing.fast_bandwidths()` wrapper
