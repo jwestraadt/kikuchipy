@@ -25,11 +25,26 @@
 # An unwanted side-effect of this is that test files cannot import
 # anything from the conftest file.
 
-from io import TextIOWrapper
-from numbers import Number
 import os
 from pathlib import Path
 import tempfile
+
+# ---------------- Per-worker Numba cache under pytest-xdist ---------- #
+# Numba writes cache=True kernels (ours, and orix's dynamic gufuncs
+# such as ``qu_conj_gufunc``) to a shared on-disk cache. When several
+# xdist workers compile the same kernel at the same time on a fresh
+# machine (CI), they race on the cache index and a worker may load a
+# half-written kernel and crash with an access violation. Giving each
+# worker its own cache directory removes the race; it has no effect
+# without xdist, and must happen before numba is imported.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if _XDIST_WORKER and "NUMBA_CACHE_DIR" not in os.environ:
+    os.environ["NUMBA_CACHE_DIR"] = str(
+        Path(tempfile.gettempdir()) / "kikuchipy-numba-cache" / _XDIST_WORKER
+    )
+
+from io import TextIOWrapper
+from numbers import Number
 from typing import Callable, Generator, Literal
 
 import dask.array as da
