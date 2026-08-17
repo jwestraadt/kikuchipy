@@ -448,6 +448,8 @@ xc = plan.inverse(fxc, dx = flmFold)
 2. for all `i in [0, bwP)`: batched `c2r` along `m`, writing `signal + slP*slP*i`.
 So only the first `bwP` beta-slices of the full `slP^3` cube are ever materialised. **NumPy equivalent:** build the full `(slP, slP, bwP)` half-complex array, `xc_full = np.fft.irfftn(fxc, s=(slP,slP,slP)) * slP**3`, then keep `xc_full[:bwP]`.
 
+**Erratum (2026-08-17, `specs/2026-08-17-spherical-cross-correlation/requirements.md` D3)**: the "NumPy equivalent" above is superseded by D3's separable form -- `scipy.fft.ifft` along `k` on the `m % n_fold == 0` planes, `ifft` along `n` on the `[:bwP]` slices only, then `irfft` along `m`, all with `norm="forward"` (FFTW's unnormalised `c2r`) and `workers=1`; the full `irfftn(..., norm="forward")[:bwP]` remains a test oracle only (1.4-2.6x slower, materialises the whole `slP^3` cube).
+
 ### 3.4 Index ↔ Euler angle mapping
 
 `indexEuler(idx, eu)` (`:580-590`), `extractInds` (`:1249-1255`) gives `knm = (k, n, m)`:
@@ -469,6 +471,8 @@ idx = round(kR)*slP*slP + round(nR)*slP + round(mR)
 ```
 The glide encodes the ZYZ identity `R(a, b, g) == R(a+pi, -b, g+pi)`.
 
+**Erratum (2026-08-17, `specs/2026-08-17-spherical-cross-correlation/requirements.md` D6)**: `eulerIndex` has no caller in EMSphInx, no `beta` wrap (an unwrapped `beta`, e.g. `pi + 0.1` at `slP` 135, gives `kR = 137.15 -> slP - kR = -2.15`, a `size_t` wrap), and a corner for odd `slP` at `beta = 0 (mod 2 pi)`: `kR = slP/2` is not glided (`>` is false) and rounds to `bwP`, outside the stored half. The port `euler_to_index` wraps `beta` with `_euler.wrap_beta`, reduces `alpha`/`gamma` into `[-pi/2, 3 pi/2)` before the formulas, rounds with `floor(x + 0.5)` (`std::round`, not banker's), reduces `n`, `m` modulo `slP` and clamps `k` to `bwP - 1`.
+
 `extractNeighborhood<N>(idx, nh)` (`:505-544`) — `(2N+1)^3` window with **periodic** wrap in all three axes, then the glide is applied to any sampled `k >= bwP`:
 ```
 if inds_k[i] >= bwP:
@@ -477,6 +481,8 @@ if inds_k[i] >= bwP:
     inds_k[i] = slP - inds_k[i]
 nh[k][n][m] = xc[inds_k[k]*slP*slP + inds_n[n]*slP + inds_m[m]]
 ```
+
+**Erratum (2026-08-17, `specs/2026-08-17-spherical-cross-correlation/requirements.md` D5)**: the C++ `extractNeighborhood` (`:527-533`) has *two* defects, both reproduced by the port under `emsphinx_compatible=True` and pinned by tests: (i) the alpha/gamma shift is applied **per slot index `i`** (`inds[2][i]`, `inds[1][i]`), not per glided *plane*, so when the `k + 1` (or `k - 1`) slot is glided the `n = i`/`m = i` slots of all three planes are shifted while the other slots of the glided plane are not; (ii) for even `slP` the shift `x < bwP ? x + bwP - 1 : x - bwP` (section 8 item 12) is applied identically to the alpha slot `:530` **and the gamma slot `:531`**, and at `x = bwP - 1 = slP/2` yields `slP`, one past the axis -- an `m` slot reads the next row's first element, an `n` slot the next beta slice's row 0 (silently in-buffer), and at `k0 = bwP - 1` the shifted `n` slot reaches **past the end of `xc`** (`(bwP - 1, bwP - 2, any m0)` and three more triples; undefined behaviour, clamped to `xc.flat[-1]` in the port and never asserted against the C++). `emsphinx_compatible=False` uses the per-plane glide (exact for even `slP`, the half-cell approximation `s = (slP - 1)/2` for odd).
 
 `extractBunge(zxz)` (`:595-649`) — repacks `xc` into a ZXZ (Bunge) cube with origin at 0, `phi1` fastest, `phi2` middle, `Phi` slowest (`ZYZ -> ZXZ` is `phi1 = alpha - pi/2`, `Phi = beta`, `phi2 = gamma + pi/2`). Contains a documented half-pixel shift.
 
@@ -1110,6 +1116,7 @@ Generating a `.spx`: `programs/mp2sht.cpp` uses `bw = 384`, `nrm = true`, `iprm[
 10. **`northPoleQuat()` returns identity** (`detector.hpp:455-459`); the "rotate the detector footprint to the pole" optimisation is disabled, and `Indexer` still applies `quNp` (a no-op) plus the final conjugation.
 11. **`interpPeak` bounds check ignores `x[2]`** (`sht_xcorr.hpp:421`): `max(|x[0]|, max(|x[1]|, |x[0]|))`. A large alpha over-step is not caught.
 12. **`extractNeighborhood` glide for even `slP`** (`sht_xcorr.hpp:530-531`): `m < bwP ? m + bwP - 1 : m - bwP`. For odd `slP` both branches are `m + (slP-1)/2 (mod slP)` — consistent. For even `slP` the second branch is off by one relative to `+slP/2`. `eulerIndex` (`:559-563`) uses exact `fmod(x + slP/2, slP)`.
+    **Addendum (2026-08-17, `specs/2026-08-17-spherical-cross-correlation/requirements.md` D5, D6)**: this item describes only the even-`slP` off-by-one. Phase 4 found that the shift is applied per slot index rather than per glided plane, that the gamma slot `:531` receives the identical shift, and that at `k0 = bwP - 1` the even-`slP` reads run past the end of `xc` (see the D5 erratum in section 3.4); `eulerIndex` (no caller) has no `beta` wrap and rounds `beta = 0` to `k = bwP` for odd `slP` (D6 erratum in section 3.4).
 13. **`n` only loops to `bwP` in `compute`** (`:756`); for even `slP` the row `n = slP/2` is written twice (`v` then `vnc`), but that row is always in the systemic-zero branch because `bwP - 1 >= mBw` in that case, so it is harmless.
 14. **`interpolateMaxima`** silently falls back to `x = 0` if Newton does not converge in 25 iterations (`:1350`); tolerance `sqrt(machine eps)`.
 15. **`refinePeak` tolerances:** `absEps = eps*2*pi/slP` with `eps = 0.01` by default; `maxIter = 15`; `euEps = sqrt(machine eps)` for the `beta ≈ 0, +/-pi` degeneracy; monotone step-shrinking is enforced; Cholesky failure is *used deliberately* to reject non-positive-definite (saddle) Hessians. On any failure the original interpolated orientation is returned with the correlation re-evaluated.

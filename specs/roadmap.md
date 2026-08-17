@@ -50,8 +50,10 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#4)
 
 ## Phase 4 -- `spherical-cross-correlation`
-- [ ] `_xcorr.py`: `SphericalCrossCorrelator`, `NormalizedSphericalCrossCorrelator` (Huhle `rDen`), spectrum kernel, 27-neighbourhood + glide, tri-quadratic interpolation, index<->euler (note: `extractBunge` (`sht_xcorr.hpp:594-649`) uses the reversed ZYZ->Bunge offsets; if ported, use `_euler.bunge_to_zyz` and record the deviation)
-- [ ] Tests: `sht_xcorr.cpp` ports (random pairs, symmetric groups, wedge mask), Ni master autocorrelation -> identity + 24 cubic ops, timing baseline at bw 53/68/88; normalised correlator with the Ni master in both `emsphinx_compatible` settings against a known rotation: argmax misorientation within the grid/refinement tolerance, score difference recorded (the D7 gate of Phase 2)
+- [x] `_xcorr.py`: `SphericalCrossCorrelator` (spectrum kernel, separable `scipy.fft` inverse with `m % n_fold` plane skipping, `findPeak`, 27-neighbourhood + glide, tri-quadratic interpolation, `index_to_euler`/`euler_to_index`, `clone()`), `NormalizedSphericalCrossCorrelator` (Huhle `rDen` computed once, fused `xc *= rDen`/argmax); `refine=True` raises until Phase 7; `extractBunge` (`sht_xcorr.hpp:594-649`) **not ported** (no consumer before Phase 9; reversed `zyz2eu` offsets -- use `_euler.bunge_to_zyz` there)
+- [x] Tests: `sht_xcorr.cpp` ports (random pairs, symmetric groups, wedge mask), Ni master autocorrelation -> identity + 24 cubic ops, timing baseline at bw 53/68/88; normalised correlator with the Ni master in both `emsphinx_compatible` settings against a known rotation: argmax misorientation within the grid/refinement tolerance, score difference recorded (the D7 gate of Phase 2); two analytic oracles (Phase 3 `wigner_D` triple sum, `rotate_harmonics` inner product), glide identity on the full `irfftn` cube, C++ `extractNeighborhood` defects pinned in both `emsphinx_compatible` settings, memory (`tracemalloc`) at bw 63/68/88/113
+- [x] Adversarial review (fidelity vs compiled C++ driver ~1e-16, conventions, 109-mutation bug injection) and fixes; coverage 100 %
+- [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#6)
 
 ## Phase 5 -- `spherical-back-projection`
 - [ ] `_back_projection.py` (`SphericalBackProjector` gather LUT, DCT rescaler, DCT IQ, window mask, `mlm`, `flm2`/`rDen`, single-PC guard)
