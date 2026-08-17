@@ -843,6 +843,19 @@ class TestSizes:
         with pytest.raises(ValueError):
             _xcorr.SphericalCrossCorrelator(4, wigner_d_half_pi=table)
 
+    def test_a_filled_nan_slot_alone_raises(self):
+        # the two guards are independent: the tables of the test
+        # above also fail the transposed check, so deleting the NaN
+        # tripwire leaves it passing.  This one is the transposed
+        # table with its undefined slots filled, i.e. exactly the
+        # np.zeros buffer Phase 3's out= idiom refuses
+        table = _wigner.wigner_d_half_pi_table(4, True).copy()
+        assert table[1, 0, 1] < 0
+        assert np.isnan(table).any()
+        table[np.isnan(table)] = 0.0
+        with pytest.raises(ValueError, match="NaN"):
+            _xcorr.SphericalCrossCorrelator(4, wigner_d_half_pi=table)
+
     def test_untransposed_wigner_table_raises(self):
         # the two layouts differ by (-1)^(k - m) in half of their
         # slots and would silently give a wrong correlation; slot
@@ -892,6 +905,60 @@ class TestSizes:
         correlator = _xcorr.SphericalCrossCorrelator(8)
         with pytest.raises(RuntimeError):
             correlator.interp_peak(0)
+
+    @pytest.mark.parametrize("index", [-1, -10, 1800, 18000])
+    def test_interp_peak_outside_the_cube_raises(self, index):
+        # the glide of `_extract_neighborhood` turns a `k0` past
+        # `bwP` into negative flat offsets and the past-the-end
+        # clamp is one sided, so an unchecked index is a read
+        # outside the buffer of a `nogil` kernel rather than a
+        # wrong answer
+        rng = np.random.default_rng(0)
+        flm = random_alm(8, rng)
+        gln = random_alm(8, rng)
+        correlator = _xcorr.SphericalCrossCorrelator(8)
+        xc = correlator.compute(flm, gln, 1, False)
+        assert xc.size == 1800
+        with pytest.raises(ValueError, match="flat index"):
+            correlator.interp_peak(index)
+        # the two ends of the valid range are accepted
+        correlator.interp_peak(0)
+        correlator.interp_peak(xc.size - 1)
+
+    @pytest.mark.parametrize("knm", [(), (3, 5), (3, 5, 7, 9)])
+    def test_index_to_euler_of_the_wrong_length_raises(self, knm):
+        with pytest.raises(ValueError, match="three elements"):
+            _xcorr.index_to_euler(knm, 15)
+
+    @pytest.mark.parametrize("zyz", [(), (0.0, 0.1), (0.0, 0.1, 0.2, 0.3)])
+    def test_euler_to_index_of_the_wrong_length_raises(self, zyz):
+        with pytest.raises(ValueError, match="three elements"):
+            _xcorr.euler_to_index(zyz, 15)
+
+    def test_the_two_reprs_and_the_delegating_properties(self):
+        # the plain `__repr__` is otherwise only exercised by the
+        # separate `--doctest-modules` run
+        bandwidth = 17
+        rng = np.random.default_rng(41)
+        _, flm, flm2, mlm, _ = masked_case(bandwidth, 4, True, rng)
+        plain = _xcorr.SphericalCrossCorrelator(bandwidth)
+        assert repr(plain) == (
+            "SphericalCrossCorrelator: bw = 17, side_length = 33 (unpadded 33), half 17"
+        )
+        normalized = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 4, True, mlm
+        )
+        assert repr(normalized) == (
+            "NormalizedSphericalCrossCorrelator: bw = 17, side_length = 33 "
+            "(unpadded 33), half 17, n_fold = 4, mirror = True"
+        )
+        for name in ("bandwidth", "side_length", "half_side_length"):
+            assert getattr(normalized, name) == getattr(normalized.correlator, name)
+
+    def test_a_wigner_table_which_is_not_an_array_raises(self):
+        table = _wigner.wigner_d_half_pi_table(8, True)
+        with pytest.raises(ValueError, match="NumPy array"):
+            _xcorr.SphericalCrossCorrelator(8, wigner_d_half_pi=table.tolist())
 
     def test_refine_raises_for_the_plain_correlator(self):
         rng = np.random.default_rng(0)
@@ -1117,6 +1184,29 @@ class TestSpectrumKernel:
         correlator.fxc[bandwidth : slp - bandwidth + 1] = poison
         correlator.compute(flm, gln, 4, True)
         assert_the_zeros(correlator.fxc)
+
+    @pytest.mark.parametrize("bandwidth, n_fold", [(16, 4), (17, 3)])
+    def test_a_violating_spectrum_keeps_the_systemic_zero_columns(
+        self, bandwidth, n_fold
+    ):
+        # the rows m % n_fold != 0 of flm are *assumed* zero, so the
+        # kernel skips them and writes zero into the four slots
+        # instead (lines 818-829).  Nothing else here sees that
+        # skip: the inverse transform drops those alpha planes
+        # anyway, so xc is unchanged, and the test above feeds a
+        # conforming spectrum, for which the value the kernel would
+        # compute is exactly zero in any case
+        rng = np.random.default_rng(30)
+        violating = random_alm(bandwidth, rng)
+        gln = random_alm(bandwidth, rng)
+        correlator = _xcorr.SphericalCrossCorrelator(bandwidth)
+        correlator.compute(violating, gln, n_fold, False)
+        for m in range(correlator.half_side_length):
+            if m % n_fold:
+                assert np.all(correlator.fxc[:, :, m] == 0), f"column {m}"
+        # not vacuous: the kept columns of a violating spectrum are
+        # not zero either
+        assert np.any(correlator.fxc[:, :, 0] != 0)
 
     @pytest.mark.parametrize("bandwidth", [9, 16])
     def test_buffers_may_be_reused_across_flags(self, bandwidth):
@@ -1354,6 +1444,22 @@ class TestGlide:
         assert index == int(np.argmax(expected))
         assert np.array_equal(cube, expected)
 
+    def test_scale_and_find_peak_seeds_with_the_scaled_first_value(self):
+        # the running maximum starts at xc.flat[0] * r_den.flat[0]
+        # (line 1146).  Seeding it with the unscaled xc.flat[0]
+        # hides every later slot whose scaled value is below it,
+        # and nothing else sees that: the tie test uses r_den == 1,
+        # so the two seeds agree, and the in-place test has its
+        # maximum away from slot 0
+        cube = np.zeros((2, 2, 2))
+        flat = cube.reshape(-1)
+        flat[0] = 10.0
+        flat[5] = 4.0
+        r_den = np.ones_like(cube)
+        r_den.reshape(-1)[0] = 0.1
+        assert _xcorr._scale_and_find_peak(cube, r_den) == 5
+        assert flat[0] == 1.0
+
     @pytest.mark.parametrize("bandwidth", [16, 60])
     def test_full_cube_glide_identity_for_even_side_length(
         self, bandwidth, record_property
@@ -1544,6 +1650,37 @@ class TestGlide:
         assert block[1, 0, 2] == flat[-1]
 
     @pytest.mark.parametrize("bandwidth", [16, 60])
+    def test_past_the_end_reads_are_clamped_in_the_interpreted_kernel(self, bandwidth):
+        # the clamp is the module's one memory safety guard and the
+        # compiled kernel hides it from `coverage`, so the same
+        # reaching centres go through `.py_func` as well
+        kernel = _xcorr._extract_neighborhood
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        interpreted = _py_func(kernel)
+        correlator = correlator_with_rotated_pair(bandwidth)
+        xc = correlator.xc
+        slp, bwp = correlator.side_length, correlator.half_side_length
+        flat = xc.reshape(-1)
+        size = flat.size
+        block = np.empty((3, 3, 3))
+        compiled = np.empty((3, 3, 3))
+
+        offsets = literal_offsets(slp, bwp, bwp - 1, bwp - 2, 0)
+        assert sum(offset >= size for offset in offsets) == 3
+        interpreted(flat, slp, bwp, bwp - 1, bwp - 2, 0, True, block)
+        kernel(flat, slp, bwp, bwp - 1, bwp - 2, 0, True, compiled)
+        for m in range(3):
+            assert block[1, 2, m] == flat[-1]
+        assert np.array_equal(block, compiled)
+
+        offsets = literal_offsets(slp, bwp, bwp - 1, 0, bwp - 2)
+        assert sum(offset >= size for offset in offsets) == 1
+        interpreted(flat, slp, bwp, bwp - 1, 0, bwp - 2, True, block)
+        kernel(flat, slp, bwp, bwp - 1, 0, bwp - 2, True, compiled)
+        assert block[1, 0, 2] == flat[-1]
+        assert np.array_equal(block, compiled)
+
+    @pytest.mark.parametrize("bandwidth", [16, 60])
     def test_the_past_the_end_set_is_exactly_the_documented_one(self, bandwidth):
         slp = _fft.fast_size(2 * bandwidth - 1)
         bwp = slp // 2 + 1
@@ -1571,7 +1708,84 @@ class TestGlide:
                     assert max(offsets) < size
 
 
+# Two neighbourhoods with a long Newton path, and the ``x`` and
+# ``vPeak`` a driver compiled against EMSphInx 60f3517 returns for
+# them from ``detail::interpolateMaxima()`` directly.  A smooth peak
+# converges in one step, where the six Hessian entries and the three
+# component convergence criterion are invisible; the first block
+# below converges to a maximum inside the cell after several steps
+# and the second exhausts the 25 iterations and is reset.
+CPP_CONVERGING_BLOCK = [
+    [
+        [3.8463257313578585, -0.783092322760318, -0.8421505813091593],
+        [-2.9084302296792317, -5.606086404020477, -1.1456845426726896],
+        [-2.061879928553311, 1.482521938382085, -4.4167874188122624],
+    ],
+    [
+        [4.294839538632369, 0.815801529643096, -0.7437080745923643],
+        [-2.128270047557685, -2.3616211663573843, -3.3902614938618463],
+        [-1.633082174721499, 0.018151244683531152, -0.5320903483308127],
+    ],
+    [
+        [-4.24346362141436, -0.7974847231310919, -2.679548746011244],
+        [0.47964655518623206, 5.593955625612349, 1.8750680823398116],
+        [-0.9393598164664716, -4.874649520423486, -4.244172926036354],
+    ],
+]
+CPP_CONVERGING_X = [0.4115222132045367, 0.9403320535558004, -0.8332813901362723]
+CPP_CONVERGING_PEAK = -2.890368332277324
+CPP_RESET_BLOCK = [
+    [
+        [-0.4411370616375323, -0.38618709187789313, 0.22670603486897],
+        [-0.19505796519119564, -0.23616835849285708, 0.41115662899548067],
+        [-0.1576526055272902, 0.43707385309572017, -0.20639897211997982],
+    ],
+    [
+        [0.3718466855934981, 0.48499047263281325, 0.4614277361438018],
+        [-0.2895492569417033, 0.2876633912659621, 1.0925180747788108],
+        [0.8780905077617163, 0.31365062471465405, 0.2002939427294054],
+    ],
+    [
+        [0.7563312270772873, -0.41674357640602877, -0.2195239175207674],
+        [-0.610106386936538, 0.2031860306205105, -0.14724259537285975],
+        [-0.23942361377717164, 1.2237107259163091, -0.3020154582084432],
+    ],
+]
+CPP_RESET_X = [0.0, 0.0, 0.0]
+CPP_RESET_PEAK = 0.2876633912659621
+
+
 class TestInterpolation:
+    @pytest.mark.parametrize(
+        "block, expected_x, expected_peak",
+        [
+            (CPP_CONVERGING_BLOCK, CPP_CONVERGING_X, CPP_CONVERGING_PEAK),
+            (CPP_RESET_BLOCK, CPP_RESET_X, CPP_RESET_PEAK),
+        ],
+    )
+    def test_the_newton_path_matches_the_cpp_on_two_recorded_blocks(
+        self, block, expected_x, expected_peak
+    ):
+        # nothing else pins the six Hessian entries or the three
+        # component convergence criterion: on a smooth peak Newton
+        # converges in one step from x = 0, where the Hessian is
+        # diagonal in the quadratic coefficients and every step
+        # component is below the criterion at once.  These two
+        # blocks have long Newton paths and the port reproduces the
+        # C++ driver bitwise on both.  Measured: dropping the outer
+        # factor two of any of h00, h11, h01, h12 or h02, swapping
+        # two inverse Hessian entries, testing only |step[0]| or
+        # only |step[0]| and |step[1]|, dropping the
+        # non-convergence reset and changing the iteration cap each
+        # move x by at least 0.2 on one of the two blocks
+        p = np.array(block)
+        x = np.zeros(3)
+        peak = _xcorr._interpolate_maxima(p, x)
+        assert np.abs(x - np.array(expected_x)).max() <= 1e-12
+        assert abs(peak - expected_peak) <= 1e-12 * max(abs(expected_peak), 1.0)
+        # and the block is unchanged, since only x is written
+        assert np.array_equal(p, np.array(block))
+
     @pytest.mark.parametrize(
         "center",
         [(0.3, -0.2, 0.45), (0.0, 0.0, 0.0), (0.49, 0.49, -0.49), (-0.7, 0.6, 0.1)],
@@ -1659,6 +1873,19 @@ class TestInterpolation:
         return correlator.interp_peak(
             flat_index(3, 5, 7, slp), emsphinx_compatible=emsphinx_compatible
         )
+
+    @pytest.mark.parametrize("emsphinx_compatible", [True, False])
+    def test_a_step_of_exactly_one_cell_is_kept(self, emsphinx_compatible):
+        # line 421 rejects only xMax > 1, so a maximum exactly one
+        # cell away is still interpolated.  A separable quadratic
+        # centred one cell out in beta converges in a single Newton
+        # step to x[0] == 1.0 bitwise, which is the only way to see
+        # the strict > against a >=
+        block = quadratic_block((1.0, 0.0, 0.0), cross=0.0)
+        _, peak, x = self._interp_peak_of_block(block, emsphinx_compatible)
+        assert x[0] == 1.0
+        assert np.array_equal(x[1:], np.zeros(2))
+        assert abs(peak - 5.0) <= 1e-12
 
     def test_the_x2_bounds_bug_lets_an_alpha_over_step_through(self):
         block = quadratic_block((0.2, 0.1, 1.5))
@@ -1854,13 +2081,44 @@ class TestCorrelate:
             worst_unreduced = max(worst_unreduced, unreduced)
             record_property(f"group_{name}_bw{bandwidth}_rot{i}", f"{delta:.4f}")
             assert delta < tier_tolerance_deg(zyz[1], side_length)
+            if n_fold > 1:
+                # The reduction must be doing work, and on the
+                # correct side: the master's symmetry composes on
+                # the crystal side, i.e. on the *left* of
+                # ~Rotation(zyz_to_quaternion(.)), so a solution and
+                # its symmetry image are 60-180 degrees apart
+                # unreduced and identical reduced.  This is asserted
+                # on the image of `found` rather than on
+                # `worst_unreduced` itself, which is not a property
+                # of a correct correlator: which of the equivalent
+                # branches carries the argmax is decided by the grid
+                # (odd slP, where no branch is on-grid) or by FFT
+                # rounding noise (even slP, where the branches are
+                # exactly tied), and the compiled EMSphInx
+                # correlator returns the identity branch for all
+                # three rotations at (bw 58, "112") and
+                # (bw 61, "2/m") as well
+                operator = Rotation(
+                    np.array(
+                        [
+                            [
+                                math.cos(math.pi / n_fold),
+                                0.0,
+                                0.0,
+                                math.sin(math.pi / n_fold),
+                            ]
+                        ]
+                    )
+                )
+                rotation = Rotation(
+                    _euler.zyz_to_quaternion(np.atleast_2d(np.asarray(found)))
+                )
+                image = _euler.quaternion_to_zyz((rotation * operator).data[0])
+                assert misorientation_deg(found, image, name) < 1e-6
+                assert misorientation_deg(found, image) > 30.0
         record_property(
             f"group_{name}_bw{bandwidth}_unreduced", f"{worst_unreduced:.3f}"
         )
-        if n_fold > 1:
-            # the reduction must be doing work, and on the correct
-            # side: without it these are 60-180 degrees apart
-            assert worst_unreduced > 30.0
 
     @pytest.mark.parametrize("name", POINT_GROUPS)
     def test_mirror_symmetrization_and_zeroing_are_exact(self, name):
@@ -2075,6 +2333,68 @@ class TestNormalized:
         difference = float(np.nanmax(np.abs(normalized.r_den - wrong)))
         assert difference > 0.05 * np.abs(expected).max()
 
+    @pytest.mark.parametrize("bandwidth", [24, 53])
+    def test_the_compatibility_keyword_reaches_the_interpolation(
+        self, bandwidth, record_property
+    ):
+        # nothing else here calls the normalized correlate() with
+        # emsphinx_compatible=False, so one which forwards a
+        # hard-coded True survives the whole file.  Near beta = 0
+        # the peak sits on the last stored slice, where the two
+        # glides differ
+        rng = np.random.default_rng(bandwidth)
+        transform, flm, flm2, mlm, mask = masked_case(bandwidth, 1, False, rng)
+        normalized = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 1, False, mlm
+        )
+        side_length = normalized.side_length
+        zyz = np.array([0.7, 0.15 * 2 * math.pi / side_length, -1.9])
+        gln = masked_pattern(transform, flm, mask, zyz)
+        found_faithful, score_faithful = normalized.correlate(gln)
+        found_exact, score_exact = normalized.correlate(gln, emsphinx_compatible=False)
+        assert_zyz_in_range(found_faithful, side_length, True)
+        assert_zyz_in_range(found_exact, side_length, False)
+        assert not np.array_equal(found_faithful, found_exact)
+        assert math.isfinite(score_faithful) and math.isfinite(score_exact)
+        record_property(
+            f"normalized_compat_bw{bandwidth}",
+            f"{misorientation_deg(found_faithful, found_exact):.4f}",
+        )
+
+    def test_the_argmax_is_taken_on_the_normalized_cube(self):
+        # the C++ fuses the scaling and the argmax (lines 1146-1154)
+        # and interpolates the scaled cube (line 1157).  Scaling
+        # after the argmax instead gives the same answer whenever
+        # the two argmaxes agree, which they do in 587 of the 600
+        # masked cases probed, so the one case where they differ is
+        # pinned here: bw 24, seed 0, the second rotation, where
+        # the normalization moves the peak one cell in gamma
+        bandwidth = 24
+        rng = np.random.default_rng(0)
+        transform, flm, flm2, mlm, mask = masked_case(bandwidth, 1, False, rng)
+        normalized = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 1, False, mlm
+        )
+        plain = _xcorr.SphericalCrossCorrelator(bandwidth)
+        side_length = plain.side_length
+        for _ in range(2):
+            zyz = random_zyz(rng)
+        gln = masked_pattern(transform, flm, mask, zyz)
+        xc = plain.compute(flm, gln, 1, False).copy()
+        unscaled = _xcorr._find_peak(xc)
+        scaled = _xcorr._find_peak(xc * normalized.r_den)
+        assert unflatten(unscaled, side_length) == (13, 38, 25)
+        assert unflatten(scaled, side_length) == (13, 39, 25)
+
+        # the reference scales first, as the port must
+        reference = plain.compute(flm, gln, 1, False)
+        reference *= normalized.r_den
+        plain.xc = reference
+        expected_zyz, expected_peak, _ = plain.interp_peak(scaled)
+        found, score = normalized.correlate(gln)
+        assert np.array_equal(found, expected_zyz)
+        assert score == expected_peak
+
     def test_the_score_semantics_are_documented(self):
         doc = " ".join(_xcorr.NormalizedSphericalCrossCorrelator.__doc__.split())
         assert "not divided by the standard deviation of the pattern function" in doc
@@ -2102,6 +2422,99 @@ class TestNormalized:
         zyz_b, score_b = clone.correlate(gln)
         assert np.array_equal(zyz_a, zyz_b)
         assert score_a == score_b
+
+    def test_a_clone_has_the_attribute_set_of_a_constructed_instance(self):
+        # `clone()` copies the seven attributes one by one, so one
+        # added to `__init__` later would silently be missing from
+        # every clone -- and clones are the thread safety mechanism,
+        # so the failure would surface as a threading bug
+        bandwidth = 17
+        rng = np.random.default_rng(38)
+        _, flm, flm2, mlm, _ = masked_case(bandwidth, 1, False, rng)
+        original = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 1, False, mlm
+        )
+        clone = original.clone()
+        assert vars(clone).keys() == vars(original).keys()
+        assert vars(clone.correlator).keys() == vars(original.correlator).keys()
+
+    def test_the_constructor_releases_the_denominator_from_the_correlator(self):
+        # the constructor's second `compute()` leaves the owned
+        # correlator's `xc` bound to the array which becomes the
+        # shared read only `r_den`, and `_scale_and_find_peak`
+        # writes its first argument in place, so the alias must be
+        # gone before anything can reach it
+        bandwidth = 17
+        rng = np.random.default_rng(39)
+        transform, flm, flm2, mlm, mask = masked_case(bandwidth, 1, False, rng)
+        normalized = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 1, False, mlm
+        )
+        assert normalized.correlator.xc is None
+        with pytest.raises(RuntimeError):
+            normalized.correlator.interp_peak(0)
+        assert normalized.clone().correlator.xc is None
+
+        before = normalized.r_den.copy()
+        gln = masked_pattern(transform, flm, mask, random_zyz(rng))
+        normalized.correlate(gln)
+        assert normalized.correlator.xc is not normalized.r_den
+        assert np.array_equal(normalized.r_den, before)
+
+    def test_a_degenerate_denominator_does_not_leak_a_numpy_warning(self):
+        # a `flm2` which is not the transform of the reference
+        # squared makes radicands negative, which is documented to
+        # give NaN slots rather than an error, but the constructor
+        # must not emit an unattributed numpy RuntimeWarning from
+        # inside kikuchipy either
+        bandwidth = 8
+        rng = np.random.default_rng(0)
+        flm = random_alm(bandwidth, rng)
+        mlm = random_alm(bandwidth, rng)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            normalized = _xcorr.NormalizedSphericalCrossCorrelator(
+                bandwidth, flm, -np.abs(flm), 1, False, mlm
+            )
+        assert not np.isfinite(normalized.r_den).all()
+
+        # and the documented consequence: this seed puts a NaN in
+        # flat slot 0, which seeds `_scale_and_find_peak`, so the
+        # peak stays at index 0 -- the grid corner -- with a NaN
+        # score instead of raising
+        assert math.isnan(float(normalized.r_den.reshape(-1)[0]))
+        gln = random_alm(bandwidth, rng)
+        zyz, score = normalized.correlate(gln)
+        corner = _xcorr.index_to_euler((0, 0, 0), normalized.side_length)
+        assert np.array_equal(zyz, corner)
+        assert math.isnan(score)
+
+    def test_a_nan_in_the_first_slot_alone_pins_the_peak(self):
+        # the C++ seeds with `xc.front()` (times `rDen.front()`), so
+        # a NaN there loses every later comparison too.  Anywhere
+        # else a NaN is skipped.  This is the C++ behaviour and must
+        # not be "fixed"
+        rng = np.random.default_rng(40)
+        xc = rng.normal(size=(3, 4, 4))
+        xc[1, 2, 3] = 100.0
+        peak = flat_index(1, 2, 3, 4)
+        assert _xcorr._find_peak(xc) == peak
+
+        poisoned = xc.copy()
+        poisoned.reshape(-1)[peak - 1] = np.nan
+        assert _xcorr._find_peak(poisoned) == peak
+        poisoned = xc.copy()
+        poisoned[0, 0, 0] = np.nan
+        assert _xcorr._find_peak(poisoned) == 0
+
+        r_den = np.ones_like(xc)
+        assert _xcorr._scale_and_find_peak(xc.copy(), r_den) == peak
+        away = r_den.copy()
+        away.reshape(-1)[peak - 1] = np.nan
+        assert _xcorr._scale_and_find_peak(xc.copy(), away) == peak
+        seeded = r_den.copy()
+        seeded[0, 0, 0] = np.nan
+        assert _xcorr._scale_and_find_peak(xc.copy(), seeded) == 0
 
 
 class TestNickel:

@@ -233,9 +233,11 @@ costs ``2 (fxc + xc)`` = 59 MB.  A correlator is **not thread-safe**:
 give every thread its own ``clone()``.
 
 **Speed.** Single thread on the development machine, ``correlate``
-end to end: 12 / 26 / 100 / 242 ms at ``bw`` 53 / 68 / 88 / 113
-without symmetry and 7 / 14-20 / 44 / 93 ms with ``m-3m``, i.e.
-1.4-2.7 times the compiled C++.  pocketfft has no radix-13 codelet,
+end to end, best of five with the kernels warm: 10.8 / 24.6 / 59.6
+/ 133.6 ms at ``bw`` 53 / 68 / 88 / 113 without symmetry and 5.4 /
+11.7 / 28.2 / 59.2 ms with ``m-3m``, i.e. 1.2-1.7 times the
+compiled C++ (8.9 / 16.3 / 48.1 / 90.4 resp. 3.3 / 6.9 / 18.9 /
+34.2 ms).  pocketfft has no radix-13 codelet,
 so an ``slP`` with a factor 13 costs 1.06-1.18 times as much in the
 inverse transform (``slP`` 117 against 120), about 4-11 % of a
 ``correlate`` at ``bw`` 57-59; this is recorded rather than warned
@@ -249,26 +251,22 @@ References
 
 import math
 
+from numba import njit
 import numpy as np
+from scipy.fft import ifft, irfft
 
-# TODO: The implementer adds the two remaining import blocks, which
-# are omitted here because a body which only raises uses none of
-# them:
-#     from numba import njit
-#     from scipy.fft import ifft, irfft
-#
-#     from kikuchipy.indexing._spherical import _euler, _fft, _wigner
-#
-# The two SciPy transforms must be bound in this namespace, as
-# Phases 1-3 bind theirs, so that the FFT call recording test can
-# patch ``_xcorr.ifft`` and ``_xcorr.irfft``.
+from kikuchipy.indexing._spherical import _euler, _fft, _wigner
+
+# The two SciPy transforms are bound in this namespace, as Phases
+# 1-3 bind theirs, so that a test can patch ``_xcorr.ifft`` and
+# ``_xcorr.irfft`` and see every call this module makes.
 
 # Machine epsilon of the 64-bit floating point type
 _EPS = float(np.finfo(np.float64).eps)
 
 # Convergence criterion and iteration cap of the Newton loop of
 # ``detail::interpolateMaxima()``
-# (``include/sht/sht_xcorr.hpp``, lines 1338 and 1348)
+# (``include/sht/sht_xcorr.hpp``, lines 1313 and 1312)
 _NEWTON_EPS = math.sqrt(_EPS)
 _NEWTON_MAX_ITERATIONS = 25
 
@@ -289,9 +287,7 @@ _TWO_PI = 2 * math.pi
 # --------------------------- Numba kernels -------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _xcorr_spectrum(
     flm: np.ndarray,
     gln: np.ndarray,
@@ -327,9 +323,14 @@ def _xcorr_spectrum(
     fxc
         ``(slP, slP, bwP)`` 128-bit complex output buffer indexed
         ``[k, n, m]``, written in place.  Every slot the kernel does
-        not write is a column ``m in [bw, bwP)`` of a row ``n < bw``,
-        which nothing ever writes, so a zero filled buffer may be
+        not write is a column ``m in [bw, bwP)`` of a row **and** a
+        slice which are not zero padded, i.e. ``n`` and ``k`` both
+        outside ``[bw, slP - bw]``: those columns exist only for
+        even ``slP``, where they are the single column ``m = bw``,
+        and nothing ever writes them, so a zero filled buffer may be
         reused across calls with different ``n_fold`` and ``mirror``.
+        Verified with a NaN tripwire: ``(slP - 1)^2`` unwritten
+        slots at ``slP`` 24 / 32 / 48 and none at odd ``slP``.
     fm
         ``(bw, bw)`` 128-bit complex scratch buffer.
     gn
@@ -362,12 +363,105 @@ def _xcorr_spectrum(
     Complex arithmetic only, so the compiled kernel and its
     ``py_func`` agree bitwise on the development machine.
     """
-    raise NotImplementedError
+    bandwidth = flm.shape[0]
+    slp = fxc.shape[0]
+    bwp = fxc.shape[2]
+    for k in range(bandwidth):
+        # fm[m, j] = f^j_m d^j_{k,m}(pi/2), lines 736-744
+        for m in range(bandwidth):
+            for j in range(max(m, k), bandwidth):
+                fm[m, j] = flm[m, j] * table[m, k, j]
+        positive_k = k > 0
+        for n in range(bwp):
+            positive_n = n > 0
+            if n >= bandwidth:
+                # a zero padded row, lines 831-837
+                for m in range(bwp):
+                    fxc[k, n, m] = 0j
+                    if positive_k:
+                        fxc[slp - k, n, m] = 0j
+                    if positive_n:
+                        fxc[k, slp - n, m] = 0j
+                    if positive_k and positive_n:
+                        fxc[slp - k, slp - n, m] = 0j
+                continue
+            max_kn = max(k, n)
+            # gn[j] = conj(g^j_n) d^j_{n,k}(pi/2), line 762
+            for j in range(max_kn, bandwidth):
+                gn[j] = gln[n, j].conjugate() * table[k, n, j]
+            for m in range(bandwidth):
+                if m % n_fold != 0:
+                    # a systemic zero column, lines 818-829
+                    fxc[k, n, m] = 0j
+                    if positive_k:
+                        fxc[slp - k, n, m] = 0j
+                    if positive_n:
+                        fxc[k, slp - n, m] = 0j
+                    if positive_k and positive_n:
+                        fxc[slp - k, slp - n, m] = 0j
+                    continue
+                value = 0j
+                negated = 0j
+                start = max(m, max_kn)
+                if mirror:
+                    # a single mirror, lines 773-783
+                    if (start + m) % 2 != 0:
+                        start += 1
+                    toggle = (start + m) % 2 == 0
+                    for j in range(start, bandwidth, 2):
+                        first = fm[m, j]
+                        second = gn[j]
+                        rr = first.real * second.real
+                        ii = first.imag * second.imag
+                        ri = first.real * second.imag
+                        ir = first.imag * second.real
+                        value += complex(rr - ii, ir + ri)
+                        negated += complex(rr + ii, ir - ri)
+                    if not toggle:  # pragma: no cover
+                        # dead: line 774 has just made start + m
+                        # even, so toggle of line 776 is always true
+                        negated = -negated
+                else:
+                    # no mirror, lines 784-793
+                    toggle = (start + m) % 2 == 0
+                    for j in range(start, bandwidth):
+                        first = fm[m, j]
+                        second = gn[j]
+                        rr = first.real * second.real
+                        ii = first.imag * second.imag
+                        ri = first.real * second.imag
+                        ir = first.imag * second.real
+                        value += complex(rr - ii, ir + ri)
+                        conjugated = complex(rr + ii, ir - ri)
+                        if toggle:
+                            negated += conjugated
+                        else:
+                            negated -= conjugated
+                        toggle = not toggle
+                if k % 2 != 0:
+                    negated = -negated
+                # the four mirrored slots, lines 796-817
+                fxc[k, n, m] = value
+                if positive_k and positive_n:
+                    fxc[slp - k, slp - n, m] = negated
+                if (m + n) % 2 == 0:
+                    if positive_k:
+                        fxc[slp - k, n, m] = value
+                    if positive_n:
+                        fxc[k, slp - n, m] = negated
+                else:
+                    if positive_k:
+                        fxc[slp - k, n, m] = -value
+                    if positive_n:
+                        fxc[k, slp - n, m] = -negated
+    # the zero pad slices, line 854, inclusive at both ends
+    for k in range(bandwidth, slp - bandwidth + 1):
+        for n in range(slp):
+            for m in range(bwp):
+                fxc[k, n, m] = 0j
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _find_peak(xc: np.ndarray) -> int:
     """Return the flat index of the largest cross-correlation.
 
@@ -387,15 +481,26 @@ def _find_peak(xc: np.ndarray) -> int:
     Port of ``Correlator<Real>::findPeak()``
     (``include/sht/sht_xcorr.hpp``, lines 862-876).  The comparison
     is a strict ``>`` seeded with ``xc.flat[0]``, so among tied
-    maxima the **smallest** flat index wins and NaN slots are
-    skipped, neither of which :func:`numpy.argmax` does.
+    maxima the **smallest** flat index wins and NaN slots **other
+    than the seed** are skipped, neither of which
+    :func:`numpy.argmax` does.  A NaN in slot 0 is *not* harmless:
+    it loses every later comparison too, so the returned index stays
+    ``0``, the grid corner ``(-pi/2, -pi, -pi/2)``.  This is the C++
+    behaviour of ``Real vMax = xc.front()`` and must not be
+    "fixed"; see :class:`NormalizedSphericalCrossCorrelator` for
+    when it is reachable.
     """
-    raise NotImplementedError
+    flat = xc.reshape(-1)
+    index = 0
+    largest = flat[0]
+    for i in range(flat.size):
+        if flat[i] > largest:
+            largest = flat[i]
+            index = i
+    return index
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _scale_and_find_peak(xc: np.ndarray, r_den: np.ndarray) -> int:
     """Scale the cross-correlation in place and return the flat
     index of its largest value.
@@ -422,12 +527,20 @@ def _scale_and_find_peak(xc: np.ndarray, r_den: np.ndarray) -> int:
     temporary.  The tie and NaN semantics are those of
     :func:`_find_peak`.
     """
-    raise NotImplementedError
+    flat = xc.reshape(-1)
+    reciprocal = r_den.reshape(-1)
+    index = 0
+    largest = flat[0] * reciprocal[0]
+    for i in range(flat.size):
+        value = flat[i] * reciprocal[i]
+        flat[i] = value
+        if value > largest:
+            largest = value
+            index = i
+    return index
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _extract_neighborhood(
     xc_flat: np.ndarray,
     slp: int,
@@ -498,13 +611,60 @@ def _extract_neighborhood(
     glide; for odd ``slP`` no on-grid glide exists and the shift is
     a half cell approximation.
     """
-    raise NotImplementedError
+    half = _NEIGHBORHOOD_HALF_WIDTH
+    width = _NEIGHBORHOOD_WIDTH
+    # the periodic index arrays of lines 512-524
+    inds = np.empty((3, width), dtype=np.int64)
+    for axis in range(3):
+        if axis == 0:
+            center = k0
+        elif axis == 1:
+            center = n0
+        else:
+            center = m0
+        inds[axis, half] = center
+        for j in range(half):
+            below = inds[axis, half - j]
+            inds[axis, half - 1 - j] = slp - 1 if below == 0 else below - 1
+            above = inds[axis, half + j] + 1
+            inds[axis, half + 1 + j] = 0 if above == slp else above
+    if emsphinx_compatible:
+        # the per-slot glide of lines 527-533
+        for i in range(width):
+            if inds[0, i] >= bwp:
+                alpha = inds[2, i]
+                inds[2, i] = alpha + bwp - 1 if alpha < bwp else alpha - bwp
+                gamma = inds[1, i]
+                inds[1, i] = gamma + bwp - 1 if gamma < bwp else gamma - bwp
+                inds[0, i] = slp - inds[0, i]
+        last = xc_flat.size - 1
+        for k in range(width):
+            for n in range(width):
+                for m in range(width):
+                    offset = inds[0, k] * slp * slp + inds[1, n] * slp + inds[2, m]
+                    if offset > last:
+                        offset = last
+                    nh[k, n, m] = xc_flat[offset]
+    else:
+        # the per-plane glide, exact on the grid for even slP
+        shift = slp // 2
+        for k in range(width):
+            beta = inds[0, k]
+            glided = beta >= bwp
+            if glided:
+                beta = slp - beta
+            for n in range(width):
+                gamma = inds[1, n]
+                if glided:
+                    gamma = (gamma + shift) % slp
+                for m in range(width):
+                    alpha = inds[2, m]
+                    if glided:
+                        alpha = (alpha + shift) % slp
+                    nh[k, n, m] = xc_flat[beta * slp * slp + gamma * slp + alpha]
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True, error_model="numpy"). It is left
-# undecorated here because Numba cannot compile a body which only
-# raises.
+@njit(cache=True, nogil=True, error_model="numpy")
 def _interpolate_maxima(p: np.ndarray, x: np.ndarray) -> float:
     """Return the value of the tri-quadratic fitted to a
     neighbourhood at its maximum, and write the maximum's position.
@@ -554,15 +714,383 @@ def _interpolate_maxima(p: np.ndarray, x: np.ndarray) -> float:
     The kernel is compiled with ``error_model="numpy"``, the one
     deviation from the project's default Numba flags.  The C++
     divides the six cofactors by the Hessian determinant without a
-    guard (lines 1319-1325) and relies on IEEE semantics: on a flat
+    guard (line 1326 for the determinant and lines 1327-1332 for
+    the cofactors) and relies on IEEE semantics: on a flat
     neighbourhood, where the determinant is zero, the steps are NaN,
     the criterion never passes and the reset returns the centre
     value.  Numba's default error model raises ``ZeroDivisionError``
     there instead, and flat neighbourhoods are reachable in
     production (a masked pattern with an empty region, an all-zero
-    ``gln``, a rotation invariant spectrum).
+    ``gln``, a rotation invariant spectrum).  The compiled kernel
+    and its ``py_func`` return the same values there, but only the
+    ``py_func`` emits NumPy's ``invalid value encountered in scalar
+    divide`` warnings, since ``error_model="numpy"`` is a compile
+    time contract with no Python warning behind it: wrap a
+    ``py_func`` call on a degenerate block in
+    :func:`numpy.errstate`.
     """
-    raise NotImplementedError
+    # the 27 coefficients a_{kji} of f = a_{kji} x^i y^j z^k,
+    # lines 1265-1308
+    a000 = p[1, 1, 1]
+    a001 = (p[1, 1, 2] - p[1, 1, 0]) / 2
+    a002 = (p[1, 1, 2] + p[1, 1, 0]) / 2 - a000
+    a010 = (p[1, 2, 1] - p[1, 0, 1]) / 2
+    a020 = (p[1, 2, 1] + p[1, 0, 1]) / 2 - a000
+    a100 = (p[2, 1, 1] - p[0, 1, 1]) / 2
+    a200 = (p[2, 1, 1] + p[0, 1, 1]) / 2 - a000
+    a022 = (p[1, 2, 2] + p[1, 2, 0] + p[1, 0, 2] + p[1, 0, 0]) / 4 - a000 - a020 - a002
+    a011 = (p[1, 2, 2] - p[1, 2, 0] - p[1, 0, 2] + p[1, 0, 0]) / 4
+    a012 = (p[1, 2, 2] + p[1, 2, 0] - p[1, 0, 2] - p[1, 0, 0]) / 4 - a010
+    a021 = (p[1, 2, 2] - p[1, 2, 0] + p[1, 0, 2] - p[1, 0, 0]) / 4 - a001
+    a220 = (p[2, 2, 1] + p[2, 0, 1] + p[0, 2, 1] + p[0, 0, 1]) / 4 - a000 - a200 - a020
+    a110 = (p[2, 2, 1] - p[2, 0, 1] - p[0, 2, 1] + p[0, 0, 1]) / 4
+    a120 = (p[2, 2, 1] + p[2, 0, 1] - p[0, 2, 1] - p[0, 0, 1]) / 4 - a100
+    a210 = (p[2, 2, 1] - p[2, 0, 1] + p[0, 2, 1] - p[0, 0, 1]) / 4 - a010
+    a202 = (p[2, 1, 2] + p[0, 1, 2] + p[2, 1, 0] + p[0, 1, 0]) / 4 - a000 - a002 - a200
+    a101 = (p[2, 1, 2] - p[0, 1, 2] - p[2, 1, 0] + p[0, 1, 0]) / 4
+    a201 = (p[2, 1, 2] + p[0, 1, 2] - p[2, 1, 0] - p[0, 1, 0]) / 4 - a001
+    a102 = (p[2, 1, 2] - p[0, 1, 2] + p[2, 1, 0] - p[0, 1, 0]) / 4 - a100
+    a222 = (
+        (
+            p[2, 2, 2]
+            + p[0, 0, 0]
+            + p[0, 2, 2]
+            + p[2, 0, 2]
+            + p[2, 2, 0]
+            + p[2, 0, 0]
+            + p[0, 2, 0]
+            + p[0, 0, 2]
+        )
+        / 8
+        - a000
+        - a200
+        - a020
+        - a002
+        - a022
+        - a202
+        - a220
+    )
+    a211 = (
+        p[2, 2, 2]
+        + p[0, 0, 0]
+        + p[0, 2, 2]
+        - p[2, 0, 2]
+        - p[2, 2, 0]
+        + p[2, 0, 0]
+        - p[0, 2, 0]
+        - p[0, 0, 2]
+    ) / 8 - a011
+    a121 = (
+        p[2, 2, 2]
+        + p[0, 0, 0]
+        - p[0, 2, 2]
+        + p[2, 0, 2]
+        - p[2, 2, 0]
+        - p[2, 0, 0]
+        + p[0, 2, 0]
+        - p[0, 0, 2]
+    ) / 8 - a101
+    a112 = (
+        p[2, 2, 2]
+        + p[0, 0, 0]
+        - p[0, 2, 2]
+        - p[2, 0, 2]
+        + p[2, 2, 0]
+        - p[2, 0, 0]
+        - p[0, 2, 0]
+        + p[0, 0, 2]
+    ) / 8 - a110
+    a111 = (
+        p[2, 2, 2]
+        - p[0, 0, 0]
+        - p[0, 2, 2]
+        - p[2, 0, 2]
+        - p[2, 2, 0]
+        + p[2, 0, 0]
+        + p[0, 2, 0]
+        + p[0, 0, 2]
+    ) / 8
+    a122 = (
+        (
+            p[2, 2, 2]
+            - p[0, 0, 0]
+            - p[0, 2, 2]
+            + p[2, 0, 2]
+            + p[2, 2, 0]
+            + p[2, 0, 0]
+            - p[0, 2, 0]
+            - p[0, 0, 2]
+        )
+        / 8
+        - a100
+        - a120
+        - a102
+    )
+    a212 = (
+        (
+            p[2, 2, 2]
+            - p[0, 0, 0]
+            + p[0, 2, 2]
+            - p[2, 0, 2]
+            + p[2, 2, 0]
+            - p[2, 0, 0]
+            + p[0, 2, 0]
+            - p[0, 0, 2]
+        )
+        / 8
+        - a010
+        - a012
+        - a210
+    )
+    a221 = (
+        (
+            p[2, 2, 2]
+            - p[0, 0, 0]
+            + p[0, 2, 2]
+            + p[2, 0, 2]
+            - p[2, 2, 0]
+            - p[2, 0, 0]
+            - p[0, 2, 0]
+            + p[0, 0, 2]
+        )
+        / 8
+        - a001
+        - a201
+        - a021
+    )
+
+    # Newton iterate to the maximum, lines 1310-1352
+    x[0] = 0.0
+    x[1] = 0.0
+    x[2] = 0.0
+    for i in range(_NEWTON_MAX_ITERATIONS):
+        xx = x[0] * x[0]
+        yy = x[1] * x[1]
+        zz = x[2] * x[2]
+        xy = x[0] * x[1]
+        yz = x[1] * x[2]
+        zx = x[2] * x[0]
+        h00 = (
+            a200
+            + a210 * x[1]
+            + a201 * x[2]
+            + a220 * yy
+            + a202 * zz
+            + a211 * yz
+            + a221 * yy * x[2]
+            + a212 * x[1] * zz
+            + a222 * yy * zz
+        ) * 2
+        h11 = (
+            a020
+            + a021 * x[2]
+            + a120 * x[0]
+            + a022 * zz
+            + a220 * xx
+            + a121 * zx
+            + a122 * zz * x[0]
+            + a221 * x[2] * xx
+            + a222 * zz * xx
+        ) * 2
+        h22 = (
+            a002
+            + a102 * x[0]
+            + a012 * x[1]
+            + a202 * xx
+            + a022 * yy
+            + a112 * xy
+            + a212 * xx * x[1]
+            + a122 * x[0] * yy
+            + a222 * xx * yy
+        ) * 2
+        h01 = (
+            a110
+            + a111 * x[2]
+            + a112 * zz
+            + (
+                a210 * x[0]
+                + a120 * x[1]
+                + a211 * zx
+                + a121 * yz
+                + a212 * x[0] * zz
+                + a122 * x[1] * zz
+                + (a220 * xy + a221 * xy * x[2] + a222 * xy * zz) * 2
+            )
+            * 2
+        )
+        h12 = (
+            a011
+            + a111 * x[0]
+            + a211 * xx
+            + (
+                a021 * x[1]
+                + a012 * x[2]
+                + a121 * xy
+                + a112 * zx
+                + a221 * x[1] * xx
+                + a212 * x[2] * xx
+                + (a022 * yz + a122 * yz * x[0] + a222 * yz * xx) * 2
+            )
+            * 2
+        )
+        h02 = (
+            a101
+            + a111 * x[1]
+            + a121 * yy
+            + (
+                a102 * x[2]
+                + a201 * x[0]
+                + a112 * yz
+                + a211 * xy
+                + a122 * x[2] * yy
+                + a221 * x[0] * yy
+                + (a202 * zx + a212 * zx * x[1] + a222 * zx * yy) * 2
+            )
+            * 2
+        )
+
+        # the inverse Hessian, divided by an unguarded determinant
+        # as in lines 1326-1332
+        det = (
+            h00 * h11 * h22
+            - h00 * h12 * h12
+            - h11 * h02 * h02
+            - h22 * h01 * h01
+            + h01 * h12 * h02 * 2
+        )
+        i00 = (h11 * h22 - h12 * h12) / det
+        i11 = (h22 * h00 - h02 * h02) / det
+        i22 = (h00 * h11 - h01 * h01) / det
+        i01 = (h02 * h12 - h01 * h22) / det
+        i12 = (h01 * h02 - h12 * h00) / det
+        i02 = (h12 * h01 - h02 * h11) / det
+
+        d0 = (
+            a100
+            + a110 * x[1]
+            + a101 * x[2]
+            + a120 * yy
+            + a102 * zz
+            + a111 * yz
+            + a121 * yy * x[2]
+            + a112 * x[1] * zz
+            + a122 * yy * zz
+            + x[0]
+            * (
+                a200
+                + a210 * x[1]
+                + a201 * x[2]
+                + a220 * yy
+                + a202 * zz
+                + a211 * yz
+                + a221 * yy * x[2]
+                + a212 * x[1] * zz
+                + a222 * yy * zz
+            )
+            * 2
+        )
+        d1 = (
+            a010
+            + a011 * x[2]
+            + a110 * x[0]
+            + a012 * zz
+            + a210 * xx
+            + a111 * zx
+            + a112 * zz * x[0]
+            + a211 * x[2] * xx
+            + a212 * zz * xx
+            + x[1]
+            * (
+                a020
+                + a021 * x[2]
+                + a120 * x[0]
+                + a022 * zz
+                + a220 * xx
+                + a121 * zx
+                + a122 * zz * x[0]
+                + a221 * x[2] * xx
+                + a222 * zz * xx
+            )
+            * 2
+        )
+        d2 = (
+            a001
+            + a101 * x[0]
+            + a011 * x[1]
+            + a201 * xx
+            + a021 * yy
+            + a111 * xy
+            + a211 * xx * x[1]
+            + a121 * x[0] * yy
+            + a221 * xx * yy
+            + x[2]
+            * (
+                a002
+                + a102 * x[0]
+                + a012 * x[1]
+                + a202 * xx
+                + a022 * yy
+                + a112 * xy
+                + a212 * xx * x[1]
+                + a122 * x[0] * yy
+                + a222 * xx * yy
+            )
+            * 2
+        )
+
+        step0 = i00 * d0 + i01 * d1 + i02 * d2
+        step1 = i01 * d0 + i11 * d1 + i12 * d2
+        step2 = i02 * d0 + i12 * d1 + i22 * d2
+        x[0] -= step0
+        x[1] -= step1
+        x[2] -= step2
+
+        max_step = max(max(abs(step0), abs(step1)), abs(step2))
+        if max_step < _NEWTON_EPS:
+            break
+        if i + 1 == _NEWTON_MAX_ITERATIONS:
+            # no convergence, so do not interpolate, line 1350
+            x[0] = 0.0
+            x[1] = 0.0
+            x[2] = 0.0
+
+    # the literal vPeak expression of lines 1354-1364, with the
+    # three mixed cubic terms at the wrong monomials
+    xx = x[0] * x[0]
+    yy = x[1] * x[1]
+    zz = x[2] * x[2]
+    xy = x[0] * x[1]
+    yz = x[1] * x[2]
+    zx = x[2] * x[0]
+    return (
+        a000
+        + a111 * x[0] * x[1] * x[2]
+        + a222 * xx * yy * zz
+        + a100 * x[0]
+        + a010 * x[1]
+        + a001 * x[2]
+        + a200 * xx
+        + a020 * yy
+        + a002 * zz
+        + a110 * xy
+        + a011 * yz
+        + a101 * zx
+        + a120 * x[0] * yy
+        + a012 * x[1] * zz
+        + a201 * x[2] * xx
+        + a210 * xx * x[1]
+        + a021 * yy * x[2]
+        + a102 * zz * x[0]
+        + a220 * xx * yy
+        + a022 * yy * zz
+        + a202 * zz * xx
+        + a112 * xy * x[2]
+        + a211 * yz * x[0]
+        + a121 * zx * x[1]
+        + a122 * x[0] * yy * zz
+        + a212 * xx * x[1] * zz
+        + a221 * xx * yy * x[2]
+    )
 
 
 # ------------------------- Inverse transform ------------------------ #
@@ -607,7 +1135,41 @@ def _inverse_fft(fxc: np.ndarray, n_fold: int) -> np.ndarray:
     oracle.  The separable path allocates one ``fxc`` sized
     transient, recorded as an optimisation target.
     """
-    raise NotImplementedError
+    side_length = fxc.shape[0]
+    half_side_length = fxc.shape[2]
+    if n_fold == 1:
+        # backward along k for every n, then along n for k < bwP
+        along_k = ifft(fxc, axis=0, norm="forward", workers=1)
+        planes = ifft(
+            along_k[:half_side_length],
+            axis=1,
+            norm="forward",
+            workers=1,
+            overwrite_x=True,
+        )
+    else:
+        # the alpha planes m % n_fold != 0 are the systemic zeros
+        # the spectrum kernel wrote, so skipping them is exact
+        along_k = ifft(fxc[:, :, ::n_fold], axis=0, norm="forward", workers=1)
+        along_n = ifft(
+            along_k[:half_side_length],
+            axis=1,
+            norm="forward",
+            workers=1,
+            overwrite_x=True,
+        )
+        planes = np.zeros(
+            (half_side_length, side_length, half_side_length), dtype=np.complex128
+        )
+        planes[:, :, ::n_fold] = along_n
+    return irfft(
+        planes,
+        n=side_length,
+        axis=2,
+        norm="forward",
+        workers=1,
+        overwrite_x=True,
+    )
 
 
 # ------------------------- Euler grid <-> index --------------------- #
@@ -632,6 +1194,12 @@ def index_to_euler(knm: tuple[int, int, int], side_length: int) -> np.ndarray:
         ``beta = 2 pi k / slP - pi`` and
         ``gamma = 2 pi n / slP - pi / 2``.
 
+    Raises
+    ------
+    ValueError
+        If ``knm`` does not have three elements, as
+        :func:`euler_to_index` raises for its ``zyz``.
+
     Notes
     -----
     Port of ``Correlator<Real>::indexEuler()``
@@ -641,7 +1209,20 @@ def index_to_euler(knm: tuple[int, int, int], side_length: int) -> np.ndarray:
     stored slice and its glide image, while for even ``slP`` it is
     slice ``bwP - 1``.
     """
-    raise NotImplementedError
+    indices = tuple(knm)
+    if len(indices) != 3:
+        raise ValueError(f"`knm` must have three elements, not {len(indices)}")
+    slp = int(side_length)
+    k = int(indices[0])
+    n = int(indices[1])
+    m = int(indices[2])
+    return np.array(
+        [
+            (m * 4 - slp) * math.pi / (2 * slp),
+            (k * 2 - slp) * math.pi / slp,
+            (n * 4 - slp) * math.pi / (2 * slp),
+        ]
+    )
 
 
 def euler_to_index(zyz: np.ndarray, side_length: int) -> tuple[int, int, int]:
@@ -687,7 +1268,165 @@ def euler_to_index(zyz: np.ndarray, side_length: int) -> tuple[int, int, int]:
 
     ``eulerIndex()`` has no caller in EMSphInx.
     """
-    raise NotImplementedError
+    angles = np.asarray(zyz, dtype=np.float64).reshape(-1)
+    if angles.size != 3:
+        raise ValueError(f"`zyz` must have three elements, not {angles.size}")
+    slp = int(side_length)
+    # the wrap and the reduction the C++ does not have; both leave
+    # an angle which is already in range bitwise unchanged
+    alpha = float(angles[0])
+    alpha -= _TWO_PI * math.floor((alpha + math.pi / 2) / _TWO_PI)
+    beta = _euler.wrap_beta(float(angles[1]))
+    gamma = float(angles[2])
+    gamma -= _TWO_PI * math.floor((gamma + math.pi / 2) / _TWO_PI)
+
+    # the fractional indices of lines 552-556
+    k_real = ((beta * slp) / math.pi + slp) / 2
+    n_real = ((gamma * 2 * slp) / math.pi + slp) / 4
+    m_real = ((alpha * 2 * slp) / math.pi + slp) / 4
+
+    # the glide of lines 559-565
+    half = slp / 2
+    if k_real > half:
+        k_real = slp - k_real
+        n_real = math.fmod(n_real + half, slp)
+        m_real = math.fmod(m_real + half, slp)
+
+    # C++ std::round(), not Python's banker's rounding
+    k = int(math.floor(k_real + 0.5))
+    n = int(math.floor(n_real + 0.5)) % slp
+    m = int(math.floor(m_real + 0.5)) % slp
+    bwp = slp // 2 + 1
+    if k > bwp - 1:
+        k = bwp - 1
+    return k, n, m
+
+
+# ---------------------------- Validation ---------------------------- #
+
+
+def _validated_spectrum(alm: np.ndarray, bandwidth: int, name: str) -> np.ndarray:
+    """Return harmonic coefficients as a C-contiguous complex array.
+
+    Parameters
+    ----------
+    alm
+        Harmonic coefficients ``a[m, l]`` in an array-like of shape
+        ``(bw, bw)``.
+    bandwidth
+        Exclusive maximum harmonic degree ``bw``.
+    name
+        Name of the parameter, used in the error message.
+
+    Returns
+    -------
+    array
+        ``(bw, bw)`` C-contiguous 128-bit complex array.
+
+    Raises
+    ------
+    ValueError
+        If the shape is not ``(bw, bw)``.
+    """
+    array = np.ascontiguousarray(alm, dtype=np.complex128)
+    if array.shape != (bandwidth, bandwidth):
+        raise ValueError(
+            f"`{name}` must have shape ({bandwidth}, {bandwidth}), not {array.shape}"
+        )
+    return array
+
+
+def _validated_flags(n_fold: int, mirror: bool) -> tuple[int, bool]:
+    """Return the two symmetry flags of the first function.
+
+    Parameters
+    ----------
+    n_fold
+        Order of the rotational symmetry about z, at least one.
+    mirror
+        Whether there is an equatorial mirror plane.
+
+    Returns
+    -------
+    flags
+        ``(n_fold, mirror)`` as a :class:`int` and a :class:`bool`.
+
+    Raises
+    ------
+    ValueError
+        If ``n_fold`` is a :class:`bool`, is not an integer or is
+        smaller than one, or if ``mirror`` is not a :class:`bool`.
+        The C++ ``compute()`` takes the two the other way round, so
+        a swapped call must fail loudly rather than silently
+        correlate with the wrong symmetry.
+    """
+    if isinstance(n_fold, (bool, np.bool_)) or not isinstance(
+        n_fold, (int, np.integer)
+    ):
+        raise ValueError(
+            f"`n_fold` must be an integer which is not a bool, not {n_fold!r}"
+        )
+    if int(n_fold) < 1:
+        raise ValueError(f"`n_fold` must be at least one, not {int(n_fold)}")
+    if not isinstance(mirror, (bool, np.bool_)):
+        raise ValueError(f"`mirror` must be a bool, not {mirror!r}")
+    return int(n_fold), bool(mirror)
+
+
+def _validated_wigner_table(table: np.ndarray, bandwidth: int) -> np.ndarray:
+    """Return a shared transposed ``pi/2`` Wigner d table unchanged.
+
+    Parameters
+    ----------
+    table
+        Transposed table ``table[m, k, j] = d^j_{k,m}(pi/2)`` of
+        shape ``(bw, bw, bw)``, as built by
+        :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_half_pi_table` with ``transpose=True``.
+    bandwidth
+        Exclusive maximum harmonic degree ``bw``.
+
+    Returns
+    -------
+    table
+        The very same array, so that instances share one table.
+
+    Raises
+    ------
+    ValueError
+        If the array is not a C-contiguous 64-bit float array of
+        shape ``(bw, bw, bw)``, if its undefined slot
+        ``[0, bw - 1, 0]`` is not NaN (Phase 3's ``out=`` tripwire,
+        which refuses a :func:`numpy.zeros` or :func:`numpy.empty`
+        buffer) or if its slot ``[1, 0, 1]`` is not negative.  The
+        latter is ``d^1_{0,1}(pi/2) = -1/sqrt(2)`` transposed and
+        ``d^1_{1,0}(pi/2) = +1/sqrt(2)`` untransposed, and the two
+        layouts differ by ``(-1)^(k - m)`` in half of their slots,
+        so an untransposed table would silently give a wrong
+        correlation.
+    """
+    if not isinstance(table, np.ndarray):
+        raise ValueError("`wigner_d_half_pi` must be a NumPy array")
+    if table.shape != (bandwidth,) * 3:
+        raise ValueError(
+            f"`wigner_d_half_pi` must have shape {(bandwidth,) * 3}, not {table.shape}"
+        )
+    if table.dtype != np.float64:
+        raise ValueError(f"`wigner_d_half_pi` must be 64-bit float, not {table.dtype}")
+    if not table.flags.c_contiguous:
+        raise ValueError("`wigner_d_half_pi` must be C-contiguous")
+    if bandwidth > 1:
+        if not math.isnan(table[0, bandwidth - 1, 0]):
+            raise ValueError(
+                "`wigner_d_half_pi` must have NaN in its undefined slots, "
+                "as the table of `wigner_d_half_pi_table()` has"
+            )
+        if not table[1, 0, 1] < 0:
+            raise ValueError(
+                "`wigner_d_half_pi` must be the transposed table, whose "
+                "slot [1, 0, 1] is d^1_(0,1)(pi/2) = -1/sqrt(2)"
+            )
+    return table
 
 
 # --------------------------- Correlators ---------------------------- #
@@ -805,14 +1544,35 @@ class SphericalCrossCorrelator:
     def __init__(
         self, bandwidth: int, *, wigner_d_half_pi: np.ndarray | None = None
     ) -> None:
-        raise NotImplementedError
+        bandwidth = int(bandwidth)
+        if bandwidth < 1:
+            raise ValueError(f"`bandwidth` must be at least one, not {bandwidth}")
+        self.bandwidth = bandwidth
+        self.side_length_unpadded = 2 * bandwidth - 1
+        self.side_length = int(_fft.fast_size(self.side_length_unpadded))
+        self.half_side_length = self.side_length // 2 + 1
+        if wigner_d_half_pi is None:
+            self.wigner_d_half_pi = _wigner.wigner_d_half_pi_table(bandwidth, True)
+        else:
+            self.wigner_d_half_pi = _validated_wigner_table(wigner_d_half_pi, bandwidth)
+        slp = self.side_length
+        bwp = self.half_side_length
+        self.fxc = np.zeros((slp, slp, bwp), dtype=np.complex128)
+        self._fm = np.zeros((bandwidth, bandwidth), dtype=np.complex128)
+        self._gn = np.zeros(bandwidth, dtype=np.complex128)
+        self.xc = None
 
     def __repr__(self) -> str:
         """Return a string with the bandwidth and the three side
         lengths, e.g. ``"SphericalCrossCorrelator: bw = 68,
         side_length = 135 (unpadded 135), half 68"``.
         """
-        raise NotImplementedError
+        return (
+            f"{type(self).__name__}: bw = {self.bandwidth}, "
+            f"side_length = {self.side_length} "
+            f"(unpadded {self.side_length_unpadded}), "
+            f"half {self.half_side_length}"
+        )
 
     def compute(
         self,
@@ -864,7 +1624,21 @@ class SphericalCrossCorrelator:
         (``include/sht/sht_xcorr.hpp``, lines 658-858), i.e.
         :func:`_xcorr_spectrum` followed by :func:`_inverse_fft`.
         """
-        raise NotImplementedError
+        n_fold, mirror = _validated_flags(n_fold, mirror)
+        flm = _validated_spectrum(flm, self.bandwidth, "flm")
+        gln = _validated_spectrum(gln, self.bandwidth, "gln")
+        _xcorr_spectrum(
+            flm,
+            gln,
+            self.wigner_d_half_pi,
+            n_fold,
+            mirror,
+            self.fxc,
+            self._fm,
+            self._gn,
+        )
+        self.xc = _inverse_fft(self.fxc, n_fold)
+        return self.xc
 
     def interp_peak(
         self, index: int, emsphinx_compatible: bool = True
@@ -904,6 +1678,13 @@ class SphericalCrossCorrelator:
         ------
         RuntimeError
             If :meth:`compute` has not been called yet.
+        ValueError
+            If ``index`` is not a flat index into :attr:`xc`, i.e.
+            not in ``[0, xc.size)``.  The C++ has no such check, but
+            :func:`_extract_neighborhood` reads a flat buffer with
+            bounds checking off and its glide turns a ``k0`` past
+            ``bwP`` into negative offsets, so an unchecked index is
+            a read outside the cube rather than a wrong answer.
 
         Notes
         -----
@@ -913,7 +1694,42 @@ class SphericalCrossCorrelator:
         but only ``x[0]`` and ``x[1]`` enter that check with
         ``emsphinx_compatible=True`` (line 421).
         """
-        raise NotImplementedError
+        if self.xc is None:
+            raise RuntimeError("`compute()` must be called before `interp_peak()`")
+        index = int(index)
+        if not 0 <= index < self.xc.size:
+            raise ValueError(
+                f"`index` must be a flat index into `xc`, i.e. in "
+                f"[0, {self.xc.size}), not {index}"
+            )
+        slp = self.side_length
+        bwp = self.half_side_length
+        # detail::extractInds(), lines 1249-1255
+        k, remainder = divmod(index, slp * slp)
+        n, m = divmod(remainder, slp)
+        nh = np.empty((3, 3, 3))
+        _extract_neighborhood(
+            self.xc.reshape(-1), slp, bwp, k, n, m, bool(emsphinx_compatible), nh
+        )
+        x = np.zeros(3)
+        peak = _interpolate_maxima(nh, x)
+        if emsphinx_compatible:
+            # the x[2] bounds bug of line 421
+            largest = max(abs(x[0]), max(abs(x[1]), abs(x[0])))
+        else:
+            largest = max(abs(x[0]), max(abs(x[1]), abs(x[2])))
+        if largest > 1:
+            # do not step too far in case we are near a degeneracy
+            x[:] = 0.0
+            peak = nh[1, 1, 1]
+        zyz = np.array(
+            [
+                ((m + x[2]) * 4 - slp) * math.pi / (2 * slp),
+                ((k + x[0]) * 2 - slp) * math.pi / slp,
+                ((n + x[1]) * 4 - slp) * math.pi / (2 * slp),
+            ]
+        )
+        return zyz, float(peak), x
 
     def correlate(
         self,
@@ -975,7 +1791,16 @@ class SphericalCrossCorrelator:
         :meth:`compute`, :func:`_find_peak` and
         :meth:`interp_peak`.
         """
-        raise NotImplementedError
+        if refine:
+            raise NotImplementedError(
+                "Real space refinement arrives in Phase 7 "
+                "(spherical-refinement), which ports `refinePeak()` and "
+                "`derivatives()`"
+            )
+        self.compute(flm, gln, n_fold, mirror)
+        index = _find_peak(self.xc)
+        zyz, peak, _ = self.interp_peak(int(index), emsphinx_compatible)
+        return zyz, peak
 
     def clone(self) -> "SphericalCrossCorrelator":
         """Return a new correlator sharing this one's Wigner table.
@@ -990,10 +1815,14 @@ class SphericalCrossCorrelator:
 
         Notes
         -----
-        Port of ``Correlator<Real>::clone()``, which shares the
-        read-only ``xcLut`` and copies the rest.
+        Port of ``UnNormalizedCorrelator<Real>::clone()``
+        (``include/sht/sht_xcorr.hpp``, line 230), the copy
+        constructor which shares the read-only ``xcLut`` and copies
+        the rest.  ``Correlator<Real>`` itself has no ``clone()``.
         """
-        raise NotImplementedError
+        return SphericalCrossCorrelator(
+            self.bandwidth, wigner_d_half_pi=self.wigner_d_half_pi
+        )
 
 
 class NormalizedSphericalCrossCorrelator:
@@ -1066,13 +1895,22 @@ class NormalizedSphericalCrossCorrelator:
     The radicand is unguarded, as in the C++.  It is
     ``s2m Var_window(f) >= 0`` mathematically, so a non-positive
     value is a caller error: a **negative** radicand gives a NaN
-    slot, which loses every comparison of :func:`_scale_and_find_peak`
-    and is therefore harmless, while a radicand of exactly **zero**
-    gives ``rDen = +inf``, and ``xc * inf`` is ``+inf`` for a
-    positive ``xc``, which *wins* the argmax and yields a garbage
-    peak.  A zero radicand means the reference is constant over the
-    window.  A ``flm2`` which is not the transform of the square of
-    the reference produces NaNs.
+    slot, which loses every comparison of
+    :func:`_scale_and_find_peak` -- **except in flat slot 0**, which
+    seeds the search, so a NaN there pins the peak at the grid
+    corner ``(-pi/2, -pi, -pi/2)`` with a NaN score instead of
+    raising.  A radicand of exactly **zero** gives ``rDen = +inf``,
+    and ``xc * inf`` is ``+inf`` for a positive ``xc``, which *wins*
+    the argmax and yields a garbage peak.  A zero radicand means the
+    reference is constant over the window.  A ``flm2`` which is not
+    the transform of the square of the reference makes **every**
+    slot NaN, slot 0 included, so it silently returns that corner:
+    inspect :attr:`r_den` for finiteness when a score is NaN.  The
+    two in-place NumPy calls run under
+    ``numpy.errstate(divide="ignore", invalid="ignore")`` so that a
+    degeneracy does not leak an unattributed ``RuntimeWarning`` out
+    of the constructor; the values are the documented ones either
+    way.
 
     The score is the C++ metric ``xc * rDen`` at the interpolated
     peak and is **not divided by the standard deviation of the
@@ -1084,6 +1922,12 @@ class NormalizedSphericalCrossCorrelator:
     ``emsphinx_compatible=True`` master normalization and 1.37-1.47
     with ``False``, a factor of about 2.6 from the master's DC term,
     while the argmax stays within the coarse tolerance in both.
+
+    The constructor sets ``correlator.xc`` back to ``None``
+    afterwards: the second :meth:`SphericalCrossCorrelator.compute`
+    left it bound to the array which becomes :attr:`r_den`, which
+    every :meth:`clone` shares read only, and
+    :func:`_scale_and_find_peak` writes its first argument in place.
 
     An instance is **not thread-safe**; use one :meth:`clone` per
     thread.
@@ -1100,7 +1944,40 @@ class NormalizedSphericalCrossCorrelator:
         *,
         wigner_d_half_pi: np.ndarray | None = None,
     ) -> None:
-        raise NotImplementedError
+        self.correlator = SphericalCrossCorrelator(
+            bandwidth, wigner_d_half_pi=wigner_d_half_pi
+        )
+        bw = self.correlator.bandwidth
+        self.n_fold, self.mirror = _validated_flags(n_fold, mirror)
+        self.flm = _validated_spectrum(flm, bw, "flm").copy()
+        self.flm2 = _validated_spectrum(flm2, bw, "flm2").copy()
+        self.mlm = _validated_spectrum(mlm, bw, "mlm").copy()
+
+        # the window function correlated with the reference and with
+        # its square, both with the reference's flags (lines 1191
+        # and 1194)
+        mrf = self.correlator.compute(self.flm, self.mlm, self.n_fold, self.mirror)
+        mrf2 = self.correlator.compute(self.flm2, self.mlm, self.n_fold, self.mirror)
+        # the integral of the window function, line 1197
+        s2m = float(self.mlm[0, 0].real) * _SQRT_FOUR_PI
+        # Huhle equations 8 and 9 (line 1200), which simplify to
+        # 1 / sqrt(mrf2 - mrf^2 / s2m) and are evaluated in place on
+        # the two cubes so that no third one is allocated.  The
+        # radicand is unguarded as in the C++, so an empty window or
+        # a mismatched flm2 gives inf or NaN rather than an error
+        # and must not leak a bare NumPy warning
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mrf *= mrf
+            mrf /= s2m
+            mrf2 -= mrf
+            np.sqrt(mrf2, out=mrf2)
+            np.reciprocal(mrf2, out=mrf2)
+        self.r_den = mrf2
+        # the second compute() left the correlator's `xc` bound to
+        # what is now the shared read only `r_den`, which every
+        # clone() also shares, so release it and restore the
+        # documented "None before the first compute()" invariant
+        self.correlator.xc = None
 
     def __repr__(self) -> str:
         """Return a string with the bandwidth, the three side
@@ -1109,26 +1986,33 @@ class NormalizedSphericalCrossCorrelator:
         side_length = 135 (unpadded 135), half 68, n_fold = 4,
         mirror = True"``.
         """
-        raise NotImplementedError
+        correlator = self.correlator
+        return (
+            f"{type(self).__name__}: bw = {correlator.bandwidth}, "
+            f"side_length = {correlator.side_length} "
+            f"(unpadded {correlator.side_length_unpadded}), "
+            f"half {correlator.half_side_length}, "
+            f"n_fold = {self.n_fold}, mirror = {self.mirror}"
+        )
 
     @property
     def bandwidth(self) -> int:
         """Return the exclusive maximum harmonic degree."""
-        raise NotImplementedError
+        return self.correlator.bandwidth
 
     @property
     def side_length(self) -> int:
         """Return the zero padded side length ``slP`` of the Euler
         cube.
         """
-        raise NotImplementedError
+        return self.correlator.side_length
 
     @property
     def half_side_length(self) -> int:
         """Return the number of stored beta slices
         ``bwP = slP // 2 + 1``.
         """
-        raise NotImplementedError
+        return self.correlator.half_side_length
 
     def correlate(
         self,
@@ -1186,7 +2070,17 @@ class NormalizedSphericalCrossCorrelator:
         **scaled** cube, as the C++ interpolates the normalized
         values (line 1157).
         """
-        raise NotImplementedError
+        if refine:
+            raise NotImplementedError(
+                "Real space refinement arrives in Phase 7 "
+                "(spherical-refinement), which ports `refinePeak()` and "
+                "`denominator()`"
+            )
+        correlator = self.correlator
+        correlator.compute(self.flm, gln, self.n_fold, self.mirror)
+        index = _scale_and_find_peak(correlator.xc, self.r_den)
+        zyz, peak, _ = correlator.interp_peak(int(index), emsphinx_compatible)
+        return zyz, peak
 
     def clone(self) -> "NormalizedSphericalCrossCorrelator":
         """Return a new correlator sharing this one's spectra,
@@ -1201,7 +2095,22 @@ class NormalizedSphericalCrossCorrelator:
 
         Notes
         -----
-        Port of ``NormalizedCorrelator<Real>::clone()``, which
-        shares the read-only ``ncLut`` and ``xcLut``.
+        Port of ``NormalizedCorrelator<Real>::clone()``
+        (``include/sht/sht_xcorr.hpp``, line 269), which shares the
+        read-only ``ncLut`` and ``xcLut``.
+
+        The attributes are copied one by one, so a test asserts that
+        a clone has exactly the attribute set of a constructed
+        instance.
         """
-        raise NotImplementedError
+        clone = NormalizedSphericalCrossCorrelator.__new__(
+            NormalizedSphericalCrossCorrelator
+        )
+        clone.correlator = self.correlator.clone()
+        clone.flm = self.flm
+        clone.flm2 = self.flm2
+        clone.mlm = self.mlm
+        clone.n_fold = self.n_fold
+        clone.mirror = self.mirror
+        clone.r_den = self.r_den
+        return clone
