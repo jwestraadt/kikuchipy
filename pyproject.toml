@@ -175,6 +175,7 @@ addopts = [
     "--ignore=src/kikuchipy/data/oxford_h5ebsd/create_oxford_h5ebsd_file.py",
     "--ignore=src/kikuchipy/data/oxford_binary/create_oxford_binary_file.py",
     "--ignore-glob=src/kikuchipy/data/emsoft_ebsd_master_pattern/*.py",
+    "--ignore-glob=src/kikuchipy/data/emsphinx/*.py",
 ]
 doctest_optionflags = "NORMALIZE_WHITESPACE"
 filterwarnings = [

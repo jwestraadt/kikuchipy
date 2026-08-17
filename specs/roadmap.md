@@ -34,11 +34,13 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#2)
 
 ## Phase 2 -- `sht-master-spectra-and-file`
-- [ ] `_master_pattern_harmonics.py`: public `kp.indexing.MasterPatternHarmonics` (`from_master_pattern`, `from_file`, `save` = `.sht` writer, `to_master_pattern` (direct Lambert synthesis, needed by `kp.load`), `resize`, `remove_dc`, `power_spectrum`, `describe`) -- `MasterSpectra` port; `toLegendre` DCT regrid; weighted normalisation with compat quirk (default `emsphinx_compatible=True`, parity-first); `accum_e` energy weights; symmetry LUTs (the 38 `_groups` names + the `'2'`/`'m'` aliases returned by `get_point_group`, validated against `orix.quaternion.symmetry._groups`, names confirmed on orix 0.12.1); bandwidth-vs-resolution warning; Phase 1 amendment: lazy `quadrature_weights` in `_sht.py` (Lambert synthesis at any odd `dim`, the Sneeuw guard moves to `analyze`)
-- [ ] `_sht_file.py` (BSD-3 SHTfile codec; generic modality/simMetaSize; NotImplementedError paths)
-- [ ] io plugin `emsphinx_master_pattern`; `EBSDMasterPattern.get_spherical_harmonics`
-- [ ] Data: `ni_20kv_bw384.sht`, `ni_small_20kv_bw384.sht` (mp2sht.exe, sig 70; the latter from an uncompressed repack because `mp2sht.exe` lacks HDF5 deflate); synthetic per-(zRot, cmpFlg) fixtures generated at test time (`_dummy_files/emsphinx_sht.py`, md5s pinned after `sht2png.exe` acceptance)
-- [ ] Tests: header parse, read->write field/CRC equality, pack/unpack all branches, EMSphInx binaries accept our `.sht` (local-gated), mp2sht parity, `kp.load(".sht")`, bandwidth warning
+- [x] `_master_pattern_harmonics.py`: public `kp.indexing.MasterPatternHarmonics` (`from_master_pattern`, `from_file`, `save` = `.sht` writer, `to_master_pattern` (direct Lambert synthesis, needed by `kp.load`), `resize`, `remove_dc`, `power_spectrum`, `describe`) -- `MasterSpectra` port; `toLegendre` DCT regrid; weighted normalisation with compat quirk (default `emsphinx_compatible=True`, parity-first); `accum_e` energy weights; symmetry LUTs (the 38 `_groups` names + the `'2'`/`'m'` aliases returned by `get_point_group`, validated against `orix.quaternion.symmetry._groups`, names confirmed on orix 0.12.1); bandwidth-vs-resolution warning; Phase 1 amendment: lazy `quadrature_weights` in `_sht.py` (Lambert synthesis at any odd `dim`, the Sneeuw guard moves to `analyze`)
+- [x] `_sht_file.py` (BSD-3 SHTfile codec; generic modality/simMetaSize; NotImplementedError paths)
+- [x] io plugin `emsphinx_master_pattern`; `EBSDMasterPattern.get_spherical_harmonics`
+- [x] Data: `ni_20kv_bw384.sht`, `ni_small_20kv_bw384.sht` (mp2sht.exe, sig 70; the latter from an uncompressed repack because `mp2sht.exe` lacks HDF5 deflate); synthetic per-(zRot, cmpFlg) fixtures generated at test time (`_dummy_files/emsphinx_sht.py`, md5s pinned after `sht2png.exe` acceptance)
+- [x] Tests: header parse, read->write field/CRC equality, pack/unpack all branches, EMSphInx binaries accept our `.sht` (local-gated), mp2sht parity, `kp.load(".sht")`, bandwidth warning
+- [x] Adversarial review (fidelity vs C++/compiled cross-check, conventions, 60-mutation bug injection) and fixes
+- [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#5)
 
 ## Phase 3 -- `sht-wigner-d`
 - [x] `_wigner.py` (d(pi/2) table, dTable(beta), dTablePre, scalar `wigner_d`, `wigner_D`, `rotate_harmonics`, derivative helpers `wigner_d_prime`/`wigner_d_prime2`); reference-table module `src/kikuchipy/data/emsphinx/wigner_reference_tables.py` (the Mathematica tables of `test/sht/wigner.cpp`)

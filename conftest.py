@@ -25,11 +25,26 @@
 # An unwanted side-effect of this is that test files cannot import
 # anything from the conftest file.
 
-from io import TextIOWrapper
-from numbers import Number
 import os
 from pathlib import Path
 import tempfile
+
+# ---------------- Per-worker Numba cache under pytest-xdist ---------- #
+# Numba writes cache=True kernels (ours, and orix's dynamic gufuncs
+# such as ``qu_conj_gufunc``) to a shared on-disk cache. When several
+# xdist workers compile the same kernel at the same time on a fresh
+# machine (CI), they race on the cache index and a worker may load a
+# half-written kernel and crash with an access violation. Giving each
+# worker its own cache directory removes the race; it has no effect
+# without xdist, and must happen before numba is imported.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if _XDIST_WORKER and "NUMBA_CACHE_DIR" not in os.environ:
+    os.environ["NUMBA_CACHE_DIR"] = str(
+        Path(tempfile.gettempdir()) / "kikuchipy-numba-cache" / _XDIST_WORKER
+    )
+
+from io import TextIOWrapper
+from numbers import Number
 from typing import Callable, Generator, Literal
 
 import dask.array as da
@@ -628,6 +643,37 @@ def ebsdsim_master_pattern_file(tmp_path_factory) -> Generator[Path, None, None]
     fpath = tmp_path_factory.mktemp("ebsdsim") / "ni_master_pattern.npz"
     create_small_ebsdsim_npz_file(fpath)
     yield fpath
+
+
+# ------------------------- EMSphInx formats ------------------------- #
+
+
+@pytest.fixture(scope="session")
+def emsphinx_synthetic_sht_files(tmp_path_factory) -> Generator[Callable, None, None]:
+    """Return a callable giving the 25 synthetic EMSphInx *.sht files,
+    one per distinct ``(z_rot, compression flags)`` pair, keyed on
+    space group.
+
+    The files are written by our own writer
+    (``kikuchipy.data._dummy_files.emsphinx_sht``) into a session
+    scoped temporary directory on the *first call* and cached, not by
+    the fixture itself, for two reasons: only a handful of tests need
+    all 25, and a failure inside the writer then shows up as a test
+    failure rather than as a fixture error.
+    """
+    directory = tmp_path_factory.mktemp("emsphinx_sht")
+    cache: dict[int, Path] = {}
+
+    def files() -> dict[int, Path]:
+        if not cache:
+            from kikuchipy.data._dummy_files.emsphinx_sht import (
+                create_synthetic_sht_files,
+            )
+
+            cache.update(create_synthetic_sht_files(directory))
+        return cache
+
+    yield files
 
 
 # -------------------------- EMsoft formats -------------------------- #

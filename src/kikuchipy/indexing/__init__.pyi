@@ -23,6 +23,7 @@ from ._refinement._refinement import (
     compute_refine_orientation_results,
     compute_refine_projection_center_results,
 )
+from ._spherical._master_pattern_harmonics import MasterPatternHarmonics
 from .similarity_metrics._normalized_cross_correlation import (
     NormalizedCrossCorrelationMetric,
 )
@@ -30,6 +31,7 @@ from .similarity_metrics._normalized_dot_product import NormalizedDotProductMetr
 from .similarity_metrics._similarity_metric import SimilarityMetric
 
 __all__ = [
+    "MasterPatternHarmonics",
     "NormalizedCrossCorrelationMetric",
     "NormalizedDotProductMetric",
     "SimilarityMetric",
