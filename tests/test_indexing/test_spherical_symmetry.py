@@ -129,12 +129,19 @@ class TestTable:
     )
     def test_every_value_equals_the_operator_oracle(self, name):
         symmetry = _symmetry_for_name(name)
+        if name == "mm2" and _operator_flags(_symmetry_for_name("mm2"))[0] != 2:
+            # orix 0.12.1 (the CI "oldest" job) orients the two-fold
+            # of mm2 about x, so its operators give (1, True) where the
+            # table -- and orix >= 0.13 -- give (2, False); the table's
+            # value is pinned separately in TestTable spot values
+            pytest.skip("this orix version orients the mm2 two-fold about x")
         assert _symmetry.Z_ROTATION_ORDER_AND_MIRROR[name] == _operator_flags(symmetry)
 
     @pytest.mark.parametrize(
         "name, value",
         [
             ("m-3m", (4, True)),
+            ("mm2", (2, False)),
             ("-4", (2, False)),
             ("-6", (3, True)),
             ("-6m2", (3, True)),
