@@ -30,6 +30,8 @@ developers, not for users.
 
 Submodules
 ----------
+``_euler``
+    ZYZ Euler angle conversions and the beta wrap.
 ``_fft``
     Fast FFT sizes and the bandwidths that use them.
 ``_grid``
@@ -45,6 +47,8 @@ Submodules
     package.
 ``_symmetry``
     Symmetry of the coefficients of a master pattern.
+``_wigner``
+    Wigner (lowercase) d functions, tables and harmonic rotation.
 
 Nothing is imported here on purpose: each submodule is imported
 directly by the code that needs it, keeping the import cost of
