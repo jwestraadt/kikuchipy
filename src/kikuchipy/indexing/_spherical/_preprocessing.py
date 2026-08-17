@@ -211,16 +211,12 @@ References
 :cite:`lenthe2019spherical`
 """
 
+from numba import njit
 import numpy as np
 
-# TODO: The implementer adds the remaining import block, which is
-# omitted here because a body which only raises uses none of it:
-#     from numba import njit
-#
-# Nothing from SciPy's fast Fourier transform package is imported
-# here, deliberately, and a test asserts both
-# ``not hasattr(_preprocessing, "dctn")`` and that the package is
-# not named anywhere in this source.
+# Nothing is imported here from SciPy's fast Fourier transform
+# package, deliberately: the discrete cosine image quality lives in
+# ``_back_projection`` alone, which owns the phase's only binding.
 
 # Number of histogram bins of the adaptive histogram equalisation,
 # i.e. the number of values an unsigned 8-bit pattern can take
@@ -237,6 +233,10 @@ _TILE_HALF_WIDTH = 0.5
 _MAX_ITERATIONS = 50
 _STOP_THRESHOLD = 1e-4
 
+# Initial stopping metric of ``gaussian::Model<Real>::fit()``,
+# ``std::numeric_limits<Real>::max()`` (line 176)
+_REAL_MAX = float(np.finfo(np.float64).max)
+
 # Machine epsilon of the 64-bit floating point type, the pivot
 # threshold of ``decompose::cholesky()``
 # (``include/util/linalg.hpp``, line 422)
@@ -248,9 +248,7 @@ _N_PARAMETERS = 3
 # --------------------------- Numba kernels -------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _row_col_max_kernel(
     pattern: np.ndarray,
     good: np.ndarray,
@@ -280,13 +278,23 @@ def _row_col_max_kernel(
     ``[0, 0]`` that happens to hold the image maximum still shows up
     in every row and column maximum.
     """
-    raise NotImplementedError
+    height, width = pattern.shape
+    seed = pattern[0, 0]
+    for j in range(height):
+        row_max[j] = seed
+    for i in range(width):
+        col_max[i] = seed
+    for j in range(height):
+        for i in range(width):
+            if good[j, i]:
+                value = pattern[j, i]
+                if value > row_max[j]:
+                    row_max[j] = value
+                if value > col_max[i]:
+                    col_max[i] = value
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.  It must **not**
-# carry error_model="numpy": it never divides by an exact zero.
+@njit(cache=True, nogil=True)
 def _cholesky_solve_3x3(a: np.ndarray, b: np.ndarray, x: np.ndarray) -> int:
     """Solve a 3x3 symmetric system by Cholesky decomposition and
     return a status.
@@ -329,13 +337,44 @@ def _cholesky_solve_3x3(a: np.ndarray, b: np.ndarray, x: np.ndarray) -> int:
     proceed) and a negative definite matrix gives ``0`` with
     ``A x == b``.
     """
-    raise NotImplementedError
+    n = _N_PARAMETERS
+    diagonal = np.zeros(n)
+    neg = np.signbit(a[0, 0])
+    for i in range(n):
+        # the C++ direction (line 416): NaN is not unequal to itself
+        # here, so an all NaN matrix passes this test
+        if np.signbit(a[i, i]) != neg:
+            return 1
+        for j in range(i, n):
+            if neg:
+                total = -a[i, j]
+            else:
+                total = a[i, j]
+            for k in range(i):
+                total -= a[i, k] * a[j, k]
+            if i == j:
+                # the C++ direction (line 422): NaN is not < eps
+                if total < _EPS:
+                    return 2
+                diagonal[i] = np.sqrt(total)
+            else:
+                a[j, i] = total / diagonal[i]
+    for i in range(n):
+        total = b[i]
+        for k in range(i):
+            total -= x[k] * a[i, k]
+        x[i] = total / diagonal[i]
+    for i in range(n - 1, -1, -1):
+        for j in range(n - 1, i, -1):
+            x[i] -= a[j, i] * x[j]
+        x[i] /= diagonal[i]
+    if neg:
+        for i in range(n):
+            x[i] = -x[i]
+    return 0
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True, error_model="numpy").  It is left
-# undecorated here because Numba cannot compile a body which only
-# raises.  It is the only kernel of this module with an error model.
+@njit(cache=True, nogil=True, error_model="numpy")
 def _fit_gaussian_1d_kernel(y: np.ndarray, params: np.ndarray) -> int:
     """Fit ``c exp(-(i - a)^2 / b)`` to samples on the integers and
     return a status.
@@ -381,12 +420,101 @@ def _fit_gaussian_1d_kernel(y: np.ndarray, params: np.ndarray) -> int:
     under :func:`numpy.errstate` instead of raising
     ``ZeroDivisionError`` on Python floats.
     """
-    raise NotImplementedError
+    n = y.shape[0]
+    if n < 3:
+        return 1
+
+    # a NumPy scalar seed, so that the ``py_func`` divides NumPy
+    # scalars and yields NaN for 0 / 0 under :func:`numpy.errstate`
+    zero = y[0] * 0.0
+
+    # ``Model<Real>::estimate()``: the maximum, its position and a
+    # log linear regression of ``ln(y / c) == -(x - a)^2 / b``
+    i_max = 0
+    for i in range(1, n):
+        if y[i] > y[i_max]:
+            i_max = i
+    c = y[i_max]
+    a = zero + i_max
+    xy = zero
+    y2 = zero
+    y_bar = zero
+    for i in range(n):
+        yc = y[i] / c
+        y_bar += y[i]
+        if yc > 0:
+            dx = a - i
+            yi = np.log(yc)
+            y2 += yi * yi
+            xy -= yi * dx * dx
+    b = xy / y2
+    y_bar = y_bar / n
+
+    ss_tot = zero
+    for i in range(n):
+        dy = y[i] - y_bar
+        ss_tot += dy * dy
+
+    jtj = np.zeros((_N_PARAMETERS, _N_PARAMETERS))
+    jtr = np.zeros(_N_PARAMETERS)
+    step = np.zeros(_N_PARAMETERS)
+    ss = zero
+    ss_prev = zero
+    metric_prev = zero + _REAL_MAX
+    for _ in range(_MAX_ITERATIONS):
+        ss = zero
+        for i in range(_N_PARAMETERS):
+            jtr[i] = 0.0
+            for j in range(_N_PARAMETERS):
+                jtj[i, j] = 0.0
+        for i in range(n):
+            dx = a - i
+            dxb = dx / b
+            dfdc = np.exp(-dx * dxb)
+            fx = c * dfdc
+            fxb = fx * dxb
+            dfda = -fxb * 2
+            dfdb = fxb * dxb
+            ri = y[i] - fx
+            jtj[0, 0] += dfda * dfda
+            jtj[0, 1] += dfda * dfdb
+            jtj[0, 2] += dfda * dfdc
+            jtj[1, 1] += dfdb * dfdb
+            jtj[1, 2] += dfdb * dfdc
+            jtj[2, 2] += dfdc * dfdc
+            jtr[0] += ri * dfda
+            jtr[1] += ri * dfdb
+            jtr[2] += ri * dfdc
+            ss += ri * ri
+        jtj[1, 0] = jtj[0, 1]
+        jtj[2, 0] = jtj[0, 2]
+        jtj[2, 1] = jtj[1, 2]
+        if _cholesky_solve_3x3(jtj, jtr, step) != 0:
+            params[0] = a
+            params[1] = b
+            params[2] = c
+            params[3] = 1 - ss / ss_tot
+            return 2
+        a += step[0]
+        b += step[1]
+        c += step[2]
+        metric = np.abs((ss_prev - ss) / ss)
+        if metric >= metric_prev and metric < _STOP_THRESHOLD:
+            params[0] = a
+            params[1] = b
+            params[2] = c
+            params[3] = 1 - ss / ss_tot
+            return 0
+        metric_prev = metric
+        ss_prev = ss
+    params[0] = a
+    params[1] = b
+    params[2] = c
+    params[3] = 1 - ss / ss_tot
+    return 3
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _ahe_cdf_kernel(
     image: np.ndarray,
     good: np.ndarray,
@@ -421,12 +549,42 @@ def _ahe_cdf_kernel(
     bin (lines 211-213), which makes its equalisation the identity
     ramp ``(v + 1) 255 / 256`` instead of a division by zero.
     """
-    raise NotImplementedError
+    n_tiles = tiles.shape[0]
+    hist = np.zeros(_N_BINS, dtype=np.int64)
+    for t in range(n_tiles):
+        i_start = tiles[t, 0]
+        i_end = tiles[t, 1]
+        j_start = tiles[t, 2]
+        j_end = tiles[t, 3]
+        for k in range(_N_BINS):
+            hist[k] = 0
+        if has_mask:
+            for j in range(j_start, j_end):
+                for i in range(i_start, i_end):
+                    if good[j, i]:
+                        hist[image[j, i]] += 1
+            largest = 0
+            for k in range(_N_BINS):
+                if hist[k] > largest:
+                    largest = hist[k]
+            if largest == 0:
+                # no good pixel: a flat histogram, lines 211-213
+                for k in range(_N_BINS):
+                    hist[k] = 1
+        else:
+            for j in range(j_start, j_end):
+                for i in range(i_start, i_end):
+                    hist[image[j, i]] += 1
+        total = 0
+        for k in range(_N_BINS):
+            total += hist[k]
+            cdfs[t, k] = total
+        norm = (_N_BINS - 1) / cdfs[t, _N_BINS - 1]
+        for k in range(_N_BINS):
+            cdfs[t, k] = norm * cdfs[t, k]
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _ahe_equalize_kernel(
     image: np.ndarray,
     cdfs: np.ndarray,
@@ -476,12 +634,23 @@ def _ahe_equalize_kernel(
     ones included: the mask only chooses which pixels the histograms
     count.
     """
-    raise NotImplementedError
+    height, width = image.shape
+    for j in range(height):
+        row_lower = j_l[j] * nx
+        row_upper = j_u[j] * nx
+        close_j = j_c[j]
+        far_j = j_f[j]
+        for i in range(width):
+            value = image[j, i]
+            out[j, i] = (
+                cdfs[row_lower + i_l[i], value] * close_j * i_c[i]
+                + cdfs[row_lower + i_u[i], value] * close_j * i_f[i]
+                + cdfs[row_upper + i_l[i], value] * far_j * i_c[i]
+                + cdfs[row_upper + i_u[i], value] * far_j * i_f[i]
+            )
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _to_uint8_kernel(buffer: np.ndarray, out: np.ndarray) -> None:
     """Rescale a flat buffer to the unsigned 8-bit range.
 
@@ -507,7 +676,23 @@ def _to_uint8_kernel(buffer: np.ndarray, out: np.ndarray) -> None:
     undefined; this kernel writes zeros instead, the module's one
     documented deviation from the C++.
     """
-    raise NotImplementedError
+    n = buffer.size
+    v_min = buffer[0]
+    v_max = buffer[0]
+    for i in range(1, n):
+        value = buffer[i]
+        if value < v_min:
+            v_min = value
+        if value > v_max:
+            v_max = value
+    if v_max == v_min:
+        # ``255 / 0`` is infinite and the C++ cast undefined
+        for i in range(n):
+            out[i] = 0
+        return
+    factor = 255.0 / (v_max - v_min)
+    for i in range(n):
+        out[i] = np.uint8(factor * (buffer[i] - v_min) + 0.5)
 
 
 # ------------------------- Circular mask ---------------------------- #
@@ -552,7 +737,53 @@ def _circular_mask(shape: tuple[int, int], radius: int | None = None) -> np.ndar
     This mask is in **good-pixel** polarity, the C++'s, which is the
     opposite of kikuchipy's ``signal_mask``.
     """
-    raise NotImplementedError
+    height, width = int(shape[0]), int(shape[1])
+    if radius is None:
+        radius = min(width, height) // 2
+    radius = int(radius)
+    if radius < 0:
+        raise ValueError(f"`radius` must be non-negative, but is {radius}")
+    rows, columns = np.indices((height, width))
+    distance = (columns - width // 2) ** 2 + (rows - height // 2) ** 2
+    return distance <= radius * radius
+
+
+def _good_pixels_or_ones(
+    good_pixels: np.ndarray | None, shape: tuple[int, int]
+) -> np.ndarray:
+    """Return a validated good-pixel mask, all ``True`` for ``None``.
+
+    Parameters
+    ----------
+    good_pixels
+        Optional ``(h, w)`` boolean mask in **good-pixel** polarity,
+        or ``None``.
+    shape
+        ``(h, w)`` the mask must have.
+
+    Returns
+    -------
+    good
+        Contiguous ``(h, w)`` boolean array.
+
+    Raises
+    ------
+    ValueError
+        If ``good_pixels`` is given and is not a boolean array of
+        shape ``shape``.
+    """
+    if good_pixels is None:
+        return np.ones(shape, dtype=bool)
+    good = np.asarray(good_pixels)
+    if good.dtype != np.bool_:
+        raise ValueError(
+            f"`good_pixels` must be boolean, but has data type {good.dtype}"
+        )
+    if good.shape != tuple(shape):
+        raise ValueError(
+            f"`good_pixels` must have shape {tuple(shape)}, but has {good.shape}"
+        )
+    return np.ascontiguousarray(good)
 
 
 # ------------------------ Gaussian background ----------------------- #
@@ -602,7 +833,18 @@ def _fit_gaussian_1d(
     a ``3 sin(x / 2) + 5`` one by 0.012; an *integer* mean gives
     ``ss == 0``, a NaN metric and non-convergence.
     """
-    raise NotImplementedError
+    samples = np.ascontiguousarray(y, dtype=np.float64)
+    if samples.ndim != 1:
+        raise ValueError(f"`y` must be one-dimensional, but has shape {samples.shape}")
+    if samples.size < _N_PARAMETERS:
+        raise ValueError(
+            f"`y` must hold at least {_N_PARAMETERS} samples for the "
+            f"{_N_PARAMETERS} parameters, but holds {samples.size}"
+        )
+    parameters = np.zeros(4)
+    status = _fit_gaussian_1d_kernel(samples, parameters)
+    a, b, c, r2 = (float(value) for value in parameters)
+    return a, b, c, r2, status == 0
 
 
 def _gaussian_background(
@@ -666,7 +908,49 @@ def _gaussian_background(
     modulated signal, which is the estimator's nature and is
     EMSphInx'.
     """
-    raise NotImplementedError
+    image = np.ascontiguousarray(pattern, dtype=np.float64)
+    if image.ndim != 2:
+        raise ValueError(
+            f"`pattern` must be two-dimensional, but has shape {image.shape}"
+        )
+    good = _good_pixels_or_ones(good_pixels, image.shape)
+    height, width = image.shape
+
+    row_max = np.empty(height, dtype=np.float64)
+    col_max = np.empty(width, dtype=np.float64)
+    _row_col_max_kernel(image, good, row_max, col_max)
+
+    offset = 0.0 if emsphinx_compatible else 1.0
+    parameters = np.zeros(4)
+    converged_x = _fit_gaussian_1d_kernel(col_max[1 : width - 1], parameters) == 0
+    if converged_x:
+        gx = (float(parameters[0]), float(parameters[1]), float(parameters[2]))
+        offset_x = offset
+    else:
+        gx = (width / 2, np.inf, float(col_max.mean()))
+        offset_x = 0.0
+    converged_y = _fit_gaussian_1d_kernel(row_max[1 : height - 1], parameters) == 0
+    if converged_y:
+        gy = (float(parameters[0]), float(parameters[1]), float(parameters[2]))
+        offset_y = offset
+    else:
+        gy = (height / 2, np.inf, float(row_max.mean()))
+        offset_y = 0.0
+
+    amplitude = max(gx[2], gy[2])
+    dx = gx[0] + offset_x - np.arange(width, dtype=np.float64)
+    dy = gy[0] + offset_y - np.arange(height, dtype=np.float64)
+    column_factor = np.exp(-(dx * dx / gx[1])) * amplitude
+    row_factor = np.exp(-(dy * dy / gy[1]))
+    background = row_factor[:, np.newaxis] * column_factor[np.newaxis, :]
+    info = {
+        "gx": gx,
+        "gy": gy,
+        "c": amplitude,
+        "converged_x": converged_x,
+        "converged_y": converged_y,
+    }
+    return background, info
 
 
 def _remove_gaussian_background(
@@ -699,10 +983,70 @@ def _remove_gaussian_background(
     only the in place ``process(uint8_t*)``, which the indexer never
     calls, uses them.
     """
-    raise NotImplementedError
+    image = np.ascontiguousarray(pattern, dtype=np.float64)
+    if image.ndim != 2:
+        raise ValueError(
+            f"`pattern` must be two-dimensional, but has shape {image.shape}"
+        )
+    good = _good_pixels_or_ones(good_pixels, image.shape)
+    background, _ = _gaussian_background(
+        image, good_pixels, emsphinx_compatible=emsphinx_compatible
+    )
+    return np.where(good, image - background, 0.0)
 
 
 # ------------------ Mosaic adaptive histogram equalisation ---------- #
+
+
+def _interpolation_pairs(
+    midpoints: np.ndarray, n: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return the two neighbouring tiles and weights of every index.
+
+    Parameters
+    ----------
+    midpoints
+        ``(n_regions,)`` 64-bit integer tile midpoints, increasing.
+    n
+        Number of image rows or columns.
+
+    Returns
+    -------
+    lower, upper
+        ``(n,)`` 64-bit integer tiles bracketing every index.
+    close, far
+        ``(n,)`` 64-bit float weights of ``lower`` and ``upper``,
+        summing to one.
+
+    Notes
+    -----
+    The ``upper_bound`` search of ``AdaptiveHistogramEqualizer<Real,
+    uint8_t>::setSize()`` (``include/util/ahe.hpp``, lines 150-166
+    and 171-187), i.e. :func:`numpy.searchsorted` with
+    ``side="right"``, with the constant ``0.5 / 0.5`` split before
+    the first and after the last midpoint.
+    """
+    index = np.arange(n)
+    bound = np.searchsorted(midpoints, index, side="right")
+    lower = np.empty(n, dtype=np.int64)
+    upper = np.empty(n, dtype=np.int64)
+    close = np.empty(n, dtype=np.float64)
+    far = np.empty(n, dtype=np.float64)
+
+    outside = (bound == midpoints.size) | (bound == 0)
+    lower[outside] = np.where(bound[outside] == 0, 0, midpoints.size - 1)
+    upper[outside] = lower[outside]
+    close[outside] = 0.5
+    far[outside] = 0.5
+
+    inside = ~outside
+    bracket = bound[inside]
+    lower[inside] = bracket - 1
+    upper[inside] = bracket
+    span = (midpoints[bracket] - midpoints[bracket - 1]).astype(np.float64)
+    far[inside] = (index[inside] - midpoints[bracket - 1]) / span
+    close[inside] = 1.0 - far[inside]
+    return lower, upper, close, far
 
 
 def _ahe_tiles(
@@ -764,7 +1108,41 @@ def _ahe_tiles(
     [34, 43), [43, 51), [51, 60)`` with midpoints ``4, 13, 21, 30,
     39, 47, 56``.
     """
-    raise NotImplementedError
+    height, width = int(shape[0]), int(shape[1])
+    largest = min(height, width)
+    if n_regions < 1 or n_regions > largest:
+        raise ValueError(
+            f"`n_regions` must be between 1 and {largest}, but is {n_regions}"
+        )
+    index = np.arange(n_regions, dtype=np.float64)
+    tile_width = width / n_regions
+    tile_height = height / n_regions
+
+    mid_x = tile_width * index + tile_width / 2
+    min_x = np.maximum(mid_x - tile_width * _TILE_HALF_WIDTH, 0.0)
+    max_x = np.minimum(mid_x + tile_width * _TILE_HALF_WIDTH, float(width))
+    mid_y = tile_height * index + tile_height / 2
+    min_y = np.maximum(mid_y - tile_height * _TILE_HALF_WIDTH, 0.0)
+    max_y = np.minimum(mid_y + tile_height * _TILE_HALF_WIDTH, float(height))
+    # ``std::round`` of a non-negative argument
+    min_x = np.floor(min_x + 0.5).astype(np.int64)
+    max_x = np.floor(max_x + 0.5).astype(np.int64)
+    mid_x = np.floor(mid_x + 0.5).astype(np.int64)
+    min_y = np.floor(min_y + 0.5).astype(np.int64)
+    max_y = np.floor(max_y + 0.5).astype(np.int64)
+    mid_y = np.floor(mid_y + 0.5).astype(np.int64)
+
+    tiles = np.empty((n_regions * n_regions, 4), dtype=np.int64)
+    tiles[:, 0] = np.tile(min_x, n_regions)
+    tiles[:, 1] = np.tile(max_x, n_regions)
+    tiles[:, 2] = np.repeat(min_y, n_regions)
+    tiles[:, 3] = np.repeat(max_y, n_regions)
+
+    return (
+        tiles,
+        _interpolation_pairs(mid_y, height),
+        _interpolation_pairs(mid_x, width),
+    )
 
 
 def _mosaic_ahe(
@@ -820,7 +1198,24 @@ def _mosaic_ahe(
     diverge (max 70 levels at ``n_regions`` 7 on 60 pixels), since
     scikit-image pads to a multiple of its kernel.
     """
-    raise NotImplementedError
+    image = np.asarray(pattern_uint8)
+    if image.ndim != 2:
+        raise ValueError(
+            f"`pattern_uint8` must be two-dimensional, but has shape {image.shape}"
+        )
+    if image.dtype != np.uint8:
+        raise ValueError(
+            f"`pattern_uint8` must be unsigned 8-bit, but has data type {image.dtype}"
+        )
+    image = np.ascontiguousarray(image)
+    good = _good_pixels_or_ones(good_pixels, image.shape)
+    tiles, j_pairs, i_pairs = _ahe_tiles(image.shape, n_regions)
+
+    cdfs = np.zeros((n_regions * n_regions, _N_BINS), dtype=np.float64)
+    _ahe_cdf_kernel(image, good, good_pixels is not None, tiles, cdfs)
+    equalised = np.zeros(image.shape, dtype=np.float64)
+    _ahe_equalize_kernel(image, cdfs, n_regions, *j_pairs, *i_pairs, equalised)
+    return equalised
 
 
 def _to_uint8(buffer: np.ndarray) -> np.ndarray:
@@ -846,7 +1241,11 @@ def _to_uint8(buffer: np.ndarray) -> np.ndarray:
     truncates toward zero: ``[0, 1, 6]`` gives ``[0, 43, 255]`` here
     and ``[0, 42, 255]`` there.
     """
-    raise NotImplementedError
+    values = np.ascontiguousarray(buffer, dtype=np.float64)
+    flat = values.reshape(-1)
+    rescaled = np.empty(flat.size, dtype=np.uint8)
+    _to_uint8_kernel(flat, rescaled)
+    return rescaled.reshape(values.shape)
 
 
 # --------------------------- The pipeline --------------------------- #
@@ -909,4 +1308,29 @@ def _preprocess_pattern(
     ``[-35.5, 18.7]``, neither the unsigned 8-bit values
     ``[26, 245]`` as 64-bit float.
     """
-    raise NotImplementedError
+    image = np.asarray(pattern)
+    if image.ndim != 2:
+        raise ValueError(
+            f"`pattern` must be two-dimensional, but has shape {image.shape}"
+        )
+    largest = min(image.shape)
+    if n_regions < 0 or n_regions > largest:
+        raise ValueError(
+            f"`n_regions` must be between 0 and {largest}, but is {n_regions}"
+        )
+    _good_pixels_or_ones(good_pixels, image.shape)
+
+    if gaussian_background:
+        subtracted = _remove_gaussian_background(
+            image, good_pixels, emsphinx_compatible=emsphinx_compatible
+        )
+        if n_regions > 0:
+            return _mosaic_ahe(_to_uint8(subtracted), n_regions, good_pixels)
+        return subtracted
+    if n_regions > 0:
+        if image.dtype == np.uint8:
+            work = image
+        else:
+            work = _to_uint8(image)
+        return _mosaic_ahe(work, n_regions, good_pixels)
+    return image.astype(np.float64)

@@ -269,30 +269,18 @@ References
 """
 
 import math
-from typing import TYPE_CHECKING
 
+from numba import njit
 import numpy as np
+from scipy.fft import dctn
 
-if TYPE_CHECKING:  # pragma: no cover
-    from kikuchipy.detectors import EBSDDetector
+from kikuchipy.detectors import EBSDDetector
+from kikuchipy.indexing._spherical import _grid
+from kikuchipy.indexing._spherical._sht import SphericalHarmonicTransform
 
-# TODO: The implementer adds the two remaining import blocks, which
-# are omitted here because a body which only raises uses none of
-# them:
-#     from copy import deepcopy
-#
-#     from numba import njit
-#     from scipy.fft import dctn
-#
-#     from kikuchipy.detectors import EBSDDetector
-#     from kikuchipy.indexing._spherical import _grid
-#     from kikuchipy.indexing._spherical._sht import (
-#         SphericalHarmonicTransform,
-#     )
-#
-# :func:`scipy.fft.dctn` must be bound in this namespace, as Phases
-# 1-4 bind their transforms, so that the call recording test can
-# patch ``_back_projection.dctn`` and see every transform this phase
+# :func:`scipy.fft.dctn` is bound in this namespace, as Phases 1-4
+# bind their transforms, so that the call recording test can patch
+# ``_back_projection.dctn`` and see every transform this phase
 # makes.  ``_preprocessing`` deliberately has no ``scipy.fft``
 # import: the discrete cosine image quality lives here, and here
 # only.
@@ -311,9 +299,7 @@ _DEFAULT_OVERSAMPLING = math.sqrt(2)
 # --------------------------- Numba kernels -------------------------- #
 
 
-# TODO: The implementer decorates this kernel with
-# @njit(cache=True, nogil=True). It is left undecorated here because
-# Numba cannot compile a body which only raises.
+@njit(cache=True, nogil=True)
 def _unproject_kernel(
     rescaled_flat: np.ndarray,
     pixel_index: np.ndarray,
@@ -382,7 +368,36 @@ def _unproject_kernel(
     can see the ``stdev == 0`` branch which
     :meth:`SphericalBackProjector.unproject` hides.
     """
-    raise NotImplementedError
+    n_points = pixel_index.shape[0]
+    values = np.empty(n_points)
+
+    # ``BiPix::interpolate()`` and the weighted mean of line 598
+    mean = 0.0
+    for i in range(n_points):
+        value = 0.0
+        for k in range(4):
+            value += rescaled_flat[pixel_index[i, k]] * weights[i, k]
+        values[i] = value
+        mean += value * solid_angles[i]
+    mean /= window_solid_angle
+
+    # Make the mean zero and take the weighted standard deviation,
+    # lines 601-605
+    stdev = 0.0
+    for i in range(n_points):
+        values[i] -= mean
+        stdev += values[i] * values[i] * solid_angles[i]
+    stdev = np.sqrt(stdev / window_solid_angle)
+
+    # The literal ``if(Real(0) == stdev)`` branch of line 607
+    if stdev == 0.0:
+        for i in range(n_points):
+            north_flat[sphere_index[i]] = 1.0
+        return 0.0
+
+    for i in range(n_points):
+        north_flat[sphere_index[i]] = values[i] / stdev
+    return stdev
 
 
 # ----------------------------- Geometry ----------------------------- #
@@ -420,7 +435,13 @@ def _pixel_map(
     (``include/modality/ebsd/detector.hpp``, lines 334-352), see the
     module documentation.
     """
-    raise NotImplementedError
+    matrix = np.asarray(
+        detector.sample_to_detector.to_matrix(), dtype=np.float64
+    ).reshape(3, 3)
+    gnomonic_bounds = np.asarray(detector.gnomonic_bounds, dtype=np.float64).reshape(4)
+    x_scale = (gnomonic_bounds[1] - gnomonic_bounds[0]) / detector.ncols
+    y_scale = (gnomonic_bounds[3] - gnomonic_bounds[2]) / detector.nrows
+    return matrix, gnomonic_bounds, float(x_scale), float(y_scale)
 
 
 def _directions_to_pixels(
@@ -462,7 +483,15 @@ def _directions_to_pixels(
     resulting non-finite coordinates are rejected by
     :func:`_inside_detector`.
     """
-    raise NotImplementedError
+    matrix, gnomonic_bounds, x_scale, y_scale = geometry
+    normals = np.atleast_2d(np.asarray(normals, dtype=np.float64))
+    detector_frame = normals @ matrix.T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x_gnomonic = detector_frame[:, 0] / detector_frame[:, 2]
+        y_gnomonic = detector_frame[:, 1] / detector_frame[:, 2]
+    col = (x_gnomonic - gnomonic_bounds[0]) / x_scale - 0.5
+    row = (gnomonic_bounds[3] - y_gnomonic) / y_scale - 0.5
+    return col, row, detector_frame[:, 2] > 0
 
 
 def _inside_detector(
@@ -514,7 +543,29 @@ def _inside_detector(
     958 points on a ``(48, 60)`` detector at ``bw`` 68).  The port
     uses one circle, the physical one.
     """
-    raise NotImplementedError
+    nrows, ncols = shape
+    inside = (
+        np.isfinite(col)
+        & np.isfinite(row)
+        & (col >= -0.5)
+        & (col <= ncols - 0.5)
+        & (row >= -0.5)
+        & (row <= nrows - 0.5)
+    )
+    if circular_mask:
+        radius = min(ncols, nrows) / 2
+        delta_x = col - (ncols - 1) / 2
+        delta_y = row - (nrows - 1) / 2
+        inside &= delta_x * delta_x + delta_y * delta_y <= radius * radius
+    if signal_mask is not None:
+        columns = np.clip(np.floor(np.nan_to_num(col) + 0.5), 0, ncols - 1).astype(
+            np.int64
+        )
+        rows = np.clip(np.floor(np.nan_to_num(row) + 0.5), 0, nrows - 1).astype(
+            np.int64
+        )
+        inside &= ~signal_mask[rows, columns]
+    return inside
 
 
 def _solid_angle_fraction(
@@ -561,7 +612,16 @@ def _solid_angle_fraction(
     kept because ``IndexEBSD``'s resampled sizes must match for the
     resample to be the same operation.
     """
-    raise NotImplementedError
+    axis = np.arange(grid_res + 1, dtype=np.float64) / grid_res
+    square_x, square_y = np.meshgrid(axis, axis, indexing="xy")
+    square = np.stack([square_x.ravel(), square_y.ravel()], axis=-1)
+    normals = _grid.square_to_sphere(square)
+    col, row, in_front = _directions_to_pixels(normals, _pixel_map(detector))
+    keep = in_front & (normals[:, 2] >= 0)
+    keep &= _inside_detector(col, row, detector.shape, circular_mask, signal_mask)
+    # The literal C++ divisor of line 413, 0.4 % small
+    divisor = grid_res**2 + (grid_res - 2) ** 2
+    return float(np.count_nonzero(keep) / divisor)
 
 
 def _rescaled_shape(shape: tuple[int, int], scale: float) -> tuple[int, int]:
@@ -588,7 +648,10 @@ def _rescaled_shape(shape: tuple[int, int], scale: float) -> tuple[int, int]:
     is banker's rounding and would give a different size for a
     detector whose product ends in ``.5``.
     """
-    raise NotImplementedError
+    nrows, ncols = shape
+    h_out = int(math.floor(scale * nrows + 0.5))
+    w_out = int(math.floor(scale * ncols + 0.5))
+    return h_out, w_out
 
 
 def _build_lut(
@@ -660,7 +723,56 @@ def _build_lut(
     along that axis.  Measured, 1.8-2.8 % of the default window sits
     in that rim.
     """
-    raise NotImplementedError
+    nrows, ncols = detector.shape
+    h_out, w_out = rescaled_shape
+
+    normals = _grid.legendre_normals(dim).reshape(-1, 3)
+    col, row, in_front = _directions_to_pixels(normals, _pixel_map(detector))
+    # ``if(std::signbit(n[2])) return false``, line 336, which no
+    # north grid normal trips but which empties the south set
+    keep = in_front & (normals[:, 2] >= 0)
+    keep &= _inside_detector(col, row, detector.shape, circular_mask, signal_mask)
+    sphere_index = np.flatnonzero(keep).astype(np.int64)
+
+    # The sampling convention of the type-2/type-3 transform, which
+    # preserves the physical extent
+    x = (col[sphere_index] + 0.5) * w_out / ncols - 0.5
+    y = (row[sphere_index] + 0.5) * h_out / nrows - 0.5
+    i0 = np.clip(np.floor(x), 0, w_out - 1).astype(np.int64)
+    j0 = np.clip(np.floor(y), 0, h_out - 1).astype(np.int64)
+    i1 = np.minimum(i0 + 1, w_out - 1)
+    j1 = np.minimum(j0 + 1, h_out - 1)
+    wx1 = np.clip(x - i0, 0, 1)
+    wy1 = np.clip(y - j0, 0, 1)
+    wx0 = 1 - wx1
+    wy0 = 1 - wy1
+    pixel_index = np.stack(
+        [j0 * w_out + i0, j0 * w_out + i1, j1 * w_out + i0, j1 * w_out + i1],
+        axis=-1,
+    )
+    weights = np.stack([wy0 * wx0, wy0 * wx1, wy1 * wx0, wy1 * wx1], axis=-1)
+
+    rings = _grid.ring_number(dim)
+    ring_values = _grid.ring_solid_angles(dim, "legendre")
+    solid_angles = ring_values[rings.ravel()[sphere_index]]
+    window_solid_angle = float(solid_angles.sum())
+
+    # ``omgS`` of lines 560-568: every grid point once, the interior
+    # ones twice, so that the equator is not counted twice
+    grid_angles = ring_values[rings]
+    equator = np.zeros((dim, dim), dtype=bool)
+    equator[0] = equator[-1] = True
+    equator[:, 0] = equator[:, -1] = True
+    sphere_solid_angle = float(grid_angles.sum() + grid_angles[~equator].sum())
+
+    return (
+        sphere_index,
+        pixel_index,
+        weights,
+        solid_angles,
+        window_solid_angle,
+        sphere_solid_angle,
+    )
 
 
 # ------------------- Resample and image quality --------------------- #
@@ -694,7 +806,10 @@ def _mean_fill(pattern: np.ndarray, signal_mask: np.ndarray | None) -> np.ndarra
     correlation with the truth is 0.981 with the block zeroed and
     0.932 with it saturated, against 0.997 with the fill.
     """
-    raise NotImplementedError
+    if signal_mask is None:
+        return pattern
+    pattern[signal_mask] = pattern[~signal_mask].mean()
+    return pattern
 
 
 def _image_quality_from_spectrum(spectrum: np.ndarray) -> float:
@@ -722,7 +837,16 @@ def _image_quality_from_spectrum(spectrum: np.ndarray) -> float:
     quality of a normalised pattern (measured correlation 0.62 over
     the nine ``nickel_ebsd_small`` patterns).
     """
-    raise NotImplementedError
+    magnitude = np.abs(np.asarray(spectrum, dtype=np.float64))
+    height, width = magnitude.shape
+    r2 = (
+        np.arange(height)[:, np.newaxis] ** 2 + np.arange(width)[np.newaxis, :] ** 2
+    ).astype(np.float64)
+    total = magnitude.sum()
+    # ``if(sumP == Real(0)) vIq = 0``, line 504
+    if total == 0:
+        return 0.0
+    return float(1 - (magnitude * r2).sum() / (r2.sum() * total / (width * height)))
 
 
 def _dct_image_quality(pattern: np.ndarray) -> float:
@@ -756,7 +880,10 @@ def _dct_image_quality(pattern: np.ndarray) -> float:
     :mod:`scipy.fft`, so one call recording test on ``dctn`` in this
     namespace covers every transform the phase makes.
     """
-    raise NotImplementedError
+    pattern = np.asarray(pattern, dtype=np.float64)
+    if np.ptp(pattern) == 0:
+        return 1.0 if pattern.flat[0] != 0 else 0.0
+    return _image_quality_from_spectrum(dctn(pattern, type=2, workers=1))
 
 
 def _dct_rescale(
@@ -813,7 +940,19 @@ def _dct_rescale(
     left untouched: its caller keeps amplitudes and applies
     EMSphInx' ``0.5 / new_dim^2``.
     """
-    raise NotImplementedError
+    pattern = np.asarray(pattern, dtype=np.float64)
+    h_in, w_in = pattern.shape
+    spectrum = dctn(pattern, type=2, workers=1)
+    # On the input size spectrum, before the truncation, lines
+    # 584-585
+    image_quality = _image_quality_from_spectrum(spectrum) if want_iq else 0.0
+    truncated = np.zeros((h_out, w_out))
+    h_copy = min(h_in, h_out)
+    w_copy = min(w_in, w_out)
+    truncated[:h_copy, :w_copy] = spectrum[:h_copy, :w_copy]
+    if zero_mean:
+        truncated[0, 0] = 0.0
+    return dctn(truncated, type=3, workers=1), image_quality
 
 
 # ----------------------- The back-projector ------------------------- #
@@ -1007,7 +1146,108 @@ class SphericalBackProjector:
         oversampling: float = _DEFAULT_OVERSAMPLING,
         dim: int | None = None,
     ) -> None:
-        raise NotImplementedError
+        bandwidth = int(bandwidth)
+        if bandwidth < 1:
+            raise ValueError(f"Bandwidth {bandwidth} must be at least one")
+        if dim is None:
+            dim = _grid.default_dim(bandwidth, "legendre")
+        dim = int(dim)
+        sht = SphericalHarmonicTransform(bandwidth, "legendre", dim)
+
+        if not isinstance(detector, EBSDDetector):
+            raise TypeError(
+                f"Detector of type {type(detector)} must be an EBSDDetector"
+            )
+        n_pc = detector.navigation_size
+        if n_pc != 1:
+            raise ValueError(
+                f"The detector has {n_pc} projection centres; "
+                "back-projection uses one projection centre per call -- set "
+                "`detector.pc = detector.pc_average` on a copy "
+                "(`detector.deepcopy()`), or build a detector from a single "
+                "projection centre"
+            )
+        if detector.azimuthal != 0 or detector.twist != 0:
+            raise ValueError(
+                f"The detector `azimuthal` angle {detector.azimuthal} and "
+                f"`twist` angle {detector.twist} must both be zero, since "
+                "tilted or twisted detectors are not supported yet"
+            )
+
+        if signal_mask is not None:
+            signal_mask = np.asarray(signal_mask)
+            if signal_mask.dtype != np.bool_:
+                raise ValueError(
+                    f"Signal mask of data type {signal_mask.dtype} must be "
+                    "boolean, since `True` means ignore the pixel"
+                )
+            if signal_mask.shape != detector.shape:
+                raise ValueError(
+                    f"Signal mask of shape {signal_mask.shape} must have the "
+                    f"detector shape {detector.shape}"
+                )
+            signal_mask = signal_mask.copy()
+
+        oversampling = float(oversampling)
+        if not oversampling > 0:
+            raise ValueError(f"Oversampling {oversampling} must be greater than zero")
+
+        # A copy, so that later mutations of the caller's detector do
+        # not reach the projector, with the projection centre reshaped
+        # so that kikuchipy's own geometry takes its fixed projection
+        # centre path
+        detector = detector.deepcopy()
+        detector.pc = np.asarray(detector.pc, dtype=np.float64).reshape(1, 3)
+
+        self.detector = detector
+        self.bandwidth = bandwidth
+        self.dim = dim
+        self.sht = sht
+        self.signal_mask = signal_mask
+        self.circular_mask = bool(circular_mask)
+        self.oversampling = oversampling
+
+        nrows, ncols = detector.shape
+        self.solid_angle_fraction = _solid_angle_fraction(
+            detector, self.circular_mask, signal_mask
+        )
+        # ``Geometry::scaleFactor()``, lines 466-468
+        square_points = 2 * dim**2 - 4 * (dim - 1)
+        self.scale_factor = math.sqrt(
+            self.solid_angle_fraction * square_points / (nrows * ncols)
+        )
+        self.rescaled_shape = _rescaled_shape(
+            detector.shape, self.scale_factor * self.oversampling
+        )
+        h_out, w_out = self.rescaled_shape
+        if h_out < 1 or w_out < 1:
+            raise ValueError(
+                "The detector footprint covers no part of the northern "
+                "hemisphere or `signal_mask` leaves nothing: "
+                f"solid_angle_fraction = {self.solid_angle_fraction:.6f}, so "
+                f"the resampled pattern would be {w_out} x {h_out} pixels"
+            )
+
+        (
+            self.sphere_index,
+            self.pixel_index,
+            self.weights,
+            self.solid_angles,
+            self.window_solid_angle,
+            self.sphere_solid_angle,
+        ) = _build_lut(
+            detector, dim, self.circular_mask, signal_mask, self.rescaled_shape
+        )
+        self.n_points = int(self.sphere_index.size)
+        if self.n_points == 0:
+            raise ValueError(
+                "The detector or `signal_mask` leaves an empty window: no "
+                f"Legendre grid point of dim {dim} falls on the detector"
+            )
+        self.window_fraction = self.window_solid_angle / self.sphere_solid_angle
+        # Eager, so that the instance holds no mutable state and may
+        # be shared read only between threads
+        self.window_harmonics = sht.analyze(*self.window_mask())
 
     def __repr__(self) -> str:
         """Return a string with the bandwidth, the grid side length,
@@ -1015,7 +1255,14 @@ class SphericalBackProjector:
         ``"SphericalBackProjector: bw = 68, dim = 71, detector
         (60, 60) -> (53, 53), window 1317 points (14.6 %)"``.
         """
-        raise NotImplementedError
+        nrows, ncols = self.detector.shape
+        h_out, w_out = self.rescaled_shape
+        return (
+            f"{type(self).__name__}: bw = {self.bandwidth}, "
+            f"dim = {self.dim}, detector ({nrows}, {ncols}) -> "
+            f"({h_out}, {w_out}), window {self.n_points} points "
+            f"({100 * self.window_fraction:.1f} %)"
+        )
 
     def window_mask(self) -> tuple[np.ndarray, np.ndarray]:
         """Return the binary mask of the window on the two grids.
@@ -1039,7 +1286,10 @@ class SphericalBackProjector:
         table.  The ``ptp == 0`` branch of :meth:`unproject` returns
         the same array bitwise.
         """
-        raise NotImplementedError
+        north = np.zeros((self.dim, self.dim))
+        north.reshape(-1)[self.sphere_index] = 1.0
+        south = np.zeros((self.dim, self.dim))
+        return north, south
 
     def squared_harmonics(self, alm: np.ndarray) -> np.ndarray:
         """Return the harmonic coefficients of the square of a
@@ -1077,7 +1327,16 @@ class SphericalBackProjector:
         :class:`~kikuchipy.indexing._spherical._xcorr.
         NormalizedSphericalCrossCorrelator` needs to build ``rDen``.
         """
-        raise NotImplementedError
+        alm = np.asarray(alm)
+        expected = (self.bandwidth, self.bandwidth)
+        if alm.shape != expected:
+            raise ValueError(
+                f"Harmonic coefficients of shape {alm.shape} must have the "
+                f"projector's shape {expected}: resize the master pattern "
+                "harmonics to this bandwidth first"
+            )
+        north, south = self.sht.synthesize(alm)
+        return self.sht.analyze(north**2, south**2)
 
     def image_quality(self, pattern: np.ndarray) -> float:
         """Return the discrete cosine image quality of a pattern.
@@ -1098,8 +1357,21 @@ class SphericalBackProjector:
         ------
         ValueError
             If ``pattern`` does not have the detector shape.
+
+        Notes
+        -----
+        The pattern is mean filled exactly as :meth:`unproject` fills
+        it when :attr:`signal_mask` is set, so that the two agree
+        bitwise for a masked projector as well.
         """
-        raise NotImplementedError
+        pattern = np.asarray(pattern)
+        if pattern.shape != self.detector.shape:
+            raise ValueError(
+                f"Pattern of shape {pattern.shape} must have the detector "
+                f"shape {self.detector.shape}"
+            )
+        work = _mean_fill(pattern.astype(np.float64), self.signal_mask)
+        return _dct_image_quality(work)
 
     def unproject(
         self,
@@ -1161,4 +1433,63 @@ class SphericalBackProjector:
         window.  All temporaries are per call, so one projector may
         be shared between threads.
         """
-        raise NotImplementedError
+        pattern = np.asarray(pattern)
+        if pattern.shape != self.detector.shape:
+            raise ValueError(
+                f"Pattern of shape {pattern.shape} must have the detector "
+                f"shape {self.detector.shape}"
+            )
+
+        dim = self.dim
+        if out is None:
+            north = np.zeros((dim, dim))
+            south = np.zeros((dim, dim))
+        else:
+            if not isinstance(out, (tuple, list)) or len(out) != 2:
+                raise ValueError(
+                    "Output buffers `out` must be a pair of C-contiguous "
+                    f"({dim}, {dim}) 64-bit float arrays"
+                )
+            north, south = out
+            for buffer in (north, south):
+                if (
+                    not isinstance(buffer, np.ndarray)
+                    or buffer.shape != (dim, dim)
+                    or buffer.dtype != np.float64
+                    or not buffer.flags.c_contiguous
+                ):
+                    raise ValueError(
+                        "Output buffers `out` must be a pair of C-contiguous "
+                        f"({dim}, {dim}) 64-bit float arrays, not an array "
+                        f"of shape {np.shape(buffer)}"
+                    )
+
+        work = _mean_fill(pattern.astype(np.float64), self.signal_mask)
+        north_flat = north.reshape(-1)
+        # pocketfft's type-2 transform of a constant is not exactly a
+        # delta, so the constant is caught before the transform
+        if np.ptp(work) == 0:
+            north_flat[self.sphere_index] = 1.0
+            image_quality = 1.0 if work.flat[0] != 0 else 0.0
+        else:
+            h_out, w_out = self.rescaled_shape
+            rescaled, image_quality = _dct_rescale(
+                work,
+                h_out,
+                w_out,
+                zero_mean=True,
+                want_iq=return_image_quality,
+            )
+            _unproject_kernel(
+                rescaled.reshape(-1),
+                self.pixel_index,
+                self.weights,
+                self.solid_angles,
+                self.window_solid_angle,
+                self.sphere_index,
+                north_flat,
+            )
+
+        if return_image_quality:
+            return north, south, image_quality
+        return north, south

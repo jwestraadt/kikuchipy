@@ -133,3 +133,81 @@ Same environment. Scratch port `prep_probe.py` (`gauss_fit`, `MosaicAHE`) and `b
 - **Uniform AHE (D9)**, `np.full((60, 60), 100, np.uint8)`, `n_regions` 10: outputs `255.0` (2520 px), `255.00000000000003` (999 px), `255.00000000000009` (81 px); `max |. - 255.0| = 8.527e-14`; `cdf[tile 0][100] = 255.0` exactly and the four weights of pixel `(0, 0)` are `0.25` each, summing to exactly `1.0` -- the residue is the four-term sum itself. The column ramp `0..236` step 4 has `min = 42.5` exactly and `max = 255.00000000000003`, i.e. the same residue the existing `1e-9` bound already absorbs. Asserted `max |. - 255.0| <= 1e-9`.
 - **Rim and resample geometries (D3/D4)**, `(left, top, right, bottom)` in resampled pixels, `n_points`, `(h_out, w_out)`. Ni detector `bw` 68: circle `(2, 0, 1, 0)`, 1117, `(49, 49)`; no circle `(10, 10, 11, 0)`, 1317, `(53, 53)`. Ni `bw` 88: circle `(1, 4, 2, 0)`, 1844, `(63, 63)`; no circle `(11, 12, 11, 8)`, 2157, `(69, 69)`. Rectangular `EBSDDetector((48, 60), pc=(0.55, 0.65, 0.6), sample_tilt=70, tilt=10)` at `bw` 68: circle `(0, 1, 0, 0)`, 953, `(42, 52)`; no circle `(6, 8, 5, 12)`, **1285**, `(48, 60)`. **Only `bw` 88 without the circle and the rectangular detector put points on the bottom rim** (8 and 12 points with `j0 == h_out - 1`), so at `bw` 68 alone fact (c) for `y > h_out - 1` is vacuous and a kernel written `j1 = j0 + 1` without `min(., h_out - 1)` survives the whole suite; facts (a)-(c) and the `~right`/`~bottom` complements hold at every one of the six cases, max weight `0.978` (rect circle) / `0.993` (rect no circle). Rim fractions `0.0027 / 0.0235 / 0.0038 / 0.0195 / 0.0010 / 0.0241`, all under the asserted `0.05`. Minimum distance of a point to one of the four rim thresholds over the six cases `1.343e-3` resampled pixels (and `1.95e-6` to a `floor` cell boundary, on the rectangular circle case), so both the pinned counts and the bitwise `pixel_index` pin are far from knife-edge.
 - **Size table rows now asserted**: `bw` 63 -> `(45, 49)` sides and `934 / 1093` points, `bw` 113 -> `(80, 87)` and `2955 / 3474`, both reproduced; the test is parametrised over all five bandwidths of the table instead of 53 / 68 / 88.
+
+### 2026-08-17 -- `_preprocessing.py` implementation measurements
+
+Same environment; the real Numba kernels of
+`src/kikuchipy/indexing/_spherical/_preprocessing.py` replacing the
+drafting probe `prep_probe.py`. `uv run pytest
+tests/test_indexing/test_spherical_preprocessing.py`: **88 passed**
+with `-n 0` (3.2 s) and with `-n 4` (10.5 s); no test was changed.
+Coverage of the module 96.36 % (357 statements, 13 missed: the
+`py_func`-only branches `n < 3`, the unmasked histogram loop and the
+flat `_to_uint8_kernel` buffer, plus six `ValueError` messages the
+committed tests do not reach).
+
+- **Every drafting number reproduced bitwise or to the digits
+  recorded**: 1-D fit exact on `(25.3, 288, 150)` and
+  `(40.7, 60.5, 90)`; ripple `|a - a0|` `2.8295e-5 / 1.0233e-3 /
+  1.4815e-4` and `|b - b0|/b0` `1.072e-5 / 1.812e-4 / 1.567e-4`;
+  modulated `(29.9994, R^2 0.99743) / (25.3120, 0.99718) /
+  (40.6985, 0.97840)`; ramp `(62.66725, 1700.1485, 56.7657,
+  0.99210)`; integer mean status **3** with params
+  `(30, 128, 200, 1)`; 2-D `gx.a = 31.4`, `gy.a = 26.9`, errors
+  `8.1565` (`True`) / `0.0027772` (`False`); Ni pattern 0
+  `gx = (23.873493, 1101.768372, 232.837776)`,
+  `gy = (25.809696, 1484.991749, 233.768384)`, `c = 233.768384`;
+  circle counts `2819 / 2821 / 29 / 1792` and `317` at `radius=10`;
+  AHE uniform `255.0` (2520 px) / `...03` (999) / `...09` (81), max
+  deviation `8.5265e-14`; ramp `[42.5, 255.00000000000003]`; mask
+  difference `164.6105`, masked-out corners `[0.0, 136.96715]`;
+  all-masked tile identity `2.8422e-14`; `skimage` `5.9028 / 4.7222
+  / 5.9028` (mean `2.989 / 2.381 / 2.993`, correlation `1.000000`),
+  `n_regions` 4 vs `kernel_size` 15 `1.13333` (correlation
+  `0.99999999350`), `n_regions` 7 `70.204` (`0.92385`); kikuchipy
+  AHE `6.625 / 5.250 / 6.444` raw and `1.019 / 1.014 / 1.019`
+  rescaled; process chain on Ni pattern 0 with the circle
+  `[0, 255] / [0, 255] / [-35.53, 18.65] / [26, 245]`.
+- **Flat-input statuses (platform-dependent, recorded not
+  asserted)**: `np.full(58, 5.0)` and `np.full(58, 0.0)` both give
+  compiled status **3** with `params` all NaN and `.py_func` status
+  **2** with `params = (0, NaN, 5, NaN)` resp. `(0, NaN, 0, NaN)`,
+  no exception either way -- identical to the drafting scratch
+  kernel `m4.py`, i.e. the C++ comparison direction and the NumPy
+  scalar accumulators reproduce the recorded NaN sign propagation
+  in the real module. `_cholesky_solve_3x3` deterministic:
+  all-NaN -> 0, one flipped NaN sign bit -> 1, `diag(1e-17, 1, 1)`
+  -> 2, `[[1, 1, 0], [1, 1, 0], [0, 0, 1]]` -> 2, negative definite
+  -> 0 with `x = (-0.25, 1.5701e-16, -1.5)`.
+- **Timing (D11, best of 200, warm, single thread)**, Ni pattern 0,
+  `60 x 60`, no mask / circle mask: `_preprocess_pattern`
+  `0.0766 / 0.0777` ms (`n_regions` 10), `0.1195 / 0.1183` ms
+  (background + AHE), `0.0324 / 0.0300` ms (background only),
+  `0.0029 / 0.0022` ms (float cast only); components `_mosaic_ahe`
+  `0.0755` ms, `_gaussian_background` `0.0265` ms, `_to_uint8`
+  `0.0061` ms. The Python probe's `3.3 / 4.3 / 1.2` ms are
+  therefore **17-43x** faster in the kernels, comfortably inside
+  D11's "expected `< 0.2` ms"; preprocessing adds `< 1 %` to a
+  coarse `correlate` at `bw` 68.
+- **Deviations from the C++ carried into the module**: only the
+  documented `_to_uint8` flat-buffer zeros (C++ UB) and the two
+  helper names `_good_pixels_or_ones` / `_interpolation_pairs`
+  (validation and the `upper_bound` bookkeeping of `setSize`,
+  factored out of three resp. two call sites; not kernels, so
+  `KERNEL_NAMES` is unaffected).
+
+### 2026-08-17 -- `_back_projection.py` implementation (task 1 of the plan)
+
+Environment as above (Windows 11, Python 3.13.12, numpy 2.4.6, scipy 1.17.1, numba 0.65.1, orix 0.14.2, kikuchipy 0.14.dev0), nlopt 2.10.0 present so the error-floor tests ran `LN_NELDERMEAD`. `src/kikuchipy/indexing/_spherical/_back_projection.py` implemented against the committed skeleton (signatures, docstrings and licence blocks unchanged; only the `raise NotImplementedError` bodies replaced, the `@njit(cache=True, nogil=True)` decorator added to `_unproject_kernel` and the deferred import blocks written). **No test file was modified.** Gates: `uv run pytest tests/test_indexing/test_spherical_back_projection.py -n 0 -q` -> **143 passed, 5 skipped (weekly), 7.9 s**; `-n 4` -> **143 passed, 5 skipped, 13.9 s**; `--weekly -m weekly` -> **5 passed, 3.7 s**; `uv run pytest --doctest-modules src/kikuchipy/indexing/_spherical -q` -> **12 passed**; `uv run pytest tests/test_indexing -n 4` (excluding the parallel `_preprocessing` work) -> **2225 passed, 703 skipped**; `pre-commit run --files ...` clean (ruff-format reflowed the new bodies once).
+
+- **Geometry (D2)**: direction oracle `max |col - c| / max |row - r|` = `1.554e-14 / 1.421e-14` (Ni 60x60), `1.421e-14 / 1.288e-14` (`(48, 60)`), `1.421e-14 / 1.155e-14` (`(60, 60)` tilt -30), `1.421e-14 / 1.643e-14` (`(41, 41)`), all in front, all under the asserted `1e-10`. Direction-cosine `z` ranges of the tilt table: `(70, 0) [0.188, 1.000]`, `(70, 10) [0.041, 0.991]`, `(70, -30) [0.579, 1.000]`, `(0, 0) [-0.841, 0.379]`, `(20, 0) [-0.605, 0.673]`; `sample_tilt` 0 puts `0.783` of the pixels below the equator and keeps `0.398` of the window. The south hemisphere is exactly zero for every geometry and every pattern.
+- **Sizes (D3)**: reproduced -- `solid_angle_fraction` `0.1457114171543314` (no circle) / `0.1243495026019896` (circle), i.e. the integer counts `72856 / 62175` over the literal divisor `500002` (consistent divisor `0.145130 / 0.123854`); `scale_factor` `0.6298728511345136 / 0.5818728919295152`; `rescaled_shape (53, 53) / (49, 49)`; `n_points 1317 / 1117`; `sphere_solid_angle` exactly `9802.0 = 2 dim^2 - 4 (dim - 1)`; `window_fraction 0.14585121975038606 / 0.12399734453713866`, i.e. `1.0049 / 1.0012` times the analytic pixel-grid estimate. The whole `bw -> (h_out, w_out), n_points` table of D3 (53, 63, 68, 88, 113, both circle settings) reproduced.
+- **Lookup table (D4)**: rim counts `(left, top, right, bottom)` in resampled pixels reproduced exactly -- Ni `bw` 68 circle `(2, 0, 1, 0)` (detector rim 2, max weight `0.969`), no circle `(10, 10, 11, 0)` (24, `0.992`); Ni `bw` 88 circle `(1, 4, 2, 0)` (7, `0.984`), no circle `(11, 12, 11, 8)` (44, `0.996`); rectangular `(48, 60)` `bw` 68 circle `(0, 1, 0, 0)` (1, `0.978`), no circle `(6, 8, 5, 12)` (31, `0.993`). Weight rows sum to one to `<= 1e-12`, no weight equals `1.0`, and the structural resample-map pin holds bitwise on `pixel_index` and to `<= 1e-12` on `weights` in all six cases. EMSphInx' stretch as the negative control: `max |dx| = 0.4999`, `max |dy| = 0.4949` resampled px, `i0` moved for `295` of 1317 points (`j0` for `230`) and **all 1317** weight rows changed by more than `1e-6`. Physical circle on the rectangular detector: `n_points 953` (the C++ rescaled circle would give 958), `rescaled_shape (42, 52)`; without the circle `1285` and `(48, 60)`.
+- **Resample, constant pattern and image quality (D5)**: pocketfft AC maximum of `dctn(np.full((60, 60), 37.0), type=2)` `1.104e-11`, so the `ptp == 0` short-cut is still needed; the constant `7.0`, the `uint8` constant `7` and the all-zero pattern all return `window_mask()` bitwise with `iq` `1.0 / 1.0 / 0.0` and **no** transform call. Nine `nickel_ebsd_small` image qualities `0.7663, 0.7734, 0.7726, 0.7667, 0.7769, 0.7709, 0.7680, 0.7788, 0.7732`, each equal to the test-local literal `imageQuality()` on the input-size spectrum to `rel 1e-12` and to `unproject(..., return_image_quality=True)` bitwise; kikuchipy's `get_image_quality` `0.5238 ... 0.5299`, correlation `0.616`; scale invariance `1.110e-16`, offset dependence `+0.0556`, uniform noise `0.0537`. Mean fill of the `[20:32, 25:40]` block on `100 Re Y_4^2 + 50`: windowed correlation `0.99652` with the fill for both fill values, against `0.98122` (block 0) and `0.93232` (block 255) without it.
+- **`unproject` (D6)**: resampled standard deviation of Ni pattern 0 `4.8711e+05`; weighted mean `<= 1e-10` and weighted second moment `1 +- 1e-10` on all nine patterns and five seeded random ones; the un-windowed grid points exactly zero; `out=` reuse keeps the caller's stale values off the window (asserted at `5.0`); the literal `stdev == 0` branch writes ones for the all-zero resampled image and returns `0.0`, while a `1e-14`-amplitude image is normalised (`stdev > 0`, mean `<= 1e-10`, second moment `1 +- 1e-10`). Transform recording: exactly two `dctn` calls, `type` 2 then 3, `workers=1`, no `norm`, and `[0, 0] == 0.0` in the type-3 input.
+- **Spherical harmonic recovery (D5/D7)**: `(l, m) ->` windowed correlation / weighted rms / spectral correlation: `(2,1) 0.999999 / 0.0014 / 1.000000`; `(3,2) 0.999999 / 0.0011 / 1.000000`; `(4,0) 0.999999 / 0.0011 / 1.000000`; `(5,3) 0.999999 / 0.0015 / 0.999999`; `(6,4) 0.999998 / 0.0020 / 0.999998`; `(8,2) 0.999991 / 0.0042 / 0.999993`; weekly `(12,5) 0.999964 / 0.0085 / 0.999971`.
+- **`mlm` and `rDen` (D7)**: `mlm[0, 0].real` `0.4394432` (circle) / `0.5169199` (no circle), i.e. `s2m/(4 pi)` `0.1239646 / 0.1458204` against `window_fraction` `0.1239973 / 0.1458512`; `rDen` finite and positive with min/max `1.7852 / 2.1503` (circle) and `1.6599 / 1.9508` (no circle); the `12 x 15` `signal_mask` changes `rDen` by up to `10.83 %` relative. Every value reproduces the drafting probe to the printed digits.
+- **Forward-projection lock (D8)**, 27 rotations, `circular_mask=False`: `bw` 68 normalised correlator `~R` median `0.344` / max `0.717` deg against `R` median `35.022` / max `58.177`, scores `1.0869-1.1431`; un-normalised `~R` `0.328 / 0.536`, `R` `35.541 / 58.175`, scores `0.5943-0.6519`. Weekly `bw` 53: normalised `~R` `0.512 / 1.040`, `R` `35.270 / 60.242`, scores `0.9781-1.0604`; un-normalised `~R` `0.591 / 1.040`, `R` `37.457 / 60.255`, scores `0.4578-0.5143`. Asymmetric blob (the default, no circle): Ni `(10, 45)` true `1.05` / vflip `49.43` / hflip `52.62` / transpose `71.44`; `(50, 5)` `1.13 / 50.36 / 53.88 / 85.93`; `pc = (0.55, 0.65, 0.6)` `(15, 40)` `1.14 / 41.68 / 28.24 / 50.88`; `(45, 12)` `0.34 / 39.42 / 50.57 / 63.24`. So `_euler.rotation_from_zyz` and the row/column convention are now confirmed by the implementation, not only by the probe.
+- **Mean-PC error floor (D12)**, unchanged from the tests-first run: `nickel_ebsd_small` per-point vs stored `0.052 / 0.188`, `pc_average` vs stored `0.296 / 0.557`, floor `0.333 / 0.542`, PC spread `(0.0057, 0.0032, 0.0013)`; `nickel_ebsd_large` 20-point subset per-point vs stored `0.038 / 0.174`, `pc_average` vs stored median `0.295` / p95 `0.815` / max `0.843`, floor median `0.283` / p90 `0.753` / p95 `0.762` / max `0.823`, correlation `0.958`; weekly 165-point subset per-point vs stored `0.051 / 0.300`, `pc_average` vs stored `0.302` / p95 `0.729` / max `1.075`, floor median `0.291` / p90 `0.512` / p95 `0.735` / max `0.964`, correlation `0.969`.
+- **Kernel and baselines (D10/D11)**: `_unproject_kernel` is the module's only `@njit` dispatcher, `cache=True`, `nogil=True`, no `parallel`, no `fastmath`, no `error_model`; its `.py_func` reproduces the compiled north grid and return value **bitwise** (maximum difference `0.000e+00`) on Ni pattern 0. Timings on this machine, warm: construction (transform + weights + lookup table + `mlm`) `17.0 / 17.7 / 21.2 / 46.5` ms at `bw` 53 / 68 / 88 / 113 (drafting probe 55 / 50 / 69 / 95 ms); `unproject` including the transform and the image quality `0.059 / 0.066 / 0.072 / 0.079` ms; `sht.analyze` of the result `0.224 / 0.431 / 0.897 / 1.890` ms. `tracemalloc` construction peak `30.4` MB at `bw` 68 and `30.6` MB at `bw` 113 (drafting probe 35.4 / 52.6 MB -- the implementation evaluates the `502 x 502` solid-angle grid from one `(252004, 2)` array and drops the meshgrid halves earlier); the lookup table is `0.089` MB at `bw` 68 and `0.236` MB at `bw` 113, both far under the asserted 5 MB.
+- **One implementation determination not fixed by the spec text**: `SphericalBackProjector.image_quality()` applies the same `_mean_fill` as `unproject()` before calling `_dct_image_quality`, so that the D5 identity `image_quality(p) == unproject(p, return_image_quality=True)[2]` holds **bitwise for a masked projector too**, not only for the unmasked one the test exercises. Without the fill the two would differ whenever `signal_mask` is set, contradicting the skeleton's documented "equal bitwise" contract. Recorded in the method's `Notes`.
