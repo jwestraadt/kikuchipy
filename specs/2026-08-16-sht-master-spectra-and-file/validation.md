@@ -517,3 +517,9 @@ sources; the two surviving-mutation findings closed with new tests. Measured on 
   checkout, and never on an idle machine over ~40 repeat runs. Treated as an environmental hazard
   of the shared numba `cache=True` on-disk cache, not a code defect: never run two processes
   against this checkout, and give parallel CI jobs a per-process `NUMBA_CACHE_DIR`.
+
+### 2026-08-17 -- CI portability fix (after PR #5 CI)
+
+- The `ubuntu-latest-py3.10-oldest` job (orix 0.12.1) failed `TestSpaceGroupTables::test_the_tables_agree_with_orix_above_space_group_15[25..46]`: that orix orients the two-fold of the orthorhombic `mm2` groups about x, so its *operators* disagree with the SHT file tables for space groups 25-46 (the tables are right: Pmm2's two-fold is along c, and they are pinned independently by the transcription tests). The two orix-operator oracle tests now skip, self-detected on space group 25, when orix does not put the `mm2` two-fold along z. The name-keyed `_symmetry.py` LUT and its tests are unaffected (they passed on 0.12.1).
+- Pre-existing, not ours: the macOS "GPU tests" step fails on upstream develop too (ebsdsim branch missing); the docstring step runs with `continue-on-error`.
+
