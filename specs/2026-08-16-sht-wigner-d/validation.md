@@ -609,3 +609,10 @@ numba 0.67.0, orix 0.15.0.
   the two test files: ruff, ruff-format and the GPL licence header
   all pass. No comment or docstring line exceeds 72 characters in
   either implementation file (checked by tokenizing, not grep).
+
+### 2026-08-17 -- CI portability fix (after PR #4 CI)
+
+- `test_the_transcribed_eu2qu_equals_orix_from_euler_bitwise` was bitwise on this machine but failed on macOS, one Windows and one Ubuntu runner: numpy's CPU-dispatched `sin`/`cos` (AVX512 vs AVX2 hosts) and LLVM on arm64 differ in the last ulp. Renamed `..._to_a_few_ulp`, tolerance `4 eps` (measured 0.0 here). The Bunge/ZYZ *relation* itself was never in doubt (the 8.6e-16 identity test is unchanged).
+- `test_rotate_harmonics_kernel_py_func_equals_the_compiled_kernel` failed on macOS arm64 only (LLVM vs CPython libm `cos`/`sin`): now `8 eps` relative to `max|alm|` (bitwise on x86-64). All table == scalar bitwise tests (compiled vs compiled) passed on every runner and stay bitwise.
+- Pre-existing, not ours: the macOS "GPU tests" step fails on upstream develop too (ebsdsim branch missing); the docstring step's `NameError` doctests are upstream's and run with `continue-on-error`.
+

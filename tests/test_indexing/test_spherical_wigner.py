@@ -1820,7 +1820,13 @@ class TestKernels:
         _py_func(_wigner._rotate_harmonics_kernel)(
             alm, alpha, gamma, table, interpreted
         )
-        assert np.array_equal(compiled, interpreted)
+        # The kernel evaluates cos/sin of alpha and gamma: LLVM's and
+        # CPython's libm differ in the last ulp on some platforms
+        # (bitwise here and on x86-64 Linux/Windows CI, not on macOS
+        # arm64), so this cross-compiler comparison is pinned to 8 eps
+        # relative to the largest coefficient
+        scale = np.abs(alm).max()
+        assert np.abs(compiled - interpreted).max() <= 8 * EPS * scale
 
     def test_derivative_py_funcs_equal_the_compiled_kernels(self):
         rng = np.random.default_rng(0)

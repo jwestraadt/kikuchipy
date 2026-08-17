@@ -281,12 +281,16 @@ class TestEmsphinxRotationsGrid:
     lines 288-318 on the Euler grids of lines 134-138.
     """
 
-    def test_the_transcribed_eu2qu_equals_orix_from_euler_bitwise(self):
+    def test_the_transcribed_eu2qu_equals_orix_from_euler_to_a_few_ulp(self):
         # pins specs/_research/explore-emsphinx-xtal-util-vs-orix.md
-        # 1.2, and thereby the whole grid test as an EMSphInx oracle
+        # 1.2, and thereby the whole grid test as an EMSphInx oracle.
+        # Bitwise on this machine, but numpy's CPU-dispatched sin/cos
+        # (AVX512 vs AVX2 runners) and LLVM on arm64 differ in the last
+        # ulp, so the cross-library comparison is pinned to 4 eps
+        # (measured 0.0 here; CI failed bitwise on macOS/Windows/Ubuntu)
         bunge = _euler.zyz_to_bunge(_random_zyz())
         mine = np.array([_emsphinx_eu2qu(e) for e in bunge])
-        assert np.array_equal(mine, Rotation.from_euler(bunge).data)
+        assert np.abs(mine - Rotation.from_euler(bunge).data).max() <= 4 * EPS
 
     @pytest.mark.parametrize("n, n_triples", [(25, 60025), (15, 12615)])
     def test_zyz_to_quaternion_matches_eu2qu_on_the_grid(self, n, n_triples):
