@@ -1,6 +1,16 @@
 # Roadmap: spherical indexing (EMSphInx CPU port)
 
-Dependency chain: 0 -> 1 -> {2, 3} -> 4 -> 5 -> 6 -> 7 -> {8, 9} -> 10 -> 11 (Phase 10 needs the Phase 2 `.sht` writer and the Phase 9 pattern repacker).
+Dependency chain: 0 -> 1 -> {2, 3} -> 4 -> 5 -> 6 -> 7 -> 9 (interop) -> 10 -> 11 (Phase 10 needs the Phase 2 `.sht` writer and the Phase 9 pattern repacker).
+
+**Re-scope (2026-09-02, Johan):** the target is indexing + binary regression +
+tutorial. Phase 8 (pseudo-symmetry) and the visualisation half of Phase 9 are
+**deferred** -- not dropped -- until after Phase 11. Phase 9 proceeds slimmed to
+its interop pieces (`write_emsphinx_patterns`, `EBSPDims` probe,
+`EMSphInxNamelist`), which are what Phase 10 needs; the Phase 11 tutorial omits
+its pseudo-symmetry section until Phase 8 lands. Phase 8 bolts on cleanly
+later: its `refine_zyz` hook shipped in Phase 7, and Phase 10's regression
+scenarios do not exercise pseudo-symmetry. Phase numbering is kept stable
+(specs and docstring guards reference phases by number).
 Each phase is one branch and one dated spec folder `specs/YYYY-MM-DD-<name>/`
 (`requirements.md`, `plan.md`, `validation.md`). A box is ticked only when the work is
 committed on the phase's branch (verifiable with `git log`); a phase is complete
@@ -76,17 +86,17 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] `_derivatives` kernel with `error_model="numpy"` (the IEEE-degeneracy detector), `_refine_peak` (maxIter 15, `absEps = eps 2pi/slP`, monotone step, Cholesky 3x3 reused from `_preprocessing`, saddle rejection, 1x1/2x2 degeneracy fallbacks, failure returns the coarse triple with the analytic value), `refine_zyz` on both correlators (Phase 8 reuses it), normalised refine dividing by `denominator(eu)` (window chain-rule caveat ported as-is), `refine=True` **default** in `SphericalIndexer` and `EBSD.spherical_indexing` (per-candidate refine before insertion, `indexer.hpp:230`), `EBSD.refine_orientation_spherical` + `SphericalIndexer.refine_patterns` (the `msk & 0x02` work item with the *intended* semantics -- the shipped `refineImage` discards its refinement and stores a zero or stale score, `indexer.hpp:296`, `idx.hpp:406-407`, a newly recorded EMSphInx defect)
 - [x] Tests: synthetic refined worst 2.96e-6 deg (30 symmetry-free cases, sizes 53-123 incl. padded) / 4.52e-6 (72 point-group cases) vs the C++ criteria 4.92e-3 / 0.351 deg; normalised wedge worst 1.85e-2 (`(1, F)` cases, gate 4.92e-2) resp. 2.13e-2 (`4/m` cases, gate 0.351 -- the C++'s own split, `sht_xcorr.cpp:316`, `:345`); `nickel_ebsd_small` refined **median 0.505** / max 0.695 deg (assert all < 1.0, median < 0.75 -- **the a-priori `median < 0.5` is amended: the measured value is 0.505** and the pin carries the Phase 6-style margin: the refined residual is the 0.33-deg mean-PC floor plus ~0.38 deg of bw-68 band-limitation and window caveat; at `bw` 88 the median is 0.450, under the old bound), scores up 9/9 (min +0.0108); large 20-pt refined 0.478/1.115 (median < 0.6, max < 2.0, deltas 20/20 > 0); weekly 165-pt refined 0.456 / p95 0.913 / max 1.140 (roadmap bounds median < 0.6 / p95 < 1.2 / max < 2.0 all pass; 161/165 scores up, the 4 dips are the un-applied window chain rule); refine-only-vs-refine=True equivalence 0.0 deg / 2.9e-14 score (assert < 1e-4 deg, < 1e-10); per-pattern refine+denominator 1.39 ms warm at `bw` 68 on 13.2 ms coarse (ratio 1.11x; C++ ~1.7x) (PR jwestraadt/kikuchipy#9)
 
-## Phase 8 -- `spherical-pseudo-symmetry`
+## Phase 8 -- `spherical-pseudo-symmetry` (DEFERRED 2026-09-02: after Phase 11)
 - [ ] `_pseudo_symmetry.py` (`find_pseudo_symmetry_operators`, MasterXcorr port incl. two-phase mode, optional volume + stereogram), `pseudo_symmetry_ops` in indexer, psymfile read/write (refines pseudo-symmetric candidates through `refine_zyz`, Phase 7)
 - [ ] Tests: Ni autocorrelation peaks subset of Oh, `exclude_symmetry` empty, synthetic 3-fold/6-fold, wrong op -> index 0, local hcp masters skip-if-absent
 
-## Phase 9 -- `sht-visualisation-and-interop`
-- [ ] sht2png equivalents (stereographic option, `plot_power_spectrum`, `.plot()` conveniences -- `to_master_pattern` and `describe` ship in Phase 2), `SphericalBackProjector.plot`, xcorr volume plot (note: `extractBunge` (`sht_xcorr.hpp:594-649`) uses the reversed ZYZ->Bunge offsets; if ported, use `_euler.bunge_to_zyz` and record the deviation)
-- [ ] `write_emsphinx_patterns` (PatternRepack contract in tech-stack.md), EBSPDims probe in `oxford_binary`, `EMSphInxNamelist` read/write (port of `test/util/nml.cpp` round trip), Sphinx-Gallery example
-- [ ] Tests: stereographic r > 0.98, IndexEBSD.exe reads a repacked file (local-gated), namelist round trip; out-of-scope list confirmed in mission.md
+## Phase 9 -- `sht-visualisation-and-interop` (slimmed 2026-09-02: interop only, branch `sht-interop`)
+- [ ] `write_emsphinx_patterns` (PatternRepack contract in tech-stack.md), EBSPDims probe in `oxford_binary`, `EMSphInxNamelist` read/write (port of `test/util/nml.cpp` round trip)
+- [ ] Tests: IndexEBSD.exe reads a repacked file (local-gated), namelist round trip; out-of-scope list confirmed in mission.md
+- DEFERRED with Phase 8 (visualisation half): sht2png equivalents (stereographic option, `plot_power_spectrum`, `.plot()` conveniences -- `to_master_pattern` and `describe` ship in Phase 2), `SphericalBackProjector.plot`, xcorr volume plot, Sphinx-Gallery example, stereographic r > 0.98 test (note: `extractBunge` (`sht_xcorr.hpp:594-649`) uses the reversed ZYZ->Bunge offsets; if ported, use `_euler.bunge_to_zyz` and record the deviation)
 
 ## Phase 10 -- `spherical-indexing-emsphinx-regression`
 - [ ] `create_emsphinx_reference.py` (pinned to 60f3517), `.npz` refs in-package, bidirectional tests (their binaries on our files; ours vs their `.ang/.h5`), `nregions in {0, 4, 10}`, two `delta` values
 
 ## Phase 11 -- `spherical-indexing-tutorial`
-- [ ] `doc/tutorials/spherical_indexing.ipynb` (uses the full Ni master `ebsd_master_pattern("ni")` or caps bw <= 190 for the 401-px master; wall-clock budget derived from the Phase 6 benchmark, target <= 3 min on 8 threads with the pre-agreed fallback bw 53 / `s.inav[:40, :30]` / `refine=False` for sweep cells; outputs stored), `doc/tutorials/index.rst` entry, `NOTEBOOKS` entry in `doc/tutorials/run_nbval.sh`, `tutorials_sanitize.cfg` for timings, `.sht` cell in `load_save_data.ipynb`, CHANGELOG consolidation, `sphinx-build -b html` and `-b linkcheck`
+- [ ] `doc/tutorials/spherical_indexing.ipynb` (uses the full Ni master `ebsd_master_pattern("ni")` or caps bw <= 190 for the 401-px master; wall-clock budget derived from the Phase 6 benchmark, target <= 3 min on 8 threads with the pre-agreed fallback bw 53 / `s.inav[:40, :30]` / `refine=False` for sweep cells; outputs stored), `doc/tutorials/index.rst` entry, `NOTEBOOKS` entry in `doc/tutorials/run_nbval.sh`, `tutorials_sanitize.cfg` for timings, `.sht` cell in `load_save_data.ipynb`, CHANGELOG consolidation, `sphinx-build -b html` and `-b linkcheck`; the pseudo-symmetry section is omitted until Phase 8 lands (re-scope 2026-09-02)
