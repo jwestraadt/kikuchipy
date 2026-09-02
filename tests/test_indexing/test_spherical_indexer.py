@@ -46,6 +46,7 @@ import functools
 import importlib
 import inspect
 import pkgutil
+import re
 import warnings
 
 import dask
@@ -67,6 +68,7 @@ from kikuchipy.indexing._spherical._indexer import (
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
 )
+from kikuchipy.indexing._spherical._preprocessing import _circular_mask
 from kikuchipy.indexing._spherical._xcorr import (
     NormalizedSphericalCrossCorrelator,
 )
@@ -458,11 +460,46 @@ class TestSphericalIndexerConstruction:
         # ``IndexEBSD``'s ``circmask = -1``
         assert indexer.good_pixels is None
 
+    def test_the_attributes_follow_the_arguments(self):
+        # the table above pins the *defaults*, so an attribute frozen
+        # at its default value is invisible there; these are
+        # documented public attributes which a caller reads back
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[20:32, 25:40] = True
+        indexer = ni_indexer(
+            signal_mask=mask,
+            circular_mask=True,
+            n_regions=4,
+            gaussian_background=True,
+            emsphinx_compatible=False,
+            normalize=False,
+        )
+        assert np.array_equal(indexer.signal_mask, mask)
+        assert indexer.circular_mask is True
+        assert indexer.n_regions == 4
+        assert indexer.gaussian_background is True
+        assert indexer.emsphinx_compatible is False
+        assert indexer.normalize is False
+
     def test_the_circle_reaches_both_the_window_and_the_histogram(self):
         indexer = ni_indexer(circular_mask=True)
         assert indexer.projector.n_points == CIRCLE_WINDOW_POINTS
         assert indexer.good_pixels is not None
         assert indexer.good_pixels.dtype == np.bool_
+
+    def test_a_signal_mask_and_the_circle_intersect(self):
+        # the two terms of ``good_pixels`` are reduced to the ones
+        # present, and both present means their intersection.  No
+        # other test of the suite gives both, so a mutant which keeps
+        # only one of the two terms survives without this one
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[20:32, 25:40] = True
+        indexer = ni_indexer(signal_mask=mask, circular_mask=True)
+        circle = _circular_mask((60, 60))
+        assert np.array_equal(indexer.good_pixels, ~mask & circle)
+        # strictly fewer good pixels than either term alone
+        assert indexer.good_pixels.sum() < circle.sum()
+        assert indexer.good_pixels.sum() < (~mask).sum()
 
     def test_the_wigner_table_is_shared_between_correlators(self):
         indexer = SphericalIndexer(
@@ -584,6 +621,77 @@ class TestIndexPatterns:
         assert np.array_equal(results["zyz"], np.zeros((9, 1, 3)))
         assert np.array_equal(results["scores"], np.zeros((9, 1)))
 
+    def test_a_score_which_ties_the_fill_is_never_recorded(self, monkeypatch):
+        # the other half of ``upper_bound``: it inserts only where
+        # the candidate **strictly** beats a row, so a candidate
+        # which merely ties the fill score of zero is dropped too.
+        # The negative score above does not separate ``upper_bound``
+        # from ``lower_bound``, since a ``>=`` port drops ``-1`` as
+        # well and records ``0`` with phase 0 only here
+        def zero(self, gln, **kwargs):
+            return np.array([0.5, 0.5, 0.5]), 0.0
+
+        monkeypatch.setattr(NormalizedSphericalCrossCorrelator, "correlate", zero)
+        indexer = ni_indexer()
+        results = indexer.index_patterns(ni_patterns(), progressbar=False)
+        assert np.array_equal(results["phase_id"], np.full((9, 1), -1, np.int32))
+        assert np.array_equal(results["zyz"], np.zeros((9, 1, 3)))
+        assert np.array_equal(results["scores"], np.zeros((9, 1)))
+
+    def test_an_equal_score_ranks_after_the_earlier_phase(self, monkeypatch):
+        # ``std::upper_bound`` places a tie *after* the rows it
+        # equals, so the earlier phase keeps the better row; a
+        # ``lower_bound`` port swaps the two
+        def tied(self, gln, **kwargs):
+            return np.array([0.1, 0.2, 0.3]), 0.5
+
+        monkeypatch.setattr(NormalizedSphericalCrossCorrelator, "correlate", tied)
+        indexer = SphericalIndexer(
+            [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()], ni_detector()
+        )
+        results = indexer.index_patterns(ni_patterns(), n_best=2, progressbar=False)
+        assert np.array_equal(results["phase_id"], np.tile([0, 1], (9, 1)))
+        assert np.array_equal(results["scores"], np.full((9, 2), 0.5))
+
+    def test_a_later_phase_displaces_an_earlier_one(self):
+        # the only phase order in the suite which makes the top-n
+        # shift do any work: with the decoy first, the true phase
+        # wins from the *second* slot and must push the decoy's
+        # candidate down to row 1.  Everywhere else the winner is
+        # already phase 0, where the shift runs over identical fill
+        # rows and its direction cannot be seen
+        indexer = SphericalIndexer(
+            [scrambled_harmonics(), ni_harmonics(NI_BANDWIDTH)], ni_detector()
+        )
+        results = indexer.index_patterns(ni_patterns(), n_best=2, progressbar=False)
+        assert np.array_equal(results["phase_id"], np.tile([1, 0], (9, 1)))
+        # row 1 holds the decoy's real candidate, not the fill a
+        # wrong way shift would leave behind
+        assert (results["scores"][:, 1] > 0).all()
+        assert (np.diff(results["scores"], axis=1) < 0).all()
+        assert (results["zyz"][:, 1] != 0).any()
+
+    def test_a_dropped_candidate_does_not_fail_the_pattern(self, monkeypatch):
+        # the drop branch must *return*: a second phase whose non
+        # positive score is thrown away has to leave the first
+        # phase's winning row alone.  An off by one bound writes past
+        # the end of the list instead, the per-pattern ``except``
+        # swallows the ``IndexError`` and the whole point is failed
+        # -- which the single phase tests above cannot see, because
+        # there the dropped candidate is the only one there is
+        def by_phase(self, gln, **kwargs):
+            if self.n_fold == 1:
+                return np.array([0.5, 0.5, 0.5]), -1.0
+            return np.array([0.1, 0.2, 0.3]), 0.75
+
+        monkeypatch.setattr(NormalizedSphericalCrossCorrelator, "correlate", by_phase)
+        indexer = SphericalIndexer(
+            [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()], ni_detector()
+        )
+        results = indexer.index_patterns(ni_patterns(), progressbar=False)
+        assert np.array_equal(results["phase_id"], np.zeros((9, 1), np.int32))
+        assert np.array_equal(results["scores"], np.full((9, 1), 0.75))
+
     def test_a_constant_processed_pattern_is_failed(self, monkeypatch):
         # guard (b) is unreachable from a raw input, since every
         # constant raw pattern is caught by guard (a) first
@@ -598,6 +706,33 @@ class TestIndexPatterns:
         assert np.array_equal(results["scores"], np.zeros((9, 1)))
         assert np.array_equal(results["iq"], np.zeros(9))
 
+    def test_a_constant_processed_pattern_never_reaches_the_projector(
+        self, monkeypatch
+    ):
+        # guard (b) is a **short circuit**, not only a fill value:
+        # the back-projection would answer a constant with its window
+        # mask and the correlation would then score that mask.  The
+        # sibling above cannot see the guard at all, because the
+        # measured -2.64 of the mask is dropped by the insertion rule
+        # anyway and leaves exactly the same fill, so it passes with
+        # the guard deleted
+        def constant(pattern, **kwargs):
+            return np.full((60, 60), 1.0)
+
+        calls = []
+        original = SphericalBackProjector.unproject
+
+        def spy(self, *args, **kwargs):
+            calls.append(1)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(_indexer, "_preprocess_pattern", constant)
+        monkeypatch.setattr(SphericalBackProjector, "unproject", spy)
+        indexer = ni_indexer()
+        results = indexer.index_patterns(ni_patterns(), progressbar=False)
+        assert calls == []
+        assert np.array_equal(results["phase_id"], np.full((9, 1), -1, np.int32))
+
     def test_a_non_finite_score_is_failed(self, monkeypatch):
         def infinite(self, gln, **kwargs):
             return np.array([0.5, 0.5, 0.5]), np.inf
@@ -607,6 +742,27 @@ class TestIndexPatterns:
         results = indexer.index_patterns(ni_patterns(), progressbar=False)
         assert np.array_equal(results["phase_id"], np.full((9, 1), -1, np.int32))
         assert np.array_equal(results["scores"], np.zeros((9, 1)))
+
+    def test_only_the_winning_row_is_checked_for_finiteness(self, monkeypatch):
+        # guard (c) is scoped to the **winning** score and angles, as
+        # the contract says.  A losing candidate whose interpolated
+        # peak came back with a non-finite angle -- which the numpy
+        # error model of ``_interpolate_maxima`` allows -- must not
+        # fail a point the winning phase indexed fine.  A guard which
+        # scans the whole result block fails it instead
+        def by_phase(self, gln, **kwargs):
+            if self.n_fold == 1:
+                return np.array([np.nan, 0.0, 0.0]), 0.1
+            return np.array([0.1, 0.2, 0.3]), 0.9
+
+        monkeypatch.setattr(NormalizedSphericalCrossCorrelator, "correlate", by_phase)
+        indexer = SphericalIndexer(
+            [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()], ni_detector()
+        )
+        results = indexer.index_patterns(ni_patterns(), n_best=2, progressbar=False)
+        assert np.array_equal(results["phase_id"], np.tile([0, 1], (9, 1)))
+        assert (results["scores"][:, 0] == 0.9).all()
+        assert np.isnan(results["zyz"][:, 1, 0]).all()
 
     def test_a_flat_pattern_in_a_stack_carries_the_fill(self):
         patterns = np.array(ni_patterns())
@@ -618,6 +774,48 @@ class TestIndexPatterns:
         assert results["scores"][4, 0] == 0.0
         assert results["iq"][4] == 0.0
         # and the other eight are untouched
+        assert (results["phase_id"][[0, 1, 2, 3, 5, 6, 7, 8]] == 0).all()
+
+    def test_a_failed_pattern_is_warned_about(self):
+        # a failed pattern is never re-raised on, so without the
+        # count a run whose every pattern failed returns in silence
+        patterns = np.array(ni_patterns())
+        patterns[4] = 37
+        indexer = ni_indexer()
+        with pytest.warns(UserWarning, match="1 of 9 pattern"):
+            results = indexer.index_patterns(patterns, progressbar=False)
+        assert results["phase_id"][4, 0] == -1
+
+    def test_a_run_without_failures_is_silent(self):
+        indexer = ni_indexer()
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            indexer.index_patterns(ni_patterns(), progressbar=False)
+        assert not [w for w in record if "could not be indexed" in str(w.message)]
+
+    def test_the_guards_are_caught_per_pattern(self, monkeypatch):
+        # the zero variance guard sits *inside* the per-pattern
+        # catch, as ``ebsdWorkItem`` wraps the whole of
+        # ``indexImage()``: a guard which raises must fail its own
+        # pattern, never the chunk
+        real_ptp = np.ptp
+
+        def exploding_ptp(array, *args, **kwargs):
+            flat = getattr(array, "dtype", None) == np.uint8 and bool(
+                np.asarray(array == 37).all()
+            )
+            if flat:
+                raise RuntimeError("the guard raised")
+            return real_ptp(array, *args, **kwargs)
+
+        patterns = np.array(ni_patterns())
+        patterns[4] = 37
+        monkeypatch.setattr(_indexer.np, "ptp", exploding_ptp)
+        indexer = ni_indexer()
+        with pytest.warns(UserWarning, match="1 of 9 pattern"):
+            results = indexer.index_patterns(patterns, chunksize=9, progressbar=False)
+        assert results["phase_id"][4, 0] == -1
+        # the eight others of the one chunk survive the raise
         assert (results["phase_id"][[0, 1, 2, 3, 5, 6, 7, 8]] == 0).all()
 
     def test_a_nan_pixel_is_documented_as_unguarded(self, record_property):
@@ -657,6 +855,41 @@ class TestIndexPatterns:
         assert _batch_estimate(NI_BANDWIDTH, 4, 9) == 1
         assert "9 chunk(s)" in message
         assert "1 pattern(s)" in message
+
+    def test_the_info_message_describes_the_phase(self):
+        # the D6 phase line is the name, the point group and the two
+        # symmetry flags, which the memory model test does not reach
+        # past the name
+        message = ni_indexer().get_info_message(9, 1)
+        assert "Phase(s): ni (m-3m; 4-fold, mirror)" in message
+
+    @pytest.mark.parametrize("lazy", [False, True])
+    def test_an_explicit_chunksize_reaches_the_graph(self, monkeypatch, lazy):
+        # the results are bitwise identical across chunk sizes by
+        # design, which is exactly what hides an ``index_patterns``
+        # that quietly re-estimates the caller's chunk size from
+        # every other test -- while the information message would go
+        # on reporting the size which was asked for and the user's
+        # only lever on the per-worker memory would be dead
+        original = _indexer._index_chunk
+        sizes = []
+
+        def spy(patterns_block, indexer, n_best):
+            sizes.append(int(patterns_block.shape[0]))
+            return original(patterns_block, indexer, n_best)
+
+        monkeypatch.setattr(_indexer, "_index_chunk", spy)
+        patterns = np.array(ni_patterns())
+        if lazy:
+            patterns = da.from_array(patterns, chunks=(9, -1, -1))
+        indexer = ni_indexer()
+        # an explicit worker count, so that the estimate a mutant
+        # would fall back to is a known one and never the machine's
+        with dask.config.set(num_workers=4):
+            indexer.index_patterns(patterns, chunksize=4, progressbar=False)
+        # dask calls the function once on an empty block to build the
+        # graph's meta, which is not a chunk of patterns
+        assert sorted(size for size in sizes if size > 0) == [1, 4, 4]
 
 
 # ------------------------- Memory model (D8) ------------------------ #
@@ -726,6 +959,25 @@ class TestExports:
         # ``fast_size`` stays private, so the cross-reference would
         # dangle in the public reference
         assert ":func:`fast_size`" not in doc
+
+    def test_no_new_public_docstring_links_a_private_name(self):
+        # a Sphinx role pointing at a private name renders as an
+        # unresolved literal, since only ``__all__`` gets a stub.
+        # ``MasterPatternHarmonics`` is excluded: its four private
+        # links predate this module and are not part of this pass
+        role = re.compile(r":(?:func|class|meth|attr|mod):`~?([\w.]+)`")
+        docstrings = {}
+        for module in (_indexer, _back_projection, _fft):
+            docstrings.update(public_docstrings(module))
+        docstrings["EBSD.spherical_indexing"] = (
+            kp.signals.EBSD.spherical_indexing.__doc__
+        )
+        for name, doc in docstrings.items():
+            if "MasterPatternHarmonics" in name:
+                continue
+            for target in role.findall(doc):
+                private = [p for p in target.split(".") if p.startswith("_")]
+                assert not private, f"{name} links the private {target}"
 
     def test_no_public_docstring_names_a_roadmap_phase(self):
         docstrings = {}

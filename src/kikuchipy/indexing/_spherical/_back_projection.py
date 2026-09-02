@@ -1022,8 +1022,8 @@ class SphericalBackProjector:
     oversampling : float
         The C++ ``fct``.
     solid_angle_fraction : float
-        Fraction of the sphere the detector covers,
-        :func:`_solid_angle_fraction`.
+        Fraction of the sphere the detector covers, counted on a
+        Lambert grid as the C++ ``Geometry::solidAngle()`` does.
     scale_factor : float
         ``sqrt(solid_angle_fraction (2 dim^2 - 4 (dim - 1)) /
         (ncols nrows))``, the C++ ``Geometry::scaleFactor()``.
@@ -1122,8 +1122,8 @@ class SphericalBackProjector:
     - The C++ return value ``var`` of ``unproject()`` is not
       returned; :attr:`window_fraction` exposes ``omgW / omgS``.
 
-    Quirks kept faithfully: the ``stdev == 0`` branch of
-    :func:`_unproject_kernel`, the binary mask assumption behind the
+    Quirks kept faithfully: the ``stdev == 0`` branch of the
+    back-projection gather, the binary mask assumption behind the
     correlator's ``s2m``, the ``omgS`` counting with the equator
     once and the ``solidAngle()`` divisor ``500002``.
 
@@ -1361,9 +1361,9 @@ class SphericalBackProjector:
         Returns
         -------
         image_quality
-            :func:`_dct_image_quality` of the pattern, equal bitwise
-            to the value :meth:`unproject` returns for the same
-            input with ``return_image_quality=True``.
+            The discrete cosine image quality of the pattern, equal
+            bitwise to the value :meth:`unproject` returns for the
+            same input with ``return_image_quality=True``.
 
         Raises
         ------
@@ -1441,8 +1441,8 @@ class SphericalBackProjector:
         -----
         Port of ``BackProjector<Real>::unproject()``
         (``include/modality/ebsd/detector.hpp``, lines 589-623): the
-        mean fill of a masked pattern, :func:`_dct_rescale` and
-        :func:`_unproject_kernel`.  A constant pattern is detected
+        mean fill of a masked pattern, the discrete cosine resample
+        and the back-projection gather.  A constant pattern is detected
         with ``ptp == 0`` **before** the transform and returns
         :meth:`window_mask` with an image quality of ``1.0`` when it
         is non-zero and ``0.0`` when it is not.

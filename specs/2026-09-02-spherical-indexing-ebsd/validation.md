@@ -692,3 +692,297 @@ test files; each line is the evidence for one of them.
   pat/s sweep at `bw` 53/68 (88 weekly) and the 4-worker throughput
   record, which the D8 determination list required and only the single
   `bw` 68 per-core row covered.
+
+### 2026-09-02 -- implementation run (the real `_indexer.py` and `EBSD.spherical_indexing`)
+
+Same environment as the two blocks above (Windows 11, Python 3.13,
+numpy 2.4.6, scipy 1.17.1, numba 0.65.1, orix 0.14.2, kikuchipy
+0.14.dev0). Every number below is a `record_property` of the two test
+modules, read out of a `--junitxml` run of the default suite (`-n 0`)
+and of `--weekly -n 4`; the pipeline is now the shipped
+`SphericalIndexer.index_patterns` / `EBSD.spherical_indexing` rather
+than the drafting probe. **Every pinned band of the two blocks above
+reproduces digit for digit**, which is the headline determination:
+the merged Phase 1-5 probe and the implementation are the same
+arithmetic.
+
+Gates (all green):
+
+```
+uv run pytest tests/test_indexing/test_spherical_indexer.py tests/test_signals/test_ebsd_spherical_indexing.py -n 0   ->  118 passed, 5 skipped (16.5 s)
+uv run pytest ... -n 4                                                ->  118 passed, 5 skipped (15.3 s)
+uv run pytest --weekly ... -n 4                                       ->  123 passed (18.6 s)
+uv run pytest --doctest-modules src/kikuchipy/indexing/_spherical     ->  14 passed (0.7 s)
+uv run pytest --benchmark-only benchmarks/indexing/test_spherical_indexing.py -> 1 passed
+uv run pytest --cov=kikuchipy.indexing._spherical._indexer ...        ->  _indexer.py 229 statements, 100.00 %
+uv run pytest tests/test_indexing tests/test_io tests/test_signals -k "spherical or sht or emsphinx or SphericalHarmonics" -n 4 -> 2403 passed, 708 skipped
+uv run pytest tests/test_signals/test_ebsd.py tests/test_indexing/test_dictionary_indexing.py -n 4 -> 187 passed
+uv run sphinx-build -b html -D nbsphinx_execute=never doc doc/_build/html_check -> exit 0, no numpydoc validation warning for the three new names
+uv run pre-commit run --files <the ten changed files>                 ->  passed
+```
+
+- **Accuracy, small map** (`bw` 68, default call): per point 0.354
+  0.750 0.599 0.446 0.484 0.594 0.713 0.681 0.838 deg, median
+  **0.5987**, max **0.8379** -- the drafting block's 0.599 / 0.838.
+  `normalize=False`: median **0.6012** / max **0.8363**;
+  `n_regions=0`: **0.6047** / **0.8524** with IQ **0.2890-0.3269**;
+  `circular_mask=True`: **0.6036** / **0.8562**;
+  `gaussian_background=True`: **0.5943** / **0.8158** with a maximum
+  per point score difference between the two `emsphinx_compatible`
+  settings of **1.826e-3**; `signal_mask[20:32, 25:40]`: **0.4958** /
+  **0.6828** with scores **0.4461-0.5762** mean **0.5307**;
+  `bw` 53: **0.7475** / **0.9915**; `bw` 88 (weekly): **0.5238** /
+  **0.5708**.
+- **Scores and IQ** (`bw` 68, default call): scores
+  **0.4963-0.6239** mean **0.5701**, IQ **0.1727-0.2036** -- the D7
+  pins, unchanged.
+- **Multi-phase**: sign-scrambled decoy gaps **0.2970-0.4151** with
+  decoy scores **0.1993-0.2194** (9/9 to the true phase); rotated
+  copy gaps **-0.0151 to +0.0090**; composed orientation median
+  **0.6765** / max **1.0736** deg against the three wrong
+  compositions at **24.262 / 26.647 / 28.690** deg (medians).
+- **`nickel_ebsd_large`**: 20-point subset median **0.4988** / max
+  **1.3497** deg, scores **0.4602-0.6506**; weekly 165-point subset
+  median **0.5302** / max **1.4947** deg, **zero** points above 2
+  deg, scores **0.4464-0.6506**.
+- **Throughput** (the hard floor's own measurement): **63.8**
+  patterns/s/core at `bw` 68 single threaded in the `-n 0` run and
+  **44.3** in the `-n 4` run (three other xdist workers competing),
+  i.e. **22x to 32x** the `>= 2` floor; four workers **76.6**
+  patterns/s. Per stage, milliseconds per pattern, best of three
+  sweeps, `-n 0`: `bw` 53 preprocess 0.21 / unproject 0.16 / analyze
+  0.23 / correlate **5.72** = 6.32 -> **158.2** pat/s; `bw` 68 0.21 /
+  0.20 / 0.46 / **12.16** = 13.03 -> **76.7** pat/s; `bw` 88 (weekly,
+  under `-n 4`) 0.28 / 0.27 / 1.29 / 38.66 = 40.50 -> 24.7 pat/s. The
+  correlation is 90.5 / 93.3 / 95.5 % of the budget, as Phase 4
+  predicted.
+- **Memory of one chunk kit** (`tracemalloc`, resident after the
+  clone / after one correlation / transient peak of one
+  `_index_chunk` call / model, MB): `bw` 63 **15.9 / 23.8 / 35.8 /
+  39.2**; `bw` 68 **20.0 / 29.9 / 45.0 / 49.4**; `bw` 88 (weekly)
+  **43.4 / 64.9 / 97.6 / 107.6**; `bw` 113 (weekly) **91.9 / 137.7 /
+  207.4 / 228.4**. The model over the peak is **1.10** at every
+  bandwidth, i.e. the "about 10 %" of D8. The `bw` 68 peak is 4.4x
+  under the loose 200 MB bound.
+- **The 2 GiB warning fires where the model says it does**, and one
+  consequence was observed and is recorded rather than changed: on
+  this 20 core machine a `bw` 88 call warns, since 20 x 107.6 MB =
+  2.15 GB = **2.004 GiB**, a hair over the threshold; at `bw` 68 it
+  is 20 x 49.4 MB = 0.92 GiB and silent, which is what
+  `test_verbose_zero_is_silent` needs.
+- **Benchmark** (`pytest-benchmark`, 5 rounds): mean **129.1 ms**,
+  min 126.5, max 131.9 for the whole `EBSD.spherical_indexing` call
+  on the nine pattern map, i.e. **69.7** map level patterns/s
+  including the per call indexer construction -- **35x** the map
+  level floor of 2. `xmap.scores.mean()` 0.5701 against the
+  benchmark's 0.570 +- 0.03.
+- **Chunking**: `_batch_estimate(68, 20, 9)` (this machine's default
+  worker count) gives 1, so the default `chunksize=None` runs the
+  nine pattern map as nine chunks, as the `nt^2` rule intends.
+
+Implementation notes worth recording:
+
+- **`iq` is unpacked from the best row's column**, `packed[:, 0, 5]`,
+  not from an average or a separate array: every inserted candidate
+  carries the pattern's image quality (the C++ `r.iq = iq` before
+  each insertion) and a row which no candidate reached keeps the fill
+  `0`, so a pattern which fails any of the five ways reports `iq 0`
+  without a second code path.
+- **Guard (c) reads row 0 only** (`np.isfinite(rows[0, :4]).all()`),
+  the winning candidate's three angles and score, as D2 states.
+- **One test was added** to `tests/test_indexing/
+  test_spherical_indexer.py`,
+  `TestSphericalIndexerConstruction::
+  test_a_signal_mask_and_the_circle_intersect`: no test of the
+  written suite passed **both** a `signal_mask` and
+  `circular_mask=True`, so the intersection branch of the
+  `good_pixels` derivation (D1, "the inverted `signal_mask` alone or
+  intersected when given") was the single uncovered line of
+  `_indexer.py` and a mutant keeping only one of the two terms
+  survived. With it, `_indexer.py` coverage is **100 %** and
+  `EBSD.spherical_indexing`'s body is fully covered as well. No
+  existing test was modified.
+
+### 2026-09-02 -- test-strength review by bug injection (the committed suite against 105 mutants)
+
+Method: `_indexer.py` and the `EBSD.spherical_indexing` block were
+backed up to the OS temp directory and md5 verified; one mutation was
+applied at a time as an exact-string edit asserted to match exactly
+once, the two Phase 6 files were run with
+`-n 0 -q -x --tb=no -p no:cacheprovider`, and the files were restored
+and md5 verified before the next. 105 mutants: the 80 of the plan's
+bug-injection list plus 25 of the reviewer's own, aimed at the
+attribute table, the information message, the crystal map assembly and
+the correlator wiring. Baseline before and after: **118 passed, 5
+skipped** (15 s), md5 unchanged.
+
+**Result: 92 of 105 killed by the suite as written, 48 distinct tests
+firing.** The busiest killers are `TestMasks::
+test_the_navigation_mask_polarity` (8), `TestIndexPatterns::
+test_a_flat_pattern_in_a_stack_carries_the_fill` (6),
+`TestNickelSmall::test_the_default_call_meets_the_coarse_bounds` (4),
+`TestPreprocessingPaths::
+test_emsphinx_compatible_changes_the_gaussian_background` (4),
+`TestSphericalIndexerConstruction::
+test_a_signal_mask_and_the_circle_intersect` (4), `TestBatchEstimate::
+test_large_map_pins[53]` (4) and `TestMemoryModel::
+test_many_workers_warn` (4). Every mutant the plan names is killed
+except the three below.
+
+**13 survivors, of which 12 were genuine gaps.** One was killed by a
+gate outside the two files (the `repr` window fraction unscaled: the
+class docstring's `1317 points (14.6 %)` is a real doctest under
+`NORMALIZE_WHITESPACE`, so `--doctest-modules
+src/kikuchipy/indexing/_spherical` catches it), one is provably
+equivalent, and ten new tests close the rest:
+
+| survivor | why the suite could not see it | new test |
+| --- | --- | --- |
+| insertion is `lower_bound`, not `upper_bound` (`>=` for `>`) | no two scores in the suite tie, and the negative-score test's `-1` is dropped by both | `test_a_score_which_ties_the_fill_is_never_recorded`, `test_an_equal_score_ranks_after_the_earlier_phase` |
+| the top-n shift loop runs the wrong way | every multi-phase test has the winner already in slot 0, where the shift runs over identical fill rows | `test_a_later_phase_displaces_an_earlier_one` |
+| guard (b) deleted (a constant processed pattern reaches the sphere) | the window mask it then correlates scores the measured -2.64, which the insertion rule drops, leaving exactly the same fill the guard would have left | `test_a_constant_processed_pattern_never_reaches_the_projector` |
+| the insertion's drop bound off by one (`index > n_best`) | the out-of-range write is swallowed by the per-pattern `except` and the point is failed -- identical to the contract whenever the dropped candidate is the only one | `test_a_dropped_candidate_does_not_fail_the_pattern` |
+| guard (c) widened to the whole result block | strictly more conservative; no suite input has a non-finite value outside row 0 columns 0-3 | `test_only_the_winning_row_is_checked_for_finiteness` |
+| `index_patterns` ignores an explicit `chunksize` (three variants: the estimate re-run, a lazy input not rechunked, an eager input in one chunk) | results are bitwise identical across chunk sizes by design, and the information message keeps reporting the size which was asked for | `test_an_explicit_chunksize_reaches_the_graph[False/True]` |
+| the signal method's detector-shape guard deleted | `index_patterns` catches the same mismatch and its message names both shapes too, after the construction has been paid for | `test_the_shape_is_refused_before_the_indexer_is_built` |
+| the information message's phase description reduced to the bare name | only `Phase(s): ni` was pinned, not the point group and the two symmetry flags | `test_the_info_message_describes_the_phase` |
+| the `signal_mask` and `circular_mask` attributes frozen at their defaults | `test_attributes` pins the *defaults*, where a frozen attribute is invisible | `test_the_attributes_follow_the_arguments` |
+
+**The one equivalent mutant, with proof.** Writing the image quality
+only on an insertion at index 0, instead of on every inserted
+candidate as `r.iq = iq` does in the C++, is unobservable: column 5 of
+a row at index greater than zero is never read (the chunk body reads
+`rows[0, :4]`, and `index_patterns` reads `packed[:, 0, 5]`), and the
+shift only ever moves a row *downwards*, so the row standing at index
+0 is always the last one written at index 0, with its image quality.
+No test can distinguish it, and no test was added.
+
+Every new test was validated twice: it passes on the pristine
+implementation, and on its own (`-k` filtered) it fails against its
+target mutant. After the ten additions all 13 survivors are killed
+except the equivalent one. Suite after: **129 passed, 5 skipped**
+(`-n 0` 27.5 s, `-n 4` 20.2 s); `pre-commit run --files` on the two
+test files passed. `_indexer.py` and `ebsd.py` are byte-identical to
+the pre-review state (md5 verified); only the two test files changed,
+by addition.
+
+### 2026-09-02 -- fix pass over the three adversarial reviews
+
+Eleven findings applied, four skipped with evidence. The changed
+files are `_indexer.py`, `signals/ebsd.py`, `_back_projection.py` and
+the two test files.
+
+**Applied.** (1) The two split Sphinx role targets of
+`EBSD.spherical_indexing`'s `Notes` were rejoined onto one line each
+-- `PyXRefRole.process_link` overrides the base role's whitespace
+collapse, so a newline inside a target never resolves and
+`nitpicky = False` hides it; verified in the rebuilt HTML, where
+`memory_per_worker_bytes` and `from_master_pattern` now carry an
+enclosing `<a>`. Line length yields to the target, as `_indexer.py`
+already does. (2) The five remaining private cross-references of the
+newly public docstrings became prose, completing the D9 scrub:
+`_batch_estimate` x2 (`get_info_message`, `index_patterns`) and, in
+`SphericalBackProjector`, `_solid_angle_fraction`,
+`_unproject_kernel` x2, `_dct_rescale` and `_dct_image_quality` --
+the last one the reviewer missed. `_back_projection.py` is already in
+the D9 pre-commit list for exactly this reason. (3) A systematic
+failure is no longer silent: `index_patterns` counts
+`packed[:, 0, 4] < 0` after the compute and warns
+`"N of M pattern(s) could not be indexed ..."`. Never re-raising is
+frozen (D2(d)), and a count is not a re-raise; measured before the
+fix, a whole map failing returned with no diagnostic at all.
+(4) A navigation shape which is not one- or two-dimensional is
+refused up front. Measured: `s.inav[0, 0]` (nav `()`) fell through to
+`create_coordinate_arrays((), ())`, which returns orix' default
+`(5, 10)` = **50** coordinates for a one-point map, so the returned
+`CrystalMap` raised `IndexError: ... size of axis is 50 but size of
+corresponding boolean axis is 1` on `.shape`/`.x`/`.y`; a 3-D
+navigation shape raised inside orix only after the whole map had been
+indexed. **`EBSD.dictionary_indexing` has the identical 0-D defect**
+(measured on the same signal) -- pre-existing and repo-wide, not
+fixed here. (5) `harmonics_list`, not the argument, is handed to the
+indexer: a one-shot iterator was exhausted by the `.phase`/unique-name
+checks and the indexer then refused it as "empty". (6) Guard (a),
+`ptp == 0` on the raw pattern, moved inside the per-pattern `try`, as
+`ebsdWorkItem` (`idx.hpp:411-437`) wraps the whole of `indexImage()`:
+a guard which raises must fail its own pattern, never the chunk.
+(7) The coarse-orientation docstring now says `180 / side_length`,
+the frozen D5/D1 quantity, instead of `180 / (2 * bandwidth - 1)`;
+the two agree at every fast bandwidth (68 -> 135 -> 1.3333 deg) and
+diverge elsewhere (bw 70: 1.2950 vs 1.2857). (8) `prop["scores"]`
+before `prop["iq"]`, the D5 listing order and the DI/HI repr order.
+(9) The provenance header now cites `Indexer<Real>` `:68-181` (D10's
+enumeration; `struct Indexer` is at 68, the constructor 163-181),
+`quat::mul` at **267** not 266 (`zyz2qu` is at 266), and records the
+fill row's `iq = 0` as a deliberate improvement -- the C++ fill loop
+(`:218-222`) never sets `iq` and `ebsdWorkItem` reuses one result
+vector across a batch (`:406`), so a not-indexed point there inherits
+the previous pattern's image quality. (10) A `Warns` section on
+`EBSD.spherical_indexing` and (11) the extended one on
+`index_patterns`.
+
+**Skipped, with evidence.** (a) *The 2 GiB warning counting cores
+rather than busy workers* (`min(n_workers, n_chunks)`): the formula
+`n_workers x memory_per_worker_bytes` is frozen in D8, and the change
+would break D8's own named test -- `test_many_workers_warn` runs nine
+patterns on `num_workers=64`, where `_batch_estimate` gives chunksize
+1, so `min(64, 9) = 9` and `9 x 49.4 MB = 444 MB` never reaches the
+threshold. Changing it needs a spec amendment, not a fix pass. (b)
+*Guard (c) inspecting row 0 only*: frozen D2 wording, and now pinned
+by the bug-injection reviewer's
+`test_only_the_winning_row_is_checked_for_finiteness`; widening it is
+strictly more conservative but is a contract change. (c) *A
+`signal_mask` which is not a NumPy array*: no polarity hazard exists,
+because `SphericalBackProjector.__init__` (`:1186-1197`) already runs
+`np.asarray` and then refuses a non-boolean dtype and a wrong shape,
+so a list of bools converts with its polarity intact and a list of
+ints raises "Signal mask of data type int64 must be boolean". D5's
+frozen own-check list carries no `signal_mask` entry. (d) *The info
+message printing before `n_best`/`chunksize` are validated*: purely
+presentational -- the `ValueError` comes from the very next statement
+-- and the fix duplicates two checks and their exact messages across
+two files, a drift hazard for no behavioural gain.
+
+**Eight tests added** (additive only, no existing test touched):
+`test_a_failed_pattern_is_warned_about`,
+`test_a_run_without_failures_is_silent`,
+`test_the_guards_are_caught_per_pattern`,
+`test_no_new_public_docstring_links_a_private_name` (the D9 scrub
+regression, excluding `MasterPatternHarmonics`, whose four private
+links predate this phase and are recorded below) in
+`test_spherical_indexer.py`; and
+`test_a_map_which_is_not_one_or_two_dimensional_is_refused`,
+`test_a_one_dimensional_map_is_allowed`,
+`test_the_navigation_shape_is_refused_before_the_indexer_is_built`,
+`test_a_generator_of_harmonics_reaches_the_indexer` in
+`test_ebsd_spherical_indexing.py`.
+
+**Recorded, not fixed.** `MasterPatternHarmonics` (public since an
+earlier phase, untouched here) carries four unresolved private
+cross-references in its public docstrings:
+`~..._sht_file.ShtFile.metadata_dict` and
+`~..._symmetry.validate_flags` in the class docstring, and
+`_check_atom_sum` and `_energy_weights` in `from_master_pattern`.
+D9's scrub is scoped to `fast_bandwidths` and
+`SphericalBackProjector`, so these are out of this phase.
+
+**Gates after the fix pass.**
+
+```
+pytest <the two Phase 6 files> -n 0     ->  137 passed, 5 skipped (30.3 s)
+pytest <the two Phase 6 files> -n 4     ->  137 passed, 5 skipped (21.2 s)
+pytest --weekly <the two files> -n 4    ->  142 passed (16.3 s)
+pytest --doctest-modules src/kikuchipy/indexing/_spherical -> 14 passed
+pytest ... -k "spherical or sht or emsphinx or SphericalHarmonics" -n 4 -> 2423 passed, 708 skipped (100.6 s)
+pytest tests/test_signals/test_ebsd.py tests/test_indexing/test_dictionary_indexing.py -n 4 -> 187 passed (143.7 s)
+pytest --benchmark-only benchmarks/indexing/test_spherical_indexing.py -> 1 passed, mean 208.7 ms
+pre-commit run --files <the ten files>  ->  passed
+sphinx-build -b html -D nbsphinx_execute=never -> exit 0
+```
+
+Coverage: `_indexer.py` **232 statements, 0 missed, 100.00 %**;
+`EBSD.spherical_indexing`'s body fully covered (`ebsd.py`'s missing
+ranges skip from 1992 to 2486, spanning the whole method). The
+benchmark's 208.7 ms mean is above the 129.1 ms recorded earlier
+because a documentation build shared the machine; the map-level rate
+is still 43.1 patterns/s against the floor of 2.

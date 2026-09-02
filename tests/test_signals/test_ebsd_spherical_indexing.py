@@ -825,9 +825,66 @@ class TestSignalGuards:
         assert "(60, 59)" in message
         assert "(60, 60)" in message
 
+    def test_the_shape_is_refused_before_the_indexer_is_built(self, monkeypatch):
+        # the guard order, pinned with no wall clock.  The sibling
+        # above passes with this guard deleted, because
+        # ``index_patterns`` catches the mismatch as well and its
+        # message names both shapes too -- after the caller has paid
+        # for a resize, a Wigner table and a correlator
+        def sentinel(*args, **kwargs):
+            raise AssertionError("the indexer was built")
+
+        monkeypatch.setattr(SphericalIndexer, "__init__", sentinel)
+        detector = ni_detector()
+        detector.shape = (60, 59)
+        with pytest.raises(ValueError, match="must be identical"):
+            index_default(detector=detector)
+
     def test_refine_is_refused(self):
         with pytest.raises(NotImplementedError, match="refine=True"):
             index_default(refine=True)
+
+    def test_a_map_which_is_not_one_or_two_dimensional_is_refused(self):
+        # a crystal map is one- or two-dimensional.  Without the
+        # guard a navigation-less signal indexes fine and then builds
+        # its map from orix' default ``(5, 10)`` coordinate arrays,
+        # so ``xmap.shape`` raises "boolean index did not match" on
+        # 50 coordinates for its one point; a three-dimensional
+        # signal raises inside orix, but only after the whole map has
+        # been indexed
+        flat = ni_signal().inav[0, 0]
+        assert flat.axes_manager.navigation_dimension == 0
+        with pytest.raises(ValueError, match="one or two dimensions"):
+            index_default(signal=flat)
+
+        cube = kp.signals.EBSD(np.zeros((2, 2, 2, 60, 60), dtype=np.uint8))
+        assert cube.axes_manager.navigation_dimension == 3
+        with pytest.raises(ValueError, match="one or two dimensions"):
+            index_default(signal=cube)
+
+    def test_a_one_dimensional_map_is_allowed(self):
+        line = ni_signal().inav[0]
+        assert line.axes_manager.navigation_dimension == 1
+        xmap = index_default(signal=line)
+        assert xmap.size == 3
+
+    def test_the_navigation_shape_is_refused_before_the_indexer_is_built(
+        self, monkeypatch
+    ):
+        def sentinel(*args, **kwargs):
+            raise AssertionError("the indexer was built")
+
+        monkeypatch.setattr(SphericalIndexer, "__init__", sentinel)
+        with pytest.raises(ValueError, match="one or two dimensions"):
+            index_default(signal=ni_signal().inav[0, 0])
+
+    def test_a_generator_of_harmonics_reaches_the_indexer(self):
+        # the phase checks materialize the argument, so handing the
+        # exhausted original to the indexer makes it refuse a
+        # perfectly good single phase as "empty"
+        xmap = index_default(harmonics=(h for h in [ni_harmonics(NI_BANDWIDTH)]))
+        assert xmap.phases.names == ["ni"]
+        assert xmap.rotations.size == 9
 
 
 # ------------- Lazy input, chunking and determinism (D4) ------------ #

@@ -23,8 +23,14 @@
 # ``include/idx/indexer.hpp`` unless stated otherwise:
 # - ``Result<Real>`` (lines 54-64), the fill values, the descending
 #   ``operator<`` and the top-n insertion, as the packed rows of
-#   :func:`_index_chunk`
-# - ``Indexer<Real>::Indexer()`` (lines 163-181), as
+#   :func:`_index_chunk`.  One deliberate improvement: the fill loop
+#   (lines 218-222) sets ``corr``, ``phase`` and ``qu`` but never
+#   ``iq``, and ``ebsdWorkItem`` reuses one result vector across the
+#   patterns of a batch (``idx.hpp`` line 406), so a not-indexed
+#   point inherits the previous pattern's image quality on that
+#   thread; the fill row here carries a deterministic ``iq = 0``
+# - ``Indexer<Real>`` (lines 68-181), its stored bandwidth, grid,
+#   back-projection rotation and per phase correlators, as
 #   :meth:`SphericalIndexer.__init__`
 # - ``Indexer<Real>::BatchEstimate()`` (lines 189-205), as
 #   :func:`_batch_estimate`
@@ -61,8 +67,8 @@
 #   release always leaves empty -- **Phase 8**.  The insertion
 #   machinery it shares with the phase loop **is** ported
 # - ``Geometry<Real>::northPoleQuat()``'s left multiplication (line
-#   266), the identity in EMSphInx as shipped, so the conversion of
-#   lines 264-269 collapses to ``_euler.rotation_from_zyz``
+#   267), the identity in EMSphInx as shipped, so the conversion of
+#   lines 265-269 collapses to ``_euler.rotation_from_zyz``
 # - the refine-only work items ``msk[i] & 0x02`` of ``ebsdWorkItem``
 #   (``idx.hpp`` lines 438-450)
 # - the HDF5, PNG and vendor file output of ``IndexingData``
@@ -256,37 +262,33 @@ from __future__ import annotations
 
 # The collaborators are bound in this namespace, as the rest of the
 # package binds its own, so that one place is patched in tests and
-# one import block changes if a collaborator moves.  The ``noqa``
-# markers go away with the function bodies -- by hand: ``pyproject``
-# selects ``F, E, W, I`` only, so ruff's ``RUF100`` never reports a
-# marker left behind (the same holds for the ``SphericalIndexer``
-# import of ``signals/ebsd.py``).
-import math  # noqa: F401
+# one import block changes if a collaborator moves.
+import math
+import os
 from typing import TYPE_CHECKING, Sequence
+from warnings import warn
 
+import dask
 import dask.array as da
+from dask.diagnostics.progress import ProgressBar
 import numpy as np
 
-from kikuchipy.indexing._spherical._back_projection import (  # noqa: F401
-    SphericalBackProjector,
+from kikuchipy.indexing._spherical._back_projection import SphericalBackProjector
+from kikuchipy.indexing._spherical._master_pattern_harmonics import (
+    MasterPatternHarmonics,
 )
-from kikuchipy.indexing._spherical._preprocessing import (  # noqa: F401
+from kikuchipy.indexing._spherical._preprocessing import (
     _circular_mask,
     _preprocess_pattern,
 )
-from kikuchipy.indexing._spherical._wigner import (  # noqa: F401
-    wigner_d_half_pi_table,
-)
-from kikuchipy.indexing._spherical._xcorr import (  # noqa: F401
+from kikuchipy.indexing._spherical._wigner import wigner_d_half_pi_table
+from kikuchipy.indexing._spherical._xcorr import (
     NormalizedSphericalCrossCorrelator,
     SphericalCrossCorrelator,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
     from kikuchipy.detectors import EBSDDetector
-    from kikuchipy.indexing._spherical._master_pattern_harmonics import (
-        MasterPatternHarmonics,
-    )
 
 # The golden ratio reciprocal of ``BatchEstimate()``
 # (``indexer.hpp`` line 199), spelled out to the C++ literal's digits
@@ -345,7 +347,117 @@ def _batch_estimate(bandwidth: int, n_workers: int, n_patterns: int) -> int:
     88 on eight workers, and one pattern per chunk for a nine pattern
     map on four workers, so small maps parallelise.
     """
-    raise NotImplementedError
+    # An estimate for many more patterns than threads first, at the
+    # C++ complexity model and its calibration constant (lines
+    # 191-196)
+    bandwidth_cubed = float(bandwidth * bandwidth * bandwidth)
+    scale = bandwidth_cubed * math.log(bandwidth_cubed)
+    patterns_per_second = 1.0 / (scale * _BATCH_TIME_SCALE)
+    # A chunk which takes about one over the golden ratio seconds, so
+    # that it does not synchronise with the progress updates (line
+    # 197).  The C++ truncates towards zero here
+    chunksize = max(1, int(patterns_per_second * _INVERSE_GOLDEN_RATIO))
+
+    # Then shrink it until there are enough chunks to balance the
+    # load, rounding up this time (lines 200-204)
+    if math.ceil(n_patterns / chunksize) < n_workers * n_workers:
+        chunksize = math.ceil(n_patterns / (n_workers * n_workers))
+
+    # The recorded deviation: the branch above returns zero for zero
+    # patterns, which the C++ never meets
+    return max(1, int(chunksize))
+
+
+def _n_workers() -> int:
+    """Return the number of worker threads the chunks are spread over.
+
+    Returns
+    -------
+    n_workers
+        The active dask configuration's ``num_workers`` when it is
+        set, so that an outer :func:`dask.config.set` is honoured as
+        it is by the scheduler itself, and the processor count
+        otherwise.  At least one.
+    """
+    n_workers = dask.config.get("num_workers", None)
+    if n_workers is None:
+        n_workers = os.cpu_count() or 1
+    return max(1, int(n_workers))
+
+
+def _phase_name(harmonics: "MasterPatternHarmonics") -> str:
+    """Return the name of a phase, ``"?"`` when it carries none."""
+    if harmonics.phase is None:
+        return "?"
+    return str(harmonics.phase.name)
+
+
+def _phase_description(harmonics: "MasterPatternHarmonics") -> str:
+    """Return the name, point group and symmetry flags of a phase,
+    e.g. ``"ni (m-3m; 4-fold, mirror)"``.
+    """
+    phase = harmonics.phase
+    point_group = None if phase is None else phase.point_group
+    name = "?" if point_group is None else str(point_group.name)
+    mirror = "mirror" if harmonics.has_equatorial_mirror else "no mirror"
+    return f"{_phase_name(harmonics)} ({name}; {harmonics.n_fold}-fold, {mirror})"
+
+
+def _insert_candidate(
+    rows: np.ndarray,
+    zyz: np.ndarray,
+    score: float,
+    phase_id: int,
+    image_quality: float,
+) -> None:
+    """Insert one candidate into a descending list of result rows.
+
+    Parameters
+    ----------
+    rows
+        ``(n_best, 6)`` packed rows, descending in the score column,
+        modified in place.
+    zyz
+        The candidate's three ZYZ Euler angles.
+    score
+        The candidate's correlation.
+    phase_id
+        Index of the phase the candidate came from.
+    image_quality
+        Image quality of the pattern, which every candidate of one
+        pattern carries.
+
+    Notes
+    -----
+    Port of the ``std::upper_bound`` insertion of
+    ``Indexer<Real>::indexImage()`` (``include/idx/indexer.hpp``,
+    lines 235-239) under the descending ``Result::operator<``
+    (line 63).  The candidate goes where it **strictly beats** an
+    existing row, so an equal score ranks after the earlier phase and
+    a candidate which beats no row is dropped.  Since the rows are
+    seeded with a score of zero, that drops every candidate with a
+    non-positive score, which is the C++ "only keep something with a
+    positive phase" (line 219).  A NaN score loses every comparison
+    and is dropped as well.
+    """
+    n_best = rows.shape[0]
+    index = n_best
+    for i in range(n_best):
+        if score > rows[i, 3]:
+            index = i
+            break
+    if index >= n_best:
+        return
+    # Shift the rows below the insertion point down by one, from the
+    # back, then write the candidate
+    for i in range(n_best - 1, index, -1):
+        rows[i] = rows[i - 1]
+    rows[index, 0] = zyz[0]
+    rows[index, 1] = zyz[1]
+    rows[index, 2] = zyz[2]
+    rows[index, 3] = score
+    rows[index, 4] = phase_id
+    rows[index, 5] = image_quality
 
 
 def _index_chunk(
@@ -393,7 +505,90 @@ def _index_chunk(
     cases and the insertion rule which never records a candidate with
     a non-positive score.
     """
-    raise NotImplementedError
+    n_patterns = int(patterns_block.shape[0])
+    # Every row starts at the fill value, so a pattern which is
+    # failed anywhere below simply keeps it
+    results = np.zeros((n_patterns, n_best, _ROW_WIDTH))
+    results[:, :, 4] = -1.0
+
+    projector = indexer.projector
+    dim = projector.dim
+    # Zeroed, never ``numpy.empty``: ``unproject`` writes only the
+    # window points of the first buffer and never touches the second
+    buffers = (np.zeros((dim, dim)), np.zeros((dim, dim)))
+
+    # One clone per invocation, so that no scratch is shared between
+    # threads and the worker itself stays stateless
+    if indexer.normalize:
+        correlators = [c.clone() for c in indexer.correlators]
+        prototype = None
+        spectra = None
+    else:
+        correlators = None
+        prototype = indexer.correlator.clone()
+        spectra = indexer.spectra
+
+    good_pixels = indexer.good_pixels
+    gaussian_background = indexer.gaussian_background
+    n_regions = indexer.n_regions
+    compatible = indexer.emsphinx_compatible
+
+    for i in range(n_patterns):
+        # Every guard sits inside the catch, as ``ebsdWorkItem``
+        # wraps the whole of ``indexImage()``: a pattern which raises
+        # anywhere, the guards included, fails alone
+        try:
+            pattern = patterns_block[i]
+            # (a) a zero variance pattern is failed, not indexed
+            if np.ptp(pattern) == 0:
+                continue
+
+            processed = _preprocess_pattern(
+                pattern,
+                good_pixels=good_pixels,
+                gaussian_background=gaussian_background,
+                n_regions=n_regions,
+                emsphinx_compatible=compatible,
+            )
+            # (b) the pipeline degenerated to a constant, which the
+            # back-projection would answer with its window mask
+            if np.ptp(processed) == 0:
+                continue
+
+            north, south, image_quality = projector.unproject(
+                processed, out=buffers, return_image_quality=True
+            )
+            gln = projector.sht.analyze(north, south)
+
+            rows = np.zeros((n_best, _ROW_WIDTH))
+            rows[:, 4] = -1.0
+            if correlators is not None:
+                for phase_id, correlator in enumerate(correlators):
+                    zyz, score = correlator.correlate(
+                        gln, emsphinx_compatible=compatible
+                    )
+                    _insert_candidate(rows, zyz, score, phase_id, image_quality)
+            else:
+                for phase_id, (alm, n_fold, mirror) in enumerate(spectra):
+                    zyz, score = prototype.correlate(
+                        alm,
+                        gln,
+                        n_fold,
+                        mirror,
+                        emsphinx_compatible=compatible,
+                    )
+                    _insert_candidate(rows, zyz, score, phase_id, image_quality)
+
+            # (c) a winning score or angle which is not finite
+            if not np.isfinite(rows[0, :4]).all():
+                continue
+            results[i] = rows
+        except Exception:
+            # (d) one bad pattern never kills the run, the
+            # ``ebsdWorkItem`` catch
+            continue
+
+    return results
 
 
 def _map_chunks(
@@ -426,7 +621,15 @@ def _map_chunks(
     correctly but lies to anything which slices or inspects the array
     before computing it.
     """
-    raise NotImplementedError
+    return patterns_da.map_blocks(
+        _index_chunk,
+        indexer,
+        n_best,
+        dtype=np.float64,
+        drop_axis=(1, 2),
+        new_axis=(1, 2),
+        chunks=(patterns_da.chunks[0], (n_best,), (_ROW_WIDTH,)),
+    )
 
 
 class SphericalIndexer:
@@ -669,7 +872,173 @@ class SphericalIndexer:
         circular_mask: bool = False,
         emsphinx_compatible: bool = True,
     ) -> None:
-        raise NotImplementedError
+        # Refused first, so that an expensive construction is never
+        # paid for a call which cannot work
+        if refine:
+            raise NotImplementedError(
+                "Newton refinement (refine=True) is not implemented yet; "
+                "only coarse indexing on the Euler grid is available. "
+                "Leave refine=False."
+            )
+
+        bandwidth = int(bandwidth)
+        smallest, largest = _BANDWIDTH_LIMITS
+        if bandwidth < smallest or bandwidth > largest:
+            raise ValueError(
+                f"Bandwidth {bandwidth} is an unreasonable bandwidth "
+                f"(should be [{smallest}, {largest}])"
+            )
+
+        if isinstance(harmonics, MasterPatternHarmonics):
+            phases = (harmonics,)
+        else:
+            phases = tuple(harmonics)
+        if len(phases) == 0:
+            raise ValueError(
+                "`harmonics` must hold the harmonics of at least one "
+                "master pattern, but is empty"
+            )
+        for i, phase in enumerate(phases):
+            if not isinstance(phase, MasterPatternHarmonics):
+                raise TypeError(
+                    f"`harmonics[{i}]` of type {type(phase)} must be a "
+                    "MasterPatternHarmonics"
+                )
+
+        # All master patterns must have been computed for the same
+        # geometry (``idx.hpp`` line 185); a value which is not set
+        # skips its comparison, since hand built harmonics may carry
+        # neither
+        for name in ("sample_tilt", "beam_energy"):
+            known = [
+                (i, getattr(phase, name))
+                for i, phase in enumerate(phases)
+                if getattr(phase, name) is not None
+            ]
+            for i, value in known[1:]:
+                first, reference = known[0]
+                if abs(value - reference) > 1e-6 * max(1.0, abs(reference)):
+                    raise ValueError(
+                        f"All master patterns must have the same `{name}`, "
+                        f"but harmonics[{first}] has {reference} and "
+                        f"harmonics[{i}] has {value}"
+                    )
+
+        # EMSphInx builds the detector geometry *from* the master
+        # pattern, so the tilt cannot disagree there; here it comes
+        # from the detector and is bound to the master's instead
+        detector_tilt = getattr(detector, "sample_tilt", None)
+        harmonics_tilt = next(
+            (p.sample_tilt for p in phases if p.sample_tilt is not None), None
+        )
+        if detector_tilt is not None and harmonics_tilt is not None:
+            detector_tilt = float(detector_tilt)
+            tolerance = 1e-6 * max(1.0, abs(detector_tilt))
+            if abs(harmonics_tilt - detector_tilt) > tolerance:
+                raise ValueError(
+                    f"The master patterns' `sample_tilt` {harmonics_tilt} "
+                    f"and the `EBSDDetector.sample_tilt` {detector_tilt} "
+                    "must be equal, since the harmonics are indexed in "
+                    "the geometry they were computed for"
+                )
+
+        # The name list rule (``nml.hpp`` line 630), re-validated by
+        # the preprocessing, but failing here beats failing in a
+        # worker
+        n_regions = int(n_regions)
+        detector_shape = getattr(detector, "shape", None)
+        if detector_shape is not None:
+            longest = min(detector_shape)
+            if n_regions < 0 or n_regions > longest:
+                raise ValueError(
+                    f"`n_regions` must be between 0 and {longest}, but is {n_regions}"
+                )
+
+        # Last, since it owns every geometry and mask guard and its
+        # errors are the ones to maintain
+        projector = SphericalBackProjector(
+            detector,
+            bandwidth,
+            signal_mask=signal_mask,
+            circular_mask=circular_mask,
+        )
+
+        # ``MasterSpectra::resize(nml.bw)`` (``idx.hpp`` line 182):
+        # truncation is silent as in the C++, while zero padding gets
+        # a warning of ours, since it buys a finer Euler grid but no
+        # new signal
+        resized = []
+        for phase in phases:
+            if phase.bandwidth < bandwidth:
+                warn(
+                    f"The harmonics of bandwidth {phase.bandwidth} are "
+                    f"zero padded to the indexing bandwidth {bandwidth}, "
+                    "which gives a finer Euler grid but no new signal",
+                    UserWarning,
+                )
+            resized.append(phase.resize(bandwidth))
+
+        # One Wigner table for every correlator (2.5 MB at ``bw`` 68)
+        table = wigner_d_half_pi_table(bandwidth, True)
+        if normalize:
+            correlators = tuple(
+                NormalizedSphericalCrossCorrelator(
+                    bandwidth,
+                    phase.alm,
+                    projector.squared_harmonics(phase.alm),
+                    phase.n_fold,
+                    phase.has_equatorial_mirror,
+                    projector.window_harmonics,
+                    wigner_d_half_pi=table,
+                )
+                for phase in resized
+            )
+            correlator = None
+            spectra = None
+        else:
+            # The C++ un-normalised correlator holds only a spectrum,
+            # so one shared prototype serves every phase
+            correlators = None
+            correlator = SphericalCrossCorrelator(bandwidth, wigner_d_half_pi=table)
+            spectra = tuple(
+                (phase.alm, phase.n_fold, phase.has_equatorial_mirror)
+                for phase in resized
+            )
+
+        # ``good_pixels`` is in the opposite polarity of
+        # ``signal_mask`` and is reduced to the terms present, so that
+        # the default is ``IndexEBSD``'s ``circmask = -1``, i.e. no
+        # histogram mask at all
+        good_pixels = None
+        if projector.signal_mask is not None:
+            good_pixels = ~projector.signal_mask
+        if circular_mask:
+            circle = _circular_mask(projector.detector.shape)
+            if good_pixels is None:
+                good_pixels = circle
+            else:
+                good_pixels = good_pixels & circle
+
+        self.phases = tuple(resized)
+        self.n_phases = len(self.phases)
+        self.bandwidth = bandwidth
+        self.normalize = bool(normalize)
+        self.projector = projector
+        self.correlators = correlators
+        self.correlator = correlator
+        self.spectra = spectra
+        self.wigner_d_half_pi = table
+        self.good_pixels = good_pixels
+        self.signal_mask = projector.signal_mask
+        self.circular_mask = bool(circular_mask)
+        self.n_regions = n_regions
+        self.gaussian_background = bool(gaussian_background)
+        self.emsphinx_compatible = bool(emsphinx_compatible)
+
+        first = correlators[0] if normalize else correlator
+        self.side_length = int(first.side_length)
+        self._half_side_length = int(first.half_side_length)
+        self.half_cell_degrees = 180.0 / self.side_length
 
     def __repr__(self) -> str:
         """Return a string with the phases, the bandwidth, the sphere
@@ -680,7 +1049,16 @@ class SphericalIndexer:
         A phase whose harmonics carry no
         :class:`~orix.crystal_map.Phase` is named ``"?"``.
         """
-        raise NotImplementedError
+        names = ", ".join(_phase_name(phase) for phase in self.phases)
+        plural = "phase" if self.n_phases == 1 else "phases"
+        correlation = "normalized" if self.normalize else "un-normalized"
+        projector = self.projector
+        return (
+            f"{type(self).__name__}: {self.n_phases} {plural} ({names}), "
+            f"bw = {self.bandwidth}, sphere window {projector.n_points} "
+            f"points ({100 * projector.window_fraction:.1f} %), "
+            f"{correlation}"
+        )
 
     @property
     def memory_per_worker_bytes(self) -> int:
@@ -704,7 +1082,9 @@ class SphericalIndexer:
         :meth:`index_patterns` warns when this times the number of
         dask workers exceeds 2 GiB.
         """
-        raise NotImplementedError
+        n_correlators = self.n_phases if self.normalize else 1
+        side = self.side_length
+        return n_correlators * side * side * self._half_side_length * 24 + (side**3 * 8)
 
     def get_info_message(self, n_patterns: int, chunksize: int | None = None) -> str:
         """Return the information message printed before indexing.
@@ -714,9 +1094,9 @@ class SphericalIndexer:
         n_patterns
             Number of patterns to index.
         chunksize
-            Number of patterns per chunk.  If not given, it is
-            resolved with :func:`_batch_estimate` exactly as
-            :meth:`index_patterns` resolves it.
+            Number of patterns per chunk.  If not given, the ported
+            chunk sizing model resolves it, exactly as
+            :meth:`index_patterns` does.
 
         Returns
         -------
@@ -748,7 +1128,29 @@ class SphericalIndexer:
         :attr:`memory_per_worker_bytes`, the model, not a
         measurement.
         """
-        raise NotImplementedError
+        n_patterns = int(n_patterns)
+        if chunksize is None:
+            chunksize = _batch_estimate(self.bandwidth, _n_workers(), n_patterns)
+        chunksize = max(1, int(chunksize))
+        n_chunks = -(-n_patterns // chunksize)
+        names = ", ".join(_phase_description(phase) for phase in self.phases)
+        correlation = "normalized" if self.normalize else "un-normalized"
+        pc = tuple(map(float, self.projector.detector.pc.squeeze().round(4)))
+        return (
+            "Spherical indexing information:\n"
+            f"  Phase(s): {names}\n"
+            f"  Bandwidth: {self.bandwidth} (Euler side length "
+            f"{self.side_length}, half cell "
+            f"{self.half_cell_degrees:.2f} deg)\n"
+            f"  Correlation: {correlation}\n"
+            f"  Preprocessing: n_regions = {self.n_regions}, "
+            f"gaussian_background = {self.gaussian_background}\n"
+            f"  Projection center (Bruker): {pc}\n"
+            f"  Indexing {n_patterns} pattern(s) in {n_chunks} chunk(s) "
+            f"of up to {chunksize} pattern(s)\n"
+            "  Estimated memory per worker: "
+            f"{self.memory_per_worker_bytes / 1e6:.0f} MB"
+        )
 
     def index_patterns(
         self,
@@ -773,9 +1175,9 @@ class SphericalIndexer:
             beyond the number of phases keep the fill values.
         chunksize
             Number of patterns per chunk, at least one.  If not
-            given, :func:`_batch_estimate` sizes the chunks from the
-            bandwidth, the number of dask workers and the number of
-            patterns.
+            given, the ported chunk sizing model sizes the chunks
+            from the bandwidth, the number of dask workers and the
+            number of patterns.
         progressbar
             Whether to show dask's progress bar, ``True`` by default.
 
@@ -808,7 +1210,10 @@ class SphericalIndexer:
         -----
         UserWarning
             If the number of dask workers times
-            :attr:`memory_per_worker_bytes` exceeds 2 GiB.
+            :attr:`memory_per_worker_bytes` exceeds 2 GiB, or if at
+            least one pattern could not be indexed.  A pattern is
+            never re-raised on, so this count is the only report of
+            the failure cases listed in the class ``Notes``.
 
         Notes
         -----
@@ -821,4 +1226,71 @@ class SphericalIndexer:
         counts and lazy against eager input, see the module
         documentation.
         """
-        raise NotImplementedError
+        n_best = int(n_best)
+        if n_best < 1:
+            raise ValueError(f"`n_best` {n_best} must be at least one")
+
+        detector_shape = self.projector.detector.shape
+        shape = tuple(patterns.shape)
+        if len(shape) != 3 or shape[1:] != detector_shape:
+            raise ValueError(
+                f"Patterns of shape {shape[1:]} must have the detector "
+                f"shape {detector_shape}"
+            )
+
+        if chunksize is not None:
+            chunksize = int(chunksize)
+            if chunksize < 1:
+                raise ValueError(f"`chunksize` {chunksize} must be at least one")
+
+        n_patterns = int(shape[0])
+        n_workers = _n_workers()
+        if chunksize is None:
+            chunksize = _batch_estimate(self.bandwidth, n_workers, n_patterns)
+
+        needed = n_workers * self.memory_per_worker_bytes
+        if needed > _MEMORY_WARNING_BYTES:
+            warn(
+                f"Indexing on {n_workers} worker(s) is estimated to need "
+                f"{needed / 1024**3:.2f} GiB of memory, which is more than "
+                "2 GiB; reduce the bandwidth, the number of phases or the "
+                "number of dask workers",
+                UserWarning,
+            )
+
+        if isinstance(patterns, da.Array):
+            blocks = patterns.rechunk((chunksize, -1, -1))
+        else:
+            blocks = da.from_array(patterns, chunks=(chunksize, -1, -1))
+        results = _map_chunks(blocks, self, n_best)
+
+        # One eager compute, as dictionary indexing does: the graph
+        # is an implementation detail and no consumer of a lazy one
+        # exists yet
+        if progressbar:
+            with ProgressBar():
+                packed = results.compute()
+        else:
+            packed = results.compute()
+
+        # A failed pattern is never re-raised on, so without this the
+        # only trace of it is the invalid phase of its best row: a run
+        # whose every pattern failed would otherwise return in silence
+        n_failed = int((packed[:, 0, 4] < 0).sum())
+        if n_failed:
+            warn(
+                f"{n_failed} of {n_patterns} pattern(s) could not be indexed "
+                "and carry the fill values (identity rotation, score 0, "
+                "phase -1, image quality 0); see the failure cases of "
+                "`SphericalIndexer`",
+                UserWarning,
+            )
+
+        return {
+            "zyz": np.ascontiguousarray(packed[:, :, :3]),
+            "scores": np.ascontiguousarray(packed[:, :, 3]),
+            "phase_id": packed[:, :, 4].astype(np.int32),
+            # The image quality belongs to the pattern, not to the
+            # candidate, so the best row's column is the pattern's
+            "iq": np.ascontiguousarray(packed[:, 0, 5]),
+        }
