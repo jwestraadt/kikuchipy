@@ -62,7 +62,7 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] Measured mean-PC error floor: `nickel_ebsd_small` refined with `pc_average` vs per-point PC median 0.33 / max 0.54 deg (vs stored xmap 0.30 / 0.56); `nickel_ebsd_large` 165-point subset median 0.29 / p95 0.74 / max 0.96 deg (corr 0.97 with `|pc - pc_average|`; 20-point default-suite subset 0.28 / 0.76 / 0.82); Phase 6 coarse tolerances (small: median < 1.5, >= 8/9 < 3 deg) and Phase 7 refined (small: all < 1.0, median < 0.5; large weekly: median < 0.6, p95 < 1.2, max < 2.0 deg) derive from it
 - [x] Spec approved (autonomous mode) and committed (728a7a47); failing tests + stubs committed (9d6d4def); implementation committed pre-review (1e3d0765), 231 tests green
 - [x] Adversarial review (fidelity vs compiled C++ headers -- Gaussian fit/AHE/Cholesky bitwise, interpolatePixel accept-set identical on 252k points; conventions; 167+63-mutation bug injection) and fixes; coverage 100 %
-- [x] Signed commits pushed; PR opened into fork `develop`
+- [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#7)
 
 ## Phase 6 -- `spherical-indexing-ebsd`
 - [ ] `_indexer.py` (`SphericalIndexer`, per-pattern failure handling), `EBSD.spherical_indexing` (dask `map_blocks`, info message, masks, multi-phase, `n_best`), benchmark
