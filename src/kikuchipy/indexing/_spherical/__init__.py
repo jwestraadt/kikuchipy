@@ -30,6 +30,9 @@ developers, not for users.
 
 Submodules
 ----------
+``_back_projection``
+    Back-projection of detector patterns onto the square Legendre
+    grid through kikuchipy's detector geometry.
 ``_euler``
     ZYZ Euler angle conversions and the beta wrap.
 ``_fft``
@@ -39,6 +42,9 @@ Submodules
 ``_master_pattern_harmonics``
     Spherical harmonic coefficients of an EBSD master pattern,
     read from and written to EMSphInx *.sht files.
+``_preprocessing``
+    EMSphInx pattern preprocessing: Gaussian background, mosaic
+    adaptive histogram equalisation.
 ``_sht``
     Discrete spherical harmonic transform on those grids.
 ``_sht_file``

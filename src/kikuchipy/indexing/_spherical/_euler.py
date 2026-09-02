@@ -646,12 +646,15 @@ def rotation_from_zyz(zyz: np.ndarray) -> Rotation:
     commented out upstream and the abstract default
     (``include/idx/base.hpp``, line 133) is the identity too.
 
-    **The sign of this conjugation is provisional.** It is the
-    faithful chain and is consistent with the direction of
+    **The sign of this conjugation is frozen.** It is the faithful
+    chain, it is consistent with the direction of
     :func:`kikuchipy.indexing._spherical._wigner.rotate_harmonics`,
-    but which of the rotation and its inverse maps the crystal to the
-    sample frame is pinned by the forward projection test of Phase 5.
-    If that test flips it, the flip happens here and nowhere else.
+    and Phase 5 (``spherical-back-projection``, D8) measured it
+    against kikuchipy's forward projection: over 27 rotations of
+    :meth:`~kikuchipy.signals.EBSDMasterPattern.get_patterns`
+    back-projected and correlated at bandwidth 68, this conjugation
+    is 0.34 degrees from the true orientation in the median and 0.72
+    at worst, while the other sign is 35 degrees out.
     """
     return ~Rotation(zyz_to_quaternion(zyz))
 
@@ -676,6 +679,8 @@ def rotation_to_zyz(rotation: Rotation) -> np.ndarray:
     -----
     The inverse of :func:`rotation_from_zyz` up to the ``2 pi``
     periodicity of the angles and the degeneracy of ``beta = 0`` and
-    ``beta = pi``, where only ``alpha +- gamma`` is determined.
+    ``beta = pi``, where only ``alpha +- gamma`` is determined.  Its
+    conjugation is the frozen one of :func:`rotation_from_zyz`, see
+    the note there and Phase 5's D8.
     """
     return quaternion_to_zyz((~rotation).data)

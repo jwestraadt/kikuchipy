@@ -56,19 +56,23 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#6)
 
 ## Phase 5 -- `spherical-back-projection`
-- [ ] `_back_projection.py` (`SphericalBackProjector` gather LUT, DCT rescaler, DCT IQ, window mask, `mlm`, `flm2`/`rDen`, single-PC guard)
-- [ ] `_preprocessing.py` (Gaussian background, mosaic AHE, EMSphInx order, all behind keywords)
-- [ ] Tests: `dctn` convention first, LUT vs `_get_direction_cosines_from_detector`, `Y_l^m` recovery, `signal_mask` changes `rDen`, `nickel_ebsd_small` window/IQ, forward-projection convention lock (27 rotations, flip/asymmetry check), binning != 1 PC test, `azimuthal`/`twist` guard, per-point-PC guard
-- [ ] Measure the mean-PC error floor (`refine_orientation` with `pc_average` vs stored per-point-PC `xmap` on `nickel_ebsd_small/large`), record in `validation.md`; Phase 6/7 tolerances derive from it
+- [x] `_back_projection.py` (`SphericalBackProjector`: gather LUT on the north Legendre grid through kikuchipy's detector geometry (exact inverse of `_get_direction_cosines_for_fixed_pc`, pixel-centre convention, physical guard `z_s >= 0` -- the south hemisphere is never gathered), `solidAngle(501)`/`scaleFactor` port with `oversampling = sqrt(2)`, DCT rescaler with mean removal, DCT IQ, window mask built directly (pocketfft's constant DCT is inexact), `mlm`, `squared_harmonics` (`flm2`; the correlator owns `rDen`), single-PC (`navigation_size != 1`) and `azimuthal`/`twist` guards, two empty-window guards (`rescaled_shape < 1 px`, `n_points == 0`), `signal_mask` in kikuchipy polarity with mean fill, `circular_mask=False` default (physical circle), `window_harmonics` eager -- one immutable projector shared across threads)
+- [x] `_preprocessing.py` (Gaussian background with the off-by-one behind `emsphinx_compatible`, `cholesky` with the C++ NaN comparison direction, mosaic AHE == `skimage` CLAHE for dividing tiles, `_preprocess_pattern` in EMSphInx order with `IndexEBSD` defaults `n_regions=10`, `gaussian_background=False`, no mask; no `scipy.fft` here -- the DCT IQ lives in `_back_projection.py`)
+- [x] Tests: `dctn` convention first, LUT vs `_get_direction_cosines_from_detector`, `Y_l^m` recovery, `signal_mask` changes `rDen`, `nickel_ebsd_small` window/IQ, forward-projection convention lock (27 rotations, flip/asymmetry check), binning != 1 PC test, `azimuthal`/`twist` guard, per-point-PC guard; `dctn` `4 h w` round trip + `idctn` negative control; structural pin of the resample map (the direction oracle cannot see a stretch there); rim structure; forward-projection lock measured: `~R` 0.34/0.72 deg median/max at bw 68 vs 35 deg for `R` -- `rotation_from_zyz` frozen; asymmetric-blob row/column check; scores and `rDen` measured-then-pinned; mosaic AHE vs kikuchipy AHE; Gaussian fit quirks; `nickel_ebsd_large` 20-point subset in the default suite
+- [x] Measured mean-PC error floor: `nickel_ebsd_small` refined with `pc_average` vs per-point PC median 0.33 / max 0.54 deg (vs stored xmap 0.30 / 0.56); `nickel_ebsd_large` 165-point subset median 0.29 / p95 0.74 / max 0.96 deg (corr 0.97 with `|pc - pc_average|`; 20-point default-suite subset 0.28 / 0.76 / 0.82); Phase 6 coarse tolerances (small: median < 1.5, >= 8/9 < 3 deg) and Phase 7 refined (small: all < 1.0, median < 0.5; large weekly: median < 0.6, p95 < 1.2, max < 2.0 deg) derive from it
+- [x] Spec approved (autonomous mode) and committed (728a7a47); failing tests + stubs committed (9d6d4def); implementation committed pre-review (1e3d0765), 231 tests green
+- [x] Adversarial review (fidelity vs compiled C++ headers -- Gaussian fit/AHE/Cholesky bitwise, interpolatePixel accept-set identical on 252k points; conventions; 167+63-mutation bug injection) and fixes; coverage 100 %
+- [x] Signed commits pushed; PR opened into fork `develop` (jwestraadt/kikuchipy#7)
 
 ## Phase 6 -- `spherical-indexing-ebsd`
 - [ ] `_indexer.py` (`SphericalIndexer`, per-pattern failure handling), `EBSD.spherical_indexing` (dask `map_blocks`, info message, masks, multi-phase, `n_best`), benchmark
 - [ ] Public `kp.indexing.fast_bandwidths()` exported in `indexing/__init__.pyi` (ShtWisdom stand-in)
-- [ ] Tests: `nickel_ebsd_small` coarse vs stored xmap (median < 1.5 deg, >= 8/9 < 3 deg), lazy/verbose/mask/error paths, hard floor >= 2 pat/s/core, memory measured; `IndexEBSD.exe` parity runs use the default `emsphinx_compatible=True`
+- [ ] Public `kp.indexing.SphericalBackProjector` exported with the indexer (one CHANGELOG entry)
+- [ ] Tests: `nickel_ebsd_small` coarse vs stored xmap (median < 1.5 deg, >= 8/9 < 3 deg -- from the Phase 5 measured mean-PC floor, median 0.33 / max 0.54 deg, plus the half cell 1.33 deg at `bw` 68), lazy/verbose/mask/error paths, hard floor >= 2 pat/s/core, memory measured; `IndexEBSD.exe` parity runs use the default `emsphinx_compatible=True`
 
 ## Phase 7 -- `spherical-refinement`
 - [ ] Analytic derivatives + Newton (`_derivatives`, `_refine_peak`, Cholesky 3x3, saddle rejection, degeneracy fallbacks), normalised refine, `refine=True` default, `EBSD.refine_orientation_spherical`
-- [ ] Tests: `sht_xcorr.cpp` refine ports, saddle/beta=0, `nickel_ebsd_small` refined all < 1 deg + score increase, weekly `nickel_ebsd_large`; `IndexEBSD.exe` parity runs use the default `emsphinx_compatible=True`
+- [ ] Tests: `sht_xcorr.cpp` refine ports, saddle/beta=0, `nickel_ebsd_small` refined all < 1.0 deg, median < 0.5 deg + score increase, weekly `nickel_ebsd_large` (median < 0.6, p95 < 1.2, max < 2.0 deg) -- from the Phase 5 measured mean-PC floor (small 0.33 / 0.54, large 0.29 / 0.74 / 0.96 deg); `IndexEBSD.exe` parity runs use the default `emsphinx_compatible=True`
 
 ## Phase 8 -- `spherical-pseudo-symmetry`
 - [ ] `_pseudo_symmetry.py` (`find_pseudo_symmetry_operators`, MasterXcorr port incl. two-phase mode, optional volume + stereogram), `pseudo_symmetry_ops` in indexer, psymfile read/write

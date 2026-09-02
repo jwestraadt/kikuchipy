@@ -30,9 +30,9 @@ indexing tutorials.
 
 Explicitly out of scope for v1 (documented, revisit later): EMSphInx ROI string
 grammar (`roimask`), `Geometry::ecp()`, `.ctf` writer, IPF/XC PNG writers,
-per-point projection centres in back-projection (single PC per call in v1), non-zero detector `azimuthal`/`twist` (raises, as EMSphInx does), EMsoft raw `.data` pattern input to the PatternRepack equivalent,
+per-point projection centres in back-projection (single PC per call in v1), non-zero detector `azimuthal`/`twist` (raises in v1, as EMSphInx does, even though `EBSDDetector` implements them), EMsoft raw `.data` pattern input to the PatternRepack equivalent,
 non-EBSD `.sht` modalities (ECP/TKD/Laue raise `NotImplementedError`),
-multi-crystal `.sht` files, big-endian `.sht`, `.sht` versions other than 1.1.
+multi-crystal `.sht` files, big-endian `.sht`, `.sht` versions other than 1.1; a detector footprint below the sample plane (`z_s < 0`) is clipped, as in EMSphInx.
 
 ## Success criteria
 
