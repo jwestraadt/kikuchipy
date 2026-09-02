@@ -65,9 +65,14 @@ Construction and guards (D1)
   `AssertionError`, pinning the guard order with no wall clock.
 - `SphericalIndexer(mph, det, bandwidth=8)` and `(..., bandwidth=600)` ->
   `ValueError` containing `"unreasonable bandwidth"` and `"[16, 512]"`
-  (the `nml.hpp:635` rule, D1 revision addition); `bandwidth=16` and
-  `512` construct (boundary smoke, no indexing run at 512 -- the 16 run
-  indexes one pattern).
+  (the `nml.hpp:635` rule, D1 revision addition); `bandwidth=16`
+  constructs and indexes one pattern, and `bandwidth=512` is asserted to
+  reach the projector through the range guard with the
+  `SphericalBackProjector.__init__` sentinel (corrected 2026-09-02:
+  `512` is *not* constructed -- `slP` 1024 / `bwP` 513 give 12.91 GB of
+  correlator cubes plus an 8.59 GB interpolation cube, 21.5 GB of model,
+  plus a 1.07 GB Wigner table; arithmetic recorded below and as a
+  `record_property` in the test).
 - **Tilt binding** (D1 revision addition, major finding): harmonics with
   `sample_tilt` 70.0 and a detector with `det.sample_tilt = 65.0` ->
   `ValueError` quoting `70`, `65` and naming `EBSDDetector.sample_tilt`;
@@ -335,11 +340,19 @@ Performance and memory (D8; the only timing assertions)
   patterns through `index_patterns` -- `patterns_per_second >= 2 * 1` at
   `bw` 68 (measured 77.6 pat/s/core, 39x margin). Everything else
   `record_property`: per-stage ms at `bw` 53/68 (88 weekly), pat/s, the
-  4-worker throughput, `tracemalloc` current/peak around one
-  `_index_chunk` call at `bw` 63 and 68 (measured 23.8 / 35.7 and 30.0 /
-  44.9 MB; `bw` 88 and 113 weekly -- with 63 and 113 this completes the
-  constitution's {63, 68, 88, 113} measurement set), and the model
-  agreement `0.5 < memory_per_worker_bytes / measured_peak < 2`.
+  4-worker throughput, `tracemalloc` resident/peak of one chunk kit at
+  `bw` 63 and 68 (measured 23.8 / 35.7 and 30.0 / 44.9 MB; `bw` 88 and
+  113 weekly -- with 63 and 113 this completes the constitution's
+  {63, 68, 88, 113} measurement set), and the model agreement
+  `0.5 < memory_per_worker_bytes / measured_peak < 2`. (Corrected
+  2026-09-02: the *peak* is taken around one `_index_chunk` call, but
+  `tracemalloc`'s `current` around that call is **not** the resident
+  cost and reads 0.0 MB -- the kit is local to the call and only the
+  packed `(nc, n_best, 6)` result survives it -- so the resident row is
+  measured with a kit of the documented composition, one correlator
+  clone per phase plus the zeroed north/south pair, held alive; the
+  measurement is wrapped in `try`/`finally` so a raise cannot leave
+  `tracemalloc` running for the rest of the session.)
 - Loose bound: the per-chunk peak `< 200 MB` at `bw` 68 (measured 44.9).
 - **Model, `normalize` factor** (D8 revision fix): a two-phase indexer
   with `normalize=False` has `memory_per_worker_bytes` equal to the
@@ -626,3 +639,56 @@ The baseline reproduced digit for digit before anything below was trusted
   the C++ insertion rule (`corr <= 0` never inserted) EMSphInx reports
   that point not-indexed -- the D2 deviation bookkeeping was corrected
   accordingly (only the AHE-ripple +0.2301 case deviates).
+
+### 2026-09-02 -- test-quality review measurements (same environment, probe `p6_fix_probe.py`, scratchpad, not committed)
+
+Measured while applying the test-quality critic's findings to the two
+test files; each line is the evidence for one of them.
+
+- **Navigation-mask check order**: `np.ones((3, 3), int).all()` is
+  `True` and `~np.ones((3, 3), int)` is `-2` everywhere (truthy). An
+  integer mask of ones therefore hits the all-`True` branch first under
+  the listing order of `requirements.md`, raising DI's "at least one
+  value equal to `False`" instead of the frozen boolean-dtype message;
+  the order **is-ndarray, dtype, shape, all-`True`** satisfies all four
+  mask tests (a list has no `.dtype`, hence is-ndarray first). The
+  requirements sentence is corrected in place and the constraint is
+  pinned by a comment on `test_a_non_boolean_navigation_mask_is_refused`.
+- **`CrystalMap.phase_id` dtype**: orix 0.14.2's `CrystalMap.__init__`
+  does `phase_id = phase_id.astype(int)`, so an `int32` input comes back
+  as the platform's default integer (measured `int64` for both `int32`
+  and `int64` inputs). The `int32` pin of the D5 contract therefore
+  lives on the `nbest_phase_id` prop and on the `index_patterns` result,
+  never on `xmap.phase_id`, which the dtype test now pins only to an
+  integer kind (it previously compared the implementation to itself).
+- **Phase-less harmonics warning**: `MasterPatternHarmonics(mph.alm)`
+  emits **nothing** under `simplefilter("always")` (empty record list),
+  so the `catch_warnings`/`simplefilter("ignore")` wrapper around it in
+  `test_repr_of_a_phase_less_harmonics` was dead scaffolding hiding a
+  future regression, and is dropped (the sibling test of the signal file
+  never had one).
+- **A `bw` 512 kit**: `fast_size(2 x 512 - 1) = 1024`, `bwP = 513` ->
+  correlator cubes `1024^2 x 513 x 24` = **12.910 GB**, interpolation
+  cube `1024^3 x 8` = **8.590 GB** (model **21.500 GB**), Wigner table
+  `512^3 x 8` = **1.074 GB**. For comparison at `bw` 68: `slP` 135,
+  `bwP` 68, 0.030 + 0.020 = 0.049 GB, Wigner 0.003 GB. This is why the
+  boundary is asserted with the projector sentinel rather than built.
+- **`tracemalloc` around a call which frees its kit**: a synthetic
+  function allocating 120 MB and returning a six-element array measures
+  `current` **0.000 MB** / `peak` 120.0 MB -- the mechanism behind the
+  corrected D8 memory row, where `current` after `_index_chunk` returns
+  would have recorded "0.0 MB" instead of the resident cost.
+- **Model over measured peak**: 1.0888 / 1.0980 / 1.1002 / 1.1025 /
+  1.1023 at `bw` 53 / 63 / 68 / 88 / 113, i.e. **+8.9 to +10.2 %**. The
+  module and `memory_per_worker_bytes` docstrings said "10 to 25 %",
+  wrong at both ends, and now say "about 10 %".
+- **Tests added by the review**: the exception arm (failure case (d)),
+  injected by a `_preprocess_pattern` which raises for one pattern keyed
+  on that pattern's own bytes (order and chunking independent; the nine
+  patterns are pairwise distinct, asserted in the test) -- without it
+  the "exception propagating" mutant of plan 4.1 survived; the `(9,)`
+  `iq` shape and its bitwise equality with the `n_best=1` run, which
+  kills the mis-packed iq column mutant; the per-stage ms/pattern and
+  pat/s sweep at `bw` 53/68 (88 weekly) and the 4-worker throughput
+  record, which the D8 determination list required and only the single
+  `bw` 68 per-core row covered.

@@ -997,10 +997,10 @@ class SphericalBackProjector:
         the average spherical grid pixel, ``sqrt(2)`` by default,
         the C++ ``fct``.  Larger than zero.
     dim
-        Side length of the square Legendre grid.  Defaults to
-        :func:`~kikuchipy.indexing._spherical._grid.default_dim` of
-        the bandwidth, i.e. ``bandwidth + 2`` if that is odd and
-        ``bandwidth + 3`` otherwise.
+        Side length of the square Legendre grid.  Defaults to the
+        smallest odd side length of the bandwidth, i.e.
+        ``bandwidth + 2`` if that is odd and ``bandwidth + 3``
+        otherwise.
 
     Attributes
     ----------
@@ -1012,8 +1012,9 @@ class SphericalBackProjector:
         Exclusive maximum harmonic degree.
     dim : int
         Side length of the square Legendre grid.
-    sht : kikuchipy.indexing._spherical._sht.SphericalHarmonicTransform
-        Transform of that bandwidth, layout and side length.
+    sht : object
+        Discrete spherical harmonic transform of that bandwidth,
+        layout and side length.
     signal_mask : numpy.ndarray or None
         Copy of the mask, in kikuchipy polarity.
     circular_mask : bool
@@ -1062,8 +1063,8 @@ class SphericalBackProjector:
         :class:`~kikuchipy.detectors.EBSDDetector`.
     ValueError
         If ``bandwidth`` is smaller than one; if ``dim`` is rejected
-        by :class:`~kikuchipy.indexing._spherical._sht.
-        SphericalHarmonicTransform`; if the detector has more than
+        by the spherical harmonic transform, which needs an odd side
+        length of at least three; if the detector has more than
         one projection centre; if its ``azimuthal`` or ``twist``
         angle is non-zero; if ``signal_mask`` is not boolean of the
         detector shape; if ``oversampling`` is not positive; if the
@@ -1083,11 +1084,11 @@ class SphericalBackProjector:
 
     An instance is **immutable after construction and thread safe**:
     :meth:`unproject` reads the lookup table and writes only the
-    caller's buffers and per-call temporaries, so Phase 6 shares one
-    projector across its dask threads.  ``BackProjector::clone()``
-    is therefore not ported and no ``clone()`` is offered; sharing
-    matters, since the transform's tables are 5.5 MB at ``bw`` 68
-    and 23.1 MB at ``bw`` 113.
+    caller's buffers and per-call temporaries, so one projector is
+    shared across the indexer's dask threads.
+    ``BackProjector::clone()`` is therefore not ported and no
+    ``clone()`` is offered; sharing matters, since the transform's
+    tables are 5.5 MB at ``bw`` 68 and 23.1 MB at ``bw`` 113.
 
     Deviations from EMSphInx, all measured:
 
@@ -1129,9 +1130,7 @@ class SphericalBackProjector:
     Examples
     --------
     >>> import kikuchipy as kp
-    >>> from kikuchipy.indexing._spherical._back_projection import (
-    ...     SphericalBackProjector,
-    ... )
+    >>> from kikuchipy.indexing import SphericalBackProjector
     >>> detector = kp.data.nickel_ebsd_small().detector.deepcopy()
     >>> detector.pc = detector.pc_average
     >>> projector = SphericalBackProjector(detector, 68)
@@ -1335,11 +1334,10 @@ class SphericalBackProjector:
         (``include/idx/idx.hpp``, lines 276-280).  The result
         depends on the projector's grid, not on the master pattern
         alone, which is why it lives here and not on
-        :class:`~kikuchipy.indexing._spherical.
-        _master_pattern_harmonics.MasterPatternHarmonics`.  Together
-        with :attr:`window_harmonics` it is what
-        :class:`~kikuchipy.indexing._spherical._xcorr.
-        NormalizedSphericalCrossCorrelator` needs to build ``rDen``.
+        :class:`~kikuchipy.indexing.MasterPatternHarmonics`.
+        Together with :attr:`window_harmonics` it is what the
+        normalized cross-correlation needs to build its denominator
+        ``rDen``.
         """
         alm = np.asarray(alm)
         expected = (self.bandwidth, self.bandwidth)
@@ -1406,7 +1404,7 @@ class SphericalBackProjector:
         out
             Optional ``(north, south)`` pair of C-contiguous
             ``(dim, dim)`` 64-bit float buffers to write into, which
-            Phase 6 reuses per thread.  Fresh zero arrays are
+            the indexer reuses per thread.  Fresh zero arrays are
             allocated when it is not given.  **Neither buffer is
             cleared**: only the window points of ``north`` are
             written and ``south`` is not touched at all, so a reused

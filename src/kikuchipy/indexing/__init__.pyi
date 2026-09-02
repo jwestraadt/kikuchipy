@@ -23,6 +23,9 @@ from ._refinement._refinement import (
     compute_refine_orientation_results,
     compute_refine_projection_center_results,
 )
+from ._spherical._back_projection import SphericalBackProjector
+from ._spherical._fft import fast_bandwidths
+from ._spherical._indexer import SphericalIndexer
 from ._spherical._master_pattern_harmonics import MasterPatternHarmonics
 from .similarity_metrics._normalized_cross_correlation import (
     NormalizedCrossCorrelationMetric,
@@ -35,9 +38,12 @@ __all__ = [
     "NormalizedCrossCorrelationMetric",
     "NormalizedDotProductMetric",
     "SimilarityMetric",
+    "SphericalBackProjector",
+    "SphericalIndexer",
     "compute_refine_orientation_projection_center_results",
     "compute_refine_orientation_results",
     "compute_refine_projection_center_results",
+    "fast_bandwidths",
     "merge_crystal_maps",
     "orientation_similarity_map",
     "xmap_from_hough_indexing_data",

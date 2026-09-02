@@ -25,7 +25,7 @@ import gc
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, Sequence
 import warnings
 
 import dask
@@ -58,6 +58,10 @@ from kikuchipy.indexing._refinement._refinement import (
     _refine_orientation,
     _refine_orientation_pc,
     _refine_pc,
+)
+from kikuchipy.indexing._spherical._indexer import SphericalIndexer  # noqa: F401
+from kikuchipy.indexing._spherical._master_pattern_harmonics import (
+    MasterPatternHarmonics,
 )
 from kikuchipy.indexing.similarity_metrics._normalized_cross_correlation import (
     NormalizedCrossCorrelationMetric,
@@ -1982,6 +1986,179 @@ class EBSD(KikuchipySignal2D):
         xmap.scan_unit = _get_navigation_axes_unit(am_exp)
 
         return xmap
+
+    def spherical_indexing(
+        self,
+        harmonics: MasterPatternHarmonics | Sequence[MasterPatternHarmonics],
+        detector: EBSDDetector,
+        bandwidth: int = 68,
+        n_best: int = 1,
+        navigation_mask: np.ndarray | None = None,
+        signal_mask: np.ndarray | None = None,
+        normalize: bool = True,
+        refine: bool = False,
+        n_regions: int = 10,
+        gaussian_background: bool = False,
+        circular_mask: bool = False,
+        emsphinx_compatible: bool = True,
+        chunksize: int | None = None,
+        verbose: int = 1,
+    ) -> CrystalMap:
+        """Index patterns by spherical cross-correlation with one or
+        more master patterns :cite:`lenthe2019spherical`.
+
+        Each pattern is back-projected onto a square grid on the unit
+        sphere, transformed to spherical harmonics and cross-correlated
+        with every master pattern over all rotations. The best rotation
+        of each phase is a candidate, and the best candidate is the
+        indexed orientation.
+
+        Parameters
+        ----------
+        harmonics
+            One :class:`~kikuchipy.indexing.MasterPatternHarmonics` or
+            a sequence of them, one per phase. Each must have its
+            ``phase`` set, and the phase names must be unique.
+        detector
+            EBSD detector with exactly one projection center (PC),
+            describing the detector-sample geometry of all patterns.
+            Get one PC for a detector with several with
+            ``detector = detector.deepcopy()`` followed by
+            ``detector.pc = detector.pc_average``.
+        bandwidth
+            Bandwidth, i.e. the exclusive maximum harmonic degree, to
+            index at, between 16 and 512. Default is 68. A bandwidth
+            from :func:`~kikuchipy.indexing.fast_bandwidths` needs no
+            zero padding and is therefore faster.
+        n_best
+            Number of candidates to keep per pattern. Default is 1.
+            Each phase contributes exactly one candidate, so rows
+            beyond the number of phases are filled with an invalid
+            phase, see the ``Notes``.
+        navigation_mask
+            A boolean mask equal to the signal's navigation (map)
+            shape, where only patterns equal to ``False`` are indexed.
+            If not given, all patterns are indexed.
+        signal_mask
+            A boolean mask equal to the detector shape, where only
+            pixels equal to ``False`` are used. If not given, all
+            pixels are used.
+        normalize
+            Whether to use the normalized cross-correlation, which
+            divides by a rotation dependent denominator computed from
+            the sphere window. Default is ``True``.
+        refine
+            Whether to refine the best orientation of the coarse Euler
+            grid. Only ``False``, the default, is available.
+        n_regions
+            Number of tiles along each detector axis of the adaptive
+            histogram equalization applied to every pattern. Default
+            is 10. ``0`` skips the equalization.
+        gaussian_background
+            Whether to fit and subtract a Gaussian background from
+            every pattern first. Default is ``False``.
+        circular_mask
+            Whether to use only the largest circle inscribed in the
+            detector. Default is ``False``.
+        emsphinx_compatible
+            Whether to reproduce EMSphInx' Gaussian fit off-by-one and
+            the two defects of its peak interpolation. Default is
+            ``True``, which EMSphInx parity requires, see the
+            ``Notes``.
+        chunksize
+            Number of patterns to index per chunk. If not given, it is
+            estimated from the bandwidth, the number of patterns and
+            the number of Dask workers.
+        verbose
+            Which information to print. Options are 0 - no output,
+            1 - information, progress bar and timing (default).
+
+        Returns
+        -------
+        xmap
+            A crystal map with the best orientation of each pattern,
+            or the ``n_best`` best, and the properties ``"scores"``
+            and ``"iq"``, the correlation and the image quality. With
+            ``n_best`` greater than one, the property
+            ``"nbest_phase_id"`` holds the phase of every candidate.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``refine`` is ``True``.
+        ValueError
+            If the detector shape and the signal shape differ; if
+            ``navigation_mask`` is not a boolean NumPy array of the
+            navigation shape with at least one ``False`` entry; if a
+            master pattern has no phase or two share a name; or for
+            any error of
+            :class:`~kikuchipy.indexing.SphericalIndexer`.
+
+        See Also
+        --------
+        dictionary_indexing
+        hough_indexing
+        refine_orientation
+        kikuchipy.indexing.SphericalIndexer
+        kikuchipy.indexing.MasterPatternHarmonics
+        kikuchipy.indexing.fast_bandwidths
+
+        Notes
+        -----
+        This is a port of EMSphInx' ``IndexEBSD`` program
+        :cite:`lenthe2019spherical`, and a call with no optional
+        parameters reproduces its name list defaults.
+
+        **The scores are not normalized cross-correlations.** The
+        ``"scores"`` property is the correlation at the interpolated
+        peak, which is never divided by the standard deviation of the
+        pattern, so it is unbounded, comparable only within a fixed
+        detector geometry and bandwidth, and **cannot** be used with
+        :func:`~kikuchipy.indexing.orientation_similarity_map`.
+        Measured for the nine shipped Ni patterns at a bandwidth of
+        68: 0.50-0.62 normalized and 0.28-0.35 un-normalized.
+
+        **One candidate per phase.** ``n_best`` counts phases, not
+        peaks: every phase contributes its single best rotation, so a
+        row beyond the number of phases keeps the invalid phase
+        ``-1``, the identity rotation and a score of ``0``. Only
+        phases which win at least one point appear in
+        ``xmap.phases``; the losing ones stay in
+        ``SphericalIndexer.phases`` and in the ``"nbest_phase_id"``
+        property. A rotated copy of a structure is indistinguishable
+        from it by design, since the correlation peak does not change
+        when the reference is rotated.
+
+        **Failed patterns** keep the invalid phase ``-1``, the
+        identity rotation, a score of ``0`` and an image quality of
+        ``0``, so ``xmap.is_indexed`` is ``False`` exactly there. A
+        pattern fails when it has no variance, when the preprocessing
+        leaves it constant, when its best score or rotation is not
+        finite, when it raises, or when no phase scored above zero.
+
+        **The orientations are coarse.** They land within about half
+        a grid cell of the Euler grid, ``180 / (2 * bandwidth - 1)``
+        degrees, which is 1.33 degrees at the default bandwidth;
+        refinement of the coarse orientation is not implemented yet.
+        Measured against the stored orientations of the shipped Ni
+        data set: a median of 0.60 and a maximum of 0.84 degrees.
+
+        **Memory.** Each Dask worker holds one correlation kit, about
+        21, 45, 98 and 207 MB at bandwidths 53, 68, 88 and 113 with
+        one phase, and one more correlation cube per additional phase
+        when ``normalize`` is ``True``.
+        :attr:`~kikuchipy.indexing.SphericalIndexer.
+        memory_per_worker_bytes` is the model this estimate comes
+        from, and a warning is raised when all workers together would
+        need more than 2 GiB.
+
+        **EMSphInx parity** needs ``emsphinx_compatible=True`` both
+        here and in
+        :meth:`~kikuchipy.indexing.MasterPatternHarmonics.
+        from_master_pattern`, since the master pattern normalization
+        quirk is frozen into the coefficients when they are built.
+        """
+        raise NotImplementedError
 
     def refine_orientation(
         self,

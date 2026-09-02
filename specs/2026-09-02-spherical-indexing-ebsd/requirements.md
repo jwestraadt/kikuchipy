@@ -494,6 +494,12 @@ already validated bitwise/near-bitwise in Phases 1-5, and the stored kikuchipy
   revision correction: DI has **no dtype check**, so the fourth is NOT
   "mirrored") plus a **new frozen check of this phase**: `dtype != bool`
   -> `ValueError` `"The navigation mask must be a boolean array"` --
+  **in the order is-ndarray, dtype, shape, all-`True`** (corrected
+  2026-09-02: the order is not free, and the listing order above is
+  wrong. `np.ones(nav_shape, int).all()` is `True`, so an integer mask
+  which reaches the all-`True` branch first raises DI's "at least one
+  value equal to `False`" instead of the dtype message; and the
+  is-ndarray check must come first because a list has no `.dtype`) --
   needed because the flow computes `~navigation_mask`, and bitwise NOT of
   an int 0/1 mask (`~1 == -2`, truthy) would silently index everything
   (plan 6.16); every `harmonics` entry must have
