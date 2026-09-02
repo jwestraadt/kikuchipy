@@ -579,6 +579,10 @@ def _ahe_cdf_kernel(
         for k in range(_N_BINS):
             total += hist[k]
             cdfs[t, k] = total
+        # never a division by zero: ``_ahe_tiles`` bounds
+        # ``n_regions`` by ``min(h, w)``, so every tile holds at
+        # least one pixel, and an all masked out tile took the flat
+        # histogram above
         norm = (_N_BINS - 1) / cdfs[t, _N_BINS - 1]
         for k in range(_N_BINS):
             cdfs[t, k] = norm * cdfs[t, k]
@@ -799,9 +803,10 @@ def _fit_gaussian_1d(
     y
         ``(n,)`` array-like of samples, cast to 64-bit float.
     emsphinx_compatible
-        Kept for symmetry with :func:`_gaussian_background`, which
-        is where the flag acts, ``True`` by default.  The fit itself
-        is identical either way.
+        **Accepted and ignored**, kept only for symmetry with
+        :func:`_gaussian_background`, which is where the flag acts
+        (on the surface it evaluates, not on the fit).  ``True`` by
+        default; the returned parameters are identical either way.
 
     Returns
     -------
@@ -884,7 +889,7 @@ def _gaussian_background(
     Raises
     ------
     ValueError
-        If ``pattern`` is not two-dimensional, or if
+        If ``pattern`` is not two-dimensional or is empty, or if
         ``good_pixels`` is given and is not a boolean array of the
         same shape.
 
@@ -913,6 +918,11 @@ def _gaussian_background(
         raise ValueError(
             f"`pattern` must be two-dimensional, but has shape {image.shape}"
         )
+    # ``_row_col_max_kernel`` seeds from ``pattern[0, 0]`` and numba
+    # compiles without bounds checking, so an empty axis would be an
+    # out of bounds read rather than an exception
+    if image.size == 0:
+        raise ValueError(f"`pattern` must not be empty, but has shape {image.shape}")
     good = _good_pixels_or_ones(good_pixels, image.shape)
     height, width = image.shape
 
@@ -974,6 +984,13 @@ def _remove_gaussian_background(
         Fresh ``(h, w)`` 64-bit float array holding
         ``pattern - background`` on the good pixels and **exactly
         zero** on the masked out ones.
+
+    Raises
+    ------
+    ValueError
+        If ``pattern`` is not two-dimensional or is empty, or if
+        ``good_pixels`` is given and is not a boolean array of the
+        same shape.
 
     Notes
     -----
@@ -1233,6 +1250,11 @@ def _to_uint8(buffer: np.ndarray) -> np.ndarray:
         ``floor(255 (v - min) / (max - min) + 0.5)``, or zeros when
         the buffer is flat.
 
+    Raises
+    ------
+    ValueError
+        If ``buffer`` is empty.
+
     Notes
     -----
     Wrapper of :func:`_to_uint8_kernel`.  This is **not**
@@ -1243,6 +1265,10 @@ def _to_uint8(buffer: np.ndarray) -> np.ndarray:
     """
     values = np.ascontiguousarray(buffer, dtype=np.float64)
     flat = values.reshape(-1)
+    # the kernel seeds from ``buffer[0]`` and numba compiles without
+    # bounds checking, so an empty buffer would read out of bounds
+    if flat.size == 0:
+        raise ValueError(f"`buffer` must not be empty, but has shape {values.shape}")
     rescaled = np.empty(flat.size, dtype=np.uint8)
     _to_uint8_kernel(flat, rescaled)
     return rescaled.reshape(values.shape)

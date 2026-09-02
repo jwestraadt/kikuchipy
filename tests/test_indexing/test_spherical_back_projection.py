@@ -688,6 +688,31 @@ class TestConstruction:
         assert projector.signal_mask is not mask
         assert np.array_equal(projector.signal_mask, mask)
 
+    def test_a_wrong_shape_signal_mask_which_keeps_pixels_raises(self):
+        # the all-``True`` mask of the shape test above also empties
+        # the window, so it raises even without the shape guard; a
+        # wrong-shape mask which keeps most pixels is accepted
+        # silently instead, and ``_inside_detector`` then indexes a
+        # 61-column mask with 60-column coordinates
+        mask = np.zeros((60, 61), dtype=bool)
+        mask[:10, :10] = True
+        with pytest.raises(ValueError) as info:
+            _back_projection.SphericalBackProjector(
+                ni_detector(), NI_BANDWIDTH, signal_mask=mask
+            )
+        assert "(60, 61)" in str(info.value)
+        assert "(60, 60)" in str(info.value)
+
+    @pytest.mark.parametrize("oversampling", [0.0, -1.0])
+    def test_the_oversampling_guard_names_oversampling(self, oversampling):
+        # without it the resampled shape is (0, 0) or negative and
+        # the first empty-window guard raises instead, blaming
+        # ``solid_angle_fraction`` for the caller's argument
+        with pytest.raises(ValueError, match="[Oo]versampling"):
+            _back_projection.SphericalBackProjector(
+                ni_detector(), NI_BANDWIDTH, oversampling=oversampling
+            )
+
 
 # ----------------------------- Geometry ----------------------------- #
 
@@ -1200,6 +1225,28 @@ class TestUnproject:
         assert np.ptp(wrong) > 1
         assert wrong.max() / correct.max() == pytest.approx(1 / 53**2, rel=1e-6)
 
+    def test_an_output_larger_than_the_input_zero_pads_the_spectrum(self):
+        # ``h_copy = min(h_in, h_out)`` is what turns the C++
+        # ``wOut > wIn`` case into a zero pad instead of a shape
+        # error, and the only default-suite call that reaches it is
+        # ``unproject`` at ``bw`` 88, inside a *timing* test -- so
+        # the branch is pinned directly here
+        rng = np.random.default_rng(11)
+        pattern = rng.standard_normal((12, 15))
+        h_out, w_out = 20, 19
+        rescaled, _ = _back_projection._dct_rescale(
+            pattern, h_out, w_out, zero_mean=False
+        )
+        assert rescaled.shape == (h_out, w_out)
+        spectrum = scipy.fft.dctn(pattern, type=2, workers=1)
+        # the type-3 then type-2 round trip of the padded spectrum
+        recovered = scipy.fft.dctn(rescaled, type=2, workers=1) / (4 * h_out * w_out)
+        scale = float(np.abs(spectrum).max())
+        assert np.abs(recovered[:12, :15] - spectrum).max() <= 1e-12 * scale
+        # everything beyond the input spectrum is exactly the pad
+        assert np.abs(recovered[12:, :]).max() <= 1e-12 * scale
+        assert np.abs(recovered[:, 15:]).max() <= 1e-12 * scale
+
     @pytest.mark.parametrize(
         "pattern, expected_iq",
         [
@@ -1401,6 +1448,26 @@ class TestUnproject:
         projector.unproject(pattern)
         assert np.array_equal(pattern, reference)
 
+    def test_the_mean_fill_writes_the_unmasked_mean(self):
+        # ``_mean_fill`` is only ever seen through a correlation
+        # bound elsewhere, which the mean of *all* pixels also
+        # satisfies; the two differ by 3.4 gray levels on Ni pattern
+        # 0 and move the window values by 0.05 of a standard
+        # deviation
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[MASK_BLOCK] = True
+        pattern = _ni_signal_data()[0, 0].astype(np.float64)
+        filled = _back_projection._mean_fill(pattern.copy(), mask)
+        expected = pattern[~mask].mean()
+        assert np.all(filled[mask] == expected)
+        assert np.array_equal(filled[~mask], pattern[~mask])
+        # the global mean is a different number, so the assertion
+        # above is not satisfied by both candidates
+        assert expected != pattern.mean()
+        untouched = pattern.copy()
+        assert _back_projection._mean_fill(untouched, None) is untouched
+        assert np.array_equal(untouched, pattern)
+
     def test_nan_is_not_guarded(self):
         # documented: a NaN pixel propagates onto the window rather
         # than raising
@@ -1484,6 +1551,85 @@ class TestImageQuality:
         )
         record_property("iq_correlation", f"{correlation(ours, theirs):.3f}")
         assert not np.allclose(ours, theirs, atol=0.1)
+
+    def test_the_image_quality_transform_is_recorded_too(self, monkeypatch):
+        # ``TestUnproject`` records the two transforms of the
+        # rescale, but ``_dct_image_quality`` owns a **third**
+        # ``dctn`` call which nothing else sees: dropping its
+        # ``workers=1`` (the constitution's rule, since Phase 6 calls
+        # this from dask threads) or its ``ptp`` short-cut leaves the
+        # suite green, because pocketfft happens to return exactly
+        # 1.0 for a 60 x 60 constant -- it returns
+        # 0.9999999999999999 on 49 x 49 and 41 x 60
+        assert hasattr(_back_projection, "dctn"), (
+            "_back_projection must bind scipy.fft.dctn in its namespace"
+        )
+        projector = _back_projection.SphericalBackProjector(
+            ni_detector(), NI_BANDWIDTH, circular_mask=True
+        )
+        pattern = _ni_signal_data()[0, 0]
+        calls = []
+        spy = recording_dctn(calls, real=scipy.fft.dctn)
+        monkeypatch.setattr(_back_projection, "dctn", spy)
+        monkeypatch.setattr(scipy.fft, "dctn", spy)
+
+        for evaluate in (
+            projector.image_quality,
+            _back_projection._dct_image_quality,
+        ):
+            calls.clear()
+            evaluate(pattern)
+            assert len(calls) == 1
+            assert calls[0].get("type") == 2
+            assert calls[0].get("workers") == 1
+            assert calls[0].get("norm") is None
+            # the input size spectrum, never the resampled one
+            assert np.shape(calls[0]["x"]) == (60, 60)
+
+        # and the ``ptp`` short-cut makes no transform at all, in the
+        # method and in the free function alike
+        calls.clear()
+        for constant in (np.full((60, 60), 7.0), np.zeros((60, 60))):
+            projector.image_quality(constant)
+            _back_projection._dct_image_quality(constant)
+        assert calls == []
+
+    def test_the_zero_spectrum_branch_is_pinned_directly(self):
+        # ``imageQuality``'s ``if(sumP == Real(0)) vIq = 0``
+        # (``include/util/image.hpp`` line 504) is unreachable behind
+        # the ``ptp`` short-cut, so only a direct call sees it: a
+        # ``1.0`` there passes every other test of the module
+        for shape in ((60, 60), (5, 7)):
+            assert _back_projection._image_quality_from_spectrum(np.zeros(shape)) == 0.0
+            assert literal_image_quality(np.zeros(shape)) == 0.0
+
+    @pytest.mark.parametrize("shape", [(60, 59), (59, 60), (60, 60, 1)])
+    def test_image_quality_validates_the_pattern_shape(self, shape):
+        # ``unproject`` has this guard tested; the method has its own
+        # copy, which nothing reached
+        projector = _back_projection.SphericalBackProjector(ni_detector(), NI_BANDWIDTH)
+        with pytest.raises(ValueError) as info:
+            projector.image_quality(np.zeros(shape))
+        assert "(60, 60)" in str(info.value)
+
+    def test_image_quality_equals_the_unproject_value_under_a_signal_mask(self):
+        # the identity above runs on an unmasked projector, where
+        # ``_mean_fill`` is a no-op, so it cannot see whether
+        # ``image_quality`` fills the pattern the way ``unproject``
+        # does -- the determination recorded in ``validation.md``
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[MASK_BLOCK] = True
+        masked = _back_projection.SphericalBackProjector(
+            ni_detector(), NI_BANDWIDTH, circular_mask=True, signal_mask=mask
+        )
+        for pattern in _ni_signal_data().reshape(-1, 60, 60):
+            _, _, from_unproject = masked.unproject(pattern, return_image_quality=True)
+            assert masked.image_quality(pattern) == from_unproject
+        # the fill moves the value by 0.02, so the equality above is
+        # not satisfied by an unfilled pattern as well
+        pattern = _ni_signal_data()[0, 0]
+        unfilled = _back_projection._dct_image_quality(pattern.astype(np.float64))
+        assert abs(masked.image_quality(pattern) - unfilled) > 1e-3
 
     def test_the_preprocessing_module_has_no_transform(self):
         assert not hasattr(_preprocessing, "dctn")
@@ -2040,6 +2186,32 @@ class TestKernels:
         )
         assert difference <= 4 * EPS
         assert results[0][1] == pytest.approx(results[1][1], rel=4 * EPS)
+
+    def test_the_stdev_zero_branch_of_the_py_func(self):
+        # ``test_the_literal_stdev_zero_branch`` runs the *compiled*
+        # kernel, which no coverage tool can see into, so the branch
+        # reads as untested; the interpreted twin fixes that and
+        # confirms the two agree on it
+        kernel = _back_projection._unproject_kernel
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        projector = _back_projection.SphericalBackProjector(
+            ni_detector(), NI_BANDWIDTH, circular_mask=True
+        )
+        h_out, w_out = projector.rescaled_shape
+        for function in (kernel, _py_func(kernel)):
+            north = np.zeros(projector.dim**2)
+            stdev = function(
+                np.zeros(h_out * w_out),
+                projector.pixel_index,
+                projector.weights,
+                projector.solid_angles,
+                projector.window_solid_angle,
+                projector.sphere_index,
+                north,
+            )
+            assert stdev == 0.0
+            assert np.all(north[projector.sphere_index] == 1.0)
+            assert np.count_nonzero(north) == projector.n_points
 
 
 class TestBaselines:

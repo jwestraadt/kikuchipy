@@ -149,13 +149,14 @@ directions and the forward projection reads the master pattern at
 ``O`` the sample to crystal orientation.  Consequently ``z_s >= 0``
 is the physical guard (the C++ ``if (signbit(n[2])) return false``,
 line 336, "can't project through sample") and **the south hemisphere
-is never gathered**: :meth:`SphericalBackProjector.unproject` always
-returns a south grid of zeros, which
-:meth:`~kikuchipy.indexing._spherical._sht.
-SphericalHarmonicTransform.analyze` and the correlator read as "no
-data".  A footprint reaching below the sample plane is clipped, not
-wrapped: at ``sample_tilt`` 0 78 % of the pixels have ``z < 0`` and
-60 % of the window is lost.
+is never gathered**: :meth:`SphericalBackProjector.unproject` never
+writes the south grid at all, so it returns zeros when it allocates
+the buffer itself and the caller's buffer untouched when ``out`` is
+given, and :meth:`~kikuchipy.indexing._spherical._sht.
+SphericalHarmonicTransform.analyze` and the correlator read a zero
+south grid as "no data".  A footprint reaching below the sample
+plane is clipped, not wrapped: at ``sample_tilt`` 0 78 % of the
+pixels have ``z < 0`` and 60 % of the window is lost.
 
 EMSphInx' frame coincides with kikuchipy's: its
 ``alpha = 90 - sTlt + dTlt`` degrees puts the pattern centre at
@@ -256,12 +257,16 @@ measurement.
 lookup table and writes only the caller's buffers and per-call
 temporaries, so **one projector is shared by all threads** and no
 ``clone()`` is offered.  Measured single thread with the kernel
-warm: ``unproject`` including the transform and the image quality
-0.055 / 0.058 / 0.069 / 0.077 / 0.080 ms at ``bw`` 53 / 63 / 68 /
-88 / 113, against 0.19 / 0.30 / 0.40 / 0.83 / 1.83 ms for the
-spherical harmonic analysis of the result; construction 48-95 ms
-with a 30 MB transient for the solid angle grid; resident tables
-2.7-23 MB (the transform's) and under 0.3 MB (the lookup table's).
+warm on the development machine, at ``bw`` 53 / 63 / 68 / 88 / 113:
+``unproject`` including the transform and the image quality 0.055 /
+0.058 / 0.069 / 0.077 / 0.080 ms, against 0.19 / 0.30 / 0.40 /
+0.83 / 1.83 ms for the spherical harmonic analysis of the result;
+construction 17-47 ms with a 29-31 MB transient for the solid angle
+grid; resident tables 2.7-23 MB (the transform's) and under 0.3 MB
+(the lookup table's).  Their ratios hold, but the absolute times
+track the machine's clock state: repeat runs on the same machine
+came out 2-3 times slower throughout, so read these as one recorded
+baseline rather than a bound.
 
 References
 ----------
@@ -404,7 +409,7 @@ def _unproject_kernel(
 
 
 def _pixel_map(
-    detector: "EBSDDetector",
+    detector: EBSDDetector,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Return the geometry of the direction to pixel chain.
 
@@ -569,7 +574,7 @@ def _inside_detector(
 
 
 def _solid_angle_fraction(
-    detector: "EBSDDetector",
+    detector: EBSDDetector,
     circular_mask: bool,
     signal_mask: np.ndarray | None,
     grid_res: int = _SOLID_ANGLE_GRID_RES,
@@ -655,7 +660,7 @@ def _rescaled_shape(shape: tuple[int, int], scale: float) -> tuple[int, int]:
 
 
 def _build_lut(
-    detector: "EBSDDetector",
+    detector: EBSDDetector,
     dim: int,
     circular_mask: bool,
     signal_mask: np.ndarray | None,
@@ -720,8 +725,12 @@ def _build_lut(
     weights ``wx1 = clip(x - i0, 0, 1)``, ``wx0 = 1 - wx1``: the
     C++'s ``min(., w - 1)`` clamp extended to the left and top rim,
     so a point in the half pixel rim takes the edge pixel's value
-    along that axis.  Measured, 1.8-2.8 % of the default window sits
-    in that rim.
+    along that axis.  The clamp acts in **resampled** coordinates,
+    where 1.5-4.1 % of the default window falls outside the pixel
+    centre box (measured 2.35 % at ``bw`` 68 and 1.50 % at ``bw``
+    113); in **detector** coordinates the same window is 1.8-3.8 %
+    outside it (1.82 % and 2.79 %).  The two counts differ because
+    ``w_out / ncols`` is not one.
     """
     nrows, ncols = detector.shape
     h_out, w_out = rescaled_shape
@@ -1088,7 +1097,8 @@ class SphericalBackProjector:
       own sampling convention.
     - The south hemisphere is never gathered, since the C++ south
       loop is unreachable behind the physical guard.  ``south`` is
-      always zero.
+      never written, so it is zero unless the caller hands
+      :meth:`unproject` a non-zero buffer through ``out``.
     - There is no ``flip`` parameter: kikuchipy patterns have one
       row convention, row 0 at the top.
     - :meth:`window_mask` is built directly from the lookup table
@@ -1099,8 +1109,9 @@ class SphericalBackProjector:
       ``0.0`` for the all-zero pattern).
     - ``signal_mask`` pixels are mean filled before the resample.
     - The rim of the window is filled by constant extrapolation off
-      the pixel centre box (1.8 % of the default window at ``bw`` 68
-      and 2.8 % at ``bw`` 113).
+      the pixel centre box: 1.8 % of the default window at ``bw``
+      68 and 2.8 % at ``bw`` 113 in detector coordinates, 2.4 % and
+      1.5 % in the resampled coordinates the clamp acts in.
     - The circle is the physical circle of the unrescaled detector,
       while the C++ lookup table loop uses the rescaled geometry: 5
       of 958 points differ on a ``(48, 60)`` detector, none on a
@@ -1138,7 +1149,7 @@ class SphericalBackProjector:
 
     def __init__(
         self,
-        detector: "EBSDDetector",
+        detector: EBSDDetector,
         bandwidth: int,
         *,
         signal_mask: np.ndarray | None = None,
@@ -1152,7 +1163,6 @@ class SphericalBackProjector:
         if dim is None:
             dim = _grid.default_dim(bandwidth, "legendre")
         dim = int(dim)
-        sht = SphericalHarmonicTransform(bandwidth, "legendre", dim)
 
         if not isinstance(detector, EBSDDetector):
             raise TypeError(
@@ -1191,6 +1201,10 @@ class SphericalBackProjector:
         oversampling = float(oversampling)
         if not oversampling > 0:
             raise ValueError(f"Oversampling {oversampling} must be greater than zero")
+
+        # Last of the guards, since this one costs 15 ms and up to
+        # 23 MB of tables while the ones above cost nothing
+        sht = SphericalHarmonicTransform(bandwidth, "legendre", dim)
 
         # A copy, so that later mutations of the caller's detector do
         # not reach the projector, with the projection centre reshaped
@@ -1393,7 +1407,11 @@ class SphericalBackProjector:
             Optional ``(north, south)`` pair of C-contiguous
             ``(dim, dim)`` 64-bit float buffers to write into, which
             Phase 6 reuses per thread.  Fresh zero arrays are
-            allocated when it is not given.
+            allocated when it is not given.  **Neither buffer is
+            cleared**: only the window points of ``north`` are
+            written and ``south`` is not touched at all, so a reused
+            pair must be zeroed by the caller, never allocated with
+            :func:`numpy.empty`.
         return_image_quality
             Whether to evaluate the image quality on the input size
             spectrum and return it as a third element, ``False`` by
@@ -1406,9 +1424,11 @@ class SphericalBackProjector:
             window points are written**, the C++ contract, so a
             reused buffer keeps its stale values off the window.
         south
-            ``(dim, dim)`` 64-bit float south grid, always zero:
-            the footprint below the sample plane is clipped, not
-            wrapped.
+            ``(dim, dim)`` 64-bit float south grid, **never
+            written**: the footprint below the sample plane is
+            clipped, not wrapped.  A fresh array of zeros when
+            ``out`` is not given, and otherwise ``out[1]`` exactly
+            as the caller left it.
         image_quality
             Only when ``return_image_quality``.
 

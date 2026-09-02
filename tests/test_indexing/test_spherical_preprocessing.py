@@ -52,6 +52,7 @@ in ``_back_projection`` together with the module's only
 ``scipy.fft`` binding.
 """
 
+import bisect
 import functools
 import inspect
 import math
@@ -168,11 +169,163 @@ def separable_background(shape=(60, 60), **kwargs):
     return parameters["c"] * row_factor[:, None] * column_factor[None, :]
 
 
+def local_gauss_newton(y, rule="faithful"):
+    """Return ``(a, b, c, steps)`` of ``gaussian::Model<Real>::fit``
+    with a swappable stopping rule.
+
+    A second implementation of ``include/util/gaussian.hpp`` lines
+    140-231, transcribed here so that the **stopping rule** can be
+    varied while everything else -- the estimate, the Jacobian and
+    the module's own :func:`_cholesky_solve_3x3` -- stays identical.
+    ``"faithful"`` is the C++'s ``metric >= metricPrev and
+    metric < 1e-4`` (line 226); ``"metric_only"`` drops the
+    non-decreasing half and ``"metric_le"`` reverses it.
+    """
+    y = np.ascontiguousarray(y, dtype=np.float64)
+    n = y.shape[0]
+    i_max = int(np.argmax(y))
+    c = y[i_max]
+    a = float(i_max)
+    xy = 0.0
+    y2 = 0.0
+    for i in range(n):
+        yc = y[i] / c
+        if yc > 0:
+            dx = a - i
+            yi = math.log(yc)
+            y2 += yi * yi
+            xy -= yi * dx * dx
+    b = xy / y2
+    ss_prev = 0.0
+    metric_prev = float(np.finfo(np.float64).max)
+    for step_count in range(1, 51):
+        jtj = np.zeros((3, 3))
+        jtr = np.zeros(3)
+        ss = 0.0
+        for i in range(n):
+            dx = a - i
+            dxb = dx / b
+            dfdc = math.exp(-dx * dxb)
+            fx = c * dfdc
+            fxb = fx * dxb
+            jacobian = (-fxb * 2, fxb * dxb, dfdc)
+            residual = y[i] - fx
+            for u in range(3):
+                jtr[u] += residual * jacobian[u]
+                for v in range(u, 3):
+                    jtj[u, v] += jacobian[u] * jacobian[v]
+            ss += residual * residual
+        jtj[1, 0] = jtj[0, 1]
+        jtj[2, 0] = jtj[0, 2]
+        jtj[2, 1] = jtj[1, 2]
+        step = np.zeros(3)
+        if _preprocessing._cholesky_solve_3x3(jtj, jtr, step) != 0:
+            return a, b, c, step_count
+        a += step[0]
+        b += step[1]
+        c += step[2]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            metric = abs((ss_prev - ss) / ss)
+        if rule == "faithful":
+            stop = metric >= metric_prev and metric < 1e-4
+        elif rule == "metric_only":
+            stop = metric < 1e-4
+        else:
+            stop = metric <= metric_prev and metric < 1e-4
+        if stop:
+            return a, b, c, step_count
+        metric_prev = metric
+        ss_prev = ss
+    return a, b, c, 50
+
+
 def column_ramp(shape=(60, 60)):
     """Return an unsigned 8-bit image whose columns ramp ``0, 4,
     ..., 236``.
     """
     return np.tile(np.arange(shape[1], dtype=np.uint8) * 4, (shape[0], 1))
+
+
+def literal_tile_bounds(n, n_regions):
+    """Return ``(mids, starts, ends)`` of ``setSize()`` on one axis.
+
+    ``include/util/ahe.hpp`` lines 128-147 written out for a single
+    axis, with the mosaic half width ``0.5`` of line 124 and
+    ``std::round`` as ``floor(x + 0.5)`` for a non-negative
+    argument.
+    """
+    tile = n / n_regions
+    mids, starts, ends = [], [], []
+    for index in range(n_regions):
+        centre = tile * index + tile / 2
+        mids.append(int(math.floor(centre + 0.5)))
+        starts.append(int(math.floor(max(centre - tile / 2, 0.0) + 0.5)))
+        ends.append(int(math.floor(min(centre + tile / 2, float(n)) + 0.5)))
+    return mids, starts, ends
+
+
+def literal_interpolation_pairs(mids, n):
+    """Return ``(l, u, c, f)`` per index, ``ahe.hpp`` lines 150-166.
+
+    ``std::upper_bound`` is :func:`bisect.bisect_right` rather than
+    :func:`numpy.searchsorted`, so that the module's own search is
+    not simply repeated.
+    """
+    pairs = []
+    for index in range(n):
+        bound = bisect.bisect_right(mids, index)
+        if bound == len(mids) or bound == 0:
+            tile = 0 if bound == 0 else len(mids) - 1
+            pairs.append((tile, tile, 0.5, 0.5))
+        else:
+            far = (index - mids[bound - 1]) / (mids[bound] - mids[bound - 1])
+            pairs.append((bound - 1, bound, 1.0 - far, far))
+    return pairs
+
+
+def literal_mosaic_ahe(image, n_regions, good=None):
+    """Return the out of place ``AdaptiveHistogramEqualizer::
+    equalize()`` written out.
+
+    An independent transcription of ``include/util/ahe.hpp`` lines
+    117-262 which keeps the row and the column roles apart **by
+    name**, so that a rectangular image tells a row/column mix-up
+    in the tile table, the histograms or the interpolation pairs
+    from a faithful implementation.  Only the shape comes from the
+    module under test.
+    """
+    image = np.asarray(image)
+    height, width = image.shape
+    mid_x, start_x, end_x = literal_tile_bounds(width, n_regions)
+    mid_y, start_y, end_y = literal_tile_bounds(height, n_regions)
+
+    cdfs = np.zeros((n_regions, n_regions, 256))
+    for ty in range(n_regions):
+        for tx in range(n_regions):
+            histogram = np.zeros(256, dtype=np.int64)
+            for j in range(start_y[ty], end_y[ty]):
+                for i in range(start_x[tx], end_x[tx]):
+                    if good is None or good[j, i]:
+                        histogram[image[j, i]] += 1
+            if good is not None and histogram.max() == 0:
+                # "there were no good pixels", lines 211-213
+                histogram[:] = 1
+            cumulative = np.cumsum(histogram).astype(np.float64)
+            cdfs[ty, tx] = (255 / cumulative[255]) * cumulative
+
+    row_pairs = literal_interpolation_pairs(mid_y, height)
+    column_pairs = literal_interpolation_pairs(mid_x, width)
+    equalised = np.zeros((height, width))
+    for j, (j_l, j_u, j_c, j_f) in enumerate(row_pairs):
+        for i, (i_l, i_u, i_c, i_f) in enumerate(column_pairs):
+            value = image[j, i]
+            equalised[j, i] = (
+                cdfs[j_l, i_l, value] * j_c * i_c
+                + cdfs[j_l, i_u, value] * j_c * i_f
+                + cdfs[j_u, i_l, value] * j_f * i_c
+                + cdfs[j_u, i_u, value] * j_f * i_f
+            )
+    return equalised
 
 
 # --------------------------- Circular mask -------------------------- #
@@ -314,8 +467,52 @@ class TestGaussianFit:
         kernel = _preprocessing._fit_gaussian_1d_kernel
         assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
         assert kernel(np.array([1.0, 2.0]), np.zeros(4)) == 1
+        assert _py_func(kernel)(np.array([1.0, 2.0]), np.zeros(4)) == 1
         with pytest.raises(ValueError):
             _preprocessing._fit_gaussian_1d(np.array([1.0, 2.0]))
+
+    @pytest.mark.parametrize("y", [np.zeros((4, 4)), np.zeros((2, 3, 4))])
+    def test_a_multidimensional_input_raises(self, y):
+        with pytest.raises(ValueError, match="one-dimensional"):
+            _preprocessing._fit_gaussian_1d(y)
+
+    @pytest.mark.parametrize("a, b, c", [(25.3, 288.0, 150.0), (40.7, 60.5, 90.0)])
+    def test_both_halves_of_the_stopping_rule_are_needed(
+        self, a, b, c, record_property
+    ):
+        # the C++ returns on ``metric >= metricPrev and
+        # metric < 1e-4`` (line 226).  Dropping the non-decreasing
+        # half, or writing it ``<=``, stops the Gauss-Newton loop
+        # 5 to 8 steps early; every other test here bounds only the
+        # *mean*, which moves by 1e-7, so both mutations survive
+        # them.  ``b`` moves by 4e-5 relative, which this pins
+        # against a local transcription differing in the rule alone
+        x = np.arange(58, dtype=np.float64)
+        y = gaussian_samples(a, b, c) + 3 * np.sin(x / 2) + 5
+        found_a, found_b, found_c, _, converged = _preprocessing._fit_gaussian_1d(y)
+        assert converged
+
+        faithful = local_gauss_newton(y, "faithful")
+        record_property(
+            f"stop_rule_{a}_faithful", f"{faithful[:3]} in {faithful[3]} steps"
+        )
+        # same arithmetic on the same platform, so this is tight
+        assert (found_a, found_b, found_c) == pytest.approx(faithful[:3], rel=1e-9)
+
+        for rule in ("metric_only", "metric_le"):
+            loose = local_gauss_newton(y, rule)
+            gap = abs(loose[1] - faithful[1])
+            record_property(
+                f"stop_rule_{a}_{rule}",
+                f"{loose[3]} steps, b differs by {gap / abs(faithful[1]):.3e} relative",
+            )
+            # the two rules really do part company on this input, so
+            # the comparison below cannot go vacuous
+            assert loose[3] < faithful[3]
+            assert gap / abs(faithful[1]) > 1e-8
+            # and the kernel sits a hundred times closer to the
+            # faithful rule than the two rules are to each other
+            assert abs(found_b - faithful[1]) < 0.01 * gap
 
     @pytest.mark.parametrize("compiled", [True, False])
     def test_the_cholesky_comparison_direction(self, compiled):
@@ -406,6 +603,91 @@ class TestGaussianBackground:
         assert bool(info["converged_x"]) is False
         assert math.isinf(info["gx"][1])
 
+    def test_the_failed_axis_fallback_triple(self):
+        # the flat pattern above cannot see two thirds of the C++
+        # fallback ``(w / 2, inf, mean(cWrk))`` (lines 274-277): on a
+        # flat pattern the mean of the maxima *is* their maximum, and
+        # ``b = inf`` makes the surface independent of ``a``.  An
+        # integer-mean Gaussian fails both axes on a pattern whose
+        # maxima are not flat, where ``mean`` is 66.83 and ``max``
+        # is 200, a factor 3 in the background
+        pattern = separable_background(ax=30.0, ay=30.0, bx=128.0, by=128.0, c=200.0)
+        row_max = np.empty(60)
+        col_max = np.empty(60)
+        _preprocessing._row_col_max_kernel(
+            np.ascontiguousarray(pattern),
+            np.ones((60, 60), dtype=bool),
+            row_max,
+            col_max,
+        )
+        assert col_max.max() == pytest.approx(200.0, rel=1e-12)
+        assert col_max.mean() < 0.4 * col_max.max()
+
+        background, info = _preprocessing._gaussian_background(pattern)
+        assert bool(info["converged_x"]) is False
+        assert bool(info["converged_y"]) is False
+        assert info["gx"][0] == pytest.approx(30.0, abs=1e-12)
+        assert info["gy"][0] == pytest.approx(30.0, abs=1e-12)
+        assert info["gx"][2] == pytest.approx(col_max.mean(), rel=1e-12)
+        assert info["gy"][2] == pytest.approx(row_max.mean(), rel=1e-12)
+        # the exponential factor of a failed axis is exactly one, so
+        # the surface is the shared amplitude everywhere
+        assert np.allclose(background, col_max.mean(), rtol=1e-12)
+
+    @pytest.mark.parametrize("shape", [(48, 60), (60, 48)])
+    def test_each_axis_is_fitted_on_its_own_length(self, shape, monkeypatch):
+        # the column fit runs on ``cWrk[1 : w - 1]`` and the row fit
+        # on ``rWrk[1 : h - 1]`` (lines 273 and 280).  Every other
+        # pattern in this module is square, where the two interior
+        # lengths are equal and a wrong axis length is invisible
+        height, width = shape
+        real = _preprocessing._fit_gaussian_1d_kernel
+        sizes = []
+
+        def spy(y, params):
+            sizes.append(int(y.shape[0]))
+            return real(y, params)
+
+        monkeypatch.setattr(_preprocessing, "_fit_gaussian_1d_kernel", spy)
+        pattern = separable_background(shape, ax=width / 3, ay=height / 3)
+        _preprocessing._gaussian_background(pattern)
+        # the column fit first, then the row fit
+        assert sizes == [width - 2, height - 2]
+
+        # and a failed axis falls back to *its own* half width
+        sizes.clear()
+        background, info = _preprocessing._gaussian_background(np.full(shape, 5.0))
+        assert sizes == [width - 2, height - 2]
+        assert info["gx"][0] == width / 2
+        assert info["gy"][0] == height / 2
+        assert background.shape == shape
+
+    def test_the_maxima_skip_masked_out_pixels(self):
+        # the mask reaches the maxima only through the ``good[j, i]``
+        # test of lines 262-270.  Ignoring it changes nothing in the
+        # background of the fixtures used elsewhere -- on Ni pattern
+        # 0 with the circle the fitted triple is bitwise the same --
+        # so the kernel needs a masked-out pixel which would take
+        # over its row and column
+        pattern = np.zeros((60, 60))
+        pattern[0, 0] = 3.0
+        pattern[30, 30] = 255.0
+        good = np.ones((60, 60), dtype=bool)
+        good[30, 30] = False
+        row_max = np.empty(60)
+        col_max = np.empty(60)
+        kernel = _preprocessing._row_col_max_kernel
+        assert hasattr(kernel, "py_func"), "kernel must be @njit-decorated"
+        kernel(pattern, good, row_max, col_max)
+        # only the seed of line 259 is left in that row and column
+        assert row_max[30] == 3.0
+        assert col_max[30] == 3.0
+        # without the mask the pixel takes both over, so this is not
+        # a statement about the pattern
+        kernel(pattern, np.ones((60, 60), dtype=bool), row_max, col_max)
+        assert row_max[30] == 255.0
+        assert col_max[30] == 255.0
+
     def test_the_row_and_column_maxima_start_at_pixel_zero_zero(self):
         pattern = np.zeros((60, 60))
         pattern[0, 0] = 255.0
@@ -446,6 +728,28 @@ class TestGaussianBackground:
         with pytest.raises(ValueError):
             _preprocessing._gaussian_background(np.zeros((60, 60)), good)
 
+    @pytest.mark.parametrize("shape", [(60,), (3, 4, 5)])
+    def test_a_non_two_dimensional_pattern_raises(self, shape):
+        for function in (
+            _preprocessing._gaussian_background,
+            _preprocessing._remove_gaussian_background,
+        ):
+            with pytest.raises(ValueError, match="two-dimensional"):
+                function(np.zeros(shape))
+
+    @pytest.mark.parametrize("shape", [(0, 60), (60, 0), (0, 0)])
+    def test_an_empty_pattern_raises_instead_of_reading_out_of_bounds(self, shape):
+        # ``_row_col_max_kernel`` seeds from ``pattern[0, 0]`` and
+        # Numba compiles with bounds checking off, so without the
+        # guard an empty axis is an out of bounds read rather than
+        # an exception
+        for function in (
+            _preprocessing._gaussian_background,
+            _preprocessing._remove_gaussian_background,
+        ):
+            with pytest.raises(ValueError, match="empty"):
+                function(np.zeros(shape))
+
 
 # ------------------- Mosaic histogram equalisation ------------------ #
 
@@ -472,6 +776,47 @@ class TestMosaicAHE:
             assert j_c[midpoint] == pytest.approx(1.0)
             assert j_f[midpoint] == pytest.approx(0.0)
             assert (i_l[midpoint], i_u[midpoint]) == (index, index + 1)
+
+    def test_the_tile_table_of_a_rectangle(self):
+        # a square shape cannot tell ``(i_start, i_end)`` from
+        # ``(j_start, j_end)``, nor the row pairs from the column
+        # ones.  ``(48, 60)`` at ``n_regions`` 6 gives 8 pixel tile
+        # rows against 10 pixel tile columns
+        tiles, j_pairs, i_pairs = _preprocessing._ahe_tiles((48, 60), 6)
+        assert tiles.shape == (36, 4)
+        # the first two bounds come from the width, the last two
+        # from the height
+        assert list(tiles[:6, 0]) == [0, 10, 20, 30, 40, 50]
+        assert list(tiles[:6, 1]) == [10, 20, 30, 40, 50, 60]
+        assert list(tiles[::6, 2]) == [0, 8, 16, 24, 32, 40]
+        assert list(tiles[::6, 3]) == [8, 16, 24, 32, 40, 48]
+        assert tiles[:, 1].max() == 60
+        assert tiles[:, 3].max() == 48
+        # and the row pairs are as long as the image is high
+        assert [array.shape for array in j_pairs] == [(48,)] * 4
+        assert [array.shape for array in i_pairs] == [(60,)] * 4
+
+    @pytest.mark.parametrize("shape", [(48, 60), (60, 48), (37, 41)])
+    @pytest.mark.parametrize("n_regions", [4, 7])
+    def test_a_rectangle_equals_the_literal_equaliser(self, shape, n_regions):
+        # every other case in this class is square, where swapping
+        # the row and column interpolation pairs, or reading a tile
+        # bound off the wrong axis, is a no-op
+        rng = np.random.default_rng(5)
+        image = rng.integers(0, 256, shape, dtype=np.uint8)
+        masks = [None, _preprocessing._circular_mask(shape, min(shape) // 3)]
+        for good in masks:
+            ours = _preprocessing._mosaic_ahe(image, n_regions, good)
+            theirs = literal_mosaic_ahe(image, n_regions, good)
+            assert ours.shape == shape
+            # same arithmetic in the same order, so this is tight
+            assert np.abs(ours - theirs).max() <= 1e-9
+        # the two masks really do give different images, so the
+        # comparison above cannot go vacuous
+        assert not np.allclose(
+            _preprocessing._mosaic_ahe(image, n_regions, masks[1]),
+            _preprocessing._mosaic_ahe(image, n_regions),
+        )
 
     def test_the_interpolation_pairs_of_three_pixels(self):
         _, _, i_pairs = _preprocessing._ahe_tiles((60, 60), 10)
@@ -589,6 +934,14 @@ class TestMosaicAHE:
                 np.zeros((60, 60), dtype=np.uint8), 10, np.zeros((60, 61), dtype=bool)
             )
 
+    def test_the_image_is_validated(self):
+        with pytest.raises(ValueError, match="two-dimensional"):
+            _preprocessing._mosaic_ahe(np.zeros(60, dtype=np.uint8), 10)
+        # the kernels index ``cdfs`` with the pixel value, so
+        # anything wider than 8 bits would read out of bounds
+        with pytest.raises(ValueError, match="unsigned 8-bit"):
+            _preprocessing._mosaic_ahe(np.zeros((60, 60), dtype=np.uint16), 10)
+
 
 # ---------------------------- To uint8 ------------------------------ #
 
@@ -619,6 +972,13 @@ class TestToUint8:
         theirs = kp.pattern.rescale_intensity(buffer, dtype_out=np.uint8)
         assert list(theirs) == [0, 42, 255]
         assert not np.array_equal(_preprocessing._to_uint8(buffer), theirs)
+
+    @pytest.mark.parametrize("shape", [(0,), (0, 5), (5, 0)])
+    def test_an_empty_buffer_raises_instead_of_reading_out_of_bounds(self, shape):
+        # the kernel seeds from ``buffer[0]`` with bounds checking
+        # off, so this would be an out of bounds read
+        with pytest.raises(ValueError, match="empty"):
+            _preprocessing._to_uint8(np.zeros(shape))
 
 
 # --------------------------- Process order -------------------------- #
@@ -712,6 +1072,31 @@ class TestProcessOrder:
         with pytest.raises(ValueError):
             _preprocessing._preprocess_pattern(
                 _ni_signal_data()[0, 0], n_regions=n_regions
+            )
+
+    @pytest.mark.parametrize("shape", [(60,), (3, 60, 60)])
+    def test_a_non_two_dimensional_pattern_raises(self, shape):
+        with pytest.raises(ValueError, match="two-dimensional"):
+            _preprocessing._preprocess_pattern(np.zeros(shape, dtype=np.uint8))
+
+    @pytest.mark.parametrize(
+        "gaussian_background, n_regions",
+        [(True, 10), (False, 10), (True, 0), (False, 0)],
+    )
+    def test_good_pixels_is_validated_in_every_branch(
+        self, gaussian_background, n_regions
+    ):
+        # three of the four branches hand the mask to
+        # ``_mosaic_ahe`` or ``_remove_gaussian_background``, which
+        # validate it themselves; the fourth returns the float cast
+        # and would accept a wrong-shape mask silently without the
+        # entry check
+        with pytest.raises(ValueError):
+            _preprocessing._preprocess_pattern(
+                _ni_signal_data()[0, 0],
+                good_pixels=np.zeros((60, 61), dtype=bool),
+                gaussian_background=gaussian_background,
+                n_regions=n_regions,
             )
 
 
@@ -833,6 +1218,45 @@ class TestKernels:
             function(buffer, out)
             results.append(out)
         assert np.array_equal(results[0], results[1])
+
+    def test_the_branches_only_the_compiled_kernel_reaches(self):
+        # each of these is exercised only through the *compiled*
+        # kernel elsewhere, which no coverage tool can see into
+        to_uint8 = _preprocessing._to_uint8_kernel
+        assert hasattr(to_uint8, "py_func"), "kernel must be @njit-decorated"
+        for function in (to_uint8, _py_func(to_uint8)):
+            out = np.full(9, 3, dtype=np.uint8)
+            function(np.full(9, 7.0), out)
+            # ``255 / 0`` is infinite and the C++ cast undefined
+            assert np.array_equal(out, np.zeros(9, dtype=np.uint8))
+
+        cdf_kernel = _preprocessing._ahe_cdf_kernel
+        assert hasattr(cdf_kernel, "py_func"), "kernel must be @njit-decorated"
+        image = column_ramp()
+        good = np.zeros((60, 60), dtype=bool)
+        good[:6, :6] = True
+        tiles, _, _ = _preprocessing._ahe_tiles((60, 60), 10)
+        # the identity ramp of the flat histogram, lines 211-213
+        expected = 255 * np.arange(1, 257) / 256
+        for function in (cdf_kernel, _py_func(cdf_kernel)):
+            cdfs = np.zeros((100, 256))
+            function(image, good, True, tiles, cdfs)
+            assert np.abs(cdfs[55] - expected).max() <= 1e-12
+            assert not np.allclose(cdfs[0], expected)
+
+        # the unmasked histogram branch is the other half of the
+        # ``has_mask`` fork, and it is equivalent to the masked one
+        # under an all-``True`` mask -- recorded, since a mutant
+        # forcing the masked branch is an equivalent mutation
+        keep_all = np.ones((60, 60), dtype=bool)
+        branches = []
+        for function in (cdf_kernel, _py_func(cdf_kernel)):
+            for has_mask in (False, True):
+                cdfs = np.zeros((100, 256))
+                function(image, keep_all, has_mask, tiles, cdfs)
+                branches.append(cdfs)
+        for other in branches[1:]:
+            assert np.array_equal(branches[0], other)
 
 
 class TestBaselines:
