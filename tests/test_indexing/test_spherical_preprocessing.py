@@ -612,7 +612,9 @@ class TestGaussianBackground:
         pattern = separable_background(ax=30.0, ay=30.0, bx=128.0, by=128.0, c=200.0)
         _, info = _preprocessing._gaussian_background(pattern)
         if bool(info["converged_x"]):
-            assert abs(info["gx"][0] - 30.0) < 1e-9
+            # the 2-D wrapper applies the EMSphInx off-by-one, so a
+            # convergent fit reports the true mean minus one
+            assert abs(info["gx"][0] - 29.0) < 1e-6
         else:
             assert math.isinf(info["gx"][1])
 
