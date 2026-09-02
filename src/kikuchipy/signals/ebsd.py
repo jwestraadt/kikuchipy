@@ -63,6 +63,9 @@ from kikuchipy.indexing._refinement._refinement import (
 from kikuchipy.indexing._spherical._euler import (
     rotation_from_zyz as _rotation_from_zyz,
 )
+from kikuchipy.indexing._spherical._euler import (
+    rotation_to_zyz as _rotation_to_zyz,
+)
 from kikuchipy.indexing._spherical._indexer import SphericalIndexer
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
@@ -2000,7 +2003,7 @@ class EBSD(KikuchipySignal2D):
         navigation_mask: np.ndarray | None = None,
         signal_mask: np.ndarray | None = None,
         normalize: bool = True,
-        refine: bool = False,
+        refine: bool = True,
         n_regions: int = 10,
         gaussian_background: bool = False,
         circular_mask: bool = False,
@@ -2052,8 +2055,13 @@ class EBSD(KikuchipySignal2D):
             divides by a rotation dependent denominator computed from
             the sphere window. Default is ``True``.
         refine
-            Whether to refine the best orientation of the coarse Euler
-            grid. Only ``False``, the default, is available.
+            Whether to refine every phase's best orientation of the
+            coarse Euler grid with Newton's method on the sphere.
+            Default is ``True``, EMSphInx' own default. Pass
+            ``False`` for the coarse grid orientations alone, which
+            costs 5-21 % less time (measured refined to coarse
+            ratios 1.05-1.27x) and gives scores which are not
+            comparable with the refined ones, see the ``Notes``.
         n_regions
             Number of tiles along each detector axis of the adaptive
             histogram equalization applied to every pattern. Default
@@ -2088,8 +2096,6 @@ class EBSD(KikuchipySignal2D):
 
         Raises
         ------
-        NotImplementedError
-            If ``refine`` is ``True``.
         ValueError
             If the detector shape and the signal shape differ; if the
             signal has no navigation axis or more than two; if
@@ -2111,6 +2117,7 @@ class EBSD(KikuchipySignal2D):
         dictionary_indexing
         hough_indexing
         refine_orientation
+        refine_orientation_spherical
         kikuchipy.indexing.SphericalIndexer
         kikuchipy.indexing.MasterPatternHarmonics
         kikuchipy.indexing.fast_bandwidths
@@ -2122,13 +2129,35 @@ class EBSD(KikuchipySignal2D):
         parameters reproduces its name list defaults.
 
         **The scores are not normalized cross-correlations.** The
-        ``"scores"`` property is the correlation at the interpolated
-        peak, which is never divided by the standard deviation of the
-        pattern, so it is unbounded, comparable only within a fixed
-        detector geometry and bandwidth, and **cannot** be used with
+        ``"scores"`` property is the correlation of the winning
+        rotation, which is never divided by the standard deviation of
+        the pattern, so it is unbounded, comparable only within a
+        fixed detector geometry and bandwidth, and **cannot** be used
+        with
         :func:`~kikuchipy.indexing.orientation_similarity_map`.
         Measured for the nine shipped Ni patterns at a bandwidth of
-        68: 0.50-0.62 normalized and 0.28-0.35 un-normalized.
+        68 with the refined default: 0.51-0.63 normalized and
+        0.29-0.36 un-normalized; with ``refine=False``: 0.50-0.62 and
+        0.28-0.35.
+
+        **A refined score is not a coarse score.** With ``refine``,
+        the score is the *analytic* correlation at the refined
+        rotation, divided by the rotation dependent window
+        denominator when ``normalize`` is ``True``, while the coarse
+        score is a tri-quadratic fitted to the grid around the
+        maximum. The two are therefore not comparable with one
+        another, and the refined normalized score can even dip
+        slightly below the coarse one, because the Newton step
+        maximizes the un-normalized correlation exactly as it does in
+        EMSphInx (measured 4 of 165 points, worst -4.8e-4).
+
+        A refinement adds no failure case of its own -- a Newton loop
+        which does not converge returns the coarse orientation with
+        the analytic correlation there -- but that correlation can be
+        non-positive, and a candidate with a non-positive score is
+        never recorded, so a pattern whose every phase failed that
+        way becomes a failed pattern where the coarse path would have
+        kept it. No such failure was observed on any real data run.
 
         **One candidate per phase.** ``n_best`` counts phases, not
         peaks: every phase contributes its single best rotation, so a
@@ -2148,19 +2177,29 @@ class EBSD(KikuchipySignal2D):
         leaves it constant, when its best score or rotation is not
         finite, when it raises, or when no phase scored above zero.
 
-        **The orientations are coarse.** They land within about half
-        a grid cell of the Euler grid, ``180 / side_length`` degrees,
-        which is 1.33 degrees at the default bandwidth and is
-        ``SphericalIndexer.half_cell_degrees``; refinement of the
-        coarse orientation is not implemented yet.
-        Measured against the stored orientations of the shipped Ni
-        data set: a median of 0.60 and a maximum of 0.84 degrees.
+        **The orientations are Newton refined** with the default
+        ``refine=True``. Measured against the stored orientations of
+        the shipped Ni data set at a bandwidth of 68: a median of
+        0.51 and a maximum of 0.70 degrees, against 0.60 and 0.84 for
+        the coarse orientations of ``refine=False``. The residual is
+        systematic rather than a convergence limit: it is the mean
+        projection center floor of that data set plus the
+        band-limitation of the bandwidth, and a larger bandwidth
+        shrinks it (median 0.45 at 88).
+
+        **With ``refine=False`` the orientations are coarse.** They
+        land within about half a grid cell of the Euler grid,
+        ``180 / side_length`` degrees, which is 1.33 degrees at the
+        default bandwidth and is
+        ``SphericalIndexer.half_cell_degrees``.
 
         **Memory.** Each Dask worker holds one correlation kit, about
         21, 45, 98 and 207 MB at bandwidths 53, 68, 88 and 113 with
         one phase, and one more correlation cube per additional phase
-        when ``normalize`` is ``True``. The model this estimate comes
-        from is
+        when ``normalize`` is ``True``. Refinement adds one Wigner
+        table per correlator per worker, 5.0, 10.9 and 23.1 MB at
+        bandwidths 68, 88 and 113, plus one 5.1 MB table shared by
+        the whole process. The model these estimates come from is
         :attr:`~kikuchipy.indexing.SphericalIndexer.memory_per_worker_bytes`,
         and a warning is raised when all workers together would need
         more than 2 GiB.
@@ -2313,6 +2352,360 @@ class EBSD(KikuchipySignal2D):
         xmap.scan_unit = _get_navigation_axes_unit(am)
 
         return xmap
+
+    def refine_orientation_spherical(
+        self,
+        xmap: CrystalMap,
+        harmonics: MasterPatternHarmonics | Sequence[MasterPatternHarmonics],
+        detector: EBSDDetector,
+        bandwidth: int = 68,
+        navigation_mask: np.ndarray | None = None,
+        signal_mask: np.ndarray | None = None,
+        normalize: bool = True,
+        n_regions: int = 10,
+        gaussian_background: bool = False,
+        circular_mask: bool = False,
+        emsphinx_compatible: bool = True,
+        chunksize: int | None = None,
+        verbose: int = 1,
+    ) -> CrystalMap:
+        """Refine orientations by Newton's method on the sphere,
+        without re-scanning the coarse rotation grid
+        :cite:`lenthe2019spherical`.
+
+        Every pattern is back-projected onto the unit sphere and
+        transformed to spherical harmonics exactly as in
+        :meth:`spherical_indexing`, and its stored orientation is then
+        refined against the master pattern of its own phase.
+
+        Parameters
+        ----------
+        xmap
+            Crystal map with the orientations to refine, e.g. from
+            :meth:`spherical_indexing`. It must have the same shape
+            as the signal's navigation shape, and the phase of every
+            point to refine must be the phase of the master pattern
+            its phase index points at.
+        harmonics
+            One :class:`~kikuchipy.indexing.MasterPatternHarmonics` or
+            a sequence of them, indexed by the crystal map's phase
+            indices. Each must have its ``phase`` set.
+        detector
+            EBSD detector with exactly one projection center (PC),
+            describing the detector-sample geometry of all patterns.
+        bandwidth
+            Bandwidth, i.e. the exclusive maximum harmonic degree, to
+            refine at, between 16 and 512. Default is 68.
+        navigation_mask
+            A boolean mask equal to the signal's navigation (map)
+            shape, where only orientations equal to ``False`` are
+            refined. If not given, all indexed points in the map are
+            refined. A point which is masked out here keeps its input
+            row.
+        signal_mask
+            A boolean mask equal to the detector shape, where only
+            pixels equal to ``False`` are used. If not given, all
+            pixels are used.
+        normalize
+            Whether to use the normalized cross-correlation, which
+            divides by a rotation dependent denominator computed from
+            the sphere window. Default is ``True``.
+        n_regions
+            Number of tiles along each detector axis of the adaptive
+            histogram equalization applied to every pattern. Default
+            is 10. ``0`` skips the equalization.
+        gaussian_background
+            Whether to fit and subtract a Gaussian background from
+            every pattern first. Default is ``False``.
+        circular_mask
+            Whether to use only the largest circle inscribed in the
+            detector. Default is ``False``.
+        emsphinx_compatible
+            Whether to reproduce EMSphInx' Gaussian fit off-by-one.
+            Default is ``True``.
+        chunksize
+            Number of patterns to refine per chunk. If not given, it
+            is estimated from the bandwidth, the number of patterns
+            and the number of Dask workers.
+        verbose
+            Which information to print. Options are 0 - no output,
+            1 - information, progress bar and timing (default).
+
+        Returns
+        -------
+        xmap_refined
+            A crystal map with one refined orientation per point and
+            the properties ``"scores"`` and ``"iq"``, the correlation
+            at the refined orientation and the image quality. The
+            phases, the phase of every point and which points are in
+            the data are those of ``xmap``.
+
+        Raises
+        ------
+        ValueError
+            If the detector shape and the signal shape differ; if the
+            signal has no navigation axis or more than two; if the
+            crystal map shape and the signal's navigation shape
+            differ; if ``navigation_mask`` is not a boolean NumPy
+            array of the navigation shape with at least one ``False``
+            entry; if a phase index of a point to refine does not
+            index ``harmonics``; if the phase of a point to refine
+            differs from the phase of that master pattern; if a
+            master pattern has no phase or two share a name; or for
+            any error of
+            :class:`~kikuchipy.indexing.SphericalIndexer`.
+
+        Warns
+        -----
+        UserWarning
+            If all Dask workers together are estimated to need more
+            than 2 GiB, or if any point to refine could not be
+            refined and keeps its input row.
+
+        See Also
+        --------
+        spherical_indexing
+        refine_orientation
+        kikuchipy.indexing.SphericalIndexer
+
+        Notes
+        -----
+        This is the refinement-only work item of EMSphInx' EBSD
+        driver, with one deliberate deviation: the shipped C++
+        discards the result of its own refinement call and stores a
+        score its refinement-only branch never assigned, so it hands
+        back the *unrefined* orientation with a zero or stale score.
+        This method implements the documented intent instead -- it
+        refines the stored orientation and stores the refined score.
+
+        **Refinement is local.** Newton's method converges to the
+        nearest stationary point of the correlation, so this method
+        is score-monotone only for orientations which came from
+        :meth:`spherical_indexing` with the same configuration. An
+        orientation from another source -- Hough indexing, dictionary
+        indexing, another geometry -- may converge to a stationary
+        point whose score is *lower* than the input's, or fail to
+        converge and keep its input orientation with the correlation
+        there.
+
+        Refining a coarse map from :meth:`spherical_indexing` equals
+        ``spherical_indexing(refine=True)`` to tolerance rather than
+        bitwise, because the stored quaternion hands back the
+        equivalent Euler triple with the opposite ``beta`` sign, whose
+        refinement walks the mirrored Wigner table path. Measured over
+        the nine shipped Ni patterns: a misorientation of 0.0 degrees
+        and a score difference of at most 2.9e-14.
+
+        **A crystal map whose points are not a full rectangle is
+        refused.** A map from a navigation-masked
+        :meth:`spherical_indexing` call has a shape derived from the
+        bounding box of the points which are in the data, so it fails
+        the shape check every refinement method of kikuchipy applies.
+        Index the full map instead and mask at refinement time with
+        this method's own ``navigation_mask``.
+
+        **A point which is not refined keeps its input row**: a point
+        which is not indexed, one masked out by ``navigation_mask``,
+        and one whose pattern fails a guard or raises. Only the
+        rotation, ``"scores"`` and ``"iq"`` are carried over from the
+        input map, so a map with more than one orientation per point
+        comes back with the first one alone, as
+        :meth:`refine_orientation` returns one.
+
+        Two conventions deviate from
+        :meth:`refine_orientation` and
+        :meth:`refine_orientation_projection_center` on purpose: the
+        parameters read ``(xmap, harmonics, detector, ...)``, mirroring
+        :meth:`spherical_indexing`, where the siblings read
+        ``(xmap, detector, master_pattern, ...)``; and there is no
+        ``compute``, ``rechunk`` or ``chunk_kwargs``, because the
+        spherical pipeline is eager, again as
+        :meth:`spherical_indexing` is. ``chunksize`` is the knob
+        offered instead.
+        """
+        am = self.axes_manager
+        nav_shape = am.navigation_shape[::-1]
+        sig_shape = am.signal_shape[::-1]
+
+        if sig_shape != detector.shape:
+            raise ValueError(
+                f"The detector shape {detector.shape} and the signal's pattern "
+                f"shape {sig_shape} must be identical"
+            )
+
+        if len(nav_shape) not in (1, 2):
+            raise ValueError(
+                f"The signal's navigation shape {nav_shape} must have one or "
+                "two dimensions, since a crystal map is one- or "
+                "two-dimensional"
+            )
+
+        # The same check and message every kikuchipy refinement
+        # applies, which also refuses a map whose points in the data
+        # are not the full navigation grid, see the `Notes`
+        _xmap_is_compatible_with_signal(
+            xmap, am.navigation_axes[::-1], raise_if_not=True
+        )
+
+        # Own checks in the frozen order of `spherical_indexing`
+        if navigation_mask is not None:
+            if not isinstance(navigation_mask, np.ndarray):
+                raise ValueError("The navigation mask must be a NumPy array")
+            elif navigation_mask.dtype != np.bool_:
+                raise ValueError("The navigation mask must be a boolean array")
+            elif navigation_mask.shape != nav_shape:
+                raise ValueError(
+                    f"The navigation mask shape {navigation_mask.shape} and the "
+                    f"signal's navigation shape {nav_shape} must be identical"
+                )
+            elif navigation_mask.all():
+                raise ValueError(
+                    "The navigation mask must allow for refinement of at least "
+                    "one orientation (at least one value equal to `False`)"
+                )
+
+        if isinstance(harmonics, MasterPatternHarmonics):
+            harmonics_list = [harmonics]
+        else:
+            harmonics_list = list(harmonics)
+        phase_names = []
+        for i, harmonics_i in enumerate(harmonics_list):
+            phase = getattr(harmonics_i, "phase", None)
+            if phase is None:
+                raise ValueError(
+                    f"The master pattern harmonics at index {i} must have their "
+                    "`MasterPatternHarmonics.phase` set, since the crystal map's "
+                    "phase list is built from it"
+                )
+            phase_names.append(phase.name)
+        if len(set(phase_names)) != len(phase_names):
+            raise ValueError(
+                f"The master pattern phase names {phase_names} must be unique"
+            )
+
+        # Full length rows scattered through `is_in_data`: orix hands
+        # back the points in the data alone, so the map's own arrays
+        # are shorter than the navigation grid whenever a point is
+        # out of it
+        n_all = int(np.prod(nav_shape))
+        in_data = np.asarray(xmap.is_in_data, dtype=bool).ravel()
+        rotations_in_data = xmap.rotations
+        if rotations_in_data.ndim > 1:
+            # only the first candidate is refined, as the C++ refine
+            # only work item "currently only uses a single result"
+            rotations_in_data = rotations_in_data[:, 0]
+        rotation_data = np.zeros((n_all, 4), dtype=np.float64)
+        rotation_data[:, 0] = 1.0
+        rotation_data[in_data] = rotations_in_data.data
+        zyz_full = np.zeros((n_all, 3), dtype=np.float64)
+        zyz_full[in_data] = _rotation_to_zyz(rotations_in_data)
+        phase_id_full = np.full(n_all, -1, dtype=np.int32)
+        phase_id_full[in_data] = xmap.phase_id
+        is_indexed_full = np.zeros(n_all, dtype=bool)
+        is_indexed_full[in_data] = xmap.is_indexed
+
+        points_to_refine = in_data & is_indexed_full
+        if navigation_mask is not None:
+            points_to_refine = points_to_refine & ~navigation_mask.ravel()
+
+        # A phase index which does not name a master pattern, and one
+        # which names the wrong one: an index which merely happens to
+        # be in range must not silently refine against another phase
+        ids = np.unique(phase_id_full[points_to_refine])
+        for phase_id_i in ids.tolist():
+            if phase_id_i >= len(harmonics_list):
+                raise ValueError(
+                    f"The phase index {phase_id_i} of the points to refine must "
+                    f"index the {len(harmonics_list)} master pattern(s) given, "
+                    "i.e. be smaller than that"
+                )
+            xmap_phase = xmap.phases[phase_id_i]
+            mp_phase = harmonics_list[phase_id_i].phase
+            equal_phases, are_different = _equal_phase(mp_phase, xmap_phase)
+            if not equal_phases:
+                raise ValueError(
+                    f"Master pattern phase '{mp_phase.name}' and phase of points "
+                    f"to refine in crystal map '{xmap_phase.name}' must be the "
+                    f"same, but have different {are_different}"
+                )
+
+        indexer = SphericalIndexer(
+            harmonics_list,
+            detector,
+            bandwidth=bandwidth,
+            normalize=normalize,
+            refine=True,
+            signal_mask=signal_mask,
+            n_regions=n_regions,
+            gaussian_background=gaussian_background,
+            circular_mask=circular_mask,
+            emsphinx_compatible=emsphinx_compatible,
+        )
+
+        patterns = self.data.reshape((-1,) + sig_shape)[points_to_refine]
+        n_kept = int(points_to_refine.sum())
+
+        if verbose >= 1:
+            print(indexer.get_info_message(n_kept, chunksize, refining=True))
+
+        time_start = time()
+        res = indexer.refine_patterns(
+            patterns,
+            zyz_full[points_to_refine],
+            phase_id_full[points_to_refine],
+            chunksize=chunksize,
+            progressbar=verbose >= 1,
+        )
+        total_time = time() - time_start
+
+        if verbose >= 1:
+            # Without this pause a part of the progress bar is
+            # displayed below this print, as in dictionary indexing
+            sleep(0.2)
+            print(f"  Refinement speed: {n_kept / total_time:.5f} patterns/s")
+
+        # A point which was not refined keeps its input row, so the
+        # scattering starts from the input map's own values.  A
+        # pattern which failed a guard or raised carries its starting
+        # angles back with a score and an image quality of exactly
+        # zero, which is how the refinement reports that it wrote
+        # nothing.  This re-derives the flag from the two columns
+        # rather than reading one: a refined row whose score *and*
+        # image quality are both exactly zero would be read as "not
+        # written", which needs the back-projection to answer a
+        # non-constant pattern with an all-zero spectrum and the
+        # correlation to land on a float64 zero at the same point
+        was_refined = np.zeros(n_all, dtype=bool)
+        was_refined[points_to_refine] = (res["scores"] != 0.0) | (res["iq"] != 0.0)
+        rotation_data[was_refined] = _rotation_from_zyz(
+            res["zyz"][was_refined[points_to_refine]]
+        ).data
+        scores = np.zeros(n_all, dtype=np.float64)
+        iq = np.zeros(n_all, dtype=np.float64)
+        for name, array in (("scores", scores), ("iq", iq)):
+            if name in xmap.prop:
+                # never ``prop.get()``: only orix' own ``__getitem__``
+                # applies ``is_in_data``, so ``get()`` returns the
+                # full length column of a partially in-data map
+                stored = np.asarray(xmap.prop[name], dtype=np.float64)
+                if stored.ndim > 1:
+                    stored = stored[:, 0]
+                array[in_data] = stored
+        scores[was_refined] = res["scores"][was_refined[points_to_refine]]
+        iq[was_refined] = res["iq"][was_refined[points_to_refine]]
+
+        step_sizes = tuple(a.scale for a in am.navigation_axes[::-1])
+        xmap_kw, _ = create_coordinate_arrays(nav_shape, step_sizes)
+        xmap_kw["rotations"] = Rotation(rotation_data)
+        xmap_kw["phase_id"] = phase_id_full
+        # `scores` first, as dictionary and Hough indexing list it
+        xmap_kw["prop"] = {"scores": scores, "iq": iq}
+        if not in_data.all():
+            xmap_kw["is_in_data"] = in_data
+        xmap_refined = CrystalMap(phase_list=xmap.phases.deepcopy(), **xmap_kw)
+        xmap_refined.scan_unit = xmap.scan_unit
+
+        return xmap_refined
 
     def refine_orientation(
         self,
@@ -2472,8 +2865,8 @@ class EBSD(KikuchipySignal2D):
 
         See Also
         --------
-        scipy.optimize, refine_projection_center,
-        refine_orientation_projection_center
+        scipy.optimize, refine_orientation_spherical,
+        refine_projection_center, refine_orientation_projection_center
 
         Notes
         -----

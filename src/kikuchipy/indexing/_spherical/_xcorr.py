@@ -52,22 +52,36 @@
 # - ``NormalizedCorrelator<Real>`` (lines 237-270), its
 #   ``Constants`` (lines 1182-1204) and its ``correlate()`` (lines
 #   1140-1159), as :class:`NormalizedSphericalCrossCorrelator`
+# - ``Correlator<Real>::derivatives()`` (lines 889-1119), the value,
+#   Jacobian and Hessian of the cross-correlation at one rotation, as
+#   :func:`_derivatives`
+# - ``Correlator<Real>::refinePeak()`` (lines 442-499), the real
+#   space Newton refinement, as :func:`_refine_peak` and
+#   :meth:`SphericalCrossCorrelator.refine_zyz`
+# - ``NormalizedCorrelator<Real>::refinePeak()`` (lines 1169-1172)
+#   and ``NormalizedCorrelator<Real>::Constants::denominator()``
+#   (lines 1211-1225), as
+#   :meth:`NormalizedSphericalCrossCorrelator.refine_zyz` and its
+#   ``_denominator``
 #
 # The following are deliberately **not** ported here:
-# - ``Correlator<Real>::refinePeak()`` (lines 442-499) and
-#   ``Correlator<Real>::derivatives()`` (lines 889-1119), the real
-#   space Newton refinement, and
-#   ``NormalizedCorrelator<Real>::Constants::denominator()`` (lines
-#   1211-1225), which it needs.  ``refine=True`` raises
-#   ``NotImplementedError`` until they arrive
 # - ``Correlator<Real>::extractBunge()`` (lines 594-649), which has
 #   no consumer in kikuchipy yet and whose ZYZ to Bunge offsets are
 #   the reversed ``zyz2eu()`` ones
+# - the window shift chain rule the C++ itself omits from the
+#   normalized refinement (lines 263-264): the Newton step maximizes
+#   the **un-normalized** correlation in both ports, so the refined
+#   normalized score can dip below the coarse one
 #
 # The wrap of ``beta`` and the reduction of ``alpha`` and ``gamma``
 # which :func:`euler_to_index` applies before the C++ formulas are a
 # deliberate addition to ``eulerIndex()``, which has no wrap and no
 # caller in EMSphInx.
+#
+# The ``refine`` keyword of both ``correlate()`` methods keeps a
+# ``False`` default, a deliberate deviation from the C++ ``ref =
+# true`` of lines 189 and 255: the user facing default lives on the
+# indexer and the signal method instead.
 
 # #####################################################################
 # Copyright (c) 2019-2019, De Graef Group, Carnegie Mellon University
@@ -100,7 +114,7 @@
 # email  : innovation@cmu.edu
 # website: https://www.cmu.edu/cttec/
 #
-# Changed by Johan Westraadt, 2026-08: translated to
+# Changed by Johan Westraadt, 2026-08, 2026-09: translated to
 # Python/NumPy/Numba for kikuchipy. GPL-2.0-or-later, conveyed
 # under GPL-3.0-or-later
 # #####################################################################
@@ -223,8 +237,70 @@ cross-correlation either.
 **Accuracy.** The coarse (interpolated, unrefined) result is within
 half a grid cell (``180 / slP`` degrees) of the true rotation, except
 within one cell of ``beta = 0`` or ``beta = pi`` and for masked
-patterns, where it is within one cell.  Phase 7's Newton refinement
+patterns, where it is within one cell.  The Newton refinement below
 supersedes this.
+
+**Refinement.**  :meth:`SphericalCrossCorrelator.refine_zyz` and
+``correlate(refine=True)`` run the real space Newton refinement of
+``refinePeak()`` (lines 442-499) from a starting triple, using the
+value, Jacobian and Hessian :func:`_derivatives` evaluates at one
+rotation (lines 889-1119).  The loop is a 3 x 3 Cholesky solve
+(:func:`kikuchipy.indexing._spherical._preprocessing.
+_cholesky_solve_3x3`, the same ``solve::cholesky`` the C++ calls)
+with a monotone step rule, saddle rejection, the 1 x 1 and 2 x 2
+sub-problems the ``beta ~ 0`` and ``beta ~ pi`` degeneracies fall
+back to, a stopping threshold of ``eps 2 pi / slP`` with ``eps =
+0.01`` and at most 15 iterations.  Measured recovery of a rotated
+pair: worst 2.96e-06 degrees over 30 symmetry free cases at ``bw``
+53-123 and 4.52e-06 over 72 point group cases, against the C++ test
+gates of 4.92e-3 and 0.351 degrees; 2 iterations in every
+non-degenerate case.
+
+**What a refinement returns and its recorded quirks.**
+
+- On failure -- a rejected saddle, a singular 2 x 2 sub-problem or
+  the iteration cap -- the *input* triple comes back together with
+  ``derivatives(zyz0, der=False)``, the **analytic** value there and
+  not the tri-quadratic interpolated peak, so a failed refinement
+  changes the score of a coarse result (measured -29.4 to +9.3 on
+  unrelated far starts).  This is the C++ behaviour of lines 494-498.
+- On success the returned value was computed at the ``eu`` **before**
+  the final sub-threshold step (lines 457 and 487), a second order
+  small lag which is again the C++'s own.
+- ``prevMag2`` is seeded with ``2 pi 3 / slP`` (line 450), which
+  compares a squared step length against a linear bound: at ``slP``
+  135 the first step may be 0.374 radians, about eight cells, where
+  the comment says one.  Ported verbatim.
+- The inner ``if(det < euEps)`` of lines 476-478 is always true when
+  it is reached, so both of the C++'s two messages are one failure.
+- ``derivatives()``' ``deg`` flag (line 909) is computed and never
+  used.
+- Newton is **local**: a starting triple which did not come from the
+  coarse pipeline may converge to a stationary point whose value is
+  *below* the start's (measured 3 of 4 converged far starts), since
+  the sub-problems freeze a degree of freedom and only test
+  ``det >= euEps``.
+
+**The normalized refinement** divides the refined un-normalized value
+by ``denominator(zyz)`` (lines 1211-1225) evaluated at the refined
+rotation.  The window shift chain rule of lines 263-264 is omitted
+there, as in the C++, so the refined normalized score can dip below
+the coarse one (measured 4 of 165 points, worst -4.8e-4) and the
+masked refined accuracy is window limited (measured 2.1e-2 degrees
+against 3e-6 unmasked).
+
+**Refinement memory and speed.**  A refining correlator owns one
+``(bw, bw, bw, 2)`` 64-bit float ``d_beta`` table (``16 bw^3`` bytes,
+5.03 MB at ``bw`` 68), allocated once and reused across iterations,
+calls and patterns -- a fresh :func:`numpy.full` per refinement would
+cost 1.03 ms at ``bw`` 68, more than the refinement itself -- and is
+never shared between clones.  The beta independent factor triple of
+:func:`kikuchipy.indexing._spherical._wigner.wigner_d_table_factors`
+(``8 bw^2 + 16 bw^3`` bytes, 5.07 MB at ``bw`` 68) is read only and
+shared per process.  Warm single thread refinement, two iterations
+including the per-iteration table rebuild: 1.45 / 3.00 / 11.06 ms at
+``bw`` 53 / 68 / 88 without symmetry and 0.33 / 0.65 / 2.54 ms with
+``m-3m``; end to end this is 1.05-1.27 times the coarse cost.
 
 **Memory and threads.** A correlator owns ``fxc``
 (``16 slP^2 bwP`` bytes), the ``pi/2`` Wigner table (``8 bw^3``) and
@@ -260,11 +336,17 @@ from numba import njit
 import numpy as np
 from scipy.fft import ifft, irfft
 
-from kikuchipy.indexing._spherical import _euler, _fft, _wigner
+from kikuchipy.indexing._spherical import _euler, _fft, _preprocessing, _wigner
 
 # The two SciPy transforms are bound in this namespace, as Phases
 # 1-3 bind theirs, so that a test can patch ``_xcorr.ifft`` and
 # ``_xcorr.irfft`` and see every call this module makes.
+#
+# The Newton loop takes its 3 x 3 Cholesky solve from
+# ``_preprocessing``, a one-way edge (that module imports nothing of
+# this package): the very ``solve::cholesky()`` the C++ calls from
+# both sites, so it has one implementation here too and never a
+# ``numpy.linalg.solve`` substitute.
 
 # Machine epsilon of the 64-bit floating point type
 _EPS = float(np.finfo(np.float64).eps)
@@ -274,6 +356,18 @@ _EPS = float(np.finfo(np.float64).eps)
 # (``include/sht/sht_xcorr.hpp``, lines 1313 and 1312)
 _NEWTON_EPS = math.sqrt(_EPS)
 _NEWTON_MAX_ITERATIONS = 25
+
+# Convergence criterion, iteration cap and first step bound of the
+# real space Newton loop of ``Correlator<Real>::refinePeak()``
+# (``include/sht/sht_xcorr.hpp``, lines 446-450).  ``_REFINE_EPS`` is
+# the ``eps`` default of ``PhaseCorrelator::correlate()`` (line 189),
+# which every C++ call site uses, and scales the stopping threshold
+# ``eps 2 pi / slP``; ``_REFINE_EU_EPS`` is the ``euEps`` of line 447
+# which the 2 x 2 sub-problem tests its determinant against
+_REFINE_EPS = 0.01
+_REFINE_MAX_ITERATIONS = 15
+_REFINE_EU_EPS = math.sqrt(_EPS)
+_REFINE_FIRST_STEP_SCALE = 3.0
 
 # Half and full width of the extracted neighbourhood, i.e. the C++
 # ``extractNeighborhood<N>`` with ``N = 1`` (lines 505-544)
@@ -1098,6 +1192,544 @@ def _interpolate_maxima(p: np.ndarray, x: np.ndarray) -> float:
     )
 
 
+# The ``numpy`` error model is **load bearing** and is the project's
+# third sanctioned one: at ``|cos(beta)| == 1`` the unguarded ``csc =
+# 1 / sqrt(1 - t^2)`` must give the IEEE infinity which propagates
+# into the NaN ``hes[1, 1]`` that :func:`_refine_peak` uses as its
+# degeneracy detector (``include/sht/sht_xcorr.hpp``, lines 461 and
+# 468), where Numba's default model would raise ``ZeroDivisionError``
+# and break the C++ control flow.
+@njit(cache=True, nogil=True, error_model="numpy")
+def _derivatives(
+    flm: np.ndarray,
+    gln: np.ndarray,
+    eu: np.ndarray,
+    jac: np.ndarray,
+    hes: np.ndarray,
+    bandwidth: int,
+    mirror: bool,
+    n_fold: int,
+    der: bool,
+    d_beta: np.ndarray,
+    e_km: np.ndarray,
+    w_jkm: np.ndarray,
+    b_jkm: np.ndarray,
+) -> float:
+    """Return the cross-correlation at one rotation and, optionally,
+    write its gradient and Hessian.
+
+    Parameters
+    ----------
+    flm, gln
+        Harmonic coefficients ``a[m, l]`` of the two real functions,
+        both C-contiguous ``(bw, bw)`` and 128-bit complex.  A shape
+        which disagrees with ``bandwidth`` is **silent garbage**, not
+        an error, since bounds checking is off: measured values of
+        ``1e225`` and NaN Hessians from ``(68, 68)`` spectra in a
+        ``bw`` 88 kernel.  Every entry point validates first.
+    eu
+        Passive ZYZ Euler angles ``(alpha, beta, gamma)`` in radians
+        in a ``(3,)`` 64-bit float array.  ``beta`` is wrapped into
+        ``[-pi, pi]`` with
+        :func:`kikuchipy.indexing._spherical._euler._wrap_beta`, the
+        C++'s own wrap of lines 895-899.
+    jac
+        ``(3,)`` 64-bit float caller-owned output, written only when
+        ``der``: the derivatives with respect to ``alpha``, ``beta``
+        and ``gamma``.
+    hes
+        ``(3, 3)`` 64-bit float caller-owned output, written only
+        when ``der``, symmetrised as the C++ does at lines
+        1110-1117.
+    bandwidth
+        Exclusive maximum harmonic degree ``bw``, which must equal
+        the side of ``flm``, ``gln`` and the tables.  The C++
+        ``mBW`` parameter is dead freedom -- every call site passes
+        ``bw``, and a smaller value would read the factor tables at
+        the wrong stride, see
+        :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_table_pre`.
+    mirror
+        Whether ``flm`` has an equatorial mirror plane, which makes
+        the degree loop step by two.
+    n_fold
+        Order of the rotational symmetry of ``flm`` about z, at
+        least one; the orders ``m % n_fold != 0`` are skipped
+        **after** the multiple-angle recursion is advanced.
+    der
+        Whether to write ``jac`` and ``hes``.  The returned value is
+        the same either way.
+    d_beta
+        ``(bw, bw, bw, 2)`` 64-bit float caller-owned Wigner d table
+        buffer, **rebuilt in place on every call** with
+        :func:`kikuchipy.indexing._spherical._wigner.
+        _wigner_d_table_pre_kernel`, the C++ ``dTablePre`` of line
+        913.  Every defined slot is written each call, so one buffer
+        is reused across iterations, calls and patterns; it must not
+        be shared between threads.
+    e_km, w_jkm, b_jkm
+        The beta independent factor triple of
+        :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_table_factors`, read only and shareable.
+
+    Returns
+    -------
+    value
+        Cross-correlation at ``eu`` in the normalization of the
+        module documentation, i.e. ``4 pi <rotate_harmonics(flm,
+        eu), gln>``.
+
+    Notes
+    -----
+    Port of ``Correlator<Real>::derivatives()``
+    (``include/sht/sht_xcorr.hpp``, lines 889-1119): the per call
+    ``dTablePre`` rebuild (line 913), the Chebyshev multiple-angle
+    recursions for ``exp(i m alpha)`` and ``exp(i n gamma)`` (lines
+    927-984), the analytic first and second beta derivative
+    coefficients (lines 1009-1041) and the ten accumulator
+    components with their conditional quadrant sums (lines
+    1057-1078).
+
+    Two recorded deviations, neither of which changes a value:
+
+    - the four sequential quadrant adds of lines 1072-1078 are
+      folded into the two weights ``1 + (m > 0 and n > 0)`` and
+      ``(n > 0) + (m > 0)``, an association change permitted because
+      no test asserts bitwise against the compiled C++ and the two
+      analytic oracles bound the whole evaluation at 1e-13;
+    - the ``deg`` flag of line 909 is computed and never used in the
+      C++, so it is not ported.
+
+    The ``t``/``csc`` chain uses :func:`numpy.cos` and
+    :func:`numpy.sqrt` rather than :mod:`math`, so that the values
+    stay NumPy scalars and the ``py_func`` yields ``inf`` under
+    :func:`numpy.errstate` at the poles where the ``math``
+    transcription would raise ``ZeroDivisionError`` regardless.  The
+    compiled results are bitwise identical either way (measured,
+    worst absolute difference 0 over 1000 samples).
+
+    The table reads are guarded with ``m >= j`` and ``m + 1 >= j``
+    (lines 1027-1032), so no undefined NaN slot of ``d_beta`` is
+    ever read and every index stays in bounds.
+    """
+    # correlation, jacobian, hessian as 00, 11, 22, 01, 12, 20
+    wrk = np.zeros(10)
+
+    # bring the middle angle to [-pi, pi] for the Wigner functions,
+    # the C++ ``fmod`` of lines 895-899
+    beta = _euler._wrap_beta(eu[1])
+    sin_a = math.sin(eu[0])
+    cos_a = math.cos(eu[0])
+    sin_g = math.sin(eu[2])
+    cos_g = math.cos(eu[2])
+
+    # NumPy scalars, never ``math``, see the Notes: at a pole the
+    # division must give an IEEE infinity in the interpreted twin as
+    # well.  The C++ ``deg`` flag of line 909 is dead and not ported
+    t = np.cos(beta)
+    negative_beta = math.copysign(1.0, beta) < 0.0
+    csc = (1.0 / np.sqrt(1.0 - t * t)) * (-1.0 if negative_beta else 1.0)
+
+    # the per call ``dTablePre`` rebuild of line 913: every defined
+    # slot is written, so one buffer serves every evaluation
+    _wigner._wigner_d_table_pre_kernel(
+        bandwidth, t, negative_beta, d_beta, e_km, w_jkm, b_jkm
+    )
+    # ``glnFold == 1`` and ``gMir == false``, so the ``n`` fold and
+    # the double mirror parity skips of lines 987-991 are dead, as
+    # they are in ``compute()``
+    d_j = 2 if mirror else 1
+
+    # recursion coefficients of the Chebyshev polynomials U_m and T_m
+    # of sin(alpha) and cos(alpha)
+    ua0 = 0.0
+    ua1 = sin_a * 2.0
+    ua2 = 1.0
+    ta0 = 0.0
+    ta1 = cos_a
+    ta2 = 1.0
+    for m in range(bandwidth):
+        # exp(I m alpha) from the multiple-angle recursion, seeded for
+        # m < 2 (lines 935-950)
+        if m < 2:
+            ua0 = 0.0 if m == 0 else sin_a
+            ta0 = 1.0 if m == 0 else cos_a
+        else:
+            ua0 = sin_a * ua1 * 2.0 - ua2
+            ta0 = cos_a * ta1 * 2.0 - ta2
+            if m % 2 == 0:
+                sm = ua1 * cos_a * (1.0 if ((m // 2) - 1) % 2 == 0 else -1.0)
+            else:
+                sm = (ua0 - sin_a * ua1) * (1.0 if ((m - 1) // 2) % 2 == 0 else -1.0)
+            cm = ta0
+            ua2 = ua1
+            ua1 = ua0
+            ta2 = ta1
+            ta1 = ta0
+            ua0 = sm
+            ta0 = cm
+        # the systematic zeros of the rotational symmetry, skipped
+        # **after** the recursion is advanced (lines 951-952)
+        if m % n_fold != 0:
+            continue
+        exp_alpha_r = ta0
+        exp_alpha_i = ua0
+
+        ug0 = 0.0
+        ug1 = sin_g * 2.0
+        ug2 = 1.0
+        tg0 = 0.0
+        tg1 = cos_g
+        tg2 = 1.0
+        for n in range(bandwidth):
+            # exp(I n gamma), the same recursion (lines 963-981)
+            if n < 2:
+                ug0 = 0.0 if n == 0 else sin_g
+                tg0 = 1.0 if n == 0 else cos_g
+            else:
+                ug0 = sin_g * ug1 * 2.0 - ug2
+                tg0 = cos_g * tg1 * 2.0 - tg2
+                if n % 2 == 0:
+                    sn = ug1 * cos_g * (1.0 if ((n // 2) - 1) % 2 == 0 else -1.0)
+                else:
+                    sn = (ug0 - sin_g * ug1) * (
+                        1.0 if ((n - 1) // 2) % 2 == 0 else -1.0
+                    )
+                cn = tg0
+                ug2 = ug1
+                ug1 = ug0
+                tg2 = tg1
+                tg1 = tg0
+                ug0 = sn
+                tg0 = cn
+
+            # detail::conjMult(expAlpha, expGamma, agP, agN) with the
+            # two sign prefactors of lines 996-1000
+            rr = exp_alpha_r * tg0
+            ii = exp_alpha_i * ug0
+            ri = exp_alpha_r * ug0
+            ir = exp_alpha_i * tg0
+            sign = 1.0 if (n + m) % 2 == 0 else -1.0
+            sign_n = 1.0 if n % 2 == 0 else -1.0
+            ag_p = complex(rr - ii, ir + ri) * sign
+            ag_n = complex(rr + ii, ir - ri) * (sign * sign_n)
+
+            # the first non-zero degree (lines 1003-1004); the
+            # ``gMir`` bump of line 1005 is dead
+            start = m if m > n else n
+            if mirror and (start + m) % 2 != 0:
+                start += 1
+
+            # the four sequential quadrant adds of lines 1072-1078,
+            # folded into two weights: +m+n always, +m-n when n > 0,
+            # -m+n and -m-n when m > 0
+            wc = 1.0 + (1.0 if (m > 0 and n > 0) else 0.0)
+            wp = (1.0 if n > 0 else 0.0) + (1.0 if m > 0 else 0.0)
+
+            if der:
+                # prefactors of the beta derivatives (lines 1009-1020)
+                mm = m * m
+                mn = m * n
+                nn = n * n
+                coef2_0a = t * t * mm + (nn - m)
+                coef2_0b = t * n * (1 - 2 * m)
+                coef2_1a = t * (1 + 2 * m)
+                coef1_0pp = (t * m - n) * csc
+                coef1_0pn = (t * m + n) * csc
+                coef2_0pp = (coef2_0a + coef2_0b) * csc * csc
+                coef2_0pn = (coef2_0a - coef2_0b) * csc * csc
+                coef2_1pp = (coef2_1a - 2 * n) * csc
+                coef2_1pn = (coef2_1a + 2 * n) * csc
+
+                for j in range(start, bandwidth, d_j):
+                    d0p = d_beta[m, n, j, 0]
+                    d0n = d_beta[m, n, j, 1]
+                    d0p_1 = 0.0 if m >= j else d_beta[m + 1, n, j, 0]
+                    d0n_1 = 0.0 if m >= j else d_beta[m + 1, n, j, 1]
+                    d0p_2 = 0.0 if m + 1 >= j else d_beta[m + 2, n, j, 0]
+                    d0n_2 = 0.0 if m + 1 >= j else d_beta[m + 2, n, j, 1]
+
+                    # first and second beta derivatives of
+                    # d^j_{m,+/-n} (lines 1035-1041)
+                    jm = j - m
+                    rjm = math.sqrt(float(jm * (j + m + 1)))
+                    if jm == 0:
+                        coef2_2 = 0.0
+                    else:
+                        coef2_2 = math.sqrt(float((jm - 1) * (j + m + 2))) * rjm
+                    d1p = d0p * coef1_0pp - d0p_1 * rjm
+                    d1n = d0n * coef1_0pn + d0n_1 * rjm
+                    d2p = d0p * coef2_0pp - d0p_1 * rjm * coef2_1pp + d0p_2 * coef2_2
+                    d2n = d0n * coef2_0pn + d0n_1 * rjm * coef2_1pn + d0n_2 * coef2_2
+
+                    # detail::conjMult(flm[m, j], gln[n, j], vp, vc)
+                    # with the (j + m) parity negation of line 1046
+                    f = flm[m, j]
+                    g = gln[n, j]
+                    frr = f.real * g.real
+                    fii = f.imag * g.imag
+                    fri = f.real * g.imag
+                    fir = f.imag * g.real
+                    vp = complex(frr - fii, fir + fri)
+                    vc = complex(frr + fii, fir - fri)
+                    if (j + m) % 2 != 0:
+                        vp = -vp
+
+                    vc_pp = vc * ag_p
+                    vc_pp0 = vc_pp * d0p
+                    vc_pp1 = vc_pp * d1p
+                    vp_pn = vp * ag_n
+                    vp_pn0 = vp_pn * d0n
+                    vp_pn1 = vp_pn * d1n
+
+                    # the ten components of lines 1057-1070
+                    wrk[0] += vc_pp0.real * wc + vp_pn0.real * wp
+                    wrk[1] += vc_pp0.imag * -m * wc + vp_pn0.imag * -m * wp
+                    wrk[2] += vc_pp1.real * wc + vp_pn1.real * wp
+                    wrk[3] += vc_pp0.imag * -n * wc + vp_pn0.imag * n * wp
+                    wrk[4] += vc_pp0.real * -mm * wc + vp_pn0.real * -mm * wp
+                    wrk[5] += vc_pp.real * d2p * wc + vp_pn.real * d2n * wp
+                    wrk[6] += vc_pp0.real * -nn * wc + vp_pn0.real * -nn * wp
+                    wrk[7] += vc_pp1.imag * -m * wc + vp_pn1.imag * -m * wp
+                    wrk[8] += vc_pp1.imag * -n * wc + vp_pn1.imag * n * wp
+                    wrk[9] += vc_pp0.real * -mn * wc + vp_pn0.real * mn * wp
+            else:
+                # the value-only branch of lines 1080-1105
+                for j in range(start, bandwidth, d_j):
+                    d0p = d_beta[m, n, j, 0]
+                    d0n = d_beta[m, n, j, 1]
+                    f = flm[m, j]
+                    g = gln[n, j]
+                    frr = f.real * g.real
+                    fii = f.imag * g.imag
+                    fri = f.real * g.imag
+                    fir = f.imag * g.real
+                    vp_r = frr - fii
+                    vp_i = fir + fri
+                    vc_r = frr + fii
+                    vc_i = fir - fri
+                    if (j + m) % 2 != 0:
+                        vp_r = -vp_r
+                        vp_i = -vp_i
+                    vc_pp0 = vc_r * ag_p.real - vc_i * ag_p.imag
+                    vp_pn0 = vp_r * ag_n.real - vp_i * ag_n.imag
+                    wrk[0] += vc_pp0 * d0p * wc + vp_pn0 * d0n * wp
+
+    # the symmetrised copy-out of lines 1110-1117
+    if der:
+        jac[0] = wrk[1]
+        jac[1] = wrk[2]
+        jac[2] = wrk[3]
+        hes[0, 0] = wrk[4]
+        hes[0, 1] = wrk[7]
+        hes[0, 2] = wrk[9]
+        hes[1, 1] = wrk[5]
+        hes[1, 2] = wrk[8]
+        hes[2, 2] = wrk[6]
+        hes[1, 0] = hes[0, 1]
+        hes[2, 0] = hes[0, 2]
+        hes[2, 1] = hes[1, 2]
+    return wrk[0]
+
+
+def _refine_peak(
+    flm: np.ndarray,
+    gln: np.ndarray,
+    zyz0: np.ndarray,
+    n_fold: int,
+    mirror: bool,
+    bandwidth: int,
+    side_length: int,
+    d_beta: np.ndarray,
+    e_km: np.ndarray,
+    w_jkm: np.ndarray,
+    b_jkm: np.ndarray,
+    jac: np.ndarray,
+    hes: np.ndarray,
+    step: np.ndarray,
+    eps: float = _REFINE_EPS,
+) -> tuple[np.ndarray, float, bool]:
+    """Return the Newton refined rotation of a cross-correlation
+    maximum, its value and whether the loop converged.
+
+    Parameters
+    ----------
+    flm, gln
+        Harmonic coefficients ``a[m, l]`` of the two real functions,
+        see :func:`_derivatives`.
+    zyz0
+        Starting passive ZYZ Euler angles in a ``(3,)`` 64-bit float
+        array, e.g. the interpolated coarse peak of
+        :meth:`SphericalCrossCorrelator.interp_peak`.  It is not
+        modified.
+    n_fold, mirror
+        Symmetry flags of ``flm``.
+    bandwidth
+        Exclusive maximum harmonic degree ``bw``.
+    side_length
+        Padded Euler side length ``slP``, which sets the stopping
+        threshold ``eps 2 pi / slP`` and the first step bound.
+    d_beta, e_km, w_jkm, b_jkm
+        The Wigner d buffer and factor triple of
+        :func:`_derivatives`.
+    jac, hes, step
+        ``(3,)``, ``(3, 3)`` and ``(3,)`` 64-bit float caller-owned
+        scratch buffers.  ``hes`` is handed to the Cholesky solve
+        **uncopied**, exactly as the C++ passes its live array (line
+        462): the decomposition writes only the subdiagonal, which
+        the fallbacks never read, and the next iteration rewrites
+        all nine entries.  Measured bitwise identical to a copying
+        variant over 15 fallback heavy cases.
+    eps
+        Convergence scale, ``0.01`` by default, the value every C++
+        call site uses.  The stopping threshold is
+        ``eps 2 pi / slP``.
+
+    Returns
+    -------
+    zyz
+        Refined angles in a new ``(3,)`` 64-bit float array on
+        success, and the **input** triple on failure.  They are not
+        wrapped back into the coarse grid intervals: Newton may step
+        ``beta`` across a pole, which :func:`_derivatives` wraps
+        internally and every consumer converts through
+        :func:`kikuchipy.indexing._spherical._euler.
+        rotation_from_zyz`.
+    value
+        Cross-correlation at ``zyz``.  On success it is the value
+        computed at the iterate **before** the final sub-threshold
+        step, the C++'s own second order lag (lines 457 and 487); on
+        failure it is ``_derivatives(zyz0, der=False)``, the
+        analytic value at the starting triple and **not** the
+        tri-quadratic interpolated peak, so a failed refinement
+        changes the score of a coarse result.
+    converged
+        Whether the loop reached the stopping threshold.  This flag
+        is an addition of the port, for tests and for
+        :meth:`kikuchipy.indexing.SphericalIndexer.refine_patterns`;
+        the C++ fails silently by returning the start.
+
+    Notes
+    -----
+    Port of ``Correlator<Real>::refinePeak()``
+    (``include/sht/sht_xcorr.hpp``, lines 442-499): at most 15
+    iterations (line 448) of ``derivatives(der=True)``, a 3 x 3
+    Cholesky solve through
+    :func:`kikuchipy.indexing._spherical._preprocessing.
+    _cholesky_solve_3x3` -- the same ``solve::cholesky()`` the C++
+    calls, whose two throws map to the indefinite (saddle) and small
+    pivot statuses -- and the monotone step rule of lines 463-465.
+    A NaN ``hes[1, 1]``, a non-zero solve status or a step longer
+    than the previous one falls back to the 1 x 1 sub-problem
+    ``step = [jac[0] / hes[0, 0], 0, 0]`` when ``hes[1, 1]`` is NaN
+    and otherwise to the 2 x 2 sub-problem of lines 480-483, whose
+    ``det < euEps`` is a total failure.  ``prev_mag2`` is **not**
+    updated by a fallback step, as in the C++.
+
+    This is a Python loop over two Numba kernels rather than one
+    kernel: the C++ exception control flow maps to statuses
+    naturally and the measured cost is kernel dominated.
+
+    The seeding of ``prev_mag2`` with ``2 pi 3 / slP`` (line 450)
+    compares a squared step length against a linear bound, so the
+    first step may be about eight cells where the C++ comment says
+    one.  Ported verbatim.
+    """
+    # ``eu0`` of line 444, and the iterate the loop steps
+    eu = np.array(zyz0, dtype=np.float64)
+    eu0 = eu.copy()
+    abs_eps = eps * _TWO_PI / side_length
+    prev_mag2 = _TWO_PI * _REFINE_FIRST_STEP_SCALE / side_length
+    peak = np.nan
+    failed = False
+
+    for iteration in range(1, _REFINE_MAX_ITERATIONS + 1):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            peak = _derivatives(
+                flm,
+                gln,
+                eu,
+                jac,
+                hes,
+                bandwidth,
+                mirror,
+                n_fold,
+                True,
+                d_beta,
+                e_km,
+                w_jkm,
+                b_jkm,
+            )
+        # the inner try of lines 460-465: a NaN beta^2 derivative, a
+        # Cholesky which refuses an indefinite or singular matrix, or
+        # a step longer than the previous one all fall back
+        newton = True
+        if math.isnan(hes[1, 1]):
+            newton = False
+        elif _preprocessing._cholesky_solve_3x3(hes, jac, step) != 0:
+            newton = False
+        else:
+            mag2 = step[0] ** 2 + step[1] ** 2 + step[2] ** 2
+            # a NaN comparison is false here, as it is in the C++
+            if mag2 > prev_mag2:
+                newton = False
+            else:
+                prev_mag2 = mag2
+
+        if not newton:
+            if math.isnan(hes[1, 1]):
+                # on the degeneracy the beta^2 derivative is
+                # undefined: the 1 x 1 sub-problem of lines 470-473,
+                # divided unguarded as the C++ divides it
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    step[0] = jac[0] / hes[0, 0]
+                step[1] = 0.0
+                step[2] = 0.0
+            else:
+                # close to it: the 2 x 2 sub-problem of lines
+                # 475-483, whose ``det < euEps`` is a total failure
+                # (the C++'s inner test is always true when reached)
+                det = hes[0, 0] * hes[1, 1] - hes[0, 1] * hes[0, 1]
+                if det < _REFINE_EU_EPS:
+                    failed = True
+                    break
+                step[0] = (jac[0] * hes[1, 1] - jac[1] * hes[0, 1]) / det
+                step[1] = (jac[1] * hes[0, 0] - jac[0] * hes[0, 1]) / det
+                step[2] = 0.0
+            # ``prevMag2`` is **not** updated by a fallback step
+
+        # apply the step and check for convergence (lines 486-489)
+        eu[0] -= step[0]
+        eu[1] -= step[1]
+        eu[2] -= step[2]
+        if max(abs(step[0]), abs(step[1]), abs(step[2])) < abs_eps:
+            break
+        if iteration == _REFINE_MAX_ITERATIONS:
+            failed = True
+
+    if failed:
+        # the catch of lines 494-498: the original orientation with
+        # the analytic value there
+        with np.errstate(divide="ignore", invalid="ignore"):
+            peak = _derivatives(
+                flm,
+                gln,
+                eu0,
+                jac,
+                hes,
+                bandwidth,
+                mirror,
+                n_fold,
+                False,
+                d_beta,
+                e_km,
+                w_jkm,
+                b_jkm,
+            )
+        return eu0, float(peak), False
+    return eu, float(peak), True
+
+
 # ------------------------- Inverse transform ------------------------ #
 
 
@@ -1378,6 +2010,37 @@ def _validated_flags(n_fold: int, mirror: bool) -> tuple[int, bool]:
     return int(n_fold), bool(mirror)
 
 
+def _validated_start(zyz0: np.ndarray) -> np.ndarray:
+    """Return a starting rotation of a refinement as three finite
+    64-bit floats.
+
+    Parameters
+    ----------
+    zyz0
+        Starting passive ZYZ Euler angles in an array-like of shape
+        ``(3,)``.
+
+    Returns
+    -------
+    array
+        ``(3,)`` 64-bit float array, which the Newton loop copies
+        before it steps.
+
+    Raises
+    ------
+    ValueError
+        If the shape is not ``(3,)`` or an angle is not finite.  A
+        non-finite start would take the whole loop to NaN and come
+        back as a silent failure rather than as an error.
+    """
+    array = np.ascontiguousarray(zyz0, dtype=np.float64)
+    if array.shape != (3,):
+        raise ValueError(f"`zyz0` must have shape (3,), not {array.shape}")
+    if not np.isfinite(array).all():
+        raise ValueError(f"`zyz0` must be three finite angles, not {array}")
+    return array
+
+
 def _validated_wigner_table(table: np.ndarray, bandwidth: int) -> np.ndarray:
     """Return a shared transposed ``pi/2`` Wigner d table unchanged.
 
@@ -1434,6 +2097,62 @@ def _validated_wigner_table(table: np.ndarray, bandwidth: int) -> np.ndarray:
     return table
 
 
+def _validated_wigner_d_factors(
+    factors: tuple[np.ndarray, np.ndarray, np.ndarray], bandwidth: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return a shared beta independent Wigner d factor triple
+    unchanged.
+
+    Parameters
+    ----------
+    factors
+        ``(e_km, w_jkm, b_jkm)`` of
+        :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_table_factors` built for ``bandwidth``.
+    bandwidth
+        Exclusive maximum harmonic degree ``bw``.
+
+    Returns
+    -------
+    factors
+        The very same three arrays, so that instances share one
+        triple.
+
+    Raises
+    ------
+    ValueError
+        If ``factors`` is not three arrays, or if any of them was
+        not built for ``bandwidth`` or is not 64-bit floating point.
+        The pre-kernel reads them without bounds checking, so an
+        undersized table is a read outside the array rather than an
+        error; the shapes are the ones
+        :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_table_pre` checks at its own boundary.
+    """
+    try:
+        e_km, w_jkm, b_jkm = factors
+    except (TypeError, ValueError):
+        raise ValueError(
+            "`wigner_d_factors` must be the `(e_km, w_jkm, b_jkm)` triple of "
+            "`wigner_d_table_factors(bandwidth)`"
+        ) from None
+    for name, factor, shape in (
+        ("e_km", e_km, (bandwidth, bandwidth)),
+        ("w_jkm", w_jkm, (bandwidth,) * 3),
+        ("b_jkm", b_jkm, (bandwidth,) * 3),
+    ):
+        if (
+            getattr(factor, "shape", None) != shape
+            or getattr(factor, "dtype", None) != np.float64
+        ):
+            raise ValueError(
+                f"`wigner_d_factors` entry `{name}` must have shape {shape} and a "
+                "64-bit floating point data type, i.e. come from "
+                f"`wigner_d_table_factors({bandwidth})`"
+            )
+    return e_km, w_jkm, b_jkm
+
+
 # --------------------------- Correlators ---------------------------- #
 
 
@@ -1452,6 +2171,13 @@ class SphericalCrossCorrelator:
         :meth:`clone` does.  If not given, one is built with
         :func:`kikuchipy.indexing._spherical._wigner.
         wigner_d_half_pi_table`.
+    wigner_d_factors
+        The ``(e_km, w_jkm, b_jkm)`` beta independent factor triple
+        of :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_table_factors` to share, read only, which only a
+        refinement needs.  If not given, one is built lazily on the
+        first :meth:`refine_zyz`; a refining indexer passes one in so
+        that its chunk clones do not each build their own 5 MB copy.
 
     Attributes
     ----------
@@ -1468,6 +2194,10 @@ class SphericalCrossCorrelator:
     wigner_d_half_pi : numpy.ndarray
         The transposed ``pi/2`` Wigner d table, read only and
         shareable between instances.
+    wigner_d_factors : tuple or None
+        The ``(e_km, w_jkm, b_jkm)`` factor triple of the Wigner d
+        tables the refinement rebuilds, read only and shareable
+        between instances, and ``None`` until it is given or built.
     fxc : numpy.ndarray
         ``(slP, slP, bwP)`` 128-bit complex spectrum buffer, owned
         by this instance and reused by every :meth:`compute`.
@@ -1479,11 +2209,14 @@ class SphericalCrossCorrelator:
     Raises
     ------
     ValueError
-        If ``bandwidth`` is smaller than one, or if
+        If ``bandwidth`` is smaller than one, if
         ``wigner_d_half_pi`` is not a C-contiguous 64-bit float
         array of shape ``(bw, bw, bw)`` whose undefined slots are
         NaN and whose slot ``[1, 0, 1]`` is negative, i.e. the
-        transposed and not the untransposed layout.
+        transposed and not the untransposed layout, or if
+        ``wigner_d_factors`` is not a triple of 64-bit float arrays
+        of shapes ``(bw, bw)``, ``(bw, bw, bw)`` and
+        ``(bw, bw, bw)``.
 
     Notes
     -----
@@ -1496,9 +2229,11 @@ class SphericalCrossCorrelator:
     An instance is **not thread-safe**, since :meth:`compute`
     overwrites :attr:`fxc` and the two scratch buffers of
     :func:`_xcorr_spectrum`, ``_fm`` of shape ``(bw, bw)`` and
-    ``_gn`` of shape ``(bw,)``, both 128-bit complex.  Use one
-    :meth:`clone` per thread; clones share the Wigner table and
-    allocate the rest.
+    ``_gn`` of shape ``(bw,)``, both 128-bit complex, and
+    :meth:`refine_zyz` overwrites the ``(bw, bw, bw, 2)`` ``_d_beta``
+    table and its three small Newton scratch buffers.  Use one
+    :meth:`clone` per thread; clones share the Wigner table and the
+    factor triple, both read only, and allocate the rest.
 
     :meth:`compute` returns a fresh caller-owned array on every call
     and rebinds :attr:`xc` to it, so a result kept by the caller
@@ -1507,9 +2242,12 @@ class SphericalCrossCorrelator:
     because :mod:`scipy.fft` has no ``out=`` and it would only add a
     copy.
 
-    ``refine=True`` raises ``NotImplementedError`` until Phase 7
-    (``spherical-refinement``) ports ``refinePeak()`` and
-    ``derivatives()``.
+    ``refine=True`` runs the real space Newton refinement of
+    :meth:`refine_zyz` from the interpolated peak.  Its ``False``
+    default is a deliberate deviation from the C++ ``ref = true``
+    (lines 189 and 255), which is recorded in the module's licence
+    notice: the user facing default lives on
+    :class:`kikuchipy.indexing.SphericalIndexer` instead.
 
     Examples
     --------
@@ -1547,7 +2285,11 @@ class SphericalCrossCorrelator:
     """
 
     def __init__(
-        self, bandwidth: int, *, wigner_d_half_pi: np.ndarray | None = None
+        self,
+        bandwidth: int,
+        *,
+        wigner_d_half_pi: np.ndarray | None = None,
+        wigner_d_factors: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     ) -> None:
         bandwidth = int(bandwidth)
         if bandwidth < 1:
@@ -1560,12 +2302,25 @@ class SphericalCrossCorrelator:
             self.wigner_d_half_pi = _wigner.wigner_d_half_pi_table(bandwidth, True)
         else:
             self.wigner_d_half_pi = _validated_wigner_table(wigner_d_half_pi, bandwidth)
+        if wigner_d_factors is None:
+            self.wigner_d_factors = None
+        else:
+            self.wigner_d_factors = _validated_wigner_d_factors(
+                wigner_d_factors, bandwidth
+            )
         slp = self.side_length
         bwp = self.half_side_length
         self.fxc = np.zeros((slp, slp, bwp), dtype=np.complex128)
         self._fm = np.zeros((bandwidth, bandwidth), dtype=np.complex128)
         self._gn = np.zeros(bandwidth, dtype=np.complex128)
         self.xc = None
+        # The refinement buffers: this instance's own ``dTablePre``
+        # table and the three Newton scratch arrays, all allocated on
+        # the first ``refine_zyz()`` and never shared with a clone
+        self._d_beta = None
+        self._jac = None
+        self._hes = None
+        self._step = None
 
     def __repr__(self) -> str:
         """Return a string with the bandwidth and the three side
@@ -1759,53 +2514,204 @@ class SphericalCrossCorrelator:
         mirror
             Whether ``flm`` has an equatorial mirror plane.
         refine
-            Whether to refine the interpolated peak in real space,
-            ``False`` by default.
+            Whether to refine the interpolated peak in real space
+            with :meth:`refine_zyz`, ``False`` by default.  The
+            default deviates from the C++ ``ref = true`` on purpose,
+            see the class ``Notes``.
         emsphinx_compatible
             Whether to reproduce the two C++ defects, ``True`` by
-            default, see :meth:`interp_peak`.
+            default, see :meth:`interp_peak`.  It affects only the
+            *starting* triple of a refinement; the Newton loop has
+            no compatibility branch.
 
         Returns
         -------
         zyz
             Passive ZYZ Euler angles ``(alpha, beta, gamma)`` in
             radians of the peak, in a new ``(3,)`` 64-bit float
-            array.  ``beta`` lies in ``[-pi - cell, cell]`` and
-            ``gamma`` in ``[-pi/2 - cell, 3 pi/2]`` with
-            ``cell = 2 pi / slP``; ``alpha`` lies in the same
-            interval as ``gamma`` when ``emsphinx_compatible`` is
-            ``False`` and is only finite when it is ``True``.
+            array.  Without refinement ``beta`` lies in
+            ``[-pi - cell, cell]`` and ``gamma`` in
+            ``[-pi/2 - cell, 3 pi/2]`` with ``cell = 2 pi / slP``,
+            and ``alpha`` lies in the same interval as ``gamma``
+            when ``emsphinx_compatible`` is ``False`` and is only
+            finite when it is ``True``.  A **refined** triple is not
+            wrapped back into those intervals, see
+            :meth:`refine_zyz`.
         score
             Interpolated peak of the un-normalised cross-correlation
             of the module documentation, equal to the total power
-            ``<f, f>`` for a perfect match.  It scales with both
-            spectra and is comparable only within one geometry.
+            ``<f, f>`` for a perfect match, or the analytic value at
+            the refined rotation when ``refine`` is ``True``.  The
+            two are **not comparable**: the coarse score is a fitted
+            tri-quadratic and the refined one is the correlation
+            itself.  Either scales with both spectra and is
+            comparable only within one geometry.
 
         Raises
         ------
-        NotImplementedError
-            If ``refine`` is ``True``.  The real space refinement
-            arrives in Phase 7 (``spherical-refinement``).
         ValueError
-            See :meth:`compute`.
+            See :meth:`compute` and :meth:`refine_zyz`.
 
         Notes
         -----
         Port of ``Correlator<Real>::correlate()``
         (``include/sht/sht_xcorr.hpp``, lines 394-400), i.e.
         :meth:`compute`, :func:`_find_peak` and
-        :meth:`interp_peak`.
+        :meth:`interp_peak`, followed by :meth:`refine_zyz` from the
+        interpolated triple when ``refine`` is ``True``.
         """
-        if refine:
-            raise NotImplementedError(
-                "Real space refinement arrives in Phase 7 "
-                "(spherical-refinement), which ports `refinePeak()` and "
-                "`derivatives()`"
-            )
         self.compute(flm, gln, n_fold, mirror)
         index = _find_peak(self.xc)
         zyz, peak, _ = self.interp_peak(int(index), emsphinx_compatible)
+        if refine:
+            return self.refine_zyz(flm, gln, n_fold, mirror, zyz)
         return zyz, peak
+
+    def refine_zyz(
+        self,
+        flm: np.ndarray,
+        gln: np.ndarray,
+        n_fold: int,
+        mirror: bool,
+        zyz0: np.ndarray,
+        *,
+        eps: float = _REFINE_EPS,
+    ) -> tuple[np.ndarray, float]:
+        """Return the Newton refined rotation of a cross-correlation
+        maximum, and its value.
+
+        Parameters
+        ----------
+        flm, gln
+            Harmonic coefficients ``a[m, l]`` of the two real
+            functions in array-likes of shape ``(bw, bw)``, see
+            :meth:`compute`.
+        n_fold
+            Order of the rotational symmetry of ``flm`` about z.
+        mirror
+            Whether ``flm`` has an equatorial mirror plane.
+        zyz0
+            Starting passive ZYZ Euler angles in an array-like of
+            shape ``(3,)``, normally the interpolated coarse peak.
+        eps
+            Convergence scale of the Newton loop, ``0.01`` by
+            default, which is the only value EMSphInx uses.  The
+            stopping threshold is ``eps 2 pi / slP``.
+
+        Returns
+        -------
+        zyz
+            Refined angles in a new ``(3,)`` 64-bit float array, or
+            ``zyz0`` unchanged when the refinement failed.  They are
+            **not** wrapped back into the coarse grid intervals of
+            :meth:`correlate`, since Newton may step ``beta`` across
+            a pole; every consumer converts through
+            :func:`kikuchipy.indexing._spherical._euler.
+            rotation_from_zyz`, which is periodic.
+        score
+            Un-normalised cross-correlation at ``zyz``, see
+            :func:`_refine_peak` for the value on failure and for
+            the second order lag on success.  A failure is
+            **silent**, as it is in the C++.
+
+        Raises
+        ------
+        ValueError
+            If ``flm`` or ``gln`` does not have shape ``(bw, bw)``,
+            if ``n_fold`` is a :class:`bool` or smaller than one, if
+            ``mirror`` is not a :class:`bool`, or if ``zyz0`` is not
+            three finite numbers.  The shape check is not optional:
+            with bounds checking off a mismatched spectrum is
+            silent garbage rather than an error, measured at
+            ``1e225``.
+
+        Notes
+        -----
+        Port of ``Correlator<Real>::refinePeak()``
+        (``include/sht/sht_xcorr.hpp``, lines 442-499), see
+        :func:`_refine_peak`.  The factor triple
+        :attr:`wigner_d_factors` and this instance's ``_d_beta``
+        table are built on the first call if they are not there yet,
+        the latter as a NaN filled buffer routed once through
+        :func:`kikuchipy.indexing._spherical._wigner.
+        wigner_d_table_pre` so that its ``out=`` tripwire actually
+        runs, and both are then reused by every later call.
+        """
+        bandwidth = self.bandwidth
+        # before the kernel, always: with bounds checking off a
+        # mismatched spectrum reads outside the array and returns
+        # garbage, measured at 1e225
+        flm = _validated_spectrum(flm, bandwidth, "flm")
+        gln = _validated_spectrum(gln, bandwidth, "gln")
+        n_fold, mirror = _validated_flags(n_fold, mirror)
+        zyz0 = _validated_start(zyz0)
+        e_km, w_jkm, b_jkm = self._refinement_buffers()
+        zyz, value, _ = _refine_peak(
+            flm,
+            gln,
+            zyz0,
+            n_fold,
+            mirror,
+            bandwidth,
+            self.side_length,
+            self._d_beta,
+            e_km,
+            w_jkm,
+            b_jkm,
+            self._jac,
+            self._hes,
+            self._step,
+            eps,
+        )
+        return zyz, float(value)
+
+    def _refinement_buffers(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the factor triple, building this instance's
+        refinement buffers on the first call.
+
+        Returns
+        -------
+        e_km, w_jkm, b_jkm
+            :attr:`wigner_d_factors`, built here when a standalone
+            correlator refines for the first time and otherwise the
+            triple a refining indexer handed to the constructor.
+
+        Raises
+        ------
+        ValueError
+            If the ``(bw, bw, bw, 2)`` buffer does not pass the
+            ``out=`` contract of
+            :func:`kikuchipy.indexing._spherical._wigner.
+            wigner_d_table_pre`.
+
+        Notes
+        -----
+        The per-evaluation table build is the raw kernel, which
+        checks nothing, so the NaN filled buffer is routed once
+        through the wrapper: the one moment at which a wrong buffer
+        could enter.  The three Newton scratch arrays follow it, and
+        all four belong to this instance alone -- every kernel is
+        ``nogil=True``, so two threads sharing one table leave a
+        table which matches neither rotation.
+        """
+        bandwidth = self.bandwidth
+        if self.wigner_d_factors is None:
+            self.wigner_d_factors = _wigner.wigner_d_table_factors(bandwidth)
+        e_km, w_jkm, b_jkm = self.wigner_d_factors
+        if self._d_beta is None:
+            self._d_beta = _wigner.wigner_d_table_pre(
+                bandwidth,
+                1.0,
+                False,
+                e_km,
+                w_jkm,
+                b_jkm,
+                out=np.full((bandwidth, bandwidth, bandwidth, 2), np.nan),
+            )
+            self._jac = np.zeros(3)
+            self._hes = np.zeros((3, 3))
+            self._step = np.zeros(3)
+        return e_km, w_jkm, b_jkm
 
     def clone(self) -> "SphericalCrossCorrelator":
         """Return a new correlator sharing this one's Wigner table.
@@ -1814,9 +2720,9 @@ class SphericalCrossCorrelator:
         -------
         correlator
             New instance with the same bandwidth, the **same**
-            :attr:`wigner_d_half_pi` and its own :attr:`fxc` and
-            ``_fm``/``_gn`` scratch buffers, ready for use in
-            another thread.
+            :attr:`wigner_d_half_pi` and :attr:`wigner_d_factors`,
+            both read only, and its own :attr:`fxc`, ``_fm``/``_gn``
+            and refinement buffers, ready for use in another thread.
 
         Notes
         -----
@@ -1824,9 +2730,17 @@ class SphericalCrossCorrelator:
         (``include/sht/sht_xcorr.hpp``, line 230), the copy
         constructor which shares the read-only ``xcLut`` and copies
         the rest.  ``Correlator<Real>`` itself has no ``clone()``.
+
+        A built factor triple is passed on, so that the clones of a
+        refining run share one; the per-instance ``_d_beta`` table
+        is **never** shared, since every kernel is ``nogil=True``
+        and two threads writing one table leave a table which
+        matches neither rotation.
         """
         return SphericalCrossCorrelator(
-            self.bandwidth, wigner_d_half_pi=self.wigner_d_half_pi
+            self.bandwidth,
+            wigner_d_half_pi=self.wigner_d_half_pi,
+            wigner_d_factors=self.wigner_d_factors,
         )
 
 
@@ -1856,6 +2770,11 @@ class NormalizedSphericalCrossCorrelator:
     wigner_d_half_pi
         Transposed ``pi/2`` Wigner d table to share, see
         :class:`SphericalCrossCorrelator`.
+    wigner_d_factors
+        The beta independent Wigner d factor triple to share, see
+        :class:`SphericalCrossCorrelator`.  It is handed to the
+        owned un-normalised correlator, which owns every refinement
+        buffer of this class as well.
 
     Attributes
     ----------
@@ -1948,9 +2867,12 @@ class NormalizedSphericalCrossCorrelator:
         mlm: np.ndarray,
         *,
         wigner_d_half_pi: np.ndarray | None = None,
+        wigner_d_factors: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     ) -> None:
         self.correlator = SphericalCrossCorrelator(
-            bandwidth, wigner_d_half_pi=wigner_d_half_pi
+            bandwidth,
+            wigner_d_half_pi=wigner_d_half_pi,
+            wigner_d_factors=wigner_d_factors,
         )
         bw = self.correlator.bandwidth
         self.n_fold, self.mirror = _validated_flags(n_fold, mirror)
@@ -2036,12 +2958,15 @@ class NormalizedSphericalCrossCorrelator:
             Harmonic coefficients ``a[m, l]`` of the masked pattern
             in an array-like of shape ``(bw, bw)``.
         refine
-            Whether to refine the interpolated peak in real space,
-            ``False`` by default.
+            Whether to refine the interpolated peak in real space
+            with :meth:`refine_zyz`, ``False`` by default.  The
+            default deviates from the C++ ``ref = true`` on purpose,
+            see :class:`SphericalCrossCorrelator`.
         emsphinx_compatible
             Whether to reproduce the two C++ defects, ``True`` by
             default, see
-            :meth:`SphericalCrossCorrelator.interp_peak`.
+            :meth:`SphericalCrossCorrelator.interp_peak`.  It
+            affects only the *starting* triple of a refinement.
 
         Returns
         -------
@@ -2052,15 +2977,15 @@ class NormalizedSphericalCrossCorrelator:
             :meth:`SphericalCrossCorrelator.correlate`.
         score
             Interpolated peak of the **normalized**
-            cross-correlation ``xc * rDen``, which still needs to be
+            cross-correlation ``xc * rDen``, or the refined
+            correlation divided by the denominator at the refined
+            rotation when ``refine`` is ``True``.  Neither is
             divided by the standard deviation of the pattern
-            function, see the class ``Notes``.
+            function, see the class ``Notes``, and the two are not
+            comparable with one another.
 
         Raises
         ------
-        NotImplementedError
-            If ``refine`` is ``True``.  The real space refinement
-            arrives in Phase 7 (``spherical-refinement``).
         ValueError
             If ``gln`` does not have shape ``(bw, bw)``.
 
@@ -2073,19 +2998,158 @@ class NormalizedSphericalCrossCorrelator:
         argmax of :func:`_scale_and_find_peak`, then
         :meth:`SphericalCrossCorrelator.interp_peak` on the
         **scaled** cube, as the C++ interpolates the normalized
-        values (line 1157).
+        values (line 1157), followed by :meth:`refine_zyz` from the
+        interpolated triple when ``refine`` is ``True``.
         """
-        if refine:
-            raise NotImplementedError(
-                "Real space refinement arrives in Phase 7 "
-                "(spherical-refinement), which ports `refinePeak()` and "
-                "`denominator()`"
-            )
         correlator = self.correlator
         correlator.compute(self.flm, gln, self.n_fold, self.mirror)
         index = _scale_and_find_peak(correlator.xc, self.r_den)
         zyz, peak, _ = correlator.interp_peak(int(index), emsphinx_compatible)
+        if refine:
+            return self.refine_zyz(gln, zyz)
         return zyz, peak
+
+    def refine_zyz(
+        self,
+        gln: np.ndarray,
+        zyz0: np.ndarray,
+        *,
+        eps: float = _REFINE_EPS,
+    ) -> tuple[np.ndarray, float]:
+        """Return the Newton refined rotation of a normalized
+        cross-correlation maximum, and its value.
+
+        Parameters
+        ----------
+        gln
+            Harmonic coefficients ``a[m, l]`` of the masked pattern
+            in an array-like of shape ``(bw, bw)``.
+        zyz0
+            Starting passive ZYZ Euler angles in an array-like of
+            shape ``(3,)``, normally the interpolated coarse peak.
+        eps
+            Convergence scale of the Newton loop, ``0.01`` by
+            default, see
+            :meth:`SphericalCrossCorrelator.refine_zyz`.
+
+        Returns
+        -------
+        zyz
+            Refined angles in a new ``(3,)`` 64-bit float array, or
+            ``zyz0`` unchanged when the refinement failed.  They are
+            not wrapped, see
+            :meth:`SphericalCrossCorrelator.refine_zyz`.
+        score
+            The refined **un-normalised** correlation divided by
+            ``denominator(zyz)`` evaluated at the refined rotation.
+
+        Raises
+        ------
+        ValueError
+            If ``gln`` does not have shape ``(bw, bw)`` or if
+            ``zyz0`` is not three finite numbers.
+
+        Notes
+        -----
+        Port of ``NormalizedCorrelator<Real>::refinePeak()``
+        (``include/sht/sht_xcorr.hpp``, lines 1169-1172): the
+        un-normalised :func:`_refine_peak` on the stored
+        :attr:`flm`, then a division by ``Constants::denominator()``
+        (lines 1211-1225), which is
+
+        .. code-block::
+
+            mrf  = derivatives(flm,  mlm, zyz, der=False)
+            mrf2 = derivatives(flm2, mlm, zyz, der=False)
+            s2m  = mlm[0, 0].real sqrt(4 pi)
+            den  = sqrt(mrf2 - 2 (mrf/s2m) mrf + (mrf/s2m)^2 s2m)
+
+        with both evaluations taking the **reference's**
+        ``(n_fold, mirror)`` flags, as the C++ passes ``mr, nf``,
+        and with the radicand and the division left to IEEE
+        arithmetic, as in the C++: a negative radicand gives a NaN
+        score and an exactly zero denominator an infinite one,
+        neither of which raises.
+
+        **The Newton step maximizes the un-normalized correlation**,
+        since the window shift chain rule of lines 263-264 is
+        omitted here exactly as it is omitted there.  The refined
+        normalized score can therefore dip below the coarse one
+        (measured 4 of 165 points on real data, worst -4.8e-4) and
+        the refined accuracy of a masked pattern is window limited
+        (measured 2.1e-2 degrees against 3e-6 unmasked).
+        """
+        zyz, value = self.correlator.refine_zyz(
+            self.flm, gln, self.n_fold, self.mirror, zyz0, eps=eps
+        )
+        # IEEE, not Python: ``0.0 / 0.0`` and ``x / 0.0`` are the
+        # C++'s NaN and infinity here, never a ``ZeroDivisionError``
+        with np.errstate(divide="ignore", invalid="ignore"):
+            score = np.float64(value) / np.float64(self._denominator(zyz))
+        return zyz, float(score)
+
+    def _denominator(self, zyz: np.ndarray) -> float:
+        """Return the Huhle denominator at one rotation.
+
+        Parameters
+        ----------
+        zyz
+            Passive ZYZ Euler angles in a ``(3,)`` 64-bit float
+            array.
+
+        Returns
+        -------
+        denominator
+            ``sqrt(mrf2 - 2 fWbar mrf + fWbar^2 s2m)`` with
+            ``fWbar = mrf / s2m``, see :meth:`refine_zyz`.
+
+        Notes
+        -----
+        Port of ``NormalizedCorrelator<Real>::Constants::
+        denominator()`` (``include/sht/sht_xcorr.hpp``, lines
+        1211-1225), the pointwise counterpart of the whole cube
+        :attr:`r_den` holds the reciprocal of.  The radicand is left
+        to IEEE arithmetic, as in the C++ and as in the whole cube
+        twin: a negative one gives a quiet NaN rather than a
+        ``ValueError``, so a foreign starting orientation loses the
+        ``upper_bound`` comparisons it should lose instead of
+        killing its pattern.  Measured O(1) and positive at the
+        refined rotation of every real Ni pattern.
+        """
+        correlator = self.correlator
+        bandwidth = correlator.bandwidth
+        e_km, w_jkm, b_jkm = correlator._refinement_buffers()
+        zyz = np.ascontiguousarray(zyz, dtype=np.float64)
+        values = []
+        for alm in (self.flm, self.flm2):
+            # both with the **reference's** flags, as the C++ passes
+            # ``mr, nf`` on lines 1213 and 1216
+            with np.errstate(divide="ignore", invalid="ignore"):
+                values.append(
+                    _derivatives(
+                        alm,
+                        self.mlm,
+                        zyz,
+                        correlator._jac,
+                        correlator._hes,
+                        bandwidth,
+                        self.mirror,
+                        self.n_fold,
+                        False,
+                        correlator._d_beta,
+                        e_km,
+                        w_jkm,
+                        b_jkm,
+                    )
+                )
+        mrf, mrf2 = values
+        s2m = float(self.mlm[0, 0].real) * _SQRT_FOUR_PI
+        fw_bar = mrf / s2m
+        radicand = mrf2 - 2.0 * fw_bar * mrf + fw_bar * fw_bar * s2m
+        # ``numpy.sqrt``, never ``math.sqrt``: the C++ returns a
+        # quiet NaN on a negative radicand and does not throw
+        with np.errstate(invalid="ignore"):
+            return float(np.sqrt(np.float64(radicand)))
 
     def clone(self) -> "NormalizedSphericalCrossCorrelator":
         """Return a new correlator sharing this one's spectra,

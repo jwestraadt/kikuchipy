@@ -24,7 +24,6 @@ Covers the assertions of
 belong to the module rather than to the signal method:
 
 - Construction and guards: the frozen signature defaults, the
-  ``refine`` refusal and its order against the projector, the
   ``[16, 512]`` bandwidth rule, the harmonics against detector
   ``sample_tilt`` binding, the guards which propagate from the
   back-projector, the shared geometry check, the resize warning
@@ -104,8 +103,11 @@ FAST_BANDWIDTHS_16_128 = [
     63, 68, 72, 74, 83, 85, 88, 95, 98, 113, 116, 122, 123,
 ]  # fmt: skip
 
-# The two kernels of the package which need the IEEE error model
+# The kernels of the coarse pipeline which need the IEEE error
+# model, and the refinement's, whose full set is pinned by
+# ``test_spherical_refinement.py``
 NUMPY_ERROR_MODEL_KERNELS = {"_interpolate_maxima", "_fit_gaussian_1d_kernel"}
+REFINEMENT_ERROR_MODEL_KERNELS = {"_derivatives"}
 
 
 # ----------------------------- Helpers ------------------------------ #
@@ -155,7 +157,14 @@ def ni_harmonics(bandwidth):
 def ni_indexer(**kwargs):
     """Return an indexer of the Ni harmonics and detector at ``bw``
     68, with the default configuration unless overridden.
+
+    ``refine`` defaults to ``False`` here rather than to the class'
+    own ``True``: every value this module pins is a coarse one, and
+    the refined path has its own suite in
+    ``test_spherical_refinement.py``. A test which means the class
+    default states it.
     """
+    kwargs.setdefault("refine", False)
     return SphericalIndexer(ni_harmonics(NI_BANDWIDTH), ni_detector(), **kwargs)
 
 
@@ -250,7 +259,7 @@ class TestSphericalIndexerConstruction:
         assert defaults == {
             "bandwidth": 68,
             "normalize": True,
-            "refine": False,
+            "refine": True,
             "signal_mask": None,
             "n_regions": 10,
             "gaussian_background": False,
@@ -264,22 +273,6 @@ class TestSphericalIndexerConstruction:
             for name, parameter in parameters.items()
             if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
         ] == ["self", "harmonics", "detector"]
-
-    def test_refine_true_is_refused(self):
-        with pytest.raises(NotImplementedError, match="refine=True") as info:
-            ni_indexer(refine=True)
-        message = str(info.value)
-        assert "not implemented" in message
-        # decision: public messages carry no roadmap phase numbers
-        for phase in ("Phase 6", "Phase 7", "spherical-refinement"):
-            assert phase not in message
-
-    def test_refine_is_refused_before_the_projector_is_built(self, monkeypatch):
-        # pins the guard order with no wall clock: if the projector
-        # were built first the sentinel would fire instead
-        monkeypatch.setattr(SphericalBackProjector, "__init__", raise_assertion)
-        with pytest.raises(NotImplementedError, match="refine=True"):
-            ni_indexer(refine=True)
 
     @pytest.mark.parametrize("bandwidth", [8, 15, 513, 600])
     def test_unreasonable_bandwidth_is_refused(self, bandwidth):
@@ -661,7 +654,9 @@ class TestIndexPatterns:
         # already phase 0, where the shift runs over identical fill
         # rows and its direction cannot be seen
         indexer = SphericalIndexer(
-            [scrambled_harmonics(), ni_harmonics(NI_BANDWIDTH)], ni_detector()
+            [scrambled_harmonics(), ni_harmonics(NI_BANDWIDTH)],
+            ni_detector(),
+            refine=False,
         )
         results = indexer.index_patterns(ni_patterns(), n_best=2, progressbar=False)
         assert np.array_equal(results["phase_id"], np.tile([1, 0], (9, 1)))
@@ -908,13 +903,16 @@ class TestMemoryModel:
             [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()],
             ni_detector(),
             normalize=False,
+            refine=False,
         )
         assert two.memory_per_worker_bytes == one.memory_per_worker_bytes
 
     def test_a_normalized_second_phase_costs_one_cube(self):
         one = ni_indexer()
         two = SphericalIndexer(
-            [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()], ni_detector()
+            [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()],
+            ni_detector(),
+            refine=False,
         )
         delta = two.memory_per_worker_bytes - one.memory_per_worker_bytes
         assert delta == MEMORY_PER_EXTRA_PHASE
@@ -972,6 +970,9 @@ class TestExports:
         docstrings["EBSD.spherical_indexing"] = (
             kp.signals.EBSD.spherical_indexing.__doc__
         )
+        docstrings["EBSD.refine_orientation_spherical"] = (
+            kp.signals.EBSD.refine_orientation_spherical.__doc__
+        )
         for name, doc in docstrings.items():
             if "MasterPatternHarmonics" in name:
                 continue
@@ -986,9 +987,12 @@ class TestExports:
         docstrings["EBSD.spherical_indexing"] = (
             kp.signals.EBSD.spherical_indexing.__doc__
         )
+        docstrings["EBSD.refine_orientation_spherical"] = (
+            kp.signals.EBSD.refine_orientation_spherical.__doc__
+        )
         assert len(docstrings) > 3
         for name, doc in docstrings.items():
-            for phase in ("Phase 5", "Phase 6", "Phase 7"):
+            for phase in ("Phase 5", "Phase 6", "Phase 7", "Phase 8"):
                 assert phase not in doc, f"{name} names {phase}"
 
 
@@ -996,13 +1000,17 @@ class TestExports:
 
 
 class TestKernelFlags:
-    def test_the_package_has_exactly_two_numpy_error_model_kernels(self):
+    def test_the_package_error_models_are_the_sanctioned_ones(self):
+        # the coarse pipeline's two, plus the refinement's, which
+        # ``test_spherical_refinement.py`` pins as an equality: no
+        # kernel outside that list may acquire the IEEE model
         found = set()
         for module in spherical_modules():
             for name, kernel in njit_kernels(module).items():
                 if kernel.targetoptions.get("error_model") == "numpy":
                     found.add(name)
-        assert found == NUMPY_ERROR_MODEL_KERNELS
+        assert found <= NUMPY_ERROR_MODEL_KERNELS | REFINEMENT_ERROR_MODEL_KERNELS
+        assert NUMPY_ERROR_MODEL_KERNELS <= found
 
     def test_the_indexer_defines_no_kernels(self):
         assert njit_kernels(_indexer) == {}
