@@ -718,13 +718,143 @@ def _refine_chunk(
     input triple with the analytic value there, which is C++ parity.
 
     ``zyz_block`` and ``phase_id_block`` are block arguments of
-    :func:`dask.array.map_blocks` chunked to the pattern blocks, so a
+    :func:`dask.array.blockwise` indexed along the pattern axis, so a
     chunk always refines from the starting orientations of its own
-    patterns.
+    patterns.  :func:`dask.array.map_blocks` cannot express that: it
+    indexes every argument from its **trailing** axis, so the two row
+    arrays would arrive whole in every block and every chunk but the
+    first would refine from the wrong starts.
     """
-    raise NotImplementedError(
-        "`_refine_chunk()` is not implemented yet; it needs the correlators' "
-        "`refine_zyz()`"
+    n_patterns = int(patterns_block.shape[0])
+    # Every row starts as its own input, so a pattern which is failed
+    # or never refined below simply passes through
+    results = np.zeros((n_patterns, _ROW_WIDTH))
+    results[:, :3] = zyz_block
+    results[:, 4] = phase_id_block
+
+    projector = indexer.projector
+    dim = projector.dim
+    # Zeroed, never ``numpy.empty``: ``unproject`` writes only the
+    # window points of the first buffer and never touches the second
+    buffers = (np.zeros((dim, dim)), np.zeros((dim, dim)))
+
+    # One clone per invocation, so that no scratch is shared between
+    # threads and the worker itself stays stateless
+    if indexer.normalize:
+        correlators = [c.clone() for c in indexer.correlators]
+        prototype = None
+        spectra = None
+    else:
+        correlators = None
+        prototype = indexer.correlator.clone()
+        spectra = indexer.spectra
+
+    good_pixels = indexer.good_pixels
+    gaussian_background = indexer.gaussian_background
+    n_regions = indexer.n_regions
+    compatible = indexer.emsphinx_compatible
+
+    for i in range(n_patterns):
+        phase_id = int(phase_id_block[i])
+        # A point which is not indexed is never refined
+        if phase_id < 0:
+            continue
+        # Every guard sits inside the catch, as ``ebsdWorkItem``
+        # wraps the whole work item: a pattern which raises anywhere
+        # keeps its input row alone
+        try:
+            pattern = patterns_block[i]
+            # (a) a zero variance pattern is failed, not refined
+            if np.ptp(pattern) == 0:
+                continue
+
+            processed = _preprocess_pattern(
+                pattern,
+                good_pixels=good_pixels,
+                gaussian_background=gaussian_background,
+                n_regions=n_regions,
+                emsphinx_compatible=compatible,
+            )
+            # (b) the pipeline degenerated to a constant, which the
+            # back-projection would answer with its window mask
+            if np.ptp(processed) == 0:
+                continue
+
+            north, south, image_quality = projector.unproject(
+                processed, out=buffers, return_image_quality=True
+            )
+            gln = projector.sht.analyze(north, south)
+
+            zyz0 = zyz_block[i]
+            if correlators is not None:
+                zyz, score = correlators[phase_id].refine_zyz(gln, zyz0)
+            else:
+                alm, n_fold, mirror = spectra[phase_id]
+                zyz, score = prototype.refine_zyz(alm, gln, n_fold, mirror, zyz0)
+
+            results[i, :3] = zyz
+            results[i, 3] = score
+            results[i, 5] = image_quality
+        except Exception:
+            # One bad pattern never kills the run, the
+            # ``ebsdWorkItem`` catch, which writes nothing
+            continue
+
+    return results
+
+
+def _map_refine_chunks(
+    patterns_da: da.Array,
+    zyz_da: da.Array,
+    phase_id_da: da.Array,
+    indexer: "SphericalIndexer",
+) -> da.Array:
+    """Return the lazy packed refinement results of a chunked pattern
+    array and its starting rows.
+
+    Parameters
+    ----------
+    patterns_da
+        ``(n, nrows, ncols)`` dask array chunked along the first axis
+        only.
+    zyz_da, phase_id_da
+        ``(n, 3)`` and ``(n,)`` dask arrays whose first axis carries
+        the chunks of ``patterns_da``.
+    indexer
+        Indexer to pass to :func:`_refine_chunk`.
+
+    Returns
+    -------
+    results
+        ``(n, 6)`` lazy 64-bit float array with the chunks of
+        ``patterns_da`` along the first axis.
+
+    Notes
+    -----
+    :func:`dask.array.blockwise` and not
+    :func:`dask.array.map_blocks`, which indexes every argument from
+    its trailing axis and would hand each block the whole of ``zyz``
+    and ``phase_id`` -- so every chunk but the first would refine
+    from the wrong starting orientations, silently and with the right
+    number of rows.  Here the pattern axis is one named index of all
+    three arrays, so a block mis-alignment is impossible to express:
+    ``blockwise`` unifies the chunks of everything indexed by ``i``,
+    which makes the caller's matching chunks an optimisation rather
+    than the source of the alignment.
+    """
+    return da.blockwise(
+        _refine_chunk,
+        "ij",
+        patterns_da,
+        "ikl",
+        zyz_da,
+        "im",
+        phase_id_da,
+        "i",
+        indexer=indexer,
+        new_axes={"j": _ROW_WIDTH},
+        dtype=np.float64,
+        concatenate=True,
     )
 
 
@@ -1241,8 +1371,11 @@ class SphericalIndexer:
 
         Notes
         -----
-        The model is above the measured transient peak by about
-        10 %, see the table in the module documentation.  With
+        The coarse term is above the measured transient peak by
+        about 10 %, see the table in the module documentation, whose
+        ``peak`` column is a coarse run's.  The refinement term is a
+        model addition, one resident ``(bw, bw, bw, 2)`` table per
+        correlator clone, and not a measured peak.  With
         ``normalize=False`` one scratch correlator serves every
         phase, so the phase count drops out of both terms.
 
@@ -1505,9 +1638,10 @@ class SphericalIndexer:
         zyz
             ``(n, 3)`` array of starting passive ZYZ Euler angles in
             radians, one per pattern, e.g. the ``"zyz"`` of
-            :meth:`index_patterns` or
-            :func:`kikuchipy.indexing._spherical._euler.
-            rotation_to_zyz` of a crystal map's rotations.
+            :meth:`index_patterns`, or a crystal map's rotations
+            converted to passive ZYZ, which
+            :meth:`kikuchipy.signals.EBSD.refine_orientation_spherical`
+            does for you.
         phase_id
             ``(n,)`` array of indices into :attr:`phases`, one per
             pattern.  A **negative** index marks a point which is not
@@ -1526,8 +1660,12 @@ class SphericalIndexer:
             :meth:`index_patterns`, all with a single candidate:
             ``"zyz"`` ``(n, 3)``, ``"scores"`` ``(n,)``, ``"iq"``
             ``(n,)`` and ``"phase_id"`` ``(n,)`` 32-bit integer, the
-            input echoed back.  A row which was not refined carries
-            its input angles and phase.
+            input echoed back.  A row which was **not** refined -- a
+            negative phase index, a failed guard or a raising pattern
+            -- carries its input angles and phase with a score and an
+            image quality of exactly ``0``, which is how this method
+            reports that it wrote nothing there, so a caller can
+            leave its own values in place at those rows.
 
         Raises
         ------
@@ -1541,8 +1679,10 @@ class SphericalIndexer:
         Warns
         -----
         UserWarning
-            If the number of dask workers times
-            :attr:`memory_per_worker_bytes` exceeds 2 GiB.
+            If the number of dask workers times the **refining**
+            memory model (:attr:`memory_per_worker_bytes` with
+            ``refine=True``, which this method always uses) exceeds
+            2 GiB, or if any indexed pattern could not be refined.
 
         See Also
         --------
@@ -1572,7 +1712,123 @@ class SphericalIndexer:
         whose score is *lower* than the starting one (measured on 3
         of 4 converged unrelated starts).
         """
-        raise NotImplementedError(
-            "`refine_patterns()` is not implemented yet; it needs the "
-            "correlators' `refine_zyz()`"
-        )
+        detector_shape = self.projector.detector.shape
+        shape = tuple(patterns.shape)
+        if len(shape) != 3 or shape[1:] != detector_shape:
+            raise ValueError(
+                f"Patterns of shape {shape[1:]} must have the detector "
+                f"shape {detector_shape}"
+            )
+        n_patterns = int(shape[0])
+
+        zyz = np.ascontiguousarray(zyz, dtype=np.float64)
+        if zyz.shape != (n_patterns, 3):
+            raise ValueError(
+                f"`zyz` must have shape ({n_patterns}, 3), one starting "
+                f"orientation per pattern, not {zyz.shape}"
+            )
+        phase_id = np.ascontiguousarray(phase_id).astype(np.int32)
+        if phase_id.shape != (n_patterns,):
+            raise ValueError(
+                f"`phase_id` must have shape ({n_patterns},), one phase per "
+                f"pattern, not {phase_id.shape}"
+            )
+        if n_patterns and int(phase_id.max()) >= self.n_phases:
+            raise ValueError(
+                f"The phase indices {sorted(set(phase_id.tolist()))} must all "
+                f"index the {self.n_phases} phase(s) of this indexer, i.e. be "
+                "smaller than that; a negative index marks a point which is "
+                "not indexed"
+            )
+
+        if chunksize is not None:
+            chunksize = int(chunksize)
+            if chunksize < 1:
+                raise ValueError(f"`chunksize` {chunksize} must be at least one")
+
+        n_workers = _n_workers()
+        if chunksize is None:
+            chunksize = _batch_estimate(self.bandwidth, n_workers, n_patterns)
+
+        # This method always refines, so it arms the sharing itself:
+        # the chunk workers clone before their first refinement, and
+        # a lazily built triple would be rebuilt once per clone
+        self._share_wigner_d_factors()
+
+        needed = n_workers * self._memory_model(True)
+        if needed > _MEMORY_WARNING_BYTES:
+            warn(
+                f"Refining on {n_workers} worker(s) is estimated to need "
+                f"{needed / 1024**3:.2f} GiB of memory, which is more than "
+                "2 GiB; reduce the bandwidth, the number of phases or the "
+                "number of dask workers",
+                UserWarning,
+            )
+
+        if isinstance(patterns, da.Array):
+            blocks = patterns.rechunk((chunksize, -1, -1))
+        else:
+            blocks = da.from_array(patterns, chunks=(chunksize, -1, -1))
+        # Chunked to match the patterns so that ``blockwise`` needs
+        # no rechunk; the alignment itself is the shared ``i`` index
+        pattern_chunks = blocks.chunks[0]
+        zyz_da = da.from_array(zyz, chunks=(pattern_chunks, (3,)))
+        phase_id_da = da.from_array(phase_id, chunks=(pattern_chunks,))
+        results = _map_refine_chunks(blocks, zyz_da, phase_id_da, self)
+
+        if progressbar:
+            with ProgressBar():
+                packed = results.compute()
+        else:
+            packed = results.compute()
+
+        # As in ``index_patterns``: a failed pattern is never
+        # re-raised on, so a run whose every pattern failed a guard
+        # or raised would otherwise return the starting rows in
+        # silence.  A negative phase is the intended pass-through of
+        # a point which is not indexed and never counts
+        indexed = packed[:, 4] >= 0
+        n_failed = int((indexed & (packed[:, 3] == 0.0) & (packed[:, 5] == 0.0)).sum())
+        if n_failed:
+            warn(
+                f"{n_failed} of {int(indexed.sum())} indexed pattern(s) could "
+                "not be refined and keep their input orientation with a score "
+                "and an image quality of 0; see the failure cases of "
+                "`SphericalIndexer`",
+                UserWarning,
+            )
+
+        return {
+            "zyz": np.ascontiguousarray(packed[:, :3]),
+            "scores": np.ascontiguousarray(packed[:, 3]),
+            "phase_id": packed[:, 4].astype(np.int32),
+            "iq": np.ascontiguousarray(packed[:, 5]),
+        }
+
+    def _share_wigner_d_factors(self) -> None:
+        """Build the beta independent Wigner d factor triple and hand
+        it to every correlator, in place.
+
+        Notes
+        -----
+        Idempotent, and what a ``refine=True`` construction does at
+        construction time.  :meth:`refine_patterns` calls it whatever
+        :attr:`refine` says, since it always refines and
+        ``SphericalIndexer(refine=False).refine_patterns(...)`` is a
+        public, reachable call: without the sharing every chunk
+        clone would lazily build its own 5 MB triple.
+
+        The triple goes to the **inner** un-normalised correlator of
+        every normalized one, which owns the refinement buffers, and
+        to the shared prototype of an un-normalised indexer.
+        """
+        if self.wigner_d_factors is None:
+            self.wigner_d_factors = wigner_d_table_factors(self.bandwidth)
+        factors = self.wigner_d_factors
+        if self.normalize:
+            targets = [c.correlator for c in self.correlators]
+        else:
+            targets = [self.correlator]
+        for target in targets:
+            if target.wigner_d_factors is None:
+                target.wigner_d_factors = factors

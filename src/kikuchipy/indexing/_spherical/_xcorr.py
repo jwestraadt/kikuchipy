@@ -336,16 +336,16 @@ from numba import njit
 import numpy as np
 from scipy.fft import ifft, irfft
 
-from kikuchipy.indexing._spherical import _euler, _fft, _wigner
+from kikuchipy.indexing._spherical import _euler, _fft, _preprocessing, _wigner
 
 # The two SciPy transforms are bound in this namespace, as Phases
 # 1-3 bind theirs, so that a test can patch ``_xcorr.ifft`` and
 # ``_xcorr.irfft`` and see every call this module makes.
 #
-# TODO: the Newton loop adds ``_preprocessing`` to that import, a
-# one-way edge (that module imports nothing of this package), for its
-# 3 x 3 Cholesky solve: the very ``solve::cholesky()`` the C++ calls
-# from both sites, so it has one implementation here too and never a
+# The Newton loop takes its 3 x 3 Cholesky solve from
+# ``_preprocessing``, a one-way edge (that module imports nothing of
+# this package): the very ``solve::cholesky()`` the C++ calls from
+# both sites, so it has one implementation here too and never a
 # ``numpy.linalg.solve`` substitute.
 
 # Machine epsilon of the 64-bit floating point type
@@ -1192,15 +1192,14 @@ def _interpolate_maxima(p: np.ndarray, x: np.ndarray) -> float:
     )
 
 
-# TODO: decorate with ``@njit(cache=True, nogil=True,
-# error_model="numpy")`` when the body lands.  The ``numpy`` error
-# model is **load bearing** and is the project's third sanctioned
-# one: at ``|cos(beta)| == 1`` the unguarded ``csc = 1 / sqrt(1 -
-# t^2)`` must give the IEEE infinity which propagates into the NaN
-# ``hes[1, 1]`` that :func:`_refine_peak` uses as its degeneracy
-# detector (``include/sht/sht_xcorr.hpp``, lines 461 and 468), where
-# Numba's default model would raise ``ZeroDivisionError`` and break
-# the C++ control flow.
+# The ``numpy`` error model is **load bearing** and is the project's
+# third sanctioned one: at ``|cos(beta)| == 1`` the unguarded ``csc =
+# 1 / sqrt(1 - t^2)`` must give the IEEE infinity which propagates
+# into the NaN ``hes[1, 1]`` that :func:`_refine_peak` uses as its
+# degeneracy detector (``include/sht/sht_xcorr.hpp``, lines 461 and
+# 468), where Numba's default model would raise ``ZeroDivisionError``
+# and break the C++ control flow.
+@njit(cache=True, nogil=True, error_model="numpy")
 def _derivatives(
     flm: np.ndarray,
     gln: np.ndarray,
@@ -1313,9 +1312,224 @@ def _derivatives(
     (lines 1027-1032), so no undefined NaN slot of ``d_beta`` is
     ever read and every index stays in bounds.
     """
-    raise NotImplementedError(
-        "`_derivatives()` is not implemented yet, so a refinement cannot run"
+    # correlation, jacobian, hessian as 00, 11, 22, 01, 12, 20
+    wrk = np.zeros(10)
+
+    # bring the middle angle to [-pi, pi] for the Wigner functions,
+    # the C++ ``fmod`` of lines 895-899
+    beta = _euler._wrap_beta(eu[1])
+    sin_a = math.sin(eu[0])
+    cos_a = math.cos(eu[0])
+    sin_g = math.sin(eu[2])
+    cos_g = math.cos(eu[2])
+
+    # NumPy scalars, never ``math``, see the Notes: at a pole the
+    # division must give an IEEE infinity in the interpreted twin as
+    # well.  The C++ ``deg`` flag of line 909 is dead and not ported
+    t = np.cos(beta)
+    negative_beta = math.copysign(1.0, beta) < 0.0
+    csc = (1.0 / np.sqrt(1.0 - t * t)) * (-1.0 if negative_beta else 1.0)
+
+    # the per call ``dTablePre`` rebuild of line 913: every defined
+    # slot is written, so one buffer serves every evaluation
+    _wigner._wigner_d_table_pre_kernel(
+        bandwidth, t, negative_beta, d_beta, e_km, w_jkm, b_jkm
     )
+    # ``glnFold == 1`` and ``gMir == false``, so the ``n`` fold and
+    # the double mirror parity skips of lines 987-991 are dead, as
+    # they are in ``compute()``
+    d_j = 2 if mirror else 1
+
+    # recursion coefficients of the Chebyshev polynomials U_m and T_m
+    # of sin(alpha) and cos(alpha)
+    ua0 = 0.0
+    ua1 = sin_a * 2.0
+    ua2 = 1.0
+    ta0 = 0.0
+    ta1 = cos_a
+    ta2 = 1.0
+    for m in range(bandwidth):
+        # exp(I m alpha) from the multiple-angle recursion, seeded for
+        # m < 2 (lines 935-950)
+        if m < 2:
+            ua0 = 0.0 if m == 0 else sin_a
+            ta0 = 1.0 if m == 0 else cos_a
+        else:
+            ua0 = sin_a * ua1 * 2.0 - ua2
+            ta0 = cos_a * ta1 * 2.0 - ta2
+            if m % 2 == 0:
+                sm = ua1 * cos_a * (1.0 if ((m // 2) - 1) % 2 == 0 else -1.0)
+            else:
+                sm = (ua0 - sin_a * ua1) * (1.0 if ((m - 1) // 2) % 2 == 0 else -1.0)
+            cm = ta0
+            ua2 = ua1
+            ua1 = ua0
+            ta2 = ta1
+            ta1 = ta0
+            ua0 = sm
+            ta0 = cm
+        # the systematic zeros of the rotational symmetry, skipped
+        # **after** the recursion is advanced (lines 951-952)
+        if m % n_fold != 0:
+            continue
+        exp_alpha_r = ta0
+        exp_alpha_i = ua0
+
+        ug0 = 0.0
+        ug1 = sin_g * 2.0
+        ug2 = 1.0
+        tg0 = 0.0
+        tg1 = cos_g
+        tg2 = 1.0
+        for n in range(bandwidth):
+            # exp(I n gamma), the same recursion (lines 963-981)
+            if n < 2:
+                ug0 = 0.0 if n == 0 else sin_g
+                tg0 = 1.0 if n == 0 else cos_g
+            else:
+                ug0 = sin_g * ug1 * 2.0 - ug2
+                tg0 = cos_g * tg1 * 2.0 - tg2
+                if n % 2 == 0:
+                    sn = ug1 * cos_g * (1.0 if ((n // 2) - 1) % 2 == 0 else -1.0)
+                else:
+                    sn = (ug0 - sin_g * ug1) * (
+                        1.0 if ((n - 1) // 2) % 2 == 0 else -1.0
+                    )
+                cn = tg0
+                ug2 = ug1
+                ug1 = ug0
+                tg2 = tg1
+                tg1 = tg0
+                ug0 = sn
+                tg0 = cn
+
+            # detail::conjMult(expAlpha, expGamma, agP, agN) with the
+            # two sign prefactors of lines 996-1000
+            rr = exp_alpha_r * tg0
+            ii = exp_alpha_i * ug0
+            ri = exp_alpha_r * ug0
+            ir = exp_alpha_i * tg0
+            sign = 1.0 if (n + m) % 2 == 0 else -1.0
+            sign_n = 1.0 if n % 2 == 0 else -1.0
+            ag_p = complex(rr - ii, ir + ri) * sign
+            ag_n = complex(rr + ii, ir - ri) * (sign * sign_n)
+
+            # the first non-zero degree (lines 1003-1004); the
+            # ``gMir`` bump of line 1005 is dead
+            start = m if m > n else n
+            if mirror and (start + m) % 2 != 0:
+                start += 1
+
+            # the four sequential quadrant adds of lines 1072-1078,
+            # folded into two weights: +m+n always, +m-n when n > 0,
+            # -m+n and -m-n when m > 0
+            wc = 1.0 + (1.0 if (m > 0 and n > 0) else 0.0)
+            wp = (1.0 if n > 0 else 0.0) + (1.0 if m > 0 else 0.0)
+
+            if der:
+                # prefactors of the beta derivatives (lines 1009-1020)
+                mm = m * m
+                mn = m * n
+                nn = n * n
+                coef2_0a = t * t * mm + (nn - m)
+                coef2_0b = t * n * (1 - 2 * m)
+                coef2_1a = t * (1 + 2 * m)
+                coef1_0pp = (t * m - n) * csc
+                coef1_0pn = (t * m + n) * csc
+                coef2_0pp = (coef2_0a + coef2_0b) * csc * csc
+                coef2_0pn = (coef2_0a - coef2_0b) * csc * csc
+                coef2_1pp = (coef2_1a - 2 * n) * csc
+                coef2_1pn = (coef2_1a + 2 * n) * csc
+
+                for j in range(start, bandwidth, d_j):
+                    d0p = d_beta[m, n, j, 0]
+                    d0n = d_beta[m, n, j, 1]
+                    d0p_1 = 0.0 if m >= j else d_beta[m + 1, n, j, 0]
+                    d0n_1 = 0.0 if m >= j else d_beta[m + 1, n, j, 1]
+                    d0p_2 = 0.0 if m + 1 >= j else d_beta[m + 2, n, j, 0]
+                    d0n_2 = 0.0 if m + 1 >= j else d_beta[m + 2, n, j, 1]
+
+                    # first and second beta derivatives of
+                    # d^j_{m,+/-n} (lines 1035-1041)
+                    jm = j - m
+                    rjm = math.sqrt(float(jm * (j + m + 1)))
+                    if jm == 0:
+                        coef2_2 = 0.0
+                    else:
+                        coef2_2 = math.sqrt(float((jm - 1) * (j + m + 2))) * rjm
+                    d1p = d0p * coef1_0pp - d0p_1 * rjm
+                    d1n = d0n * coef1_0pn + d0n_1 * rjm
+                    d2p = d0p * coef2_0pp - d0p_1 * rjm * coef2_1pp + d0p_2 * coef2_2
+                    d2n = d0n * coef2_0pn + d0n_1 * rjm * coef2_1pn + d0n_2 * coef2_2
+
+                    # detail::conjMult(flm[m, j], gln[n, j], vp, vc)
+                    # with the (j + m) parity negation of line 1046
+                    f = flm[m, j]
+                    g = gln[n, j]
+                    frr = f.real * g.real
+                    fii = f.imag * g.imag
+                    fri = f.real * g.imag
+                    fir = f.imag * g.real
+                    vp = complex(frr - fii, fir + fri)
+                    vc = complex(frr + fii, fir - fri)
+                    if (j + m) % 2 != 0:
+                        vp = -vp
+
+                    vc_pp = vc * ag_p
+                    vc_pp0 = vc_pp * d0p
+                    vc_pp1 = vc_pp * d1p
+                    vp_pn = vp * ag_n
+                    vp_pn0 = vp_pn * d0n
+                    vp_pn1 = vp_pn * d1n
+
+                    # the ten components of lines 1057-1070
+                    wrk[0] += vc_pp0.real * wc + vp_pn0.real * wp
+                    wrk[1] += vc_pp0.imag * -m * wc + vp_pn0.imag * -m * wp
+                    wrk[2] += vc_pp1.real * wc + vp_pn1.real * wp
+                    wrk[3] += vc_pp0.imag * -n * wc + vp_pn0.imag * n * wp
+                    wrk[4] += vc_pp0.real * -mm * wc + vp_pn0.real * -mm * wp
+                    wrk[5] += vc_pp.real * d2p * wc + vp_pn.real * d2n * wp
+                    wrk[6] += vc_pp0.real * -nn * wc + vp_pn0.real * -nn * wp
+                    wrk[7] += vc_pp1.imag * -m * wc + vp_pn1.imag * -m * wp
+                    wrk[8] += vc_pp1.imag * -n * wc + vp_pn1.imag * n * wp
+                    wrk[9] += vc_pp0.real * -mn * wc + vp_pn0.real * mn * wp
+            else:
+                # the value-only branch of lines 1080-1105
+                for j in range(start, bandwidth, d_j):
+                    d0p = d_beta[m, n, j, 0]
+                    d0n = d_beta[m, n, j, 1]
+                    f = flm[m, j]
+                    g = gln[n, j]
+                    frr = f.real * g.real
+                    fii = f.imag * g.imag
+                    fri = f.real * g.imag
+                    fir = f.imag * g.real
+                    vp_r = frr - fii
+                    vp_i = fir + fri
+                    vc_r = frr + fii
+                    vc_i = fir - fri
+                    if (j + m) % 2 != 0:
+                        vp_r = -vp_r
+                        vp_i = -vp_i
+                    vc_pp0 = vc_r * ag_p.real - vc_i * ag_p.imag
+                    vp_pn0 = vp_r * ag_n.real - vp_i * ag_n.imag
+                    wrk[0] += vc_pp0 * d0p * wc + vp_pn0 * d0n * wp
+
+    # the symmetrised copy-out of lines 1110-1117
+    if der:
+        jac[0] = wrk[1]
+        jac[1] = wrk[2]
+        jac[2] = wrk[3]
+        hes[0, 0] = wrk[4]
+        hes[0, 1] = wrk[7]
+        hes[0, 2] = wrk[9]
+        hes[1, 1] = wrk[5]
+        hes[1, 2] = wrk[8]
+        hes[2, 2] = wrk[6]
+        hes[1, 0] = hes[0, 1]
+        hes[2, 0] = hes[0, 2]
+        hes[2, 1] = hes[1, 2]
+    return wrk[0]
 
 
 def _refine_peak(
@@ -1421,9 +1635,99 @@ def _refine_peak(
     first step may be about eight cells where the C++ comment says
     one.  Ported verbatim.
     """
-    raise NotImplementedError(
-        "`_refine_peak()` is not implemented yet, so a refinement cannot run"
-    )
+    # ``eu0`` of line 444, and the iterate the loop steps
+    eu = np.array(zyz0, dtype=np.float64)
+    eu0 = eu.copy()
+    abs_eps = eps * _TWO_PI / side_length
+    prev_mag2 = _TWO_PI * _REFINE_FIRST_STEP_SCALE / side_length
+    peak = np.nan
+    failed = False
+
+    for iteration in range(1, _REFINE_MAX_ITERATIONS + 1):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            peak = _derivatives(
+                flm,
+                gln,
+                eu,
+                jac,
+                hes,
+                bandwidth,
+                mirror,
+                n_fold,
+                True,
+                d_beta,
+                e_km,
+                w_jkm,
+                b_jkm,
+            )
+        # the inner try of lines 460-465: a NaN beta^2 derivative, a
+        # Cholesky which refuses an indefinite or singular matrix, or
+        # a step longer than the previous one all fall back
+        newton = True
+        if math.isnan(hes[1, 1]):
+            newton = False
+        elif _preprocessing._cholesky_solve_3x3(hes, jac, step) != 0:
+            newton = False
+        else:
+            mag2 = step[0] ** 2 + step[1] ** 2 + step[2] ** 2
+            # a NaN comparison is false here, as it is in the C++
+            if mag2 > prev_mag2:
+                newton = False
+            else:
+                prev_mag2 = mag2
+
+        if not newton:
+            if math.isnan(hes[1, 1]):
+                # on the degeneracy the beta^2 derivative is
+                # undefined: the 1 x 1 sub-problem of lines 470-473,
+                # divided unguarded as the C++ divides it
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    step[0] = jac[0] / hes[0, 0]
+                step[1] = 0.0
+                step[2] = 0.0
+            else:
+                # close to it: the 2 x 2 sub-problem of lines
+                # 475-483, whose ``det < euEps`` is a total failure
+                # (the C++'s inner test is always true when reached)
+                det = hes[0, 0] * hes[1, 1] - hes[0, 1] * hes[0, 1]
+                if det < _REFINE_EU_EPS:
+                    failed = True
+                    break
+                step[0] = (jac[0] * hes[1, 1] - jac[1] * hes[0, 1]) / det
+                step[1] = (jac[1] * hes[0, 0] - jac[0] * hes[0, 1]) / det
+                step[2] = 0.0
+            # ``prevMag2`` is **not** updated by a fallback step
+
+        # apply the step and check for convergence (lines 486-489)
+        eu[0] -= step[0]
+        eu[1] -= step[1]
+        eu[2] -= step[2]
+        if max(abs(step[0]), abs(step[1]), abs(step[2])) < abs_eps:
+            break
+        if iteration == _REFINE_MAX_ITERATIONS:
+            failed = True
+
+    if failed:
+        # the catch of lines 494-498: the original orientation with
+        # the analytic value there
+        with np.errstate(divide="ignore", invalid="ignore"):
+            peak = _derivatives(
+                flm,
+                gln,
+                eu0,
+                jac,
+                hes,
+                bandwidth,
+                mirror,
+                n_fold,
+                False,
+                d_beta,
+                e_km,
+                w_jkm,
+                b_jkm,
+            )
+        return eu0, float(peak), False
+    return eu, float(peak), True
 
 
 # ------------------------- Inverse transform ------------------------ #
@@ -1704,6 +2008,37 @@ def _validated_flags(n_fold: int, mirror: bool) -> tuple[int, bool]:
     if not isinstance(mirror, (bool, np.bool_)):
         raise ValueError(f"`mirror` must be a bool, not {mirror!r}")
     return int(n_fold), bool(mirror)
+
+
+def _validated_start(zyz0: np.ndarray) -> np.ndarray:
+    """Return a starting rotation of a refinement as three finite
+    64-bit floats.
+
+    Parameters
+    ----------
+    zyz0
+        Starting passive ZYZ Euler angles in an array-like of shape
+        ``(3,)``.
+
+    Returns
+    -------
+    array
+        ``(3,)`` 64-bit float array, which the Newton loop copies
+        before it steps.
+
+    Raises
+    ------
+    ValueError
+        If the shape is not ``(3,)`` or an angle is not finite.  A
+        non-finite start would take the whole loop to NaN and come
+        back as a silent failure rather than as an error.
+    """
+    array = np.ascontiguousarray(zyz0, dtype=np.float64)
+    if array.shape != (3,):
+        raise ValueError(f"`zyz0` must have shape (3,), not {array.shape}")
+    if not np.isfinite(array).all():
+        raise ValueError(f"`zyz0` must be three finite angles, not {array}")
+    return array
 
 
 def _validated_wigner_table(table: np.ndarray, bandwidth: int) -> np.ndarray:
@@ -2302,10 +2637,81 @@ class SphericalCrossCorrelator:
         wigner_d_table_pre` so that its ``out=`` tripwire actually
         runs, and both are then reused by every later call.
         """
-        raise NotImplementedError(
-            "`refine_zyz()` is not implemented yet; it needs `_refine_peak()` "
-            "and `_derivatives()`"
+        bandwidth = self.bandwidth
+        # before the kernel, always: with bounds checking off a
+        # mismatched spectrum reads outside the array and returns
+        # garbage, measured at 1e225
+        flm = _validated_spectrum(flm, bandwidth, "flm")
+        gln = _validated_spectrum(gln, bandwidth, "gln")
+        n_fold, mirror = _validated_flags(n_fold, mirror)
+        zyz0 = _validated_start(zyz0)
+        e_km, w_jkm, b_jkm = self._refinement_buffers()
+        zyz, value, _ = _refine_peak(
+            flm,
+            gln,
+            zyz0,
+            n_fold,
+            mirror,
+            bandwidth,
+            self.side_length,
+            self._d_beta,
+            e_km,
+            w_jkm,
+            b_jkm,
+            self._jac,
+            self._hes,
+            self._step,
+            eps,
         )
+        return zyz, float(value)
+
+    def _refinement_buffers(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the factor triple, building this instance's
+        refinement buffers on the first call.
+
+        Returns
+        -------
+        e_km, w_jkm, b_jkm
+            :attr:`wigner_d_factors`, built here when a standalone
+            correlator refines for the first time and otherwise the
+            triple a refining indexer handed to the constructor.
+
+        Raises
+        ------
+        ValueError
+            If the ``(bw, bw, bw, 2)`` buffer does not pass the
+            ``out=`` contract of
+            :func:`kikuchipy.indexing._spherical._wigner.
+            wigner_d_table_pre`.
+
+        Notes
+        -----
+        The per-evaluation table build is the raw kernel, which
+        checks nothing, so the NaN filled buffer is routed once
+        through the wrapper: the one moment at which a wrong buffer
+        could enter.  The three Newton scratch arrays follow it, and
+        all four belong to this instance alone -- every kernel is
+        ``nogil=True``, so two threads sharing one table leave a
+        table which matches neither rotation.
+        """
+        bandwidth = self.bandwidth
+        if self.wigner_d_factors is None:
+            self.wigner_d_factors = _wigner.wigner_d_table_factors(bandwidth)
+        e_km, w_jkm, b_jkm = self.wigner_d_factors
+        if self._d_beta is None:
+            self._d_beta = _wigner.wigner_d_table_pre(
+                bandwidth,
+                1.0,
+                False,
+                e_km,
+                w_jkm,
+                b_jkm,
+                out=np.full((bandwidth, bandwidth, bandwidth, 2), np.nan),
+            )
+            self._jac = np.zeros(3)
+            self._hes = np.zeros((3, 3))
+            self._step = np.zeros(3)
+        return e_km, w_jkm, b_jkm
 
     def clone(self) -> "SphericalCrossCorrelator":
         """Return a new correlator sharing this one's Wigner table.
@@ -2660,7 +3066,10 @@ class NormalizedSphericalCrossCorrelator:
 
         with both evaluations taking the **reference's**
         ``(n_fold, mirror)`` flags, as the C++ passes ``mr, nf``,
-        and with the radicand unguarded, as in the C++.
+        and with the radicand and the division left to IEEE
+        arithmetic, as in the C++: a negative radicand gives a NaN
+        score and an exactly zero denominator an infinite one,
+        neither of which raises.
 
         **The Newton step maximizes the un-normalized correlation**,
         since the window shift chain rule of lines 263-264 is
@@ -2670,10 +3079,14 @@ class NormalizedSphericalCrossCorrelator:
         the refined accuracy of a masked pattern is window limited
         (measured 2.1e-2 degrees against 3e-6 unmasked).
         """
-        raise NotImplementedError(
-            "`refine_zyz()` is not implemented yet; it needs `_refine_peak()`, "
-            "`_derivatives()` and the denominator"
+        zyz, value = self.correlator.refine_zyz(
+            self.flm, gln, self.n_fold, self.mirror, zyz0, eps=eps
         )
+        # IEEE, not Python: ``0.0 / 0.0`` and ``x / 0.0`` are the
+        # C++'s NaN and infinity here, never a ``ZeroDivisionError``
+        with np.errstate(divide="ignore", invalid="ignore"):
+            score = np.float64(value) / np.float64(self._denominator(zyz))
+        return zyz, float(score)
 
     def _denominator(self, zyz: np.ndarray) -> float:
         """Return the Huhle denominator at one rotation.
@@ -2695,13 +3108,48 @@ class NormalizedSphericalCrossCorrelator:
         Port of ``NormalizedCorrelator<Real>::Constants::
         denominator()`` (``include/sht/sht_xcorr.hpp``, lines
         1211-1225), the pointwise counterpart of the whole cube
-        :attr:`r_den` holds the reciprocal of.  The radicand is
-        unguarded, as in the C++; measured O(1) and positive at the
+        :attr:`r_den` holds the reciprocal of.  The radicand is left
+        to IEEE arithmetic, as in the C++ and as in the whole cube
+        twin: a negative one gives a quiet NaN rather than a
+        ``ValueError``, so a foreign starting orientation loses the
+        ``upper_bound`` comparisons it should lose instead of
+        killing its pattern.  Measured O(1) and positive at the
         refined rotation of every real Ni pattern.
         """
-        raise NotImplementedError(
-            "`_denominator()` is not implemented yet; it needs `_derivatives()`"
-        )
+        correlator = self.correlator
+        bandwidth = correlator.bandwidth
+        e_km, w_jkm, b_jkm = correlator._refinement_buffers()
+        zyz = np.ascontiguousarray(zyz, dtype=np.float64)
+        values = []
+        for alm in (self.flm, self.flm2):
+            # both with the **reference's** flags, as the C++ passes
+            # ``mr, nf`` on lines 1213 and 1216
+            with np.errstate(divide="ignore", invalid="ignore"):
+                values.append(
+                    _derivatives(
+                        alm,
+                        self.mlm,
+                        zyz,
+                        correlator._jac,
+                        correlator._hes,
+                        bandwidth,
+                        self.mirror,
+                        self.n_fold,
+                        False,
+                        correlator._d_beta,
+                        e_km,
+                        w_jkm,
+                        b_jkm,
+                    )
+                )
+        mrf, mrf2 = values
+        s2m = float(self.mlm[0, 0].real) * _SQRT_FOUR_PI
+        fw_bar = mrf / s2m
+        radicand = mrf2 - 2.0 * fw_bar * mrf + fw_bar * fw_bar * s2m
+        # ``numpy.sqrt``, never ``math.sqrt``: the C++ returns a
+        # quiet NaN on a negative radicand and does not throw
+        with np.errstate(invalid="ignore"):
+            return float(np.sqrt(np.float64(radicand)))
 
     def clone(self) -> "NormalizedSphericalCrossCorrelator":
         """Return a new correlator sharing this one's spectra,

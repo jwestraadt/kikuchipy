@@ -650,7 +650,15 @@ machinery bitwise.
   `da.from_array(zyz, chunks=(patterns_da.chunks[0], (3,)))` and
   `da.from_array(phase_id, chunks=(patterns_da.chunks[0],))` and
   passed to `map_blocks` as aligned block arguments alongside the
-  pattern blocks (`_refine_chunk` packs `(nc, 6)` rows:
+  pattern blocks (corrected 2026-09-02, implementation: `map_blocks`
+  cannot express this -- measured, it builds its `argpairs` as
+  `tuple(range(a.ndim))[::-1]` and so aligns arrays on their
+  *trailing* axes, handing every block the whole `(n, 3)` and `(n,)`
+  arrays; the port uses the `dask.array.blockwise` call `map_blocks`
+  itself makes, with the explicit indices `"ij"` out of
+  `patterns "ikl"`, `zyz "im"`, `phase_id "i"`, and keeps the
+  `da.from_array` chunking above verbatim -- see "Recorded results")
+  (`_refine_chunk` packs `(nc, 6)` rows:
   `alpha, beta, gamma, score, phase_id, iq`); a bitwise
   chunksize/worker-count invariance test covers this path
   (validation).

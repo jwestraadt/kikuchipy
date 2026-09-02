@@ -58,6 +58,7 @@ import threading
 import time
 
 import dask
+import dask.array as da
 import numpy as np
 from orix.crystal_map import (
     CrystalMap,
@@ -703,7 +704,7 @@ def analytic_normalized_score(indexer, gln, zyz):
     return float(value) / correlator._denominator(zyz)
 
 
-# =================== _derivatives: the kernel (D1/D2) ================ #
+# ================== _derivatives: the kernel (D1/D2) ================ #
 
 
 class TestDerivatives:
@@ -1051,6 +1052,57 @@ class TestDerivatives:
         assert worst_value <= PY_FUNC_VALUE_RELATIVE
         assert worst_derivative <= PY_FUNC_DERIVATIVE_ABSOLUTE
 
+    def test_the_py_func_matches_on_the_symmetry_free_branches(self, record_property):
+        # the sibling above draws a mirrored pair and asks for
+        # derivatives only, which leaves two whole pieces of the
+        # kernel interpreted-untouched: with a mirror the degree loop
+        # steps by two from a bumped start, so ``(j + m)`` is always
+        # even and the parity negation of line 1046 never runs, and
+        # ``der=True`` never enters the value-only loop of lines
+        # 1080-1105.  A symmetry free pair at both ``der`` settings
+        # walks both, and the same tolerances hold there
+        kernel = _xcorr._derivatives
+        bandwidth = 12
+        rng = np.random.default_rng(37)
+        buffers = RefineBuffers(bandwidth)
+        flm = random_alm(bandwidth, rng)
+        gln = _wigner.rotate_harmonics(flm, random_zyz(rng))
+        zyz = np.asarray(random_zyz(rng), dtype=np.float64)
+        worst_value = worst_derivative = 0.0
+        for der in (True, False):
+            results = []
+            for function in (kernel, kernel.py_func):
+                jac = np.zeros(3)
+                hes = np.zeros((3, 3))
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    value = function(
+                        flm,
+                        gln,
+                        zyz,
+                        jac,
+                        hes,
+                        bandwidth,
+                        False,
+                        1,
+                        der,
+                        buffers.d_beta,
+                        buffers.e_km,
+                        buffers.w_jkm,
+                        buffers.b_jkm,
+                    )
+                results.append((float(value), jac, hes))
+            compiled, interpreted = results
+            worst_value = max(
+                worst_value,
+                abs(compiled[0] - interpreted[0]) / max(1e-30, abs(compiled[0])),
+            )
+            for a, b in ((compiled[1], interpreted[1]), (compiled[2], interpreted[2])):
+                worst_derivative = max(worst_derivative, float(np.abs(a - b).max()))
+        record_property("py_func_symmetry_free_value", f"{worst_value:.3e}")
+        record_property("py_func_symmetry_free_derivative", f"{worst_derivative:.3e}")
+        assert worst_value <= PY_FUNC_VALUE_RELATIVE
+        assert worst_derivative <= PY_FUNC_DERIVATIVE_ABSOLUTE
+
     def test_a_shape_mismatch_never_reaches_the_kernel(self):
         # with bounds checking off a spectrum which disagrees with
         # the kernel's bandwidth is silent garbage rather than an
@@ -1068,7 +1120,7 @@ class TestDerivatives:
             correlator.refine_zyz(good, small, 1, False, zyz)
 
 
-# ================== Kernel flags and the error model ================= #
+# ================= Kernel flags and the error model ================= #
 
 
 class TestRefinementKernels:
@@ -1168,7 +1220,7 @@ class TestRefinementKernels:
         assert calls == []
 
 
-# ================= _refine_peak: the Newton loop (D4) ================ #
+# ================ _refine_peak: the Newton loop (D4) ================ #
 
 
 class TestRefinePeak:
@@ -1449,11 +1501,13 @@ class TestRefinePeak:
         flm = random_alm(bandwidth, rng)
         gln = random_alm(bandwidth, rng)
         identity = np.eye(3)
+        # mag2 0.01 accepted, 0.25 rejected -> fallback, 0.1125
+        # rejected unless ``prev_mag2`` grew, then converged
         gradients = [
-            np.array([0.1, 0.0, 0.0]),  # accepted, mag2 0.01
-            np.array([0.5, 0.0, 0.0]),  # rejected, mag2 0.25 -> fallback
-            np.array([0.15, 0.0, 0.3]),  # mag2 0.1125: rejected unless prev grew
-            np.array([1e-9, 0.0, 0.0]),  # converged
+            np.array([0.1, 0.0, 0.0]),
+            np.array([0.5, 0.0, 0.0]),
+            np.array([0.15, 0.0, 0.3]),
+            np.array([1e-9, 0.0, 0.0]),
         ]
         calls = {"n": 0}
 
@@ -1487,14 +1541,21 @@ class TestRefinePeak:
 
     def test_the_stopping_threshold_is_the_ported_one(self, monkeypatch):
         # ``absEps = eps 2 pi / slP`` (line 446): a step just under
-        # it stops the loop and a step just over it does not
+        # it stops the loop and a step just over it does not.  The
+        # scale of exactly 1 is the one input the C++'s strict
+        # ``<`` (line 488) and a ``<=`` disagree on: the identity
+        # solve is exact, so ``step[0]`` is bitwise ``threshold``,
+        # which is bitwise the loop's own ``abs_eps``
         bandwidth = 16
         buffers = RefineBuffers(bandwidth)
         rng = np.random.default_rng(6)
         flm = random_alm(bandwidth, rng)
         gln = random_alm(bandwidth, rng)
         threshold = 0.01 * 2 * math.pi / buffers.side_length
-        for scale, expected in ((0.5, 1), (2.0, _xcorr._REFINE_MAX_ITERATIONS)):
+        code = _xcorr._REFINE_EPS * 2 * math.pi / buffers.side_length
+        assert threshold == code
+        cap = _xcorr._REFINE_MAX_ITERATIONS
+        for scale, expected in ((0.5, 1), (1.0, cap), (2.0, cap)):
             calls = {"n": 0}
 
             def fake(*args, **kwargs):
@@ -1516,6 +1577,44 @@ class TestRefinePeak:
         assert _xcorr._REFINE_MAX_ITERATIONS == 15
         assert _xcorr._REFINE_EPS == 0.01
 
+    def test_the_first_step_bound_is_the_ported_seed(self, monkeypatch):
+        # ``prevMag2 = 2 pi 3 / slP`` (line 450), the recorded C++
+        # quirk of comparing a squared step length against a linear
+        # bound.  The seed decides whether the very first step is
+        # taken whole, so it is pinned as a constant *and*
+        # behaviourally
+        assert _xcorr._REFINE_FIRST_STEP_SCALE == 3.0
+        bandwidth = 16
+        buffers = RefineBuffers(bandwidth)
+        rng = np.random.default_rng(4)
+        flm = random_alm(bandwidth, rng)
+        gln = random_alm(bandwidth, rng)
+        # 2 pi 1 / slP = 0.196 < mag2 0.29 < 2 pi 3 / slP = 0.589
+        gradients = [np.array([0.5, 0.0, 0.2]), np.array([1e-9, 0.0, 0.0])]
+        assert 2 * math.pi / buffers.side_length < 0.5**2 + 0.2**2
+        calls = {"n": 0}
+
+        def fake(*args, **kwargs):
+            jac = args[3]
+            hes = args[4]
+            der = kwargs["der"] if "der" in kwargs else args[8]
+            if not der:
+                return -1.0
+            index = min(calls["n"], len(gradients) - 1)
+            jac[:] = gradients[index]
+            hes[:] = np.eye(3)
+            calls["n"] += 1
+            return -1.0
+
+        monkeypatch.setattr(_xcorr, "_derivatives", fake)
+        start = np.array([0.0, 0.5, 0.3])
+        zyz, _, converged = buffers.refine(flm, gln, start)
+        assert converged is True
+        # the seed of 3 accepts the first step whole, gamma
+        # included; a tighter seed rejects it and the 2 x 2 fallback
+        # freezes gamma at its starting value
+        assert zyz[2] == pytest.approx(start[2] - 0.2, abs=1e-9)
+
     def test_the_convergence_scale_barely_matters(self, record_property):
         # recorded, not asserted tightly: the real-data residual is
         # systematic, so a hundredfold tighter ``eps`` changes
@@ -1535,7 +1634,7 @@ class TestRefinePeak:
         assert delta < CPP_EPS_DEG
 
 
-# ============ refine_zyz, correlate(refine=True), buffers ============ #
+# =========== refine_zyz, correlate(refine=True), buffers ============ #
 
 
 class TestCorrelateRefine:
@@ -1782,9 +1881,82 @@ class TestCorrelateRefine:
         assert np.array_equal(plain_zyz, refined)
         assert denominator > 0
         assert score == pytest.approx(plain_score / denominator, rel=1e-12)
+        # this pins *that* the division happens and that the
+        # denominator is taken at the refined rotation, not *what*
+        # the denominator is -- both sides call the same method.  Its
+        # internals are pinned by the call test below and by the
+        # ``TestRefinedNickelSmall`` accuracy bounds, so do not
+        # "simplify" either away
+
+    def test_the_denominator_uses_the_reference_flags(self, monkeypatch):
+        # ``mr, nf`` of lines 1213 and 1216: both evaluations take
+        # the **reference's** symmetry flags, never the pattern's.
+        # Pinned at the call, since the flags only skip coefficients
+        # a symmetric reference has no amplitude in, so no value
+        # assertion at any tolerance can see them (measured: a
+        # loosened flag moves the real Ni value by 0.0 and the
+        # Hessian by 7.9e-14 on a value of 9.9)
+        bandwidth = 16
+        rng = np.random.default_rng(11)
+        flm = random_alm(bandwidth, rng, n_fold=4, mirror=True)
+        flm2 = random_alm(bandwidth, rng, n_fold=4, mirror=True)
+        mlm = random_alm(bandwidth, rng)
+        correlator = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 4, True, mlm
+        )
+        seen = []
+        original = _xcorr._derivatives
+
+        def spy(alm, mlm_, zyz, jac, hes, bw, mirror, n_fold, der, *rest):
+            seen.append((mirror, n_fold))
+            return original(alm, mlm_, zyz, jac, hes, bw, mirror, n_fold, der, *rest)
+
+        monkeypatch.setattr(_xcorr, "_derivatives", spy)
+        correlator._denominator(np.array([0.1, 0.4, 0.2]))
+        assert seen == [(correlator.mirror, correlator.n_fold)] * 2
+        assert seen == [(True, 4), (True, 4)]
+
+    def test_a_negative_radicand_is_a_quiet_nan(self, recwarn):
+        # the C++ ``std::sqrt`` of a negative radicand is a quiet
+        # NaN which loses every ``upper_bound`` comparison, not an
+        # exception which kills the pattern for every other phase
+        # too.  ``flm2 = 0`` leaves ``-mrf^2 / s2m``, negative
+        # whenever the window integral is positive
+        bandwidth = 16
+        rng = np.random.default_rng(3)
+        flm = random_alm(bandwidth, rng)
+        mlm = random_alm(bandwidth, rng)
+        mlm[0, 0] = 1.0
+        flm2 = np.zeros((bandwidth, bandwidth), dtype=np.complex128)
+        gln = random_alm(bandwidth, rng)
+        correlator = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 1, False, mlm
+        )
+        zyz0 = np.array([0.3, 0.7, -0.4])
+        assert math.isnan(correlator._denominator(zyz0))
+        _, score = correlator.refine_zyz(gln, zyz0)
+        assert math.isnan(score)
+        # and no bare NumPy invalid-value warning leaks out
+        assert not [w for w in recwarn.list if w.category is RuntimeWarning]
+
+    def test_a_zero_denominator_is_an_infinite_score(self, monkeypatch):
+        # the C++ divide is IEEE: an exactly zero denominator gives
+        # an infinity, never a ``ZeroDivisionError``
+        bandwidth = 16
+        rng = np.random.default_rng(5)
+        flm = random_alm(bandwidth, rng)
+        flm2 = random_alm(bandwidth, rng)
+        mlm = random_alm(bandwidth, rng)
+        gln = random_alm(bandwidth, rng)
+        correlator = _xcorr.NormalizedSphericalCrossCorrelator(
+            bandwidth, flm, flm2, 1, False, mlm
+        )
+        monkeypatch.setattr(type(correlator), "_denominator", lambda self, zyz: 0.0)
+        _, score = correlator.refine_zyz(gln, np.array([0.3, 0.7, -0.4]))
+        assert math.isinf(score)
 
 
-# ================== The indexer's plumbing (D3/D7/D8) ================ #
+# ================= The indexer's plumbing (D3/D7/D8) ================ #
 
 
 class TestIndexerRefinePlumbing:
@@ -1929,7 +2101,7 @@ class TestRefinedInfoMessage:
         assert "Refining" not in message
 
 
-# =================== refine_patterns and its chunks ================== #
+# ================== refine_patterns and its chunks ================== #
 
 
 def _coarse_results(indexer, patterns):
@@ -2017,14 +2189,40 @@ class TestRefinePatterns:
             raise RuntimeError("injected refinement failure")
 
         monkeypatch.setattr(_xcorr, "_refine_peak", exploding)
-        results = indexer.refine_patterns(
+        # a run whose every pattern failed must not return the input
+        # rows in silence, as ``index_patterns`` does not
+        with pytest.warns(UserWarning, match="9 of 9 indexed pattern"):
+            results = indexer.refine_patterns(
+                patterns,
+                coarse["zyz"][:, 0],
+                coarse["phase_id"][:, 0],
+                progressbar=False,
+            )
+        assert np.array_equal(results["zyz"], coarse["zyz"][:, 0])
+        assert np.array_equal(results["phase_id"], coarse["phase_id"][:, 0])
+
+    def test_a_successful_run_does_not_warn(self, recwarn):
+        indexer, patterns, coarse = self._setup()
+        indexer.refine_patterns(
             patterns,
             coarse["zyz"][:, 0],
             coarse["phase_id"][:, 0],
             progressbar=False,
         )
-        assert np.array_equal(results["zyz"], coarse["zyz"][:, 0])
-        assert np.array_equal(results["phase_id"], coarse["phase_id"][:, 0])
+        messages = [str(w.message) for w in recwarn.list]
+        assert not [m for m in messages if "could not be refined" in m]
+
+    def test_a_not_indexed_row_is_not_counted_as_a_failure(self, recwarn):
+        # the negative phase pass-through is the intended case and
+        # carries the same zero score and zero image quality
+        indexer, patterns, coarse = self._setup()
+        phase_id = coarse["phase_id"][:, 0].copy()
+        phase_id[4] = -1
+        indexer.refine_patterns(
+            patterns, coarse["zyz"][:, 0], phase_id, progressbar=False
+        )
+        messages = [str(w.message) for w in recwarn.list]
+        assert not [m for m in messages if "could not be refined" in m]
 
     def test_a_phase_index_out_of_range_is_refused(self):
         indexer, patterns, coarse = self._setup()
@@ -2034,6 +2232,47 @@ class TestRefinePatterns:
             indexer.refine_patterns(
                 patterns, coarse["zyz"][:, 0], phase_id, progressbar=False
             )
+
+    def test_the_phase_index_boundary_is_refused(self):
+        # exactly ``n_phases``, the only value a ``>`` guard would
+        # let through: it would then reach ``correlators[n_phases]``,
+        # whose ``IndexError`` the per-pattern catch swallows into a
+        # zero-score row
+        indexer, patterns, coarse = self._setup()
+        phase_id = coarse["phase_id"][:, 0].copy()
+        phase_id[3] = indexer.n_phases
+        with pytest.raises(ValueError):
+            indexer.refine_patterns(
+                patterns, coarse["zyz"][:, 0], phase_id, progressbar=False
+            )
+
+    @pytest.mark.parametrize("normalize", [True, False])
+    def test_the_row_s_own_phase_decides_the_correlator(self, normalize):
+        # every other refinement test here is single phase, where
+        # ``correlators[0]`` and ``correlators[phase_id]`` -- and
+        # ``spectra[0]`` and ``spectra[phase_id]`` on the
+        # un-normalised path -- are the same object.  The same nine
+        # patterns and starts refined through phase 0 and through
+        # phase 1 must differ
+        indexer = SphericalIndexer(
+            [ni_harmonics(), scrambled_harmonics()],
+            ni_detector(),
+            refine=False,
+            normalize=normalize,
+        )
+        patterns = ni_signal().data.reshape((-1, 60, 60))
+        zyz = _coarse_results(indexer, patterns)["zyz"][:, 0]
+        first = indexer.refine_patterns(
+            patterns, zyz, np.zeros(9, dtype=np.int32), progressbar=False
+        )
+        second = indexer.refine_patterns(
+            patterns, zyz, np.ones(9, dtype=np.int32), progressbar=False
+        )
+        assert not np.array_equal(first["scores"], second["scores"])
+        assert not np.array_equal(first["zyz"], second["zyz"])
+        # the Ni phase wins on Ni patterns, the decoy does not
+        assert (first["scores"] > 0.25).all()
+        assert (second["scores"] < 0.0).all()
 
     @pytest.mark.parametrize("chunksize", [1, 4, 9])
     def test_the_chunk_size_does_not_change_the_result(self, chunksize):
@@ -2085,9 +2324,11 @@ class TestRefinePatterns:
         # a mis-alignment which is *consistent* across chunk sizes
         # would survive the invariance test above, so the starting
         # triples are also permuted here: every refined row must
-        # follow its own pattern
+        # follow its own pattern.  The permutation is deliberately
+        # **not** cyclic: a cyclic one commutes with a row roll, so
+        # an off-by-one roll of the starts would pass it
         indexer, patterns, coarse = self._setup()
-        order = np.array([4, 5, 6, 7, 8, 0, 1, 2, 3])
+        order = np.array([2, 0, 5, 8, 1, 7, 3, 6, 4])
         straight = indexer.refine_patterns(
             patterns,
             coarse["zyz"][:, 0],
@@ -2130,8 +2371,91 @@ class TestRefinePatterns:
         with pytest.raises(ValueError):
             indexer.refine_patterns(patterns, zyz[:, :2], phase_id, progressbar=False)
 
+    def test_patterns_which_do_not_match_the_detector_are_refused(self):
+        indexer, patterns, coarse = self._setup()
+        with pytest.raises(ValueError, match="detector shape"):
+            indexer.refine_patterns(
+                patterns[:, :59],
+                coarse["zyz"][:, 0],
+                coarse["phase_id"][:, 0],
+                progressbar=False,
+            )
 
-# ===================== Real data, the small map ====================== #
+    def test_a_chunk_size_below_one_is_refused(self):
+        indexer, patterns, coarse = self._setup()
+        with pytest.raises(ValueError, match="at least one"):
+            indexer.refine_patterns(
+                patterns,
+                coarse["zyz"][:, 0],
+                coarse["phase_id"][:, 0],
+                chunksize=0,
+                progressbar=False,
+            )
+
+    def test_a_zero_variance_pattern_keeps_its_input_row(self):
+        # guard (a) of the refine-only pipeline, which is the
+        # indexing one: a pattern with no variance is never refined
+        # and its row passes through with a zero score
+        indexer, patterns, coarse = self._setup()
+        patterns = patterns.copy()
+        patterns[3] = 37
+        zyz = coarse["zyz"][:, 0]
+        results = indexer.refine_patterns(
+            patterns, zyz, coarse["phase_id"][:, 0], progressbar=False
+        )
+        assert np.array_equal(results["zyz"][3], zyz[3])
+        assert results["scores"][3] == 0.0
+        assert results["iq"][3] == 0.0
+        # and the untouched patterns were refined
+        assert results["scores"][0] > 0.0
+
+    def test_a_constant_processed_pattern_keeps_its_input_row(self, monkeypatch):
+        # guard (b), which no raw input reaches: every constant raw
+        # pattern is caught by guard (a) first
+        indexer, patterns, coarse = self._setup()
+
+        def constant(pattern, **kwargs):
+            return np.full((60, 60), 1.0)
+
+        monkeypatch.setattr(_indexer, "_preprocess_pattern", constant)
+        zyz = coarse["zyz"][:, 0]
+        results = indexer.refine_patterns(
+            patterns, zyz, coarse["phase_id"][:, 0], progressbar=False
+        )
+        assert np.array_equal(results["zyz"], zyz)
+        assert np.array_equal(results["scores"], np.zeros(9))
+        assert np.array_equal(results["iq"], np.zeros(9))
+
+    def test_a_lazy_pattern_array_is_refined_the_same_way(self):
+        indexer, patterns, coarse = self._setup()
+        zyz = coarse["zyz"][:, 0]
+        phase_id = coarse["phase_id"][:, 0]
+        eager = indexer.refine_patterns(patterns, zyz, phase_id, progressbar=False)
+        lazy = indexer.refine_patterns(
+            da.from_array(patterns, chunks=(3, -1, -1)),
+            zyz,
+            phase_id,
+            chunksize=2,
+            progressbar=False,
+        )
+        assert np.array_equal(lazy["zyz"], eager["zyz"])
+        assert np.array_equal(lazy["scores"], eager["scores"])
+
+    def test_many_workers_warn(self):
+        # the refined model, not the constructor's: this indexer was
+        # built with ``refine=False`` and the method refines anyway
+        indexer, patterns, coarse = self._setup()
+        with dask.config.set(num_workers=64):
+            with pytest.warns(UserWarning, match="2 GiB"):
+                indexer.refine_patterns(
+                    patterns,
+                    coarse["zyz"][:, 0],
+                    coarse["phase_id"][:, 0],
+                    progressbar=False,
+                )
+
+
+# ===================== Real data, the small map ===================== #
 
 
 class TestRefinedNickelSmall:
@@ -2243,7 +2567,7 @@ class TestRefinedNickelSmall:
         assert (angles < SMALL_REFINED_ALL_DEG).all()
 
 
-# ============== EBSD.refine_orientation_spherical (D9) =============== #
+# ============== EBSD.refine_orientation_spherical (D9) ============== #
 
 
 def refine_ni(xmap, signal=None, **kwargs):
@@ -2363,7 +2687,9 @@ class TestRefineOrientationSpherical:
             return original(pattern, **kwargs)
 
         monkeypatch.setattr(_indexer, "_preprocess_pattern", exploding)
-        refined = refine_ni(coarse, signal=signal)
+        # the row is kept, but the user is told that it was
+        with pytest.warns(UserWarning, match="1 of 9 indexed pattern"):
+            refined = refine_ni(coarse, signal=signal)
         assert np.array_equal(refined.rotations[4].data, coarse.rotations[4].data)
         assert refined.scores[4] == coarse.scores[4]
         assert refined.iq[4] == coarse.iq[4]
@@ -2465,6 +2791,80 @@ class TestRefineOrientationSpherical:
         # into the input row above
         assert unchanged or refined.scores[4] <= foreign.scores[4] + 1e-12
 
+    def test_a_detector_shape_mismatch_is_refused(self):
+        signal = ni_signal()
+        coarse = index_ni(signal=signal, refine=False)
+        detector = ni_detector()
+        detector.shape = (60, 59)
+        with pytest.raises(ValueError, match="must be identical"):
+            refine_ni(coarse, signal=signal, detector=detector)
+
+    def test_a_map_which_is_not_one_or_two_dimensional_is_refused(self):
+        signal = ni_signal()
+        coarse = index_ni(signal=signal, refine=False)
+        flat = signal.inav[0, 0]
+        assert flat.axes_manager.navigation_dimension == 0
+        with pytest.raises(ValueError, match="one or two dimensions"):
+            refine_ni(coarse, signal=flat)
+
+    @pytest.mark.parametrize(
+        "mask, message",
+        [
+            ([[False] * 3] * 3, "NumPy array"),
+            (np.ones((3, 3), dtype=int), "boolean array"),
+            (np.zeros((2, 3), dtype=bool), "must be identical"),
+            (np.ones((3, 3), dtype=bool), "at least one value equal to"),
+        ],
+    )
+    def test_the_navigation_mask_is_validated(self, mask, message):
+        # the four checks of ``spherical_indexing`` in its frozen
+        # order: is-array, data type, shape, all-``True``
+        signal = ni_signal()
+        coarse = index_ni(signal=signal, refine=False)
+        with pytest.raises(ValueError, match=message):
+            refine_ni(coarse, signal=signal, navigation_mask=mask)
+
+    def test_master_patterns_without_a_phase_or_with_repeated_names_are_refused(self):
+        signal = ni_signal()
+        coarse = index_ni(signal=signal, refine=False)
+        harmonics = ni_harmonics()
+        no_phase = MasterPatternHarmonics(harmonics.alm.copy())
+        with pytest.raises(ValueError, match="phase"):
+            refine_ni(coarse, signal=signal, harmonics=[no_phase])
+        twin = MasterPatternHarmonics(
+            harmonics.alm.copy(), phase=harmonics.phase.deepcopy()
+        )
+        with pytest.raises(ValueError, match="unique"):
+            refine_ni(coarse, signal=signal, harmonics=[harmonics, twin])
+
+    def test_a_multi_candidate_map_keeps_only_the_first(self):
+        # ``idx.hpp`` refines a single result, so a keep-n map comes
+        # back as a keep-1 one and only its first column is read
+        signal = ni_signal()
+        coarse = index_ni(signal=signal, refine=False)
+        keep_two = index_ni(signal=signal, refine=False, n_best=2)
+        assert keep_two.rotations_per_point == 2
+        assert keep_two.scores.ndim == 2
+        refined = refine_ni(keep_two, signal=signal)
+        assert refined.rotations.shape == (9,)
+        assert refined.scores.shape == (9,)
+        assert misorientation(refined.rotations, coarse.rotations).max() < 1.0
+
+    def test_a_point_out_of_the_data_keeps_its_row(self):
+        # a mask which removes an interior point leaves the bounding
+        # box, and therefore ``xmap.shape``, alone, so such a map is
+        # accepted where the sparse one above is refused
+        signal = ni_signal()
+        mask = np.zeros((3, 3), dtype=bool)
+        mask[1, 1] = True
+        partial = index_ni(signal=signal, refine=False, navigation_mask=mask)
+        assert partial.shape == (3, 3)
+        assert not partial.is_in_data.all()
+        refined = refine_ni(partial, signal=signal)
+        assert np.array_equal(refined.is_in_data, partial.is_in_data)
+        assert refined.rotations.shape == (8,)
+        assert (refined.scores > 0).all()
+
     def test_the_verbose_wording(self, capsys):
         signal = ni_signal()
         coarse = index_ni(signal=signal, refine=False)
@@ -2477,7 +2877,7 @@ class TestRefineOrientationSpherical:
         assert "Indexing" not in out
 
 
-# ================ Public messages of the new surface ================= #
+# ================ Public messages of the new surface ================ #
 
 
 def _identity_map(phase, scores=None):
@@ -2550,7 +2950,7 @@ class TestPublicMessages:
                 assert token not in message, f"{token!r} in {message!r}"
 
 
-# ================== Real data, the large map (D10) =================== #
+# ================== Real data, the large map (D10) ================== #
 
 
 class TestRefinedNickelLarge:
@@ -2619,7 +3019,7 @@ class TestRefinedNickelLarge:
         assert deltas.mean() > SMALL_REFINED_SCORE_MEAN_DELTA
 
 
-# ==================== Performance of the new default ================= #
+# =================== Performance of the new default ================= #
 
 
 class TestRefinedPerformance:

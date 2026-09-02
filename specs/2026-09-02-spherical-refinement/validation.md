@@ -581,3 +581,282 @@ differ; they supersede the earlier sections for those fixtures.
   carries -0.066475, not the Ni coarse ~0.57 which no refinement
   from a random orientation could reach and against which the
   disjunction was vacuous.
+
+### 2026-09-02 -- implementation measurements (shipped code)
+
+Environment as above; the numbers below come from the **shipped**
+`_derivatives` / `_refine_peak` / `refine_zyz` / `_denominator` /
+`refine_patterns` / `EBSD.refine_orientation_spherical`, read out of
+the `record_property` entries of a
+`uv run pytest tests/test_indexing/test_spherical_refinement.py -n 0`
+run (`--junitxml`; 156 passed, 6 weekly skips). Every frozen band of
+the sections above is reproduced by the port.
+
+**Kernel oracles** (all inside their frozen bounds):
+
+| quantity | measured | bound |
+|---|---|---|
+| value vs inner product, `bw` 16, `der` True and False | 6.051e-14 (scale 19.44) | 1e-11 |
+| value vs analytic triple sum, `bw` 12 | 5.684e-14 | 1e-11 |
+| jacobian vs analytic, `bw` 12 (betas -2.0676..+2.0676) | 3.055e-13 | 1e-10 |
+| hessian vs analytic, `bw` 12 (scale 922.3) | 1.478e-12 | 1e-9 |
+| jacobian vs central differences, `bw` 16 | 2.724e-07 | 1e-5 |
+| hessian vs central differences, `bw` 16 | 6.653e-04 | 1e-2 |
+| `_phase7_derivatives` vs `wigner_d_prime(2)`, `bw` 15 | 5.684e-14 | 1e-12 |
+
+- `.py_func` parity is **exactly bitwise here** (worst relative value
+  difference 0.000e+00, worst derivative difference 0.000e+00), at
+  both `(n_fold, mirror)` settings and both `der` settings, i.e. well
+  inside the 1e-12 / 1e-9 bounds the CI lesson keeps.
+- Pole contract at `beta` `0.0` and `-0.0` (`bw` 24, on-peak start):
+  `hes[1, 1]` NaN, `jac = [-4.883e-13, nan, -4.883e-13]`, value
+  396.238717, no exception; `_refine_peak` converges through the
+  1 x 1 path in **1** iteration with the step's beta and gamma slots
+  exactly 0 (step `[1.186e-17, 0, 0]`). At `beta = +-pi` this host's
+  libm gives `cos == -1.0` and `hes[1, 1]` is NaN, as recorded.
+
+**Synthetic recovery** (the C++ gates, split as the C++ splits them):
+
+- symmetry free, `bw in {53, 54, 57, 60, 63, 64, 68}` x 3: worst
+  **2.958e-06 deg** (gate 4.92e-3), all 21 cases in **2** iterations,
+  zero failures, coarse 0.066-0.549;
+- eight point groups x `bw in {53, 60, 63}`: worst **9.035e-06 deg**
+  (gate 0.351), the `4/m` case at `bw` 53 -- exactly the figure the
+  test-quality review re-measured under the shipped fixture seeds;
+  20 of 24 cases are exactly 0;
+- normalised wedge: `(1, F)` worst **1.8487e-02 deg** (gate 4.92e-2),
+  `4/m` worst **2.1326e-02 deg** (gate 0.351), refined score above
+  the coarse one in **12/12** (e.g. `bw` 68 rot 2: 0.56756 ->
+  0.69284);
+- near-degenerate targets, `bw` 24: `beta = 0` and `beta = pi` refine
+  to **0.0 deg** from coarse 1.1973 and 0.8984, and the `+-1e-3`
+  offsets to **5.7307e-02** / **5.7308e-02**;
+- far starts, `bw` 24: **9/10** fail and return the start bitwise
+  with the analytic value there (-29.353 .. +9.263); the pinned case
+  32 converges, moving **3.642 deg** from value **-19.936** to
+  **-27.293**;
+- constructed saddle: **1** `der=True` evaluation, the start
+  returned, value -7.25, `converged False`; the monotone-step
+  sequence: 4 iterations, gamma frozen by the 2 x 2 fallback, alpha
+  moved by 0.1 + 0.5 + 0.15 + 1e-9;
+- `eps` 0.01 against 0.0001 at `bw` 53: **0.000e+00 deg** apart.
+
+**Real data** (`bw` 68, default configuration, `pc_average`):
+
+| data | refined median / p95 / max (deg) | scores |
+|---|---|---|
+| small (9) | **0.5052** / 0.6482 / **0.6953** (coarse 0.5987 / 0.8026 / 0.8379) | 0.5143-0.6347, mean **0.5886**, deltas +0.0108..+0.0286, 9/9 up |
+| small, `normalize=False` | 0.5052 / 0.6482 / 0.6953, **0.000e+00 deg** from the normalised run per point | deltas +0.00585..+0.01639, 9/9 up |
+| large 20-pt | **0.4780** / 0.9814 / **1.1148** (coarse 0.4988 / 1.2307 / 1.3497) | deltas min +0.00198, max +0.03066, mean +0.01348, **20/20 up** |
+
+- Small-map derivative calls: **19** with `der=True` and **18** with
+  `der=False`, i.e. the drafted 8 x 2 + 1 x 3 iterations plus one
+  denominator pair per pattern.
+- `refine_orientation_spherical` against
+  `spherical_indexing(refine=True)`: misorientation **0.000e+00 deg**
+  and score difference **2.920e-14** over the nine patterns, image
+  quality equal.
+- The sparse-mask map (`mask[0] = False`) gets `xmap.shape`
+  **(1, 3)** from orix and is refused by
+  `_xmap_is_compatible_with_signal`, as D9 predicted.
+- Foreign start (pattern 4, `default_rng(7)`): the refinement fails
+  and hands back the start with its analytic normalised value
+  **-0.066475**; the stored row is the glide-equivalent quaternion of
+  that same orientation rather than the input's bits, so the D10
+  disjunction is satisfied by its score half.
+
+**Timing on this machine** (single dask worker, `bw` 68, warm):
+refined throughput **40.4 patterns/s/core** (the `>= 2` floor keeps a
+20x margin); refined over coarse **1.11x** (22.53 -> 25.03 ms per
+pattern end to end); per stage, coarse `correlate` 17.87 ms and
+refine-with-denominator **1.81 ms** (ratio 1.10x). The absolute
+milliseconds sit above the drafting probe's 13.17 + 1.39 because this
+run shared the machine with the rest of the suite; the ratio
+reproduces.
+
+**Memory model** re-measured through the shipped
+`memory_per_worker_bytes`: single phase refined **54,457,112 B**
+("54 MB" in the information message), two phases normalised
+**89,231,224 B**, `refine=False` unchanged at 49,426,200 B, and
+`_memory_model(True)` on a `refine=False` indexer returns the refined
+number -- what `refine_patterns` prints.
+
+**One mechanism deviation, measured** (the chunk alignment of D9).
+`dask.array.map_blocks` **cannot** carry the `(n, 3)` starting
+triples and the `(n,)` phase indices as block arguments of a
+`(n, r, c)` pattern array. Measured on the installed dask:
+`map_blocks` builds its `argpairs` as `tuple(range(a.ndim))[::-1]`,
+i.e. it aligns arrays on their **trailing** axes, so a 9-pattern run
+chunked `(4, 4, 1)` hands **every** block the whole `(9, 3)` and
+`(9,)` arrays (`shapes (4, 2, 2) (9, 3) (9,)` printed from inside the
+chunk function) -- exactly the silent mis-alignment D9 exists to
+prevent, and it would still return the right number of rows. The port
+therefore maps with `dask.array.blockwise` and an explicit index
+expression -- `"ij"` out of `patterns "ikl"`, `zyz "im"`,
+`phase_id "i"` -- which is the general form `map_blocks` itself calls
+and makes the pattern axis one named index of all three arrays. The
+`da.from_array(..., chunks=(patterns_da.chunks[0], ...))` wrapping of
+the two row arrays is kept exactly as D9 froze it, and the bitwise
+chunksize, worker-count and permutation invariance tests pass.
+
+**Coverage** of the touched modules under
+
+```
+uv run pytest tests/test_indexing/test_spherical_refinement.py \
+  tests/test_indexing/test_spherical_xcorr.py \
+  tests/test_indexing/test_spherical_indexer.py \
+  tests/test_signals/test_ebsd_spherical_indexing.py \
+  --cov=kikuchipy.indexing._spherical --cov=kikuchipy.signals.ebsd \
+  --cov-report=term-missing -n 4
+```
+
+`_xcorr.py` **100.00 %** (690 statements) and `_indexer.py`
+**100.00 %** (337), with every line of `EBSD.spherical_indexing` and
+`EBSD.refine_orientation_spherical` covered too (the misses reported
+for `signals/ebsd.py` are all in the unrelated methods this selection
+does not exercise). Reaching 100 % needed four groups of additions to
+the test module, none of which relaxes an existing assertion: a
+`.py_func` parity case at `(n_fold=1, mirror=False)` and both `der`
+settings (the mirrored pair of the frozen test never runs the
+`(j + m)` parity negation nor the value-only loop), the two
+`refine_patterns` guards, and its shape, `chunksize`, lazy-input and
+2 GiB paths, and the signal method's detector-shape,
+navigation-dimension, four navigation-mask, master-pattern-phase,
+keep-n and point-out-of-the-data paths. The last of those records a
+case D9 did not name: a `navigation_mask` which removes an
+**interior** point leaves the in-data bounding box alone, so such a
+map keeps `xmap.shape == (3, 3)`, passes the compatibility check and
+is refined with its out-of-data row carried through untouched
+(measured) -- only a mask which shrinks the bounding box is the
+refusal case.
+
+**Whole-suite `-n 4` worker crashes are pre-existing, measured.**
+The four gate selections above are green, but a
+`uv run pytest tests/test_signals tests/test_indexing -n 4` over the
+*whole* suite loses one to four xdist workers per run on this machine
+("worker 'gwN' crashed while running ...", a native crash rather than
+an assertion failure), and the tests it takes down differ from run to
+run (`test_ebsd_hough_indexing`, `test_ebsd_refinement`,
+`test_spherical_wigner`, `test_spherical_xcorr`). Checked against the
+pre-implementation tree: the same command on the stashed
+tests-and-stubs commit crashes `gw3` and `gw4` too, at the *same*
+site (`test_spherical_xcorr.py::TestNormalized::
+test_the_compatibility_keyword_reaches_the_interpolation[24]`), so
+this is the environmental instability the `NUMBA_CACHE_DIR` note in
+`conftest.py` already describes and not a refinement regression. The
+narrower `-k "spherical or sht" -n 4` selection (2558 tests) ran
+green three times in a row.
+
+### Review follow-up, 2026-09-02 (fidelity / conventions / bug-injection)
+
+**The normalized score is IEEE, not raising (fidelity F1).** The C++
+differential probe (`cxx_probe2b.exe` against `py_probe2.py`, `bw` 12,
+identical `flm`/`flm2`/`mlm`/`gln`) had two of four starts return
+`-nan(ind)` from `NormalizedCorrelator::refinePeak` where the port
+raised `ValueError: math domain error` out of `math.sqrt` -- the
+whole-cube twin at `_xcorr.py:2900` already produced the quiet NaN.
+`_denominator` now takes `np.sqrt` under
+`np.errstate(invalid="ignore")` and `refine_zyz` divides in
+`numpy.float64`; re-measured, the two finite cases stay bitwise
+(`-0.05583698747953895`, `0.24783968938036238`, C++
+`-0.055836987479538643`, `0.24783968938036166`) and the two negative
+radicands now return `nan` with the refined `eu` matching the C++ to
+16 digits (`1.1005905059928804`, `-0.9073430219362185` /
+`2.8471347698084934`). A denominator forced to exactly `0.0` gives
+`inf`, not `ZeroDivisionError`. Blast radius removed: the phase loop
+of `_index_chunk` sits inside the per-pattern `except`, so one phase
+with a negative radicand used to discard every sibling phase's
+candidates.
+
+**The sentinel of `refine_orientation_spherical` (fidelity F2) is a
+re-derivation and stays one.** The proposed exact fix, a seventh
+written-flag column surfaced as a fifth dictionary key, is refused by
+the acceptance contract: `test_the_result_contract` asserts
+`set(results) == {"zyz", "scores", "iq", "phase_id"}`. The reviewer's
+alternative, keying on `iq != 0.0` alone, is strictly narrower than
+the implemented `scores != 0 | iq != 0` and would misclassify a row
+with a non-zero score and a zero image quality, so it is worse. The
+condition needs the back-projection to answer a non-constant pattern
+with an all-zero spectrum (only reachable when a `signal_mask` makes
+`_mean_fill`'s output constant and zero, `_back_projection.py:1491`)
+*and* the correlation to land on a float64 zero at the same point.
+Recorded as a documented residual instead, in the comment at the
+scatter site.
+
+**`refine_patterns` no longer fails in silence (conventions F1).**
+With `RuntimeError` injected into `_xcorr._refine_peak`, the previous
+code returned the input map with `warnings: []`. It now warns
+`"9 of 9 indexed pattern(s) could not be refined ..."`, mirroring
+`index_patterns`. A negative `phase_id` is the intended pass-through
+and is excluded from the count (`packed[:, 4] >= 0`), so the
+not-indexed row of `test_a_not_indexed_row_passes_through_bitwise`
+does not warn.
+
+**Timing claim corrected (conventions F4).** The `refine` docstring
+said coarse "is faster by 5-30 %"; the recorded refined/coarse ratios
+are 1.05-1.27x, i.e. 4.8-21.3 %. Reworded to "costs 5-21 % less time
+(measured refined to coarse ratios 1.05-1.27x)".
+
+**Comment width in the acceptance module (conventions F6).** Eleven
+73-char `# === Title === #` banners and the two inline comments at the
+`test_steps_must_shrink` gradient list were the module's only comment
+lines over 72; all are now within it (measured by a `tokenize` scan:
+`test_spherical_refinement.py` 0). *(corrected 2026-09-02: the
+conventions review's "0 violations in all twelve other
+`test_spherical_*.py` files" is wrong -- the same scan finds five
+pre-existing ones, `test_spherical_indexer.py:246` (73, a Phase 6
+banner), `test_spherical_master_pattern_harmonics.py:940,960` (76),
+`test_spherical_wigner.py:1899` (77) and
+`test_spherical_xcorr.py:2008,2886` (75, 78). None are Phase 7's and
+none were touched.)*
+
+**Survivor killers, each measured against its mutant.** Four genuine
+gaps closed and one equivalence pinned at the call:
+
+| mutant | new or changed test | pristine | mutant |
+|---|---|---|---|
+| `< abs_eps` -> `<=` | `test_the_stopping_threshold_is_the_ported_one`, scale 1.0 added | 15 iterations, `step[0]` bitwise `abs_eps` `0.001963495408493621` | 1 iteration |
+| `_REFINE_FIRST_STEP_SCALE` 3.0 -> 1.0 | `test_the_first_step_bound_is_the_ported_seed` | `mag2` 0.29 accepted whole, `gamma` `0.3 -> 0.1`, 2 iterations | first step rejected, 2 x 2 fallback freezes `gamma` at 0.3 |
+| `correlators[phase_id]` -> `[0]` and `spectra[phase_id]` -> `[0]` | `test_the_row_s_own_phase_decides_the_correlator[True/False]` | normalized scores phase 0 0.514-0.635 vs phase 1 -0.128--0.014; un-normalised 0.290-0.359 vs -0.071--0.008 | both phases bitwise identical |
+| `phase_id >= n_phases` -> `>` | `test_the_phase_index_boundary_is_refused` | `ValueError` at `phase_id == n_phases` | slips through to an `IndexError` swallowed as a zero-score row |
+| `_denominator` flags -> the pattern's | `test_the_denominator_uses_the_reference_flags` | `[(True, 4), (True, 4)]` | `[(False, 1), (False, 1)]` |
+
+**The two symmetry-flag mutants really are equivalent (bug-injection
+E1/X14), re-measured.** `_derivatives` with `(n_fold, mirror)`
+loosened to `(1, False)`: synthetic `4/m` at `bw` 16 is **bitwise
+equal** in value, jac and hes over six rotations; the real Ni master
+at `bw` 68 (`m-3m` -> `(4, True)`) moves the value by `0.0`, the jac
+by 2.2e-15 and the hes by 7.9e-14 on a value of 9.9, since the 2040
+skipped coefficients have `max |flm| = 7.1e-16` against an overall
+3.16. The `d_j = 2 if mirror` mutant adds 56 degrees whose `|flm|` is
+**exactly** `0.000e+00`. No value assertion at any tolerance in the
+suite (tightest oracle bound 1e-10) can see either, so the
+denominator flags are pinned at the call instead and `d_j` is
+recorded as an accepted equivalent mutant.
+
+**Row-shuffle permutation made non-cyclic (bug-injection bonus).**
+`test_the_rows_are_not_shuffled_by_the_blocks` used
+`[4,5,6,7,8,0,1,2,3]`, which commutes with a row roll, so mutant 28b
+(starts rolled by one) passed it and was only caught one stage later.
+With `[2,0,5,8,1,7,3,6,4]` the same mutant fails that test directly
+(measured).
+
+**Gate set after the fixes.** `test_spherical_refinement.py` **165
+passed, 6 weekly skips** at `-n 0` (32.2 s) and at `-n 4` (30.1 s),
+up from 156 by the nine new tests. `tests/test_indexing
+tests/test_signals -k "spherical or sht" -n 4`: **2567 passed, 714
+skipped** (126 s). New-line coverage of the working-tree diff, over
+that selection: `_xcorr.py` 249/249 new statements, `_indexer.py`
+94/94, `ebsd.py` 89/89 -- **100 %** on all three, with `_xcorr.py`
+and `_indexer.py` at 100 % whole-file. Twelve mutants (the five
+above plus the two F1 reversions, the warning removal, its
+not-indexed miscount, the roll and an inverted `was_refined` key) all
+**KILLED**, sources md5-restored. Docs build exits 0 with two
+warnings, both intersphinx network failures; the `refine_patterns`
+page now renders `refine_orientation_spherical` as a resolved link
+with zero multiline xref spans and zero `_spherical._euler` mentions.
+Two `--doctest-modules` failures in `signals/ebsd.py` are
+pre-existing and outside every changed hunk: the `EBSD` class
+docstring's degree sign (console encoding) and
+`get_image_quality`'s float32 last digits
+(`0.16031407` vs `0.16031112`).
