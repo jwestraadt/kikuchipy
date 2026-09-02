@@ -126,6 +126,17 @@ _PI_4 = math.pi / 4
 # EMSphInx (``square_sht.hpp``, line 1057)
 _WEIGHT_SUM_TOLERANCE = float(np.cbrt(_EPS) / 64)
 
+# Largest tolerated componentwise backward error of the ring weight
+# solve in _ring_weights_skip(). A LAPACK LU with partial pivoting has
+# a backward error of order n * eps whatever the conditioning of the
+# system, and a scan of every reachable (layout, dim, skip) up to
+# dim 769 measures at most 1.4e-15 on both the oldest supported and the
+# current NumPy. The tolerance sits seven orders above that, and seven
+# orders below the ~1e-1 seen when the BLAS misbehaves (see
+# _solve_partial_pivot), so it separates the two without ever firing on
+# a healthy stack.
+_SOLVE_BACKWARD_ERROR_TOLERANCE = 1e-8
+
 
 # ----------------------------- Helpers ------------------------------ #
 
@@ -929,6 +940,98 @@ def lambert_solid_angles(dim: int) -> np.ndarray:
 # ------------------------- Quadrature weights ----------------------- #
 
 
+def _backward_error(a: np.ndarray, b: np.ndarray, x: np.ndarray) -> float:
+    """Return the componentwise backward error of ``a @ x = b``.
+
+    Parameters
+    ----------
+    a
+        Square coefficient matrix of shape ``(n, n)``.
+    b
+        Right hand side of shape ``(n,)``.
+    x
+        Candidate solution of shape ``(n,)``.
+
+    Returns
+    -------
+    error
+        The Oettli-Prager measure
+        ``max_j |a @ x - b|_j / (|a| @ |x| + |b|)_j``, i.e. the
+        smallest relative perturbation of ``a`` and ``b`` for which
+        ``x`` is the exact solution. It is of order ``n * eps`` for any
+        backward stable solver, however ill-conditioned ``a`` is.
+
+    Notes
+    -----
+    The products are formed with element wise multiplication and a sum
+    reduction rather than with ``@``, deliberately: the whole point of
+    the check is to catch a BLAS which computes the wrong answer, and
+    ``@`` on two floating point arrays is itself a BLAS call.
+    """
+    residual = np.abs((a * x).sum(axis=1) - b)
+    scale = (np.abs(a) * np.abs(x)).sum(axis=1) + np.abs(b)
+    return float(np.max(residual / np.maximum(scale, np.finfo(np.float64).tiny)))
+
+
+def _solve_partial_pivot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Return the solution of ``a @ x = b`` by Gaussian elimination
+    with partial pivoting, without calling BLAS or LAPACK.
+
+    Parameters
+    ----------
+    a
+        Square coefficient matrix of shape ``(n, n)``.
+    b
+        Right hand side of shape ``(n,)``.
+
+    Returns
+    -------
+    x
+        Solution of shape ``(n,)`` and 64-bit floating point data type.
+
+    Notes
+    -----
+    This is the recovery path of :func:`_ring_weights_skip`, not its
+    normal one: :func:`numpy.linalg.solve` is used first and this is
+    reached only when the solution it returns fails
+    :func:`_backward_error`.
+
+    The CI lesson which motivates it: on one
+    ``ubuntu-latest-py3.10-oldest`` job (NumPy 1.23.0 and its bundled
+    OpenBLAS) every ``numpy.linalg.solve`` of a system of order 17 or
+    more silently returned a vector which satisfied the first equation
+    -- the all ones row, hence ``sum(w_hat) == 1`` and a quiet
+    :func:`_ring_weights_skip` -- and none of the others. These
+    systems are well conditioned, with a two-norm condition number of
+    3 to 13, so no correct solver can do that. The quadrature weights
+    were therefore wrong but unguarded, and 122 tests across every
+    spherical module failed with plausible looking numbers. A rerun of
+    the same commit on another runner, with a byte identical
+    environment, passed. Orders of 9 and below were unaffected, which
+    points at a threading or kernel dispatch fault in that BLAS rather
+    than at anything this package can fix.
+
+    Only element wise arithmetic, ``numpy.argmax`` and slicing are used
+    here, so nothing in this function can be dispatched to the library
+    whose failure it exists to survive. The elimination is the textbook
+    one, ``O(n ** 3)`` in ``n`` vectorized row updates, which is
+    immaterial for the ``n <= 384`` of a square grid.
+    """
+    n = int(b.size)
+    # Augmented system, copied so that the caller's arrays are untouched
+    matrix = np.concatenate((np.asarray(a, dtype=np.float64), b.reshape(-1, 1)), axis=1)
+    for k in range(n - 1):
+        pivot_row = k + int(np.argmax(np.abs(matrix[k:, k])))
+        if pivot_row != k:
+            matrix[[k, pivot_row]] = matrix[[pivot_row, k]]
+        factors = matrix[k + 1 :, k] / matrix[k, k]
+        matrix[k + 1 :, k:] -= factors[:, None] * matrix[k, k:]
+    x = np.empty(n, dtype=np.float64)
+    for k in range(n - 1, -1, -1):
+        x[k] = (matrix[k, n] - (matrix[k, k + 1 : n] * x[k + 1 :]).sum()) / matrix[k, k]
+    return x
+
+
 def _ring_weights_skip(dim: int, cos_lats: np.ndarray, skip: int) -> np.ndarray:
     """Return the unscaled Sneeuw ring quadrature weights with one
     ring excluded.
@@ -973,6 +1076,14 @@ def _ring_weights_skip(dim: int, cos_lats: np.ndarray, skip: int) -> np.ndarray:
     EMSphInx tests the signed residual ``sum(w_hat) - 1`` only. Here
     the absolute residual is tested, because a large negative
     residual is equally unusable. This is a deliberate deviation.
+
+    That residual is the first equation of the system, the all ones
+    row, and it says nothing about the remaining ones. The solution is
+    therefore also checked with :func:`_backward_error` and recomputed
+    with :func:`_solve_partial_pivot` when
+    :func:`numpy.linalg.solve` fails it, which some BLAS builds have
+    been seen to do silently; see the notes of
+    :func:`_solve_partial_pivot`.
     """
     n_matrix = n_rings(dim) - 1
     kept = np.delete(np.asarray(cos_lats, dtype=np.float64), skip)
@@ -990,15 +1101,27 @@ def _ring_weights_skip(dim: int, cos_lats: np.ndarray, skip: int) -> np.ndarray:
     b[0] = 1
     j = np.arange(1, n_matrix)
     b[1:] = -1 / (4 * j * j - 1)
+
+    def guard(weights: np.ndarray) -> None:
+        residual = np.sum(weights) - 1
+        if abs(residual) > _WEIGHT_SUM_TOLERANCE:
+            raise ValueError(
+                f"Insufficient precision to compute the ring weights of the square "
+                f"grid of side length {dim} skipping ring {skip}: they sum to "
+                f"1 + {residual:.3e}, while at most 1 + {_WEIGHT_SUM_TOLERANCE:.3e} "
+                "is tolerated. Use the 'legendre' layout instead"
+            )
+
     w_hat = np.linalg.solve(a, b)
-    residual = np.sum(w_hat) - 1
-    if abs(residual) > _WEIGHT_SUM_TOLERANCE:
-        raise ValueError(
-            f"Insufficient precision to compute the ring weights of the square "
-            f"grid of side length {dim} skipping ring {skip}: they sum to "
-            f"1 + {residual:.3e}, while at most 1 + {_WEIGHT_SUM_TOLERANCE:.3e} "
-            "is tolerated. Use the 'legendre' layout instead"
-        )
+    # The conditioning guard first, so that an ill-conditioned grid
+    # still raises exactly as it always has, and only then the solver
+    # guard: a LAPACK which does not actually solve the system leaves
+    # every equation but the first one unsatisfied, which no assertion
+    # downstream could tell from real weights
+    guard(w_hat)
+    if _backward_error(a, b, w_hat) > _SOLVE_BACKWARD_ERROR_TOLERANCE:
+        w_hat = _solve_partial_pivot(a, b)
+        guard(w_hat)
     return np.insert(w_hat, skip, 0.0)
 
 

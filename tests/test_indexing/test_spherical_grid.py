@@ -634,6 +634,69 @@ class TestQuadratureWeights:
         with pytest.raises(ValueError, match="Insufficient precision"):
             _grid._ring_weights_skip(361, cos_lats, 16)
 
+    @pytest.mark.parametrize(
+        "dim, layout", [(35, "legendre"), (65, "lambert"), (101, "legendre")]
+    )
+    def test_a_lapack_which_only_satisfies_the_first_equation_is_recovered(
+        self, dim, layout, monkeypatch, record_property
+    ):
+        # CI lesson, ubuntu-latest-py3.10-oldest (NumPy 1.23.0): every
+        # solve of order >= 17 silently returned a vector satisfying
+        # only the first, all ones equation, so ``sum(w_hat) == 1``
+        # held and the precision guard stayed quiet while the weights
+        # were wrong. 122 tests across every spherical module then
+        # failed with plausible looking numbers; a rerun of the same
+        # commit on another runner passed. The solver guard turns that
+        # into a recovery, and this test is the only thing which pins
+        # it: nothing else can distinguish wrong weights from right
+        # ones
+        expected = _grid.quadrature_weights(dim, layout)
+
+        def only_the_first_equation(a, b):
+            rng = np.random.default_rng(a.shape[0])
+            x = rng.normal(scale=0.4, size=b.shape[0])
+            x += (b[0] - x.sum()) / x.size  # a[0] is the all ones row
+            return x
+
+        monkeypatch.setattr(np.linalg, "solve", only_the_first_equation)
+        recovered = _grid.quadrature_weights(dim, layout)
+        deviation = float(np.abs(recovered - expected).max())
+        largest = float(np.abs(expected).max())
+        record_property(
+            f"recovered_deviation_{layout}_{dim}",
+            f"{deviation:.3e} of {largest:.3e}, relative {deviation / largest:.3e}",
+        )
+        # Not bitwise, since the recovery eliminates in its own order:
+        # the measured relative deviations are 2.3e-14 (35, legendre),
+        # 3.8e-15 (65, lambert) and 4.1e-14 (101, legendre), three
+        # orders inside the bound and far below every tolerance the
+        # suite asserts on weights
+        assert deviation <= 1e-11 * largest
+        assert np.all(np.isfinite(recovered))
+        # And the recovered sets are still normalized weight sets
+        n_phi = np.maximum(1, 8 * np.arange(_grid.n_rings(dim)))
+        assert np.allclose((recovered * n_phi).sum(axis=1), 4 * np.pi, rtol=1e-14)
+
+    def test_the_solver_guard_leaves_a_healthy_solve_untouched(self):
+        # The recovery must be unreachable on a working LAPACK, or the
+        # weights would silently change between stacks
+        for dim, layout in [(35, "legendre"), (65, "lambert"), (201, "legendre")]:
+            cos_lats = _grid.cos_latitudes(dim, layout)
+            n_matrix = _grid.n_rings(dim) - 1
+            kept = np.delete(cos_lats, 0)
+            x = kept * kept * 2 - 1
+            a = np.empty((n_matrix, n_matrix))
+            a[0] = 1
+            a[1] = x
+            for j in range(2, n_matrix):
+                a[j] = x * a[j - 1] * 2 - a[j - 2]
+            b = np.empty(n_matrix)
+            b[0] = 1
+            j = np.arange(1, n_matrix)
+            b[1:] = -1 / (4 * j * j - 1)
+            error = _grid._backward_error(a, b, np.linalg.solve(a, b))
+            assert error < _grid._SOLVE_BACKWARD_ERROR_TOLERANCE / 1e6
+
     def test_smallest_lambert_dim_tripping_the_precision_guard(self, record_property):
         # Recorded determination: the reviewers bracketed the first
         # failure between dim 259 and 301

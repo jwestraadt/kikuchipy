@@ -986,3 +986,149 @@ ranges skip from 1992 to 2486, spanning the whole method). The
 benchmark's 208.7 ms mean is above the 129.1 ms recorded earlier
 because a documentation build shared the machine; the map-level rate
 is still 43.1 patterns/s against the floor of 2.
+
+---
+
+### 2026-09-02 -- `ubuntu-latest-py3.10-oldest` CI failure: root cause and fix
+
+**Symptom.** PR #8 run `33629625164` failed only on
+`ubuntu-latest-py3.10-oldest` (`dask==2021.8.1 diffsims==0.5.2
+hyperspy==2.2 matplotlib==3.6 numba==0.57 numpy==1.23.0 orix==0.12.1
+pooch==1.3.0 pyebsdindex==0.3.9.2 scikit-image==0.21.0`, resolved
+`scipy 1.13.1`, Python 3.10.21), with **122 failed, 2912 passed, 244
+rerun**. The failures were not confined to this phase: they spanned
+`test_spherical_xcorr.py` (47), `test_spherical_sht.py` (26),
+`test_ebsd_spherical_indexing.py` (16),
+`test_spherical_master_pattern_harmonics.py` (11),
+`test_spherical_grid.py` (9), `test_spherical_back_projection.py` (6),
+`test_spherical_indexer.py` (5), `test_ebsd_master_pattern.py` (1) and
+`test_spherical_wigner.py` (1), on all four xdist workers. Run
+`33629630800`, the **same commit** with a **byte identical `pip list`**,
+passed the same job.
+
+**Root cause: one, not four.** All four reported failure classes are
+downstream of a single fault -- `numpy.linalg.solve` returned a wrong
+answer inside `_grid._ring_weights_skip`, so every quadrature weight
+set in the process was wrong:
+
+- The garbage solutions satisfied the **first** equation of the
+  Chebyshev-Vandermonde system. That row is the all ones row, so
+  `sum(w_hat) == 1` held to 4e-16 and the existing precision guard
+  (`|sum(w_hat) - 1| > cbrt(eps) / 64`, `square_sht.hpp:1057`) never
+  fired. Nothing else in the port could tell wrong weights from right
+  ones.
+- Diagnostic proof from the log: `analyze` of a constant function still
+  gave `alm[0, 0] == sqrt(4 pi)` to 1e-10 (which needs only
+  `sum(w_hat) == 1`) while every other coefficient was garbage
+  (`372.8`, tolerance 1e-9). The dim 35 Legendre case printed the
+  solver's output `[-0.748, 0.026, 0.004, 0.217, ...]` against the
+  correct `leggauss` weights `[0.0066, 0.0153, 0.0239, ...]` -- so
+  `leggauss` (hence `eigvalsh`, hence the Legendre nodes and the
+  matrix `a`) was **correct** on that runner and only the solve was
+  wrong.
+- These systems are **well conditioned** (measured two-norm condition
+  numbers 2.9, 3.1, 4.2, 12.6 and 4.0 for dim 19/35/33/65/401): no
+  correct solver can miss them. Order <= 9 was unaffected (`[19]`
+  passed, `[35]`, `[101]`, `[201]`, `[401]` failed), which points at a
+  threading or kernel dispatch fault in that runner's BLAS rather than
+  at conditioning.
+
+Mapping the reported classes onto it: (a) the ~35 deg misorientation
+medians are wrong weights, **not** orix -- `Orientation.dot` is already
+symmetry reduced in orix 0.12.1 (verified: `angle_with` gives
+`[50.0, 44.4, 36.2, 37.5]` where the unreduced angles are
+`[62.8, 148.6, 36.2, 95.3]`), so the `misorientation` oracle in
+`test_ebsd_spherical_indexing.py` is correct on both stacks and was
+**left unchanged**; (b) the `np.isfinite` failures are `r_den` built
+from wrong window harmonics; (c) the `DID NOT RAISE ValueError` cases
+are the precision guard not tripping at lambert dim 401 / 361 / 259-301
+because the wrong solutions still summed to one; (d) the `cell_deg`
+comparisons are the cross-correlation peaks moving once the master and
+window spectra are wrong.
+
+**Not reproducible locally, so reproduced by construction.** The pinned
+stack was rebuilt with `uv run --isolated --python 3.10 --with
+"numpy==1.23.0" ... --with-editable . pytest ...`; every spherical test
+passes there (1419 passed, 758 skipped with `-n 4 --reruns 2`), as does
+the Phase 6 gate (137 passed, 5 skipped), on Windows and on the same
+NumPy. The fault was therefore emulated with a pytest plugin replacing
+`numpy.linalg.solve`, for orders >= 17 with an all ones first row, by a
+vector satisfying only that first equation. On the **unfixed** tree
+that reproduces the CI signature; measured separation of the check
+introduced below, dim 35 legendre: healthy backward error **4.8e-16**,
+emulated fault **7.6e-1**, `sum(w_hat) - 1` of the emulated fault
+**-4.4e-16** (tolerance 9.5e-08, i.e. invisible to the old guard).
+
+**Fix (production, `src/kikuchipy/indexing/_spherical/_grid.py`).**
+
+- `_backward_error(a, b, x)`: the Oettli-Prager componentwise backward
+  error `max_j |a x - b|_j / (|a| |x| + |b|)_j`, formed with element
+  wise products and a sum reduction, never with `@` -- the check must
+  not be dispatched to the library it is checking. It is of order
+  `n * eps` for any backward stable solver however ill-conditioned `a`
+  is, which is what lets it pass the legitimately ill-conditioned
+  lambert grids whose **forward** error the existing sum guard rejects.
+- `_solve_partial_pivot(a, b)`: Gaussian elimination with partial
+  pivoting in pure NumPy element wise arithmetic, `numpy.argmax` and
+  slicing -- no BLAS or LAPACK. `O(n ** 3)` in `n` vectorized row
+  updates, immaterial at `n <= 384`.
+- `_ring_weights_skip` now runs the **conditioning guard first**
+  (unchanged text, unchanged behaviour, so
+  `test_a_negative_weight_residual_also_raises`, the dim 401 raise and
+  the dim 259-301 bracket are all preserved), and only then the
+  **solver guard**: if the LAPACK solution's backward error exceeds
+  `_SOLVE_BACKWARD_ERROR_TOLERANCE = 1e-8`, the set is recomputed
+  without BLAS and re-guarded.
+- The tolerance: a scan of every reachable `(layout, dim, skip)` up to
+  dim 769 measures a worst healthy backward error of **1.43e-15** on
+  NumPy 1.23.0 and **1.32e-15** on NumPy 2.4.6, so 1e-8 sits seven
+  orders above any healthy value and seven below the observed fault.
+
+**Fix (tests, `tests/test_indexing/test_spherical_grid.py`).** Two
+named tests, in the Phase 1 module which owns the code:
+`test_a_lapack_which_only_satisfies_the_first_equation_is_recovered`
+(3 params) monkeypatches the fault and asserts the recovered sets match
+the healthy ones -- measured relative deviations **2.3e-14**
+(35, legendre), **3.8e-15** (65, lambert), **4.1e-14** (101, legendre),
+three orders inside the asserted `1e-11` bound -- and that they are
+still normalized weight sets;
+`test_the_solver_guard_leaves_a_healthy_solve_untouched` asserts the
+recovery is unreachable on a working LAPACK. **No test was weakened and
+no test was skipped.** The `misorientation` oracle was deliberately not
+touched.
+
+**Production behaviour unchanged.** Weight sets from the pre-change and
+post-change modules were compared for every `(layout, dim)` over
+`dim` 3-129 odd plus 201, 259, 275, 301, 361, 401, 501 and 769:
+**139 bitwise identical arrays and 5 identical `ValueError` messages**,
+zero differences. The recovery is dead code on a healthy stack.
+
+**Gates.**
+
+```
+oldest stack (numpy 1.23.0 / py3.10, pins as in tests.yml:48)
+  pytest <the two Phase 6 files> -n 0                      -> 137 passed, 5 skipped (17.9 s)
+  pytest tests/test_indexing/test_spherical_grid.py -n 0   -> 182 passed (32.0 s)
+  pytest <the other seven spherical files> -n 4 --reruns 2 -> 1286 passed, 753 skipped (221.8 s)
+  pytest -p broken_lapack <the two Phase 6 files> -n 0     -> 137 passed, 5 skipped (30.0 s)
+modern stack
+  pytest <the two Phase 6 files> -n 0                      -> 137 passed, 5 skipped (18.4 s)
+  pytest <the two Phase 6 files> -n 4                      -> 137 passed, 5 skipped (18.7 s)
+  pytest -p broken_lapack <all eight spherical files> -n 4 -> 1425 passed, 701 skipped (29.5 s)
+  pytest --doctest-modules src/kikuchipy/indexing/_spherical -> 14 passed
+  pre-commit run --files _grid.py test_spherical_grid.py   -> passed
+```
+
+`-p broken_lapack` is the emulation plugin described above; it lives in
+a scratch directory and is not part of the repository.
+
+**Residual risk, recorded not fixed.** The same runner fault would also
+corrupt `numpy.polynomial.legendre.leggauss` (which calls
+`numpy.linalg.eigvalsh`) and the two other BLAS calls in the port,
+`normals @ matrix.T` in `_back_projection.py` and `np.tensordot` in
+`MasterPatternHarmonics.resize`. The CI log shows all three were
+correct in the failing job -- `leggauss` demonstrably so -- and none of
+them is guarded here, because guarding an unobserved failure would be
+speculation. The weight solve was singled out because it is the one
+place where a wrong BLAS answer is **silently** cached into every
+downstream spectrum.
