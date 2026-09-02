@@ -18,6 +18,12 @@ Unreleased
 
 Added
 -----
+- Newton refinement of spherical-indexing orientations on the sphere:
+  ``EBSD.refine_orientation_spherical()``, and ``refine=True`` -- the new default,
+  EMSphInx's own -- in ``EBSD.spherical_indexing()`` /
+  ``kikuchipy.indexing.SphericalIndexer`` (pass ``refine=False`` for coarse-only
+  indexing).
+  (`#9 <https://github.com/jwestraadt/kikuchipy/pull/9>`_)
 - Spherical indexing of EBSD patterns against one or more master patterns with
   ``EBSD.spherical_indexing()``, ``kikuchipy.indexing.SphericalIndexer`` and
   ``kikuchipy.indexing.SphericalBackProjector``, a CPU port of EMSphInx's

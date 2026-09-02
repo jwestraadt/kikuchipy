@@ -25,8 +25,9 @@ Covers every named assertion of
 - Sizes and layouts: the ``bw -> slP`` table of the ported
   ``fft::fastSize()`` (and a guard against
   :func:`scipy.fft.next_fast_len`), the ``[k, n, m]`` buffers, the
-  shared ``pi/2`` Wigner table and every ``ValueError``,
-  ``RuntimeError`` and ``NotImplementedError`` path.
+  shared ``pi/2`` Wigner table and every ``ValueError`` and
+  ``RuntimeError`` path.  The Newton refinement of ``refine=True``
+  has its own module, ``test_spherical_refinement.py``.
 - The spectrum kernel against two oracles which do not share a line
   of code with the port: a triple sum over Phase 3's ``wigner_D``
   (which also rules out the three other index and conjugation
@@ -159,7 +160,8 @@ GROUP_BANDWIDTHS = DEFAULT_GROUP_BANDWIDTHS + [
     for bandwidth in WEEKLY_GROUP_BANDWIDTHS
 ]
 
-# Every Numba kernel of the module, for the flag and py_func tests
+# The Numba kernels of the coarse path, for the flag and py_func
+# tests of this module
 KERNEL_NAMES = [
     "_extract_neighborhood",
     "_find_peak",
@@ -167,6 +169,17 @@ KERNEL_NAMES = [
     "_scale_and_find_peak",
     "_xcorr_spectrum",
 ]
+
+# The Newton refinement's kernel is defined in the same module but
+# is pinned -- presence, flags, ``py_func`` parity, error model --
+# by ``test_spherical_refinement.py``, with the rest of the
+# refinement.  It is listed here only so that the completeness
+# check below can tell "covered elsewhere" from "covered nowhere"
+REFINEMENT_KERNEL_NAMES = ["_derivatives"]
+
+# The kernels of this module which need the IEEE error model: the
+# coarse interpolation and, once it lands, the refinement
+NUMPY_ERROR_MODEL_KERNELS = {"_interpolate_maxima", "_derivatives"}
 
 # Point groups by orix name, for the symmetry reduced metric
 GROUPS = {group.name: group for group in _groups}
@@ -960,23 +973,9 @@ class TestSizes:
         with pytest.raises(ValueError, match="NumPy array"):
             _xcorr.SphericalCrossCorrelator(8, wigner_d_half_pi=table.tolist())
 
-    def test_refine_raises_for_the_plain_correlator(self):
-        rng = np.random.default_rng(0)
-        flm = random_alm(8, rng)
-        gln = random_alm(8, rng)
-        correlator = _xcorr.SphericalCrossCorrelator(8)
-        with pytest.raises(NotImplementedError, match="Phase 7"):
-            correlator.correlate(flm, gln, 1, False, refine=True)
-
-    def test_refine_raises_for_the_normalized_correlator(self):
-        rng = np.random.default_rng(0)
-        transform, flm, flm2, mlm, mask = masked_case(17, 1, False, rng)
-        correlator = _xcorr.NormalizedSphericalCrossCorrelator(
-            17, flm, flm2, 1, False, mlm
-        )
-        gln = masked_pattern(transform, flm, mask, random_zyz(rng))
-        with pytest.raises(NotImplementedError, match="Phase 7"):
-            correlator.correlate(gln, refine=True)
+    # ``refine=True`` no longer refuses; the refined path and the
+    # ``refine=False`` signature pins live in
+    # ``test_spherical_refinement.py``
 
     @pytest.mark.parametrize(
         "n_fold, mirror",
@@ -1117,7 +1116,7 @@ class TestSpectrumKernel:
         record_property(f"peak_identity_bw{bandwidth}_power", f"{power:.6f}")
 
         correlator = _xcorr.SphericalCrossCorrelator(bandwidth)
-        zyz, score = correlator.correlate(flm, gln, n_fold, mirror)
+        zyz, score = correlator.correlate(flm, gln, n_fold, mirror, refine=False)
         record_property(f"peak_identity_bw{bandwidth}_ratio", f"{score / power:.6f}")
         assert float(correlator.xc.max()) <= power * (1 + 1e-12)
         # the tri-quadratic under-estimates a peak which is one cell
@@ -1141,7 +1140,7 @@ class TestSpectrumKernel:
         flm[0] = flm[0].real
         zyz0 = _xcorr.index_to_euler((3, 5, 7), side_length)
         gln = _wigner.rotate_harmonics(flm, zyz0)
-        zyz, score = correlator.correlate(flm, gln, 1, False)
+        zyz, score = correlator.correlate(flm, gln, 1, False, refine=False)
         assert _xcorr.euler_to_index(zyz, side_length) == (3, 5, 7)
         assert np.abs(zyz - zyz0).max() <= 1e-12
         assert abs(score / total_power(flm) - 1) <= 1e-12
@@ -2044,7 +2043,7 @@ class TestCorrelate:
         for i in range(3):
             zyz = random_zyz(rng)
             gln = _wigner.rotate_harmonics(flm, zyz)
-            found, score = correlator.correlate(flm, gln, 1, False)
+            found, score = correlator.correlate(flm, gln, 1, False, refine=False)
             delta = misorientation_deg(zyz, found)
             record_property(f"coarse_bw{bandwidth}_rot{i}", f"{delta:.4f}")
             assert math.isfinite(score)
@@ -2074,7 +2073,7 @@ class TestCorrelate:
         for i in range(3):
             zyz = random_zyz(rng)
             gln = _wigner.rotate_harmonics(flm, zyz)
-            found, _ = correlator.correlate(flm, gln, n_fold, mirror)
+            found, _ = correlator.correlate(flm, gln, n_fold, mirror, refine=False)
             assert_zyz_in_range(found, side_length, True)
             delta = misorientation_deg(zyz, found, name)
             unreduced = misorientation_deg(zyz, found)
@@ -2155,7 +2154,12 @@ class TestCorrelate:
         deltas = {}
         for emsphinx_compatible in (True, False):
             found, _ = correlator.correlate(
-                flm, gln, 1, False, emsphinx_compatible=emsphinx_compatible
+                flm,
+                gln,
+                1,
+                False,
+                refine=False,
+                emsphinx_compatible=emsphinx_compatible,
             )
             assert_zyz_in_range(found, side_length, emsphinx_compatible)
             deltas[emsphinx_compatible] = misorientation_deg(zyz, found)
@@ -2236,10 +2240,10 @@ class TestNormalized:
         for i in range(3):
             zyz = random_zyz(rng)
             gln = masked_pattern(transform, flm, mask, zyz)
-            found, score = normalized.correlate(gln)
+            found, score = normalized.correlate(gln, refine=False)
             assert_zyz_in_range(found, side_length, True)
             delta = misorientation_deg(zyz, found)
-            found_plain, score_plain = plain.correlate(flm, gln, 1, False)
+            found_plain, score_plain = plain.correlate(flm, gln, 1, False, refine=False)
             assert_zyz_in_range(found_plain, side_length, True)
             delta_plain = misorientation_deg(zyz, found_plain)
             record_property(f"wedge_bw{bandwidth}_rot{i}", f"{delta:.4f}")
@@ -2261,7 +2265,7 @@ class TestNormalized:
         side_length = normalized.side_length
         zyz = random_zyz(rng)
         gln = masked_pattern(transform, flm, mask, zyz)
-        found, score = normalized.correlate(gln)
+        found, score = normalized.correlate(gln, refine=False)
         assert_zyz_in_range(found, side_length, True)
         delta = misorientation_deg(zyz, found, name)
         record_property(f"wedge_group_{name}_bw{bandwidth}", f"{delta:.4f}")
@@ -2653,7 +2657,7 @@ class TestNickel:
         for i in range(5):
             zyz = random_zyz(rng)
             gln = _wigner.rotate_harmonics(flm, zyz)
-            found, score = correlator.correlate(flm, gln, n_fold, mirror)
+            found, score = correlator.correlate(flm, gln, n_fold, mirror, refine=False)
             delta = misorientation_deg(zyz, found, "m-3m")
             record_property(f"ni_rotated_{i}", f"{delta:.4f}")
             record_property(f"ni_rotated_{i}_ratio", f"{score / power:.5f}")
@@ -2702,10 +2706,12 @@ class TestNickel:
             for i in range(4):
                 zyz = random_zyz(rng)
                 gln = masked_pattern(transform, flm, masks, zyz)
-                found, score = normalized.correlate(gln)
+                found, score = normalized.correlate(gln, refine=False)
                 assert_zyz_in_range(found, side_length, True)
                 delta = misorientation_deg(zyz, found, "m-3m")
-                found_plain, score_plain = plain.correlate(flm, gln, n_fold, mirror)
+                found_plain, score_plain = plain.correlate(
+                    flm, gln, n_fold, mirror, refine=False
+                )
                 assert_zyz_in_range(found_plain, side_length, True)
                 record_property(f"d7_{mask}_{compatible}_{i}", f"{delta:.4f}")
                 record_property(f"d7_{mask}_{compatible}_{i}_score", f"{score:.4f}")
@@ -2733,9 +2739,18 @@ class TestKernels:
     def test_kernel_names_lists_every_njit_kernel_of_the_module(self):
         # the flag and py_func tests are parametrised over the
         # literal list above, so a kernel added during the
-        # implementation would silently escape both of them
-        assert _njit_kernel_names(_xcorr) == sorted(KERNEL_NAMES), (
-            "KERNEL_NAMES must list exactly the @njit kernels of _xcorr"
+        # implementation would silently escape both of them.  The
+        # refinement's kernel is listed separately and asserted in
+        # ``test_spherical_refinement.py``, so the check is a pair
+        # of inclusions rather than an equality: nothing in the
+        # module is unlisted, and nothing listed here has vanished
+        found = set(_njit_kernel_names(_xcorr))
+        assert found <= set(KERNEL_NAMES) | set(REFINEMENT_KERNEL_NAMES), (
+            "a kernel of _xcorr is listed in neither KERNEL_NAMES nor "
+            "REFINEMENT_KERNEL_NAMES"
+        )
+        assert set(KERNEL_NAMES) <= found, (
+            "KERNEL_NAMES must list only kernels which exist"
         )
 
     @pytest.mark.parametrize("name", KERNEL_NAMES)
@@ -2752,13 +2767,14 @@ class TestKernels:
         assert not kernel.targetoptions.get("fastmath", False)
 
     @pytest.mark.parametrize("name", KERNEL_NAMES)
-    def test_only_the_interpolation_uses_the_numpy_error_model(self, name):
-        # the C++ divides by an unguarded Hessian determinant and
-        # relies on IEEE semantics, which is a correctness fix
-        # there and nowhere else
+    def test_only_the_sanctioned_kernels_use_the_numpy_error_model(self, name):
+        # the C++ divides by an unguarded Hessian determinant here
+        # and by an unguarded ``csc`` in the refinement, and relies
+        # on IEEE semantics in both: a correctness fix there and
+        # nowhere else
         kernel = getattr(_xcorr, name)
         assert hasattr(kernel, "targetoptions"), f"{name} must be decorated with @njit"
-        expected = "numpy" if name == "_interpolate_maxima" else None
+        expected = "numpy" if name in NUMPY_ERROR_MODEL_KERNELS else None
         assert kernel.targetoptions.get("error_model") == expected
 
     @pytest.mark.parametrize(
@@ -3006,7 +3022,7 @@ class TestWeeklyStatistics:
         for _ in range(30):
             zyz = random_zyz(rng)
             gln = _wigner.rotate_harmonics(flm, zyz)
-            found, _ = correlator.correlate(flm, gln, 1, False)
+            found, _ = correlator.correlate(flm, gln, 1, False, refine=False)
             delta = misorientation_deg(zyz, found)
             beta = abs(_euler.wrap_beta(float(zyz[1])))
             if min(beta, abs(beta - math.pi)) < cell:

@@ -25,8 +25,10 @@ from kikuchipy.indexing import MasterPatternHarmonics
 # Bandwidth of the benchmark, the ``IndexEBSD`` name list default
 BANDWIDTH = 68
 
-# Measured mean score of the nine patterns at that bandwidth
-MEAN_SCORE = 0.570
+# Measured mean score of the nine patterns at that bandwidth with the
+# default configuration, i.e. Newton refined (the coarse mean is
+# 0.570)
+MEAN_SCORE = 0.589
 
 # The constitution's hard floor, patterns per second per core
 FLOOR = 2
@@ -48,6 +50,11 @@ def test_spherical_indexing(benchmark):
 
     The floor asserted here is therefore a map level one, and it still
     passes with more than an order of magnitude of margin.
+
+    The call keeps every default, so it includes the Newton
+    refinement of ``refine=True``, which costs a measured 5-27 % of
+    the coarse wall time and lifts the mean score from 0.570 to
+    0.589.
     """
     # Load patterns
     s = kp.data.nickel_ebsd_small()

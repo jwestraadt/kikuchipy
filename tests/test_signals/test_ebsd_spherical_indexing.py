@@ -229,10 +229,17 @@ def misorientation(rotations, reference):
 def index_default(signal=None, **kwargs):
     """Return the crystal map of the default call, i.e. the Ni
     harmonics and detector with every parameter at its default.
+
+    ``refine`` defaults to ``False`` here rather than to the method's
+    own ``True``: every value this module pins is a coarse one, and
+    the refined path has its own suite in
+    ``tests/test_indexing/test_spherical_refinement.py``.  A test
+    which means the method default states it.
     """
     if signal is None:
         signal = ni_signal()
     kwargs.setdefault("verbose", 0)
+    kwargs.setdefault("refine", False)
     harmonics = kwargs.pop("harmonics", ni_harmonics(NI_BANDWIDTH))
     detector = kwargs.pop("detector", ni_detector())
     return signal.spherical_indexing(harmonics, detector, **kwargs)
@@ -294,7 +301,7 @@ class TestSignature:
             "navigation_mask": None,
             "signal_mask": None,
             "normalize": True,
-            "refine": False,
+            "refine": True,
             "n_regions": 10,
             "gaussian_background": False,
             "circular_mask": False,
@@ -606,7 +613,7 @@ class TestMultiPhase:
             index_default(harmonics=anonymous)
         # the indexer itself accepts it: only the phase list needs a
         # phase
-        indexer = SphericalIndexer(anonymous, ni_detector())
+        indexer = SphericalIndexer(anonymous, ni_detector(), refine=False)
         results = indexer.index_patterns(
             ni_signal().data.reshape((-1, 60, 60))[:1], progressbar=False
         )
@@ -840,10 +847,6 @@ class TestSignalGuards:
         with pytest.raises(ValueError, match="must be identical"):
             index_default(detector=detector)
 
-    def test_refine_is_refused(self):
-        with pytest.raises(NotImplementedError, match="refine=True"):
-            index_default(refine=True)
-
     def test_a_map_which_is_not_one_or_two_dimensional_is_refused(self):
         # a crystal map is one- or two-dimensional.  Without the
         # guard a navigation-less signal indexes fine and then builds
@@ -977,12 +980,15 @@ class TestVerbose:
         # the *model*, not the measured peak: the first draft of the
         # template printed 45 MB, the measurement, and no test could
         # have caught the divergence
-        indexer = SphericalIndexer(ni_harmonics(NI_BANDWIDTH), ni_detector())
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH), ni_detector(), refine=False
+        )
         message = indexer.get_info_message(9, 1)
         assert "Estimated memory per worker: 49 MB" in message
         assert "Spherical indexing information:" in message
         assert "Phase(s): ni" in message
         assert "Correlation: normalized" in message
+        assert "Refinement: off" in message
 
 
 # ------------------ Performance and memory (D8) --------------------- #
@@ -1031,8 +1037,12 @@ def pipeline_stages(indexer, correlator, pattern, buffers):
 class TestPerformance:
     def test_the_throughput_floor(self, record_property):
         # the single loose timing assertion of the suite: one thread,
-        # warm, the nine patterns through ``index_patterns``
-        indexer = SphericalIndexer(ni_harmonics(NI_BANDWIDTH), ni_detector())
+        # warm, the nine patterns through ``index_patterns``.  The
+        # refined default has its own floor row in
+        # ``test_spherical_refinement.py``
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH), ni_detector(), refine=False
+        )
         patterns = ni_signal().data.reshape((-1, 60, 60))
         with dask.config.set(num_workers=1):
             indexer.index_patterns(patterns, chunksize=9, progressbar=False)
@@ -1046,7 +1056,9 @@ class TestPerformance:
     def test_the_four_worker_throughput_is_recorded(self, record_property):
         # recorded, never asserted: the scaling of this machine is not
         # a contract, and the floor above is the one timing bound
-        indexer = SphericalIndexer(ni_harmonics(NI_BANDWIDTH), ni_detector())
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH), ni_detector(), refine=False
+        )
         patterns = ni_signal().data.reshape((-1, 60, 60))
         with dask.config.set(num_workers=4):
             indexer.index_patterns(patterns, chunksize=1, progressbar=False)
@@ -1063,7 +1075,10 @@ class TestPerformance:
         best of three sweeps of the nine patterns on one thread.
         """
         indexer = SphericalIndexer(
-            ni_harmonics(bandwidth), ni_detector(), bandwidth=bandwidth
+            ni_harmonics(bandwidth),
+            ni_detector(),
+            bandwidth=bandwidth,
+            refine=False,
         )
         correlator = indexer.correlators[0].clone()
         dim = indexer.projector.dim
@@ -1143,7 +1158,10 @@ class TestPerformance:
         session and perturbing the other rows.
         """
         indexer = SphericalIndexer(
-            ni_harmonics(bandwidth), ni_detector(), bandwidth=bandwidth
+            ni_harmonics(bandwidth),
+            ni_detector(),
+            bandwidth=bandwidth,
+            refine=False,
         )
         patterns = ni_signal().data.reshape((-1, 60, 60))[:1]
         dim = indexer.projector.dim
@@ -1236,6 +1254,7 @@ class TestNickelLargeSubset:
             ni_harmonics(NI_BANDWIDTH),
             detector,
             navigation_mask=mask,
+            refine=False,
             verbose=0,
         )
         angles = misorientation(xmap.rotations, signal.xmap.rotations[keep])

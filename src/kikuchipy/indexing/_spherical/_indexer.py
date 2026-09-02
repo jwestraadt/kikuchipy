@@ -47,6 +47,22 @@
 # - the per pattern failure semantics of ``ebsdWorkItem<Real>``
 #   (``include/modality/ebsd/idx.hpp``, lines 382-456), as the guards
 #   and the exception arm of :func:`_index_chunk`
+# - ``Indexer<Real>::refineImage()`` and ``Indexer<Real>::refine()``
+#   (lines 277-306 and 337-345) and the refine-only work items
+#   ``msk[i] & 0x02`` of ``ebsdWorkItem`` (``idx.hpp`` lines
+#   438-450), as :meth:`SphericalIndexer.refine_patterns` and
+#   :func:`_refine_chunk`, **with a documented deviation**: the
+#   shipped ``refineImage()`` drops the ``Result`` its ``refine()``
+#   call returns (line 296) and takes ``eu`` by const reference, so
+#   it converts the *unrefined* orientation back and stores a
+#   ``corr`` the refine-only branch never assigned.  That score is
+#   zero or stale rather than indeterminate, since
+#   ``std::vector<Result> res(om.size())`` value-initialises and is
+#   hoisted outside the per pattern loop (``idx.hpp`` lines
+#   406-407), so a pure ``msk & 0x02`` run stores 0 and a mixed
+#   ``0x01``/``0x02`` batch stores the previous pattern's score.
+#   This port implements the documented intent instead: it refines
+#   the stored orientation and stores the refined score
 #
 # ``include/idx/base.hpp`` (lines 40-150) declares the abstract
 # ``ImageProcessor``, ``BackProjector`` and ``PhaseCorrelator``
@@ -58,10 +74,6 @@
 # The following are deliberately **not** ported here (the roadmap
 # phases are named in this provenance comment only -- decision 6.14
 # keeps them out of every public docstring and error message):
-# - ``Indexer<Real>::refineImage()`` and ``Indexer<Real>::refine()``
-#   (lines 277-306 and 337-345), the Newton refinement, which
-#   ``refine=True`` refuses until it is implemented -- **Phase 7**
-#   (spherical-refinement)
 # - the pseudo-symmetry loop of ``indexImage()`` (lines 243-261),
 #   which needs the pseudo-symmetric operator lists ``pSym`` this
 #   release always leaves empty -- **Phase 8**.  The insertion
@@ -69,8 +81,6 @@
 # - ``Geometry<Real>::northPoleQuat()``'s left multiplication (line
 #   267), the identity in EMSphInx as shipped, so the conversion of
 #   lines 265-269 collapses to ``_euler.rotation_from_zyz``
-# - the refine-only work items ``msk[i] & 0x02`` of ``ebsdWorkItem``
-#   (``idx.hpp`` lines 438-450)
 # - the HDF5, PNG and vendor file output of ``IndexingData``
 #   (``idx.hpp`` lines 313-370), the ``roimask`` region of interest
 #   grammar and ``ThreadedIqCalc``: a crystal map replaces them,
@@ -110,7 +120,8 @@
 # website: https://www.cmu.edu/cttec/
 #
 # Changed by Johan Westraadt, 2026-09: translated to
-# Python/NumPy/dask for kikuchipy. GPL-2.0-or-later, conveyed under
+# Python/NumPy/dask for kikuchipy, with the ``refineImage()``
+# deviation stated above. GPL-2.0-or-later, conveyed under
 # GPL-3.0-or-later
 # #####################################################################
 
@@ -242,6 +253,14 @@ which is what the factor expresses.
 :meth:`SphericalIndexer.index_patterns` warns when the model times
 the worker count exceeds 2 GiB.
 
+A **refining** run adds ``(n_phases if normalize else 1) 16 bw^3``
+bytes per worker, one ``(bw, bw, bw, 2)`` Wigner d table per
+correlator clone -- 5.03, 10.9 and 23.1 MB each at ``bw`` 68, 88 and
+113 -- so the model reads 54,457,112 B at ``bw`` 68 with one phase
+and 89,231,224 B with two normalized phases.  The beta independent
+factor triple, another ``8 bw^2 + 16 bw^3`` bytes (5.07 MB at ``bw``
+68), is read only and shared by every correlator of one process.
+
 **Resizing against direct construction.**  Every phase is stored as
 ``harmonics.resize(bandwidth)``, exactly as ``IndexEBSD`` resizes the
 stored spectra of a ``.sht`` file.  Resizing is **not** the same as
@@ -281,7 +300,10 @@ from kikuchipy.indexing._spherical._preprocessing import (
     _circular_mask,
     _preprocess_pattern,
 )
-from kikuchipy.indexing._spherical._wigner import wigner_d_half_pi_table
+from kikuchipy.indexing._spherical._wigner import (
+    wigner_d_half_pi_table,
+    wigner_d_table_factors,
+)
 from kikuchipy.indexing._spherical._xcorr import (
     NormalizedSphericalCrossCorrelator,
     SphericalCrossCorrelator,
@@ -497,6 +519,13 @@ def _index_chunk(
     failure semantics of ``ebsdWorkItem<Real>``
     (``include/modality/ebsd/idx.hpp``, lines 382-456).
 
+    ``indexer.refine`` is handed to **every** phase's ``correlate``,
+    which is where ``indexImage()`` puts it (line 230): each phase's
+    single candidate is refined *before* insertion, so the top-n
+    ordering uses refined scores and a run with ``P`` phases pays
+    ``P`` refinements per pattern.  Fill rows carry no candidate and
+    are never refined.
+
     The correlators are cloned and the north and south buffers
     allocated **once per invocation**, with :func:`numpy.zeros` and
     never :func:`numpy.empty`, so that the chunk worker is stateless
@@ -532,6 +561,7 @@ def _index_chunk(
     gaussian_background = indexer.gaussian_background
     n_regions = indexer.n_regions
     compatible = indexer.emsphinx_compatible
+    refine = indexer.refine
 
     for i in range(n_patterns):
         # Every guard sits inside the catch, as ``ebsdWorkItem``
@@ -565,7 +595,7 @@ def _index_chunk(
             if correlators is not None:
                 for phase_id, correlator in enumerate(correlators):
                     zyz, score = correlator.correlate(
-                        gln, emsphinx_compatible=compatible
+                        gln, refine=refine, emsphinx_compatible=compatible
                     )
                     _insert_candidate(rows, zyz, score, phase_id, image_quality)
             else:
@@ -575,6 +605,7 @@ def _index_chunk(
                         gln,
                         n_fold,
                         mirror,
+                        refine=refine,
                         emsphinx_compatible=compatible,
                     )
                     _insert_candidate(rows, zyz, score, phase_id, image_quality)
@@ -632,6 +663,71 @@ def _map_chunks(
     )
 
 
+def _refine_chunk(
+    patterns_block: np.ndarray,
+    zyz_block: np.ndarray,
+    phase_id_block: np.ndarray,
+    indexer: "SphericalIndexer",
+) -> np.ndarray:
+    """Return the packed refinement results of one chunk of patterns
+    and their starting orientations.
+
+    Parameters
+    ----------
+    patterns_block
+        ``(nc, nrows, ncols)`` array of patterns of any real data
+        type.
+    zyz_block
+        ``(nc, 3)`` 64-bit float starting passive ZYZ Euler angles,
+        **block aligned** with ``patterns_block``.
+    phase_id_block
+        ``(nc,)`` starting phase indices into
+        :attr:`SphericalIndexer.phases`, negative where the point is
+        not indexed and must pass through untouched.
+    indexer
+        Indexer whose projector, preprocessing configuration and
+        correlators to use.  It is only read: the correlators are
+        cloned and the buffers allocated in this call, so one indexer
+        serves every worker.
+
+    Returns
+    -------
+    results
+        ``(nc, 6)`` 64-bit float array packing ``alpha``, ``beta``,
+        ``gamma``, ``score``, ``phase_id`` and ``iq`` of every
+        pattern.  A row which is not refined -- a negative phase
+        index, a failed guard or a raising pattern -- carries its
+        input angles and phase with a score and image quality of
+        zero, so the caller can leave the input map's values in
+        place there.
+
+    Notes
+    -----
+    Port of the refine-only work item of ``ebsdWorkItem<Real>``
+    (``include/modality/ebsd/idx.hpp``, lines 438-450) with the
+    **intended** semantics of ``Indexer<Real>::refineImage()``
+    (``include/idx/indexer.hpp``, lines 277-306); see the licence
+    notice at the top of this module for the defect this deviates
+    from.  Per pattern: preprocess, back-project and analyse exactly
+    as :func:`_index_chunk` does, with the same two guards and the
+    same per pattern exception arm, then refine through **that
+    phase's** correlator (line 296) and recompute the image quality
+    (lines 280 and 304).
+
+    A non-converged refinement is **not** a failure: it returns the
+    input triple with the analytic value there, which is C++ parity.
+
+    ``zyz_block`` and ``phase_id_block`` are block arguments of
+    :func:`dask.array.map_blocks` chunked to the pattern blocks, so a
+    chunk always refines from the starting orientations of its own
+    patterns.
+    """
+    raise NotImplementedError(
+        "`_refine_chunk()` is not implemented yet; it needs the correlators' "
+        "`refine_zyz()`"
+    )
+
+
 class SphericalIndexer:
     """Indexing of EBSD patterns by spherical cross-correlation with
     one or more master patterns :cite:`lenthe2019spherical`.
@@ -665,8 +761,12 @@ class SphericalIndexer:
         from the window.  Default is ``True``, the ``IndexEBSD`` name
         list default.
     refine
-        Whether to refine the best orientation of the Euler grid with
-        Newton's method.  Only ``False``, the default, is available.
+        Whether to refine every phase's best orientation of the Euler
+        grid with Newton's method on the sphere.  Default is
+        ``True``, the ``IndexEBSD`` name list default; pass ``False``
+        for the coarse grid result alone.  A refined score is the
+        analytic correlation at the refined rotation and is **not**
+        comparable with a coarse one, see the ``Notes``.
     signal_mask
         Boolean mask of the detector shape in kikuchipy polarity,
         ``True`` = ignore the pixel, as in
@@ -704,6 +804,13 @@ class SphericalIndexer:
         Exclusive maximum harmonic degree.
     normalize : bool
         Whether the normalized correlation is used.
+    refine : bool
+        Whether every candidate is Newton refined before insertion.
+    wigner_d_factors : tuple or None
+        The beta independent Wigner d factor triple every correlator
+        of a refining indexer shares, and ``None`` when
+        :attr:`refine` is ``False`` and
+        :meth:`refine_patterns` has not been called.
     projector : kikuchipy.indexing.SphericalBackProjector
         The shared back-projector, whose ``detector`` attribute is
         the isolated deep copy of the detector.
@@ -741,8 +848,6 @@ class SphericalIndexer:
 
     Raises
     ------
-    NotImplementedError
-        If ``refine`` is ``True``.
     TypeError
         If an entry of ``harmonics`` is not a
         :class:`~kikuchipy.indexing.MasterPatternHarmonics`, or if
@@ -779,12 +884,12 @@ class SphericalIndexer:
     the chunk sizing.
 
     **Validation order** (frozen), so that an expensive construction
-    is never paid for a call which cannot work: ``refine``, the
-    bandwidth range, the harmonics sequence and its entry types, the
-    shared ``sample_tilt`` and ``beam_energy`` of the phases, the
-    binding of that ``sample_tilt`` to the detector's, ``n_regions``,
-    and finally the back-projector, whose own geometry and mask
-    errors propagate unchanged rather than being duplicated here.
+    is never paid for a call which cannot work: the bandwidth range,
+    the harmonics sequence and its entry types, the shared
+    ``sample_tilt`` and ``beam_energy`` of the phases, the binding of
+    that ``sample_tilt`` to the detector's, ``n_regions``, and
+    finally the back-projector, whose own geometry and mask errors
+    propagate unchanged rather than being duplicated here.
 
     **The tilt binding** deserves its own note.  EMSphInx builds the
     detector geometry *from* the master pattern, so a mismatch is
@@ -796,12 +901,23 @@ class SphericalIndexer:
     based sanity check could catch it.
 
     **The scores are not normalized cross-correlations.**  The metric
-    is the correlation at the interpolated peak, divided by the
+    is the correlation of the winning rotation, divided by the
     rotation dependent window denominator when ``normalize`` is
     ``True`` but never by the standard deviation of the pattern, so
     it is unbounded and comparable only within one geometry and
-    bandwidth.  Measured for the nine Ni patterns at ``bw`` 68:
-    0.4963-0.6239 normalized and 0.2799-0.3533 un-normalised.
+    bandwidth.  Measured for the nine Ni patterns at ``bw`` 68 with
+    ``refine=False``: 0.4963-0.6239 normalized and 0.2799-0.3533
+    un-normalised; with the ``refine=True`` default 0.5143-0.6347
+    resp. 0.2903-0.3592.
+
+    **A refined score is not a coarse score.**  With ``refine``, the
+    metric is the *analytic* correlation at the Newton point, over
+    ``denominator(zyz)`` when ``normalize`` is ``True``, and not the
+    tri-quadratic interpolated peak of the coarse grid, so the two
+    are not comparable with one another.  The refined normalized
+    score can even dip below the coarse one where the window shift
+    chain rule is omitted, exactly as it is omitted in EMSphInx
+    (measured 4 of 165 points, worst -4.8e-4).
 
     **Failure semantics**, the result contract of the module
     documentation.  A failed pattern records the identity rotation, a
@@ -820,6 +936,16 @@ class SphericalIndexer:
     index the rounding ripple of the histogram equalisation of a
     uniform image at a measured score of +0.2301 and a garbage
     orientation; the module documentation states the measurements.
+
+    A refinement does not add a failure case of its own -- a Newton
+    loop which does not converge returns the coarse triple with the
+    analytic value there, as the C++ does -- but that analytic value
+    **can be non-positive**, and the insertion rule then drops the
+    candidate.  A pattern whose every phase fails that way becomes a
+    failed pattern where the coarse path would have kept a positive
+    interpolated score.  Measured: zero refinement failures on every
+    real data run, so this is a contract statement rather than an
+    observed regression.
 
     **EMSphInx parity** needs ``emsphinx_compatible=True`` **both**
     here and in
@@ -865,22 +991,13 @@ class SphericalIndexer:
         *,
         bandwidth: int = 68,
         normalize: bool = True,
-        refine: bool = False,
+        refine: bool = True,
         signal_mask: np.ndarray | None = None,
         n_regions: int = 10,
         gaussian_background: bool = False,
         circular_mask: bool = False,
         emsphinx_compatible: bool = True,
     ) -> None:
-        # Refused first, so that an expensive construction is never
-        # paid for a call which cannot work
-        if refine:
-            raise NotImplementedError(
-                "Newton refinement (refine=True) is not implemented yet; "
-                "only coarse indexing on the Euler grid is available. "
-                "Leave refine=False."
-            )
-
         bandwidth = int(bandwidth)
         smallest, largest = _BANDWIDTH_LIMITS
         if bandwidth < smallest or bandwidth > largest:
@@ -980,6 +1097,12 @@ class SphericalIndexer:
 
         # One Wigner table for every correlator (2.5 MB at ``bw`` 68)
         table = wigner_d_half_pi_table(bandwidth, True)
+        # The refinement's beta independent factor triple (5.07 MB at
+        # ``bw`` 68) is built **eagerly** and shared into every
+        # correlator, since the chunk workers clone before their first
+        # refinement and a lazily built triple would therefore be
+        # rebuilt once per clone.  A coarse-only indexer pays nothing
+        factors = wigner_d_table_factors(bandwidth) if refine else None
         if normalize:
             correlators = tuple(
                 NormalizedSphericalCrossCorrelator(
@@ -990,6 +1113,7 @@ class SphericalIndexer:
                     phase.has_equatorial_mirror,
                     projector.window_harmonics,
                     wigner_d_half_pi=table,
+                    wigner_d_factors=factors,
                 )
                 for phase in resized
             )
@@ -999,7 +1123,9 @@ class SphericalIndexer:
             # The C++ un-normalised correlator holds only a spectrum,
             # so one shared prototype serves every phase
             correlators = None
-            correlator = SphericalCrossCorrelator(bandwidth, wigner_d_half_pi=table)
+            correlator = SphericalCrossCorrelator(
+                bandwidth, wigner_d_half_pi=table, wigner_d_factors=factors
+            )
             spectra = tuple(
                 (phase.alm, phase.n_fold, phase.has_equatorial_mirror)
                 for phase in resized
@@ -1023,11 +1149,13 @@ class SphericalIndexer:
         self.n_phases = len(self.phases)
         self.bandwidth = bandwidth
         self.normalize = bool(normalize)
+        self.refine = bool(refine)
         self.projector = projector
         self.correlators = correlators
         self.correlator = correlator
         self.spectra = spectra
         self.wigner_d_half_pi = table
+        self.wigner_d_factors = factors
         self.good_pixels = good_pixels
         self.signal_mask = projector.signal_mask
         self.circular_mask = bool(circular_mask)
@@ -1060,6 +1188,41 @@ class SphericalIndexer:
             f"{correlation}"
         )
 
+    def _memory_model(self, refine: bool) -> int:
+        """Return the estimated memory one worker needs for a run
+        with or without refinement, in bytes.
+
+        Parameters
+        ----------
+        refine
+            Whether the run refines.  :meth:`refine_patterns` always
+            does, whatever :attr:`refine` says, so the flag is a
+            parameter rather than the attribute.
+
+        Returns
+        -------
+        n_bytes
+            The model of :attr:`memory_per_worker_bytes`, with the
+            ``n_correlators * 16 bw^3`` refinement term when
+            ``refine``.
+
+        Notes
+        -----
+        The refinement term is **per correlator clone**, not one per
+        worker: every clone owns its own ``(bw, bw, bw, 2)`` Wigner
+        d table, and a normalized run clones one correlator per
+        phase, so a flat term would understate every multi-phase run
+        by ``(P - 1) 16 bw^3`` and make the 2 GiB warning under-fire
+        on exactly the runs which need it.
+        """
+        n_correlators = self.n_phases if self.normalize else 1
+        side = self.side_length
+        n_bytes = n_correlators * side * side * self._half_side_length * 24
+        n_bytes += side**3 * 8
+        if refine:
+            n_bytes += n_correlators * 16 * self.bandwidth**3
+        return n_bytes
+
     @property
     def memory_per_worker_bytes(self) -> int:
         """Return the estimated memory one worker needs, in bytes.
@@ -1070,42 +1233,55 @@ class SphericalIndexer:
             ``(n_phases if normalize else 1) slP^2 bwP 24 + slP^3 8``
             bytes, i.e. one correlation spectrum and cube per
             correlator clone plus the interpolation cube, 49,426,200
-            at ``bw`` 68 with one phase.
+            at ``bw`` 68 with one phase; plus
+            ``(n_phases if normalize else 1) 16 bw^3`` bytes, one
+            refinement Wigner d table per correlator clone, when
+            :attr:`refine` is set, i.e. 54,457,112 at ``bw`` 68 with
+            one phase.
 
         Notes
         -----
         The model is above the measured transient peak by about
         10 %, see the table in the module documentation.  With
         ``normalize=False`` one scratch correlator serves every
-        phase, so the phase count drops out.
+        phase, so the phase count drops out of both terms.
 
         :meth:`index_patterns` warns when this times the number of
         dask workers exceeds 2 GiB.
         """
-        n_correlators = self.n_phases if self.normalize else 1
-        side = self.side_length
-        return n_correlators * side * side * self._half_side_length * 24 + (side**3 * 8)
+        return self._memory_model(self.refine)
 
-    def get_info_message(self, n_patterns: int, chunksize: int | None = None) -> str:
+    def get_info_message(
+        self,
+        n_patterns: int,
+        chunksize: int | None = None,
+        refining: bool = False,
+    ) -> str:
         """Return the information message printed before indexing.
 
         Parameters
         ----------
         n_patterns
-            Number of patterns to index.
+            Number of patterns to index or to refine.
         chunksize
             Number of patterns per chunk.  If not given, the ported
             chunk sizing model resolves it, exactly as
             :meth:`index_patterns` does.
+        refining
+            Whether the message describes a refinement-only run, i.e.
+            :meth:`refine_patterns`.  Default is ``False``.  Such a
+            run always refines, so its work line reads ``Refining n
+            orientation(s)`` and its memory line prints the refined
+            model whatever :attr:`refine` says.
 
         Returns
         -------
         message
             Multiple lines naming the phases with their point groups
             and symmetry flags, the bandwidth with the Euler side
-            length and half cell, the correlation, the preprocessing,
-            the projection centre, the chunking and the estimated
-            memory per worker, e.g.
+            length and half cell, the correlation, the refinement,
+            the preprocessing, the projection centre, the chunking
+            and the estimated memory per worker, e.g.
 
             .. code-block::
 
@@ -1114,13 +1290,14 @@ class SphericalIndexer:
                   Bandwidth: 68 (Euler side length 135, half cell
                   1.33 deg)
                   Correlation: normalized
+                  Refinement: Newton (on)
                   Preprocessing: n_regions = 10,
                   gaussian_background = False
                   Projection center (Bruker): (0.4251, 0.2134,
                   0.5007)
                   Indexing 9 pattern(s) in 9 chunk(s) of up to 1
                   pattern(s)
-                  Estimated memory per worker: 49 MB
+                  Estimated memory per worker: 54 MB
 
         Notes
         -----
@@ -1135,7 +1312,19 @@ class SphericalIndexer:
         n_chunks = -(-n_patterns // chunksize)
         names = ", ".join(_phase_description(phase) for phase in self.phases)
         correlation = "normalized" if self.normalize else "un-normalized"
+        refine = self.refine or refining
+        refinement = "Newton (on)" if refine else "off"
         pc = tuple(map(float, self.projector.detector.pc.squeeze().round(4)))
+        if refining:
+            work = (
+                f"  Refining {n_patterns} orientation(s) in {n_chunks} "
+                f"chunk(s) of up to {chunksize} pattern(s)\n"
+            )
+        else:
+            work = (
+                f"  Indexing {n_patterns} pattern(s) in {n_chunks} chunk(s) "
+                f"of up to {chunksize} pattern(s)\n"
+            )
         return (
             "Spherical indexing information:\n"
             f"  Phase(s): {names}\n"
@@ -1143,13 +1332,13 @@ class SphericalIndexer:
             f"{self.side_length}, half cell "
             f"{self.half_cell_degrees:.2f} deg)\n"
             f"  Correlation: {correlation}\n"
+            f"  Refinement: {refinement}\n"
             f"  Preprocessing: n_regions = {self.n_regions}, "
             f"gaussian_background = {self.gaussian_background}\n"
             f"  Projection center (Bruker): {pc}\n"
-            f"  Indexing {n_patterns} pattern(s) in {n_chunks} chunk(s) "
-            f"of up to {chunksize} pattern(s)\n"
-            "  Estimated memory per worker: "
-            f"{self.memory_per_worker_bytes / 1e6:.0f} MB"
+            + work
+            + "  Estimated memory per worker: "
+            f"{self._memory_model(refine) / 1e6:.0f} MB"
         )
 
     def index_patterns(
@@ -1294,3 +1483,96 @@ class SphericalIndexer:
             # candidate, so the best row's column is the pattern's
             "iq": np.ascontiguousarray(packed[:, 0, 5]),
         }
+
+    def refine_patterns(
+        self,
+        patterns: np.ndarray | da.Array,
+        zyz: np.ndarray,
+        phase_id: np.ndarray,
+        *,
+        chunksize: int | None = None,
+        progressbar: bool = True,
+    ) -> dict[str, np.ndarray]:
+        """Return Newton refined orientations of a stack of patterns
+        which are already indexed.
+
+        Parameters
+        ----------
+        patterns
+            ``(n, nrows, ncols)`` NumPy or dask array of any real
+            data type, whose last two axes must match the detector
+            shape.
+        zyz
+            ``(n, 3)`` array of starting passive ZYZ Euler angles in
+            radians, one per pattern, e.g. the ``"zyz"`` of
+            :meth:`index_patterns` or
+            :func:`kikuchipy.indexing._spherical._euler.
+            rotation_to_zyz` of a crystal map's rotations.
+        phase_id
+            ``(n,)`` array of indices into :attr:`phases`, one per
+            pattern.  A **negative** index marks a point which is not
+            indexed: its row passes through untouched and is never
+            refined.
+        chunksize
+            Number of patterns per chunk, at least one.  If not
+            given, the ported chunk sizing model sizes the chunks.
+        progressbar
+            Whether to show dask's progress bar, ``True`` by default.
+
+        Returns
+        -------
+        results
+            Dictionary with the same four keys as
+            :meth:`index_patterns`, all with a single candidate:
+            ``"zyz"`` ``(n, 3)``, ``"scores"`` ``(n,)``, ``"iq"``
+            ``(n,)`` and ``"phase_id"`` ``(n,)`` 32-bit integer, the
+            input echoed back.  A row which was not refined carries
+            its input angles and phase.
+
+        Raises
+        ------
+        ValueError
+            If the last two axes of ``patterns`` do not match the
+            detector shape, if ``zyz`` or ``phase_id`` does not have
+            one row per pattern, if a non-negative ``phase_id`` does
+            not index :attr:`phases`, or if ``chunksize`` is given
+            and smaller than one.
+
+        Warns
+        -----
+        UserWarning
+            If the number of dask workers times
+            :attr:`memory_per_worker_bytes` exceeds 2 GiB.
+
+        See Also
+        --------
+        kikuchipy.signals.EBSD.refine_orientation_spherical
+        index_patterns
+
+        Notes
+        -----
+        **This method always refines**, whatever :attr:`refine` says:
+        it builds and shares the beta independent Wigner d factor
+        triple exactly as a refining construction does, so that the
+        chunk workers' clones share one, and its information message
+        prints the refined memory model.
+
+        Per pattern the pipeline is the one of
+        :meth:`index_patterns` -- preprocess, back-project, analyse
+        -- followed by a refinement against **that pattern's own
+        phase**, and the image quality is recomputed as EMSphInx
+        recomputes it.  A refinement which does not converge is not
+        a failure: it returns the starting triple with the analytic
+        value there.
+
+        Refinement is score-monotone only for starting orientations
+        which came from :meth:`index_patterns` with the same
+        configuration.  Newton's method is local, so a foreign
+        starting orientation may converge to a stationary point
+        whose score is *lower* than the starting one (measured on 3
+        of 4 converged unrelated starts).
+        """
+        raise NotImplementedError(
+            "`refine_patterns()` is not implemented yet; it needs the "
+            "correlators' `refine_zyz()`"
+        )

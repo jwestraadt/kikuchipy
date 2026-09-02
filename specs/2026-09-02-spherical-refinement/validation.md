@@ -19,6 +19,20 @@ surface includes `tests/test_indexing/test_spherical_back_projection.py`
 `_xcorr` kernels and goes red when `_derivatives` lands -- plan 2.4
 lists every such test).
 
+(Corrected 2026-09-02, test-quality review: the four kernel-surface
+tests of plan 2.4 were rewritten to be green **both** before and
+after `_derivatives` lands, rather than left red across the
+tests-first commit -- the back-projection loop and the `_xcorr`
+parametrised flag test read a sanctioned-name set, the `_xcorr`
+completeness check and the package-wide error-model test became
+inclusions with the refinement's kernel listed separately, and the
+equalities they gave up are asserted in
+`test_spherical_refinement.py::TestRefinementKernels`
+(`test_the_package_has_exactly_three_numpy_error_model_kernels` and
+the new `test_the_xcorr_module_has_exactly_two_error_model_kernels`,
+which is the home the back-projection assertion previously had
+nowhere). The `-k spherical` first-green-run rule stands.)
+
 `tests/test_indexing/test_spherical_xcorr.py` (new classes):
 
 - `TestDerivatives` -- both oracle tests draw spectra with the
@@ -36,10 +50,17 @@ lists every such test).
     the `wigner_d`/`wigner_d_prime`/`wigner_d_prime2` triple sum
     (negative orders `(-1)^m conj`): value `abs <= 1e-11`, jac
     `abs <= 1e-10`, hes `abs <= 1e-9` (measured 5.51e-14 / 2.98e-13
-    / 1.71e-12); values `record_property`.
+    / 1.71e-12; corrected 2026-09-02: the fixture also evaluates
+    every drawn triple at `zyz * (1, -1, 1)`, since
+    `quaternion_to_zyz` returns `beta` in `[0, pi]` and a dropped
+    negative-`beta` `csc` sign survived otherwise -- re-measured
+    5.68e-14 / 3.06e-13 / 1.48e-12, bounds unchanged); values
+    `record_property`.
   - `test_jacobian_and_hessian_match_finite_differences`: `bw` 16,
     central differences `h = 1e-5`: jac `abs <= 1e-5`, hes
-    `abs <= 1e-2` (measured 2.97e-7 / 6.66e-4, truncation-limited).
+    `abs <= 1e-2` (measured 2.97e-7 / 6.66e-4, truncation-limited;
+    corrected 2026-09-02: with the negated-`beta` twins above,
+    2.72e-7 / 6.65e-4).
   - `test_phase7_formulas_still_pin_the_kernel_inputs`: the copied
     `_phase7_derivatives` helper (per its Phase 3 docstring) agrees
     with `wigner_d_prime`/`wigner_d_prime2` through
@@ -72,7 +93,13 @@ lists every such test).
     no `parallel`/`fastmath`. The Phase 4/5/6 tests that pinned
     "one in `_xcorr`" / "exactly two" are renamed and extended per
     plan 2.4 (incl.
-    `test_spherical_back_projection.py::test_phase_four_keeps_its_single_error_model`).
+    `test_spherical_back_projection.py::test_phase_four_keeps_its_single_error_model`,
+    renamed 2026-09-02 to
+    `test_the_correlator_module_keeps_its_sanctioned_error_models`;
+    the `_xcorr` one to
+    `test_only_the_sanctioned_kernels_use_the_numpy_error_model`
+    and the indexer one to
+    `test_the_package_error_models_are_the_sanctioned_ones`).
 - `TestRefinePeak`
   - `test_an_on_grid_rotation_refines_in_one_iteration`: `bw` 16,
     on-grid pair: refined angle 0 (`<= 1e-9` deg), 1 iteration,
@@ -86,7 +113,10 @@ lists every such test).
   - `test_the_eight_point_groups_are_recovered`: groups `112, 11m,
     2/m, 3, 4, 4/m, 6, 6/m` x `bw in {53, 60, 63}` x 3: reduced
     misorientation `< 0.351` deg (the C++ gate; measured worst
-    4.518e-6).
+    4.518e-6; corrected 2026-09-02: that is the drafting probe's
+    `11 + bw` seed recipe -- under the shipped fixture's own
+    `100 bw + index` seeds the worst is **9.04e-6**, still 38,800x
+    inside the gate; the per-case table is in Recorded results).
   - `test_normalized_wedge_masked_pairs_are_recovered`: `testNCorr`
     recipe, `bw in {53, 68}` x `{1, 4/m}` x 3, gated **as the C++
     gates them** (D10): the `(n_fold=1, mirror=False)` cases
@@ -122,7 +152,13 @@ lists every such test).
     `_derivatives` writing an indefinite Hessian with a finite
     gradient: `_refine_peak` returns the start,
     `converged is False` (kills saddle-acceptance and
-    `np.linalg.solve` mutants).
+    `np.linalg.solve` mutants).  (Corrected 2026-09-02: those three
+    assertions do **not** kill the `np.linalg.solve` mutant -- its
+    constant step is accepted, the loop times out at the cap and it
+    returns the same start, the same -7.25 and the same
+    `converged False`.  The stand-in therefore counts its calls and
+    the test asserts **1** `der=True` evaluation; measured 1 for
+    the port and 15 for the mutant, see Recorded results.)
   - `test_steps_must_shrink`: monkeypatched Hessian sequence whose
     cholesky step grows on iteration 2: the fallback path runs
     (pinned via the recorded step) and `prev_mag2` is not updated by
@@ -477,3 +513,71 @@ normalised point-group loop runs under the loosened `eps` 0.351
   **89,231,224**; `16 bw^3` = 5,030,912 / **10,903,552** /
   23,086,352 B at `bw` 68 / 88 / 113 (the draft's "11.5 MB" at 88
   corrected to 10.9).
+
+### 2026-09-02 -- test-quality review re-measurements (fixture seeds)
+
+Environment as above; the review's reference implementation
+(`p7_ref.py`, the drafting probe's verbatim `derivatives()` /
+`refinePeak()` / `denominator()` with the `np.*` `csc` chain of D1)
+monkeypatched into `_xcorr`, plus `p7_fix_check.py`; scratchpad, not
+committed. These are the numbers the **shipped fixtures** give,
+which differ from the drafting probe's where the seed recipes
+differ; they supersede the earlier sections for those fixtures.
+
+- **Point groups under the test file's own seeds**
+  (`100 * bw + POINT_GROUPS.index(name)`, not the drafting
+  `11 + bw`): worst **9.0355e-06 deg** over the 24 cases, gate
+  0.351 -> **38,800x**. Non-zero cases only: `2/m` 5.915e-6 and
+  `4/m` **9.036e-6** at `bw` 53, `2/m` 1.708e-6 at 60, `6`
+  3.818e-6 at 63; the other 20 are exactly 0.
+- **Negated-`beta` twins in the two derivative oracles.**
+  `quaternion_to_zyz` returns `beta` in `[0, pi]`, so the drafting
+  fixtures never evaluated below the equator and the
+  "`csc` sign for negative beta dropped" mutant of plan 3
+  **survived both named killers**. Each drawn triple is now
+  evaluated at `zyz * (1, -1, 1)` as well:
+  - analytic oracle (`bw` 12, betas -2.068..+2.068): value
+    5.68e-14, jac 3.06e-13, hes 1.48e-12, worst imaginary part
+    3.43e-13; scales max `|value|` 16.80, max `|hes|` 922.3;
+  - finite differences (`bw` 16, betas -2.911..+2.911): jac
+    2.72e-7, hes 6.65e-4.
+  Bounds unchanged (1e-11 / 1e-10 / 1e-9 / 1e-5 / 1e-2). With the
+  sign dropped the mutant measures jac **5.79e+01** (analytic) and
+  **1.15e+02** (finite differences), i.e. it now dies by both.
+- **Constructed saddle, iteration count.** The port takes exactly
+  **1** `der=True` evaluation: the Cholesky solve returns the
+  indefinite status, the 2 x 2 determinant is -1 and the first
+  iteration is a total failure. With `numpy.linalg.solve`
+  substituted the constant step (`mag2` 0.03) is accepted on every
+  iteration -- equal to `prev_mag2` from the second on, which the
+  C++ rule accepts -- and the loop runs the full **15** iterations,
+  yet **still** returns the start with value -7.25 and
+  `converged False`. The return values do not separate the two; the
+  iteration count does, so the test asserts it.
+- **Exact-pole starts.** `_refine_peak` from `(0.45, +-0.0, -0.75)`
+  with the peak at `(0.4, 0, -0.7)` **converges** through the 1 x 1
+  path in one iteration, value 396.238717 -- so the pole test
+  asserts `converged is True` instead of the vacuous "finite or
+  NaN". At `+-pi` it also converges, with `hes[1, 1]` NaN.
+- **Small map derivative calls** (default configuration, `bw` 68):
+  **19** with `der=True` and **18** with `der=False`, i.e. exactly
+  the drafted `>= 18` bound. The value-only assertion is loosened
+  to `>= 9` (one denominator evaluation per pattern) and the exact
+  figures `record_property`ed; the counters are taken under a lock,
+  since a chunked run increments them from several worker threads.
+- **The factor triple's identity.**
+  `_validated_wigner_d_factors` ends `return e_km, w_jkm, b_jkm`,
+  a **new tuple** of the same three arrays, so
+  `correlator.wigner_d_factors is factors` is False while element
+  identity is `[True, True, True]` (measured). The sharing
+  assertions of "the very same three arrays" are therefore made per
+  array, at all six sites.
+- **Foreign start on the small map** (`bw` 68, pattern 4, the
+  seeded `default_rng(7)` rotation of
+  `test_a_foreign_start_is_not_score_monotone`): the analytic
+  normalised value at that start is **-0.066475**, and the
+  refinement **fails** from it and returns it bitwise with that
+  same value (moved 0.0000 deg). The injected input row therefore
+  carries -0.066475, not the Ni coarse ~0.57 which no refinement
+  from a random orientation could reach and against which the
+  disjunction was vacuous.

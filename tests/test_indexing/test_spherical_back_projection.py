@@ -2147,12 +2147,19 @@ class TestKernels:
         assert hasattr(kernel, "targetoptions"), f"{name} must be decorated with @njit"
         assert kernel.targetoptions.get("error_model") is None
 
-    def test_phase_four_keeps_its_single_error_model(self):
-        # regression: the second sanctioned error model of the
-        # project arrives in _preprocessing, not here
+    def test_the_correlator_module_keeps_its_sanctioned_error_models(self):
+        # regression: no kernel of ``_xcorr`` acquires the IEEE
+        # error model by accident.  Two are sanctioned there -- the
+        # coarse tri-quadratic interpolation, whose unguarded
+        # Hessian determinant is the Phase 4 reason, and the Newton
+        # refinement's ``_derivatives``, whose unguarded ``csc`` at
+        # the poles is the Phase 7 one.  The set is pinned exactly
+        # in ``test_spherical_refinement.py``, which is where the
+        # refinement's own assertions live
+        sanctioned = {"_interpolate_maxima", "_derivatives"}
         for name in _njit_kernel_names(_xcorr):
             kernel = getattr(_xcorr, name)
-            expected = "numpy" if name == "_interpolate_maxima" else None
+            expected = "numpy" if name in sanctioned else None
             assert kernel.targetoptions.get("error_model") == expected
 
     def test_unproject_kernel_py_func(self, record_property):
