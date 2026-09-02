@@ -25,7 +25,8 @@ import gc
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from time import sleep, time
+from typing import TYPE_CHECKING, Iterable, Sequence
 import warnings
 
 import dask
@@ -37,7 +38,7 @@ from hyperspy.axes import AxesManager
 from hyperspy.roi import BaseInteractiveROI
 from hyperspy.signals import Signal2D
 import numpy as np
-from orix.crystal_map import CrystalMap, PhaseList
+from orix.crystal_map import CrystalMap, PhaseList, create_coordinate_arrays
 from orix.quaternion import Rotation
 from scipy.ndimage import correlate, gaussian_filter
 from skimage.util.dtype import dtype_range
@@ -58,6 +59,13 @@ from kikuchipy.indexing._refinement._refinement import (
     _refine_orientation,
     _refine_orientation_pc,
     _refine_pc,
+)
+from kikuchipy.indexing._spherical._euler import (
+    rotation_from_zyz as _rotation_from_zyz,
+)
+from kikuchipy.indexing._spherical._indexer import SphericalIndexer
+from kikuchipy.indexing._spherical._master_pattern_harmonics import (
+    MasterPatternHarmonics,
 )
 from kikuchipy.indexing.similarity_metrics._normalized_cross_correlation import (
     NormalizedCrossCorrelationMetric,
@@ -1980,6 +1988,329 @@ class EBSD(KikuchipySignal2D):
             )
 
         xmap.scan_unit = _get_navigation_axes_unit(am_exp)
+
+        return xmap
+
+    def spherical_indexing(
+        self,
+        harmonics: MasterPatternHarmonics | Sequence[MasterPatternHarmonics],
+        detector: EBSDDetector,
+        bandwidth: int = 68,
+        n_best: int = 1,
+        navigation_mask: np.ndarray | None = None,
+        signal_mask: np.ndarray | None = None,
+        normalize: bool = True,
+        refine: bool = False,
+        n_regions: int = 10,
+        gaussian_background: bool = False,
+        circular_mask: bool = False,
+        emsphinx_compatible: bool = True,
+        chunksize: int | None = None,
+        verbose: int = 1,
+    ) -> CrystalMap:
+        """Index patterns by spherical cross-correlation with one or
+        more master patterns :cite:`lenthe2019spherical`.
+
+        Each pattern is back-projected onto a square grid on the unit
+        sphere, transformed to spherical harmonics and cross-correlated
+        with every master pattern over all rotations. The best rotation
+        of each phase is a candidate, and the best candidate is the
+        indexed orientation.
+
+        Parameters
+        ----------
+        harmonics
+            One :class:`~kikuchipy.indexing.MasterPatternHarmonics` or
+            a sequence of them, one per phase. Each must have its
+            ``phase`` set, and the phase names must be unique.
+        detector
+            EBSD detector with exactly one projection center (PC),
+            describing the detector-sample geometry of all patterns.
+            Get one PC for a detector with several with
+            ``detector = detector.deepcopy()`` followed by
+            ``detector.pc = detector.pc_average``.
+        bandwidth
+            Bandwidth, i.e. the exclusive maximum harmonic degree, to
+            index at, between 16 and 512. Default is 68. A bandwidth
+            from :func:`~kikuchipy.indexing.fast_bandwidths` needs no
+            zero padding and is therefore faster.
+        n_best
+            Number of candidates to keep per pattern. Default is 1.
+            Each phase contributes exactly one candidate, so rows
+            beyond the number of phases are filled with an invalid
+            phase, see the ``Notes``.
+        navigation_mask
+            A boolean mask equal to the signal's navigation (map)
+            shape, where only patterns equal to ``False`` are indexed.
+            If not given, all patterns are indexed.
+        signal_mask
+            A boolean mask equal to the detector shape, where only
+            pixels equal to ``False`` are used. If not given, all
+            pixels are used.
+        normalize
+            Whether to use the normalized cross-correlation, which
+            divides by a rotation dependent denominator computed from
+            the sphere window. Default is ``True``.
+        refine
+            Whether to refine the best orientation of the coarse Euler
+            grid. Only ``False``, the default, is available.
+        n_regions
+            Number of tiles along each detector axis of the adaptive
+            histogram equalization applied to every pattern. Default
+            is 10. ``0`` skips the equalization.
+        gaussian_background
+            Whether to fit and subtract a Gaussian background from
+            every pattern first. Default is ``False``.
+        circular_mask
+            Whether to use only the largest circle inscribed in the
+            detector. Default is ``False``.
+        emsphinx_compatible
+            Whether to reproduce EMSphInx' Gaussian fit off-by-one and
+            the two defects of its peak interpolation. Default is
+            ``True``, which EMSphInx parity requires, see the
+            ``Notes``.
+        chunksize
+            Number of patterns to index per chunk. If not given, it is
+            estimated from the bandwidth, the number of patterns and
+            the number of Dask workers.
+        verbose
+            Which information to print. Options are 0 - no output,
+            1 - information, progress bar and timing (default).
+
+        Returns
+        -------
+        xmap
+            A crystal map with the best orientation of each pattern,
+            or the ``n_best`` best, and the properties ``"scores"``
+            and ``"iq"``, the correlation and the image quality. With
+            ``n_best`` greater than one, the property
+            ``"nbest_phase_id"`` holds the phase of every candidate.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``refine`` is ``True``.
+        ValueError
+            If the detector shape and the signal shape differ; if the
+            signal has no navigation axis or more than two; if
+            ``navigation_mask`` is not a boolean NumPy array of the
+            navigation shape with at least one ``False`` entry; if a
+            master pattern has no phase or two share a name; or for
+            any error of
+            :class:`~kikuchipy.indexing.SphericalIndexer`.
+
+        Warns
+        -----
+        UserWarning
+            If at least one pattern could not be indexed, since a
+            failed pattern is never raised on, or if all Dask workers
+            together are estimated to need more than 2 GiB.
+
+        See Also
+        --------
+        dictionary_indexing
+        hough_indexing
+        refine_orientation
+        kikuchipy.indexing.SphericalIndexer
+        kikuchipy.indexing.MasterPatternHarmonics
+        kikuchipy.indexing.fast_bandwidths
+
+        Notes
+        -----
+        This is a port of EMSphInx' ``IndexEBSD`` program
+        :cite:`lenthe2019spherical`, and a call with no optional
+        parameters reproduces its name list defaults.
+
+        **The scores are not normalized cross-correlations.** The
+        ``"scores"`` property is the correlation at the interpolated
+        peak, which is never divided by the standard deviation of the
+        pattern, so it is unbounded, comparable only within a fixed
+        detector geometry and bandwidth, and **cannot** be used with
+        :func:`~kikuchipy.indexing.orientation_similarity_map`.
+        Measured for the nine shipped Ni patterns at a bandwidth of
+        68: 0.50-0.62 normalized and 0.28-0.35 un-normalized.
+
+        **One candidate per phase.** ``n_best`` counts phases, not
+        peaks: every phase contributes its single best rotation, so a
+        row beyond the number of phases keeps the invalid phase
+        ``-1``, the identity rotation and a score of ``0``. Only
+        phases which win at least one point appear in
+        ``xmap.phases``; the losing ones stay in
+        ``SphericalIndexer.phases`` and in the ``"nbest_phase_id"``
+        property. A rotated copy of a structure is indistinguishable
+        from it by design, since the correlation peak does not change
+        when the reference is rotated.
+
+        **Failed patterns** keep the invalid phase ``-1``, the
+        identity rotation, a score of ``0`` and an image quality of
+        ``0``, so ``xmap.is_indexed`` is ``False`` exactly there. A
+        pattern fails when it has no variance, when the preprocessing
+        leaves it constant, when its best score or rotation is not
+        finite, when it raises, or when no phase scored above zero.
+
+        **The orientations are coarse.** They land within about half
+        a grid cell of the Euler grid, ``180 / side_length`` degrees,
+        which is 1.33 degrees at the default bandwidth and is
+        ``SphericalIndexer.half_cell_degrees``; refinement of the
+        coarse orientation is not implemented yet.
+        Measured against the stored orientations of the shipped Ni
+        data set: a median of 0.60 and a maximum of 0.84 degrees.
+
+        **Memory.** Each Dask worker holds one correlation kit, about
+        21, 45, 98 and 207 MB at bandwidths 53, 68, 88 and 113 with
+        one phase, and one more correlation cube per additional phase
+        when ``normalize`` is ``True``. The model this estimate comes
+        from is
+        :attr:`~kikuchipy.indexing.SphericalIndexer.memory_per_worker_bytes`,
+        and a warning is raised when all workers together would need
+        more than 2 GiB.
+
+        **EMSphInx parity** needs ``emsphinx_compatible=True`` both
+        here and in
+        :meth:`~kikuchipy.indexing.MasterPatternHarmonics.from_master_pattern`,
+        since the master pattern normalization quirk is frozen into
+        the coefficients when they are built.
+        """
+        am = self.axes_manager
+        nav_shape = am.navigation_shape[::-1]
+        sig_shape = am.signal_shape[::-1]
+
+        if sig_shape != detector.shape:
+            raise ValueError(
+                f"The detector shape {detector.shape} and the signal's pattern "
+                f"shape {sig_shape} must be identical"
+            )
+
+        # A crystal map is one- or two-dimensional. Without this a
+        # navigation-less signal builds one from orix' default (5, 10)
+        # coordinate arrays, so the returned map holds 50 coordinates
+        # for its one point and raises on `xmap.shape`; a
+        # three-dimensional one raises inside orix, but only after the
+        # whole map has been indexed
+        if len(nav_shape) not in (1, 2):
+            raise ValueError(
+                f"The signal's navigation shape {nav_shape} must have one or "
+                "two dimensions, since a crystal map is one- or "
+                "two-dimensional"
+            )
+
+        # Own checks first, in the frozen order: is-array, data type,
+        # shape, all-`True`. The data type check must precede the
+        # all-`True` one, since an integer mask of ones is all `True`
+        # and would raise the wrong message; and it must follow the
+        # is-array one, since a list has no data type
+        if navigation_mask is not None:
+            if not isinstance(navigation_mask, np.ndarray):
+                raise ValueError("The navigation mask must be a NumPy array")
+            elif navigation_mask.dtype != np.bool_:
+                raise ValueError("The navigation mask must be a boolean array")
+            elif navigation_mask.shape != nav_shape:
+                raise ValueError(
+                    f"The navigation mask shape {navigation_mask.shape} and the "
+                    f"signal's navigation shape {nav_shape} must be identical"
+                )
+            elif navigation_mask.all():
+                raise ValueError(
+                    "The navigation mask must allow for indexing of at least one "
+                    "pattern (at least one value equal to `False`)"
+                )
+
+        if isinstance(harmonics, MasterPatternHarmonics):
+            harmonics_list = [harmonics]
+        else:
+            harmonics_list = list(harmonics)
+        phase_names = []
+        for i, harmonics_i in enumerate(harmonics_list):
+            phase = getattr(harmonics_i, "phase", None)
+            if phase is None:
+                raise ValueError(
+                    f"The master pattern harmonics at index {i} must have their "
+                    "`MasterPatternHarmonics.phase` set, since the crystal map's "
+                    "phase list is built from it"
+                )
+            phase_names.append(phase.name)
+        if len(set(phase_names)) != len(phase_names):
+            raise ValueError(
+                f"The master pattern phase names {phase_names} must be unique"
+            )
+
+        # The materialized list, never the argument: a one-shot
+        # iterator is exhausted by the checks above, and the indexer
+        # would then refuse it as empty
+        indexer = SphericalIndexer(
+            harmonics_list,
+            detector,
+            bandwidth=bandwidth,
+            normalize=normalize,
+            refine=refine,
+            signal_mask=signal_mask,
+            n_regions=n_regions,
+            gaussian_background=gaussian_background,
+            circular_mask=circular_mask,
+            emsphinx_compatible=emsphinx_compatible,
+        )
+
+        patterns = self.data.reshape((-1,) + sig_shape)
+        n_all = int(np.prod(nav_shape))
+        if navigation_mask is None:
+            keep = np.ones(n_all, dtype=bool)
+        else:
+            keep = ~navigation_mask.ravel()
+            patterns = patterns[keep]
+        n_kept = int(keep.sum())
+
+        if verbose >= 1:
+            print(indexer.get_info_message(n_kept, chunksize))
+
+        time_start = time()
+        res = indexer.index_patterns(
+            patterns, n_best=n_best, chunksize=chunksize, progressbar=verbose >= 1
+        )
+        total_time = time() - time_start
+
+        if verbose >= 1:
+            # Without this pause a part of the progress bar is
+            # displayed below this print, as in dictionary indexing
+            sleep(0.2)
+            print(f"  Indexing speed: {n_kept / total_time:.5f} patterns/s")
+
+        # Fill values of the result contract on every point which was
+        # not indexed, deterministic where dictionary indexing leaves
+        # uninitialized memory
+        rotations = Rotation.identity((n_all, n_best))
+        rotations[keep] = _rotation_from_zyz(res["zyz"]).data
+        scores = np.zeros((n_all, n_best), dtype=np.float64)
+        scores[keep] = res["scores"]
+        phase_id = np.full((n_all, n_best), -1, dtype=np.int32)
+        phase_id[keep] = res["phase_id"]
+        iq = np.zeros(n_all, dtype=np.float64)
+        iq[keep] = res["iq"]
+
+        # ``scores`` first, as dictionary and Hough indexing list it
+        prop = {}
+        if n_best == 1:
+            rotations = rotations.flatten()
+            prop["scores"] = scores.squeeze(axis=1)
+        else:
+            prop["scores"] = scores
+            # A crystal map holds one phase per point, so the phase of
+            # every candidate goes into its own property
+            prop["nbest_phase_id"] = phase_id
+        prop["iq"] = iq
+
+        step_sizes = tuple(a.scale for a in am.navigation_axes[::-1])
+        xmap_kw, _ = create_coordinate_arrays(nav_shape, step_sizes)
+        xmap_kw["rotations"] = rotations
+        xmap_kw["phase_id"] = phase_id[:, 0]
+        xmap_kw["prop"] = prop
+        if navigation_mask is not None:
+            xmap_kw["is_in_data"] = keep
+        # orix deletes a phase whose identifier never occurs in
+        # `phase_id`, so a losing phase is absent from `xmap.phases`;
+        # the configured list stays on `SphericalIndexer.phases`
+        phase_list = PhaseList([p.phase.deepcopy() for p in indexer.phases])
+        xmap = CrystalMap(phase_list=phase_list, **xmap_kw)
+        xmap.scan_unit = _get_navigation_axes_unit(am)
 
         return xmap
 
