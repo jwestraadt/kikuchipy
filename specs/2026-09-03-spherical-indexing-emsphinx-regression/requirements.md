@@ -44,7 +44,13 @@ In scope:
   candidates measured 5,211-8,511 B each with the drafting key set;
   the final key set (D2, + the verbatim namelist text and the md5
   provenance strings) adds ~2 kB/file -- every file far below the
-  constitution's **per-file < 100 kB** rule (D2).
+  constitution's **per-file < 100 kB** rule (D2). (corrected
+  2026-09-03 at implementation: the final key set adds ~21 kB/file,
+  not ~2 kB -- `to_string()` emits 4,228-4,232 characters of
+  commented template and NumPy stores unicode as UCS-4, so the
+  `namelist` array alone is ~16.9 kB. Shipped: 26,292-29,632 B per
+  file, 214,027 B total; the per-file rule still holds with 3.4x
+  margin.)
 - **Bidirectional regression tests**
   (`tests/test_indexing/test_spherical_emsphinx_regression.py`):
   - *ours-vs-theirs, CI, no binaries* -- **the real CI parity
@@ -274,7 +280,9 @@ configuration):
   (tech-stack "Tests, docs, data") -- asserted **per file**, with
   the total recorded via `record_property` (drafting candidates
   summed to 50,450 B over nine; the final eight with the extended
-  key set are estimated ~60 kB total). Registry: eight
+  key set are estimated ~60 kB total; corrected 2026-09-03 at
+  implementation: **measured 214,027 B total**, see the correction
+  in Scope). Registry: eight
   `"emsphinx/regression_*.npz"` md5 entries in `_registry_hashes`,
   no `_registry_urls` entries (in-package, the `.sht` precedent).
 
@@ -511,7 +519,12 @@ in `validation.md`), bands with the Phase 6 margin convention
   over on another CI platform is a legitimate near-tie, so the
   coarse scenario uses the Phase 6 convention (>= 8/9 under the
   tight max, all under a single-cell-jump ceiling of 4.0 deg =
-  measured max + one cell, ~1.9x). The refined scenarios keep plain
+  measured max + one cell, ~1.9x). (corrected 2026-09-03 at
+  implementation: the arithmetic is wrong. Measured max + one cell
+  is 0.622 + 2.667 = **3.29** deg, not 4.0, and 4.0 deg is **6.4x**
+  the measured max, not 1.9x. The ceiling stays 4.0 -- that sum
+  rounded up to a round number -- and the constant's comment in the
+  test module now says so.) The refined scenarios keep plain
   maxima: their >= 2x margins stand, and Newton refinement
   re-converges a near-tie.
 - Scores, all scenarios: mean |ours - metric| < 0.03 (measured
