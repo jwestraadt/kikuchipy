@@ -57,7 +57,13 @@ import pytest
 import kikuchipy as kp
 from kikuchipy.detectors import EBSDDetector
 from kikuchipy.indexing import _spherical
-from kikuchipy.indexing._spherical import _back_projection, _fft, _indexer
+from kikuchipy.indexing._spherical import (
+    _back_projection,
+    _fft,
+    _indexer,
+    _namelist,
+    _pattern_repack,
+)
 from kikuchipy.indexing._spherical._back_projection import SphericalBackProjector
 from kikuchipy.indexing._spherical._indexer import (
     SphericalIndexer,
@@ -931,7 +937,14 @@ class TestMemoryModel:
 
 class TestExports:
     @pytest.mark.parametrize(
-        "name", ["SphericalIndexer", "SphericalBackProjector", "fast_bandwidths"]
+        "name",
+        [
+            "EMSphInxNamelist",
+            "SphericalBackProjector",
+            "SphericalIndexer",
+            "fast_bandwidths",
+            "write_emsphinx_patterns",
+        ],
     )
     def test_the_name_resolves_through_the_lazy_loader(self, name):
         assert hasattr(kp.indexing, name)
@@ -965,7 +978,13 @@ class TestExports:
         # links predate this module and are not part of this pass
         role = re.compile(r":(?:func|class|meth|attr|mod):`~?([\w.]+)`")
         docstrings = {}
-        for module in (_indexer, _back_projection, _fft):
+        for module in (
+            _indexer,
+            _back_projection,
+            _fft,
+            _namelist,
+            _pattern_repack,
+        ):
             docstrings.update(public_docstrings(module))
         docstrings["EBSD.spherical_indexing"] = (
             kp.signals.EBSD.spherical_indexing.__doc__
@@ -982,7 +1001,13 @@ class TestExports:
 
     def test_no_public_docstring_names_a_roadmap_phase(self):
         docstrings = {}
-        for module in (_indexer, _back_projection, _fft):
+        for module in (
+            _indexer,
+            _back_projection,
+            _fft,
+            _namelist,
+            _pattern_repack,
+        ):
             docstrings.update(public_docstrings(module))
         docstrings["EBSD.spherical_indexing"] = (
             kp.signals.EBSD.spherical_indexing.__doc__
@@ -992,7 +1017,14 @@ class TestExports:
         )
         assert len(docstrings) > 3
         for name, doc in docstrings.items():
-            for phase in ("Phase 5", "Phase 6", "Phase 7", "Phase 8"):
+            for phase in (
+                "Phase 5",
+                "Phase 6",
+                "Phase 7",
+                "Phase 8",
+                "Phase 9",
+                "Phase 10",
+            ):
                 assert phase not in doc, f"{name} names {phase}"
 
 

@@ -64,6 +64,71 @@ def file_reader(filename: str | Path, lazy: bool = False) -> list[dict]:
     return [scan]
 
 
+def get_scan_info(filename: str | Path) -> dict:
+    """Return the scan grid and layout of an Oxford Instruments'
+    binary .ebsp file.
+
+    Modelled on the ``EBSPDims`` program of EMSphInx
+    (``programs/ebsp_dims.cpp``), built on
+    :class:`OxfordBinaryFileReader`.
+
+    Parameters
+    ----------
+    filename
+        File path to .ebsp file.
+
+    Returns
+    -------
+    info
+        Dictionary with these keys:
+
+        * ``"n_patterns"``: number of pattern slots in the file
+          header, i.e. the reader's guess.
+        * ``"n_patterns_present"``: number of patterns actually
+          stored, and ``"all_patterns_present"``.
+        * ``"signal_shape"``: pattern shape (n rows, n columns),
+          ``"dtype"``, ``"pattern_bytes"`` per pattern and
+          ``"total_bytes"`` of the patterns present.
+        * ``"version"``: the .ebsp file version.
+        * ``"beam_x"``, ``"beam_y"``: the distinct beam positions.
+        * ``"is_regular_grid"``.
+
+        ``beam_x`` and ``beam_y`` are sorted 64-bit float arrays of
+        the distinct footer coordinates of the patterns present, by
+        exact value and without tolerance, and are ``None`` when the
+        footer holds no such field.  ``is_regular_grid`` is whether
+        their sizes multiply to ``n_patterns_present``, and is
+        ``False`` when either is ``None``.
+
+        Every other value is a plain Python scalar, not a NumPy
+        one: :class:`OxfordBinaryFileReader` reads the file header
+        into 32- and 64-bit NumPy integers, which are cast here so
+        that the dictionary is comparable, printable and JSON
+        serialisable.  ``dtype`` stays a :class:`numpy.dtype` type.
+
+    Raises
+    ------
+    NotImplementedError
+        If the patterns are compressed, which the reader cannot
+        read.
+
+    Examples
+    --------
+    The equivalent of ``EBSPDims``' report:
+
+    >>> from pathlib import Path
+    >>> import kikuchipy as kp
+    >>> from kikuchipy.io.plugins.oxford_binary import get_scan_info
+    >>> fname = Path(kp.data.__file__).parent / "oxford_binary/patterns.ebsp"
+    >>> info = get_scan_info(fname)
+    >>> info["n_patterns"], info["signal_shape"], info["pattern_bytes"]
+    (9, (60, 60), 3600)
+    >>> len(info["beam_x"]), len(info["beam_y"]), info["is_regular_grid"]
+    (3, 3, True)
+    """
+    raise NotImplementedError
+
+
 class OxfordBinaryFileReader:
     """Oxford Instruments' binary .ebsp file reader.
 

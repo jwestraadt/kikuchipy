@@ -192,6 +192,13 @@ Everything below runs on CI (no EMSphInx binaries) except the
     (EMSphInx-TSL == kikuchipy `pc_oxford()`; EMSphInx-Oxford z !=
     kikuchipy `pc_tsl()` z -- the frozen deviation rows, asserted
     on both `(48, 60)` and `(60, 48)`; equal on square detectors).
+    (corrected 2026-09-02: the *inequality* holds on `(48, 60)`
+    only. Measured in the tests-first run -- on `(60, 48)`
+    kikuchipy's `min(nrows, ncols)/nrows` factor reproduces
+    EMSphInx's `h/w` scaling exactly, so EMSphInx-Oxford **equals**
+    `pc_tsl()` there. The test is parametrised over the three
+    shapes with the measured relation per shape; see the third
+    dated section of "Recorded results".)
   - `test_delta_invariant_for_fractional_vendors`: two `delta`
     values give identical `to_detector().pc` for
     Bruker/tsl/EDAX/Oxford pctr (exact; measured bitwise through
@@ -537,3 +544,178 @@ constructs its detector that way.
 `pc_average` (`0.21336699472343632...`). Tests quote input and
 output from the same unrounded source and assert with
 `pytest.approx`.
+### 2026-09-02 -- tests-first run (skeleton + failing suite; binaries @ 60f3517, Windows, this machine)
+
+Probe script (session scratchpad, not committed): `p9_probe.py`
+(pure Python conversions on the live kikuchipy detectors, the
+in-package `patterns.ebsp` through `OxfordBinaryFileReader`, the
+`binAvg` rounding count and the `.6g` formatting). The
+`IndexEBSD.exe -t` capture was re-taken in a temporary directory:
+119 lines, CRLF, md5 `49ddf0e7d9b2d758d918c20a7f900a6d` --
+unchanged, and now embedded verbatim (LF) as
+`INDEX_EBSD_TEMPLATE` in `tests/test_indexing/
+test_spherical_namelist.py`, with a guard test for the trailing
+space of its `masterfile` line.
+
+**Confirmed unchanged**: `pc_average` of `nickel_ebsd_small` is
+`[0.42513885, 0.21336699, 0.50070692]` (unrounded
+`0.4251388...`/`0.2133669947...`/`0.5007069...`) and its Bruker ->
+internal triple at `delta` 500 on the 60 x 60 detector is
+`(-4.491668961692965, 17.19798031659382, 15021.207468035665)`
+(from the rounded pc: `17.1979806`/`15021.2076`, hence
+`pytest.approx`). `binAvg` bin 2 of the flipped nickel data
+differs from `np.round` on **1003 of 8100** pixels.
+`patterns.ebsp`: version 2, 9/9 patterns, `(60, 60)` uint8, 3600
+B/pattern, `beam_x == beam_y == [0, 1.5, 3]`. `.6g` renders
+`50.0 -> "50"`, `1.5 -> "1.5"`, `0.42513885 -> "0.425139"`,
+`12345678.9 -> "1.23457e+07"`.
+
+**Correction to the TSL/Oxford deviation rows (D6)**: measured on
+detectors built with `binning=1, px_size=delta=500` and Bruker pc
+`(0.4251, 0.2134, 0.5007)`:
+
+| shape (nrows, ncols) | EMSphInx-TSL vs kp `pc_oxford()` | EMSphInx-Oxford vs kp `pc_tsl()` |
+|---|---|---|
+| (60, 60) | equal | equal |
+| (48, 60) | equal | **z differs** (0.40056 vs 0.5007) |
+| (60, 48) | equal | **equal** (0.625875 both) |
+
+kikuchipy's `_pc_bruker2tsl` divides z by `min(nrows, ncols)/nrows`
+(`_ebsd_detector.py:2326-2330`): on `(60, 48)` that factor is
+`48/60`, exactly EMSphInx's `h/w`, so the two agree there; on
+`(48, 60)` it is a no-op and they disagree. The spec sentence
+"asserted on both `(48, 60)` and `(60, 48)`" is corrected in place
+in both `requirements.md` D6 and the `TestVendorConversions` bullet
+above: `test_tsl_oxford_deviate_from_kikuchipy_on_rectangular` is
+parametrised over the three shapes and asserts the measured
+relation per shape (equality of the x and y components always, and
+of z only where the table says so). The "never delegate to the
+kikuchipy helpers" decision is unaffected -- one orientation
+disagrees, which is enough to make delegation wrong.
+
+Also confirmed (same probe): EMSphInx-EMsoft equals kikuchipy
+`pc_emsoft(version=4)` **exactly** (max |diff| 0.0) on all three
+shapes under `binning=1, px_size=delta`, and `version=5` flips the
+x sign; `delta` 250 vs 500 gives bitwise identical
+`to_detector`-style pc for EDAX/tsl/Oxford/Bruker and different pc
+for EMsoft.
+
+**h5py availability (plan 5.2)**: `h5py.h5d.CONTIGUOUS`,
+`ALLOC_TIME_EARLY`, `h5p.DATASET_CREATE.set_alloc_time`,
+`h5py.h5t.CSET_ASCII` and `string_dtype(encoding="ascii")` all
+exist in the environment's h5py 3.16 and have been part of the
+low-level API since h5py 2.x, so **no `importorskip` or version
+gate is added**.
+
+**Tests-first status**: 265 CI tests fail, every one of them on
+`NotImplementedError` from the three stubs (11 of them surface as
+`pytest.warns` "DID NOT WARN" and 2 as `pytest.raises` regex
+mismatches chained from that same `NotImplementedError`), and the
+13 locally gated tests likewise. The only new test which passes is
+`test_the_template_master_line_keeps_its_trailing_space`, the
+tripwire on the frozen template constant itself. Existing suites
+stay green: `tests/test_indexing tests/test_io -k "spherical or
+sht or emsphinx or oxford" -n 4` gives 2545 passed / 708 skipped
+with the new modules excluded, and the six refactored
+`test_spherical_sht_file.py` binary tests pass with
+`KIKUCHIPY_EMSPHINX_DIR` set.
+
+**Open at implementation time**: the lazy-write `tracemalloc`
+bound is provisional. The test asserts the peak stays under
+`LAZY_PEAK_FRACTION = 0.5` of the full map bytes (a 64 x 32 map of
+60 x 60 uint8 patterns, 7 372 800 B) and records the measured peak
+with `record_property`; the band is to be re-pinned on that
+measurement with the Phase 6 margin convention once the writer
+exists.
+
+### 2026-09-02 -- test-quality review fixes (skeleton unchanged; pure-Python measurements, this machine)
+
+Probe scripts (session scratchpad, not committed): `check3.py`
+(Bruker composition), `check6.py` (binAvg accumulator search),
+`check8.py` (reader scalar types), `check10.py` (lazy-write peak).
+Run to settle the ten findings of the test-quality critic; no
+implementation exists yet, so all four are pure Python.
+
+**Bruker is not the bitwise identity** (critic finding 3). With
+`geom = pctr_to_geometry` and `pc = geometry_to_pc` as the D6
+formulas, `pc(geom(x))` at `delta` 500:
+
+| input pc | w, h | round trip |
+|---|---|---|
+| `(0.4251, 0.2134, 0.5007)` | 60, 60 | `(0.4251, 0.21340000000000003, 0.5007)` |
+| `(0.4251, 0.2134, 0.5007)` | 60, 48 | `(0.4251, 0.21340000000000003, 0.5006999999999999)` |
+| `(0.4251, 0.2134, 0.5007)` | 48, 60 | `(0.4251, 0.21340000000000003, 0.5007)` |
+| nickel `pc_average` | 60, 60 | y `0.21336699472343634` vs `...32` |
+
+`np.array_equal` is `False` in every case, so a spec-faithful
+`_pctr_to_pc = geometry ∘ pctr` fails the two `np.array_equal`
+assertions. Resolved by **short-circuiting `"Bruker"`** in
+`_pctr_to_pc`/`_pc_to_pctr` (documented in both docstrings, the
+module docstring and an in-place note at `requirements.md` D6);
+`test_bruker_is_the_identity_on_the_kikuchipy_pc` now asserts both
+directions and names the reason.
+
+**binAvg accumulator discrimination** (critic finding 6). The
+fixture of `test_binavg_accumulates_in_float64` has a maximum block
+sum of **1020**, exact in `float32` and in `uint16`, so a `float32`
+(or `int32`) accumulator survives it; only an *input-dtype*
+accumulator dies. For `uint8` input the `float32`/`float64`
+distinction is unobservable at any binning a legal pattern shape
+allows (`255 * binning**2 < 2**24` up to `binning = 256`). The
+uint8 test is therefore renamed
+`test_binavg_does_not_overflow_the_input_dtype`, and the C++
+`std::vector<double>` is pinned by a new
+`test_binavg_accumulates_in_float64` on a **`float32`** block
+`[[2**24, 1], [1, 2]]`: 64-bit sum 16777220 -> mean **4194305.0**
+(exact in `float32`), while every 32-bit accumulation of it gives
+16777218 -> **4194304.5** (pairwise and left-to-right alike, both
+measured). The named assertion of the `validation.md` bullet above
+keeps its name; the bullet's parenthetical ("blocks whose uint8
+sums exceed 255") describes the renamed test.
+
+**Reader scalar types** (critic finding 8).
+`OxfordBinaryFileReader` on the in-package `patterns.ebsp`:
+`signal_shape` is `(np.int32(60), np.int32(60))`, `n_patterns` is
+`np.int64(9)`, `n_bytes` is `np.int32(3600)`; `isinstance(np.int32(60), int)`
+and `isinstance(np.bool_(True), bool)` are both **`False`**. So
+`get_scan_info` must cast to plain Python scalars -- now stated in
+its docstring and asserted for all five integer keys.
+
+**Lazy-write peak** (critic finding 10; numpy 2.4.6, dask 2026.3.0,
+h5py 3.16.0). The exact test fixture `(64, 32, 60, 60)` uint8,
+chunks `(8, 32, 60, 60)`, 7 372 800 B, into a contiguous
+early-allocated data set:
+
+| route | peak B | peak / full |
+|---|---|---|
+| `da.store`, default (threaded) scheduler | 1 181 159 | **0.160** |
+| `da.store`, `scheduler="synchronous"` | 1 061 764 | **0.144** |
+| explicit `for blk in arr.blocks` loop | 2 070 985 | **0.281** |
+| full materialisation (control) | 7 497 272 | **1.017** |
+
+`LAZY_PEAK_FRACTION = 0.5` stands: at least **1.78x** margin over
+the worst streaming route, not thread-count sensitive, and the
+materialising mutant misses by 2x. The band is no longer
+provisional and the "Open at implementation time" note above is
+resolved.
+
+**Named-assertion naming map** (critic finding 5, cosmetic). The
+`test_uint16_write_warns` / `test_float32_write_warns` pair of the
+D2 bullet and of plan 5 is realised as the single parametrised
+`test_non_uint8_write_warns[uint16|float32]`; coverage is
+identical, only the node id differs. Likewise
+`test_conversion_table_square_and_rectangular` is realised as
+`test_conversion_table_square` plus
+`test_conversion_table_rectangular`, and `test_vendor_whitelist` as
+`test_vendor_whitelist_accepts` plus `test_vendor_whitelist_rejects`.
+
+**Messages now pinned verbatim** (critic finding 5). Three C++
+strings which the suite matched only by a substring are frozen as
+module constants and matched with `re.escape`: `expected a filename
+or dimensions + resolution for 'scandims' in namelist`, `scan
+dimensinos must be non-negative integers` (the C++ typo is part of
+the wording, `ebsd/nml.hpp:263`) and `some namelist parameters
+weren't used: extrakey` (`index_ebsd.cpp:83`). Two uncovered
+element-count messages gain named tests: `patdims must be 2
+elements` (`:272`) and `pctr    must be 3 elements` (`:276`, four
+spaces).

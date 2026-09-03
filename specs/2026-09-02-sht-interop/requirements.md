@@ -546,7 +546,19 @@ additionally confirmed through `IndexEBSD.exe` (exit 1 + message,
   and kikuchipy (Bruker) pc from the triple:
   `PCx = cX/w + 0.5`, `PCy = 0.5 - cY/h`, `PCz = sDst/(h*delta)`
   -- i.e. **Bruker is the identity on kikuchipy's `pc`**
-  (tech-stack: kikuchipy `pc` enters directly). **`delta` cancels
+  (tech-stack: kikuchipy `pc` enters directly).
+  (corrected 2026-09-02: that identity is **algebraic, not
+  bitwise**. Measured -- composing the two formulas returns
+  `0.2134` as `0.21340000000000003` on all three test shapes and
+  `0.5007` as `0.5006999999999999` on `(60, 48)`, and the nickel
+  `pc_average` in the last ulp of its y component. Since
+  `test_bruker_is_the_identity_on_the_kikuchipy_pc` and
+  `test_from_kwargs_bruker_pctr_is_pc_average_verbatim` assert
+  `np.array_equal`, and D6 says `pctr` is `pc_average`
+  **verbatim**, `_pctr_to_pc`/`_pc_to_pctr` **short circuit
+  `"Bruker"`** and return the input unchanged rather than composing
+  `_pctr_to_geometry` with the projection; see the appended
+  "Recorded results" of `validation.md`.) **`delta` cancels
   exactly for the three fractional vendors** (TSL/Oxford/Bruker
   fold it into `sDst` and the projection divides it back out):
   measured through the binary, Bruker namelists with `delta` 250
@@ -583,7 +595,12 @@ additionally confirmed through `IndexEBSD.exe` (exit 1 + message,
   orientations -- `(48, 60)` and `(60, 48)` -- because kikuchipy's
   `_pc_bruker2tsl` divides z by `min(nrows, ncols)/nrows`
   (`_ebsd_detector.py:2326-2330`), a no-op when `nrows < ncols`,
-  so a single orientation hides that branch. **EMsoft equals
+  so a single orientation hides that branch. (corrected
+  2026-09-02: that branch makes the two **agree** on `(60, 48)` --
+  `48/60` is exactly EMSphInx's `h/w`, measured -- so the
+  Oxford-vs-`pc_tsl` *deviation* is a `(48, 60)` row only; the
+  named test carries the measured relation per shape. Recorded
+  results, third dated section.) **EMsoft equals
   kikuchipy `pc_emsoft(version=4)` exactly only when
   `binning == 1` and `px_size == delta`** (kikuchipy multiplies by
   `self._binning` and `self.px_size`, `_ebsd_detector.py:

@@ -23,6 +23,11 @@ master pattern (spherical indexing).
 
 Some of these tools are used in
 :meth:`~kikuchipy.signals.EBSD.dictionary_indexing`.
+
+Two of them are file utilities rather than indexing tools: they write
+the pattern file and read and write the namelist file EMSphInx's
+``IndexEBSD`` program takes, so that its results can be compared with
+kikuchipy's own.
 """
 
 import lazy_loader

@@ -15,6 +15,6 @@
 # You should have received a copy of the GNU General Public License
 # along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 
-from ._api import file_reader
+from ._api import file_reader, get_scan_info
 
-__all__ = ["file_reader"]
+__all__ = ["file_reader", "get_scan_info"]

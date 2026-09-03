@@ -648,6 +648,61 @@ def ebsdsim_master_pattern_file(tmp_path_factory) -> Generator[Path, None, None]
 # ------------------------- EMSphInx formats ------------------------- #
 
 
+@pytest.fixture
+def emsphinx_dir() -> Generator[Path, None, None]:
+    """Yield the EMSphInx checkout, skipping if it is not set up.
+
+    The locally gated tests need ``KIKUCHIPY_EMSPHINX_DIR`` to point
+    at a checkout with the built programs and the shipped Ni file.
+    """
+    value = os.environ.get("KIKUCHIPY_EMSPHINX_DIR")
+    if not value:
+        pytest.skip(
+            "KIKUCHIPY_EMSPHINX_DIR is not set; set it to an EMSphInx "
+            "checkout with build/Release/{mp2sht,sht2png,IndexEBSD,"
+            "PatternRepack,EBSPDims} and data/'Ni {20kV 75.7deg}.sht' "
+            "to run this test"
+        )
+    yield Path(value)
+
+
+@pytest.fixture
+def emsphinx_program(emsphinx_dir) -> Generator[Callable, None, None]:
+    """Yield a callable returning the path of a built EMSphInx
+    program, skipping if the checkout or the program is missing.
+
+    Every invocation of a returned program must pass ``cwd=tmp_path``
+    to :func:`subprocess.run`: ``IndexEBSD -t`` writes to a hard
+    coded relative path and namelist paths resolve against the
+    process working directory.
+    """
+
+    def program(name: str) -> Path:
+        directory = emsphinx_dir / "build" / "Release"
+        for candidate in (directory / f"{name}.exe", directory / name):
+            if candidate.is_file():
+                return candidate
+        pytest.skip(f"{name} not built in {directory}")
+
+    yield program
+
+
+@pytest.fixture
+def read_ang() -> Generator[Callable, None, None]:
+    """Yield a callable reading an EMSphInx written *.ang file into a
+    plain array of its eight columns.
+
+    ``orix.io.load`` reads the file but warns about the column
+    layout and names the quality columns ``unknown1``/``unknown2``,
+    while the assertions index the array.
+    """
+
+    def read(filename) -> np.ndarray:
+        return np.loadtxt(filename, comments="#")
+
+    yield read
+
+
 @pytest.fixture(scope="session")
 def emsphinx_synthetic_sht_files(tmp_path_factory) -> Generator[Callable, None, None]:
     """Return a callable giving the 25 synthetic EMSphInx *.sht files,
