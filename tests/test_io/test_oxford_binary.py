@@ -261,6 +261,16 @@ class TestGetScanInfo:
         assert isinstance(info["is_regular_grid"], bool)
         assert info["beam_x"].dtype == np.float64
 
+    def test_get_scan_info_links_only_published_names(self):
+        # ``OxfordBinaryFileReader`` is not exported, so a Sphinx
+        # role pointing at it would render as an unresolved literal
+        # in the public reference, as ``fast_size`` would in
+        # ``kikuchipy.indexing``
+        doc = get_scan_info.__doc__
+        assert "Examples" in doc
+        assert ":class:`OxfordBinaryFileReader`" not in doc
+        assert "``OxfordBinaryFileReader``" in doc
+
     def test_get_scan_info_takes_a_string(self, oxford_binary_path):
         fpath = oxford_binary_path / "patterns.ebsp"
         assert get_scan_info(str(fpath))["n_patterns"] == 9

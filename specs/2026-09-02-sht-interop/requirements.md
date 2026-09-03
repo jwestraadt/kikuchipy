@@ -643,8 +643,17 @@ additionally confirmed through `IndexEBSD.exe` (exit 1 + message,
   (0 -> the `BatchEstimate` default, matching Phase 6). `n_thread`
   has no kikuchipy equivalent (dask owns the workers) --
   documented, not returned. A non-empty `roi_mask` raises
-  `ValueError` (out-of-scope grammar); `emsphinx_compatible` is not
-  emitted (both defaults are `True`, the parity configuration).
+  `ValueError` (out-of-scope grammar) (corrected 2026-09-02: except
+  `"0"`, which is the program's own spelling of *no* region of
+  interest -- `RoiSelection::from_string` returns an empty selection
+  for it, `idx/roi.h:592`, and the template's own comment advertises
+  "0 (or omitted) to index the entire scan". Measured through
+  `IndexEBSD.exe`: `roimask = '0'` is accepted exactly as `''` is,
+  while `'1'` gives "odd number of points in ROI string". `"0"`
+  therefore maps to the whole scan and does not raise; it is still
+  written back as `'0'`, since the string is stored opaquely, where
+  the C++ writer normalises it to `''`); `emsphinx_compatible` is
+  not emitted (both defaults are `True`, the parity configuration).
 - `from_kwargs(*, pattern_file, pat_dset="patterns", master_files,
   detector, scan_shape, scan_steps, data_file, vendor="Bruker",
   delta=None, n_thread=0, batch_size=0, vendor_file="",

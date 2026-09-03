@@ -35,7 +35,10 @@ Covers the ``test_spherical_pattern_repack.py`` assertions of
   ``overwrite``, suffix and directory conventions.
 - Binning: the ``binAvg`` block mean rounded half away from zero and
   accumulated in 64-bit floats, and the ``binFloat`` 32-bit float
-  block sum with its ``binning == 1`` cast.
+  block sum with its ``binning == 1`` cast; and, on the two binners
+  as functions, the data types they return at ``binning == 1`` and
+  the peak memory of the accumulation, neither of which the written
+  file can see.
 - Behind ``KIKUCHIPY_EMSPHINX_DIR``: the acid test which indexes a
   kikuchipy written repack with ``IndexEBSD.exe`` and its negative
   controls, bitwise parity with ``PatternRepack.exe`` at binning one
@@ -60,7 +63,11 @@ import pytest
 import kikuchipy as kp
 from kikuchipy.data._data import Dataset
 from kikuchipy.indexing._spherical._namelist import EMSphInxNamelist
-from kikuchipy.indexing._spherical._pattern_repack import write_emsphinx_patterns
+from kikuchipy.indexing._spherical._pattern_repack import (
+    _bin_avg,
+    _bin_float,
+    write_emsphinx_patterns,
+)
 from kikuchipy.io.plugins.oxford_binary import get_scan_info
 
 # ------------------------- Frozen constants ------------------------- #
@@ -399,8 +406,17 @@ class TestWriteEmsphinxPatterns:
             fpath = written(tmp_path, signal_of(data))
         with h5py.File(fpath, mode="r") as f:
             written_dtype = f["patterns"].dtype
-        assert written_dtype.byteorder in ("=", "|")
+        # ``isnative`` rather than a literal byte order character:
+        # h5py reconstructs a native 32-bit float data set's type as
+        # "<f4" and a native 16-bit unsigned one as "=u2" (measured),
+        # so the character discriminates h5py's spelling and not the
+        # data set.  A big endian data set, i.e. the mutant which
+        # drops the cast, reads back as ">f4" with ``isnative``
+        # False, which is what this pins (corrected 2026-09-02, see
+        # the Recorded results of validation.md)
+        assert written_dtype.isnative
         assert written_dtype == np.dtype(dtype).newbyteorder("=")
+        assert written_dtype != np.dtype(dtype)
         assert np.array_equal(patterns_of(fpath), data.astype(written_dtype))
 
     @pytest.mark.parametrize("binning", [0, -1, 7, 8, 11])
@@ -497,6 +513,21 @@ class TestWriteEmsphinxPatterns:
         fpath = written(tmp_path, ni_signal())
         with pytest.raises(ValueError, match="overwrite"):
             write_emsphinx_patterns(fpath, ni_signal(), overwrite="yes")
+
+    def test_a_refused_write_creates_no_directory(self, tmp_path):
+        fpath = tmp_path / "new" / "patterns.h5"
+        with pytest.raises(ValueError, match="overwrite"):
+            write_emsphinx_patterns(fpath, ni_signal(), overwrite="yes")
+        assert not fpath.parent.exists()
+
+    def test_a_refused_write_does_not_warn(self, tmp_path):
+        # the warning says "The file is still written", so it must
+        # not fire on a path which writes nothing
+        signal = signal_of(np.ones((2, 4, 4), dtype=np.uint16))
+        with pytest.warns(UserWarning, match=NON_UINT8_WARNING):
+            fpath = written(tmp_path, signal)
+        with no_user_warning():
+            write_emsphinx_patterns(fpath, signal, overwrite=False)
 
 
 # --------------------------- Binning (D1) --------------------------- #
@@ -618,6 +649,51 @@ class TestBinning:
         with pytest.raises(ValueError, match="[Bb]inning"):
             written(tmp_path, ni_signal(), binning=7, bin_to_float=True)
 
+    # ---------------- The two binners as functions ------------------ #
+    #
+    # The data set is created with the written data type and h5py
+    # converts on assignment, so the file cannot see the data type
+    # either binner returns at ``binning == 1``.  Both casts are the
+    # documented contract of the function, so both are pinned here.
+
+    @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+    def test_binfloat_binning_one_returns_float32(self, dtype):
+        patterns = np.ones((1, 2, 2), dtype=dtype)
+        assert _bin_float(patterns, 1).dtype == np.float32
+
+    def test_binavg_binning_one_returns_the_native_dtype(self):
+        patterns = np.ones((1, 2, 2), dtype=">u2")
+        binned = _bin_avg(patterns, 1, np.dtype("uint16"))
+        assert binned.dtype == np.dtype("uint16")
+        assert binned.dtype.isnative
+
+    def test_binavg_binning_one_does_not_copy_a_native_input(self):
+        # ``copy=False``: the only conversion this can make is the
+        # byte order one, so a native map is passed straight through
+        # rather than doubling the peak memory of an eager signal
+        patterns = np.ones((1, 2, 2), dtype=np.uint8)
+        assert _bin_avg(patterns, 1, np.dtype("uint8")) is patterns
+
+    def test_binavg_does_not_copy_the_map_to_the_accumulator(self, record_property):
+        # ``binAvg()`` bins one pattern at a time; a whole map cast to
+        # 64-bit floats needs eight times its own bytes, i.e. 24 GB
+        # for a (10000, 480, 640) unsigned 8-bit map.  Measured on
+        # this (200, 240, 320) one at binning eight: the summation
+        # accumulator peaks at 0.38 of the map and the cast at 8.38,
+        # so two is a band with more than four times' margin on
+        # either side
+        data = np.ones((200, 240, 320), dtype=np.uint8)
+        tracemalloc.start()
+        try:
+            binned = _bin_avg(data, 8, np.dtype("uint8"))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        record_property("binavg_peak_bytes", peak)
+        record_property("binavg_input_bytes", data.nbytes)
+        assert binned.shape == (200, 30, 40)
+        assert peak < 2 * data.nbytes
+
 
 # ------------- The EMSphInx binaries (D7, D9, local only) ----------- #
 
@@ -636,7 +712,11 @@ class TestAgainstEmsphinxBinaries:
         namelist = build_acid_files(tmp_path)
         result = run_index_ebsd(program, tmp_path, namelist)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "Vertical Flip: true" in result.stdout
+        # the geometry block pads its labels, so the line is
+        # "\tVertical Flip        : true" (measured; the spec quotes
+        # it unpadded).  True is the default route: the file is
+        # written unflipped and the reader flips it
+        assert re.search(r"Vertical Flip\s*: true", result.stdout)
 
         array = read_ang(tmp_path / "out.ang")
         assert array.shape == (9, 8)
@@ -703,7 +783,20 @@ class TestAgainstEmsphinxBinaries:
         namelist = build_acid_files(tmp_path, vendor=vendor)
         result = run_index_ebsd(program, tmp_path, namelist)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert np.array_equal(read_ang(tmp_path / "out.ang")[:, :3], reference)
+        angles = read_ang(tmp_path / "out.ang")[:, :3]
+        if vendor == "EMsoft":
+            # bitwise for the three fractional vendors, but the
+            # EMsoft pattern centre is in pixels and microns and so
+            # quantises coarsely at the six significant digits
+            # ``to_string`` writes: -4.491668961692965 becomes
+            # "-4.49167" where the fractional route reaches
+            # -4.49166 (both measured in the geometry block), which
+            # moves one Euler angle by one unit in the last decimal
+            # the .ang carries.  The hand written full precision
+            # namelists of D6 are bitwise identical (measured)
+            assert np.abs(angles - reference).max() <= 2e-5
+        else:
+            assert np.array_equal(angles, reference)
 
     @pytest.mark.parametrize("binning", [1, 2])
     def test_emsphinx_binaries_pattern_repack_binary_parity(

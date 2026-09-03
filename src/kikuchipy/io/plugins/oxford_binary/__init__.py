@@ -18,7 +18,7 @@
 #
 
 """Reader of uncompressed EBSD patterns from a Oxford Instruments binary
-.ebsp file.
+.ebsp file, and a probe of the scan grid and layout of such a file.
 
 Information about the file format was generously provided by Oxford
 Instruments.

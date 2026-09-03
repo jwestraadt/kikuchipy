@@ -303,6 +303,17 @@ against the cwd (D9).
 - `test_vendor_namelists_are_equivalent`: EMsoft/EDAX/Oxford
   namelists from the D6 conversions -> `.ang` Euler columns
   bitwise-equal to the Bruker run (measured max |diff| 0.0).
+  (corrected 2026-09-02: bitwise holds for the three **fractional**
+  vendors (EDAX/Oxford/tsl, max |diff| 0.0 re-measured) but **not for
+  EMsoft** when the namelist is written by `to_string`: the drafting
+  probe's 0.0 came from hand-written 8-decimal namelists, while
+  `to_string`'s `.6g` (open question 6) quantises the pixel-unit
+  EMsoft `pctr` coarsely -- `-4.491668961692965` is written
+  `-4.49167` where the fractional route reaches `-4.49166`, both read
+  back in the stdout geometry block -- which moves one Euler angle by
+  1.0e-5 deg, exactly one unit in the last `.ang` decimal. The test
+  asserts bitwise for the fractional vendors and `<= 2e-5` for
+  EMsoft; see the fourth dated section of "Recorded results".)
 - `test_pattern_repack_binary_parity`: `PatternRepack.exe
   patterns.ebsp out.h5 [1|2]` vs our writer (`flip=True`, binAvg)
   -- `/patterns` bitwise equal at binning 1 and 2 (Manufacturer
@@ -719,3 +730,329 @@ weren't used: extrakey` (`index_ebsd.cpp:83`). Two uncovered
 element-count messages gain named tests: `patdims must be 2
 elements` (`:272`) and `pctr    must be 3 elements` (`:276`, four
 spaces).
+
+### 2026-09-02 -- implementation run (all three modules written; binaries @ 60f3517, Windows, this machine)
+
+Probe scripts (session scratchpad, not committed): `probe_acid.py`
+(full `IndexEBSD.exe` stdout on the canonical route and the four
+vendor namelists written by `to_string`). Everything else was
+measured by the suite itself.
+
+**Gate results.**
+
+| gate | result |
+|---|---|
+| the three new suites, `-n 0`, no env var | 304 passed, 13 skipped |
+| the three new suites, `-n 4`, no env var | 304 passed, 13 skipped (2/2 runs) |
+| the three new suites, `-n 0`, `KIKUCHIPY_EMSPHINX_DIR` set | **317 passed**, 0 skipped |
+| the three new suites, `-n 4`, env var set | 317 passed (2/2 runs) |
+| `+ test_spherical_sht_file.py`, `-n 4`, env var set | 855 passed (847 in the 6/6 lock runs below, before the eight coverage tests) |
+| `tests/test_indexing tests/test_io -k "spherical or sht or emsphinx or oxford" -n 4`, env var set | 2846 passed, 700 skipped |
+| `--doctest-modules src/kikuchipy/indexing/_spherical` | 16 passed |
+| `pre-commit run --files <the 7 changed files>` | clean (ruff-format reflowed two files once) |
+
+**Coverage** (the three new suites, `-n 0`, env var set, so the
+gated tests count):
+
+| module | statements | missing | cover |
+|---|---|---|---|
+| `indexing/_spherical/_namelist.py` | 612 | 0 | **100.00 %** |
+| `indexing/_spherical/_pattern_repack.py` | 82 | 0 | **100.00 %** |
+| `io/plugins/oxford_binary/_api.py` | 219 | 2 | 99.09 % |
+
+The two `_api.py` lines are 612 and 614, the `map_x`/`map_y`
+branches of the **pre-existing** `OxfordBinaryFileReader.get_scan()`
+(version 5 files only), untouched by this phase; `get_scan_info()`
+itself is fully covered. Eight `_namelist.py` lines were uncovered
+on the first pass and closed with named tests rather than left:
+`test_a_line_without_a_delimiter_raises`,
+`test_an_unterminated_string_raises`,
+`test_an_out_of_range_integer_is_a_double`,
+`test_an_empty_token_is_skipped`,
+`test_write_overwrite_none_asks_and_does_not_overwrite`,
+`test_write_bad_overwrite_raises`,
+`test_a_namelist_is_not_equal_to_another_type` and
+`test_from_kwargs_rejects_an_unknown_indexing_argument`.
+
+**The acid test reproduces the frozen anchors exactly** (canonical
+default route, `record_property` values from the junit XML):
+per-point `0.6477, 0.9479, 0.7988, 0.7051, 0.7245, 0.6889, 0.8748,
+0.6159, 0.9015` deg -> **median 0.7245 / max 0.9479**, `.ang` scores
+mean **0.6283**, `0.0775859s to index (116.217 pat/s)` -- identical
+to the second dated section's default-route anchor. Stdout geometry
+block: `Scintillator Distance: 15021.2 microns`, `Pattern Center:
+-4.49166, 17.198 fractional pixels`, `Vertical Flip: true`, `Sample
+Tilt: 70 degrees`, `Camera: 60 x 60 with 500 micron pixels`.
+`test_wrong_flip_pairing_is_discriminated` measured **median 42.899
+deg** (the drafting probe's wrong pairing gave 39.618; both are far
+above the asserted `> 10`).
+
+**Lazy write peak re-pinned** (the fixture of
+`test_lazy_write_does_not_materialise`, `(64, 32, 60, 60)` uint8 in
+chunks `(8, 32, 60, 60)`, 7 372 800 B): the implemented writer, which
+reshapes to `(n, h, w)` and calls `da.store` into the early
+allocated data set, peaks at **1 180 346 B = 0.1601** of the map --
+within a per-cent of the 0.160 the fourth dated section measured for
+the `da.store` route. `LAZY_PEAK_FRACTION = 0.5` therefore stands
+unchanged with a **3.12x** margin, and the materialising mutant
+(measured 1.017) misses by 2x.
+
+**Three test expectations were falsified by the binary and
+corrected in place** (never weakened; each was re-measured first):
+
+1. `test_missing_leading_space_message[""]` used the key line
+   `"b = 2,"`. Measured through `IndexEBSD.exe`: that line exits 1
+   with `error parsing line 'b = 2,' from name list`, **not**
+   `missing leading space ...`. The C++ extraction is
+   `iss >> noskipws >> space >> key >> skipws >> delim`, so the
+   first character is consumed as the leading space and a
+   one-character key leaves the `std::string` extraction with
+   nothing to read, which fails the whole chain before the
+   `space != ' '` test is reached. Probed all four ways in one
+   temporary directory: `b = 2,` and `  b = 2,` give
+   `error parsing line ...`, while `\tb = 2,` and `bc = 2,` give
+   `missing leading space in namelist line 3 "..."`. The test now
+   uses `bb = 2,` (both prefixes) and the other mode has its own
+   test, `test_a_one_character_key_without_a_leading_space_parses_
+   differently`. The mutant "leading-space rule dropped" still dies.
+2. `test_index_ebsd_accepts_kikuchipy_repack` asserted
+   `"Vertical Flip: true" in result.stdout`. The geometry block pads
+   its labels, so the line is `\tVertical Flip        : true`; the
+   spec quotes it unpadded. The assertion is now
+   `re.search(r"Vertical Flip\s*: true", ...)`, which still
+   discriminates the two flip routes.
+3. `test_vendor_namelists_are_equivalent[EMsoft]` -- the `.6g`
+   quantisation of the pixel-unit EMsoft `pctr`; corrected in place
+   at the bullet above, measured max |diff| **1.0e-5 deg** (one unit
+   in the last `.ang` decimal) against **0.0** for EDAX/Oxford/tsl.
+4. `test_byteswapped_input_writes_native[>f4]` asserted
+   `written_dtype.byteorder in ("=", "|")`. Measured: h5py
+   reconstructs a **native** 32-bit float data set's type as `"<f4"`
+   (`byteorder "<"`) and a native 16-bit unsigned one as `"=u2"`,
+   through both its high and low level APIs, so the character
+   discriminates h5py's spelling rather than the file. The
+   assertion is now `written_dtype.isnative`, which is `False` for
+   the big endian data set the dropped-cast mutant would write
+   (measured `">f4"`, `isnative False`), plus a new
+   `written_dtype != np.dtype(dtype)` line.
+
+**A shipped-binary race, fixed in `conftest.py`** (new, not in the
+spec): under `pytest -n 4` with the env var set, roughly one run in
+two failed with `IndexEBSD.exe` exiting **3221226505**
+(`STATUS_STACK_BUFFER_OVERRUN`) and an empty standard output *and*
+error, on a different test each time. Cause: every EMSphInx program
+imports FFTW wisdom from one machine-wide file in a global
+constructor and exports it back in a global destructor
+(`include/util/fft.hpp` lines 320-372, `getSharedDataDir()` =
+`SHGetFolderPathA(CSIDL_COMMON_APPDATA)` = `C:\ProgramData`; the
+file here is `C:\ProgramData\fftw.wisdom`, 383 662 B), so two
+concurrent programs race and one imports a half-written file. The
+directory comes from the shell API, not an environment variable, so
+it cannot be made per-worker the way the numba cache is. The shared
+`emsphinx_program` fixture now holds a stdlib
+`O_CREAT | O_EXCL` lock (`_emsphinx_program_lock()`, stale after
+900 s, no new dependency) for the whole test, serialising the
+programs across xdist workers: **6/6 clean runs** of the 847-test
+`-n 4` set afterwards, against 4 failures in 6 runs before.
+
+### 2026-09-02 -- review-response run (three reviews applied; binaries @ 60f3517, Windows, this machine)
+
+Probe scripts (session scratchpad, not committed): `probe_tokens.py`,
+`probe_tokens2.py`, `probe_tokens3.py` (60 distinct number tokens plus
+the `scandims`, `roimask` and empty-value cases through
+`IndexEBSD.exe`), `verify_findings.py` (every Python-side claim of the
+three reviews, re-measured on the pristine tree before any fix),
+`verify_binsums.py` and `measure_peak.py` (the binning change).
+
+**The number token grammar, measured** (63 runs, 60 distinct tokens,
+on the integer field `bw` and the double field `delta`).
+`detail::tryParse<T>()` (`nml.hpp:274-278`) is a *whole* stream
+extraction, i.e. C's `strtod` for the double and a decimal `strtol`
+for the integer, and Python's `float()`/`int()` are wider than it in
+four ways:
+
+| token | `float()`/`int()` before | `IndexEBSD.exe` | now |
+|---|---|---|---|
+| `nan`, `NaN`, `inf`, `INF`, `infinity` | accepted (`nan` passed all 13 sanity checks) | `couldn't parse token "nan" ...` | rejected |
+| `6_8`, `1_000`, `5_00` | accepted as 68 / 1000 / 500 (PEP 515) | `couldn't parse token "6_8" ...` | rejected |
+| `1e400`, `-1e400`, `1e309`, `1.8e308` | `inf` | `couldn't parse token ...` (overflow sets the fail bit) | rejected |
+| `1e-400`, `0x1p-99999` | `0.0` | `couldn't parse token ...` (underflow) | rejected |
+| `0x44`, `0X44`, `0x0`, `0x10`, `0x7fffffff`, `-0x44`, `0x1p3`, `0x1.8`, `0x1.8p3` | `couldn't parse token "0x44"` | **`stored type isn't integer`**, i.e. a *double* | accepted as a double |
+
+Everything else the probe found agrees with the port as it stood:
+`68`, `+68`, `-0`, `00`, `2147483647` and `-2147483648` are integers,
+`2147483648`, `68.`, `.5`, `5.`, `68e0`, `1e2`, `1e-320` and
+`1.7976931348623157e308` are doubles (subnormals parse; only a true
+underflow fails), and `1.2.3`, `12abc`, `abc`, `68f`, `1e`, `0x`,
+`0xg`, `0b11`, `--68`, `.`, `-`, `+`, `1d5` and `1.5d0` are not
+numbers. The Fortran `d` exponent is **not** accepted, although the
+file is Fortran-shaped. `NaN` is reported as `nan`, i.e. the token is
+lower-cased before the parse, which the port already did. Implemented
+as the two grammar patterns `_DOUBLE_TOKEN`/`_INT_TOKEN` plus a
+finite/underflow test, and pinned by the 52-row `NUMBER_TOKENS` table
+of `test_number_token_grammar`. The binary discriminates the three
+kinds, not the values, which are C's own.
+
+**Negative `scandims` is a sanity-check failure, not a parse error**
+(fidelity F2). Measured: ` scandims = -1, 3, 1.5, 1.5,` exits 1 with
+**`non-positive scan dimensions`**, and `3, -1, ...` and `0, 3, ...`
+likewise, while `-1.5, 3, ...` gives `scan dimensinos must be
+non-negative integers`. The C++ `dims[0] != (uint32_t) dims[0]` is
+undefined behaviour for a negative double and, as built by MSVC here,
+does not fire; the value lands in the `int32_t scanDims[0]`
+(`ebsd/nml.hpp:70`) and `sanityCheck()` catches it. The port's extra
+`value < 0` clause is dropped, so all four cases now match the binary
+(`test_negative_scandims_are_a_sanity_check_failure`).
+
+**An empty value list is undefined behaviour in the C++** (fidelity
+F3). Measured: ` bw = ,` makes `IndexEBSD.exe` exit **3221225477**
+(an access violation, `Value::operator[]` on an empty vector), and
+` ipath = ,` the same. The port raised an `IndexError`, which escaped
+`from_string`'s documented `ValueError`/`NotImplementedError` because
+`_optional()` catches only `ValueError`. It now reports the key as
+missing, so ` ipath = ,` reads as an empty `ipath`, and `get_strings`
+still returns `[]` as the C++ `getStrings` does.
+
+**`roimask = '0'` is *no* region of interest** (fidelity F4).
+`RoiSelection::from_string` returns an empty selection for `"0"`
+(`idx/roi.h:592`), which the template's own comment advertises.
+Measured: `roimask = '0'` is accepted exactly as `''` is (the run
+proceeds to the missing pattern file), while `'1'` exits 1 with `odd
+number of points in ROI string`. `to_kwargs()` therefore accepts
+`"0"` and maps it to the whole scan; requirements.md carries the
+in-place correction. The string is still written back as `'0'`
+(stored opaquely), where the C++ writer normalises it to `''`.
+
+**`nregions` is bounded by `std::min(patDims)`** (bug-injection F3).
+Measured on `pat_dims = (60, 48)`: 48 passes, and 49, 60 and 61 raise
+`unreasonable AHE nregions`; with `max` in place of `min`, 49 and 60
+would pass. Every other sanity fixture is 60 x 60, so the two rows
+added to `SANITY_FAILURES`/`SANITY_LIMITS` are the only ones which can
+see the difference.
+
+**`thetac = detector.tilt`** (bug-injection F4, and the fidelity
+review's residual risk at the unit level). Measured with a
+`tilt = 5.0` detector: `from_kwargs(...).thetac` is `5.0` (`-5.0` for
+a `-5.0` tilt) and `to_detector(sample_tilt=70).tilt` gives it back.
+Every detector in both suites carried `tilt = 0`, so neither the sign
+nor the link itself was pinned before. The *physical* sign convention
+against a kikuchipy back-projection still needs one `IndexEBSD.exe`
+run at a non-zero `thetac`, which stays a Phase 10 item.
+
+**A trailing backslash breaks the round trip** (conventions 2).
+Measured: `ipath = "C:\data\"` writes ` ipath      = 'C:\data\',`,
+which reads back as `ValueError: no closing quote for a token in line
+7`, because the parser's only escape is `\'`. A separator *inside* the
+string and a forward slash both round trip bitwise. `to_string()` now
+raises for any written string ending in a backslash, next to the
+existing spaced-master guard, and the parser can never produce such a
+value, so the guard is round-trip safe.
+
+**Dropping the binning pre-cast is bitwise neutral and much cheaper**
+(fidelity F7, conventions 7). `_bin_sums` cast the whole stack to the
+accumulator before reshaping; the accumulation data type of `sum()`
+does the same arithmetic. Checked bitwise on the nickel map for 3
+input types x 2 flip directions x 12 binning factors (1, 2, 3, 4, 5,
+6, 10, 12, 15, 20, 30, 60) x both binners: **0 mismatches**, plus the
+lazy route at six factors. Peak memory of `_bin_avg` on a
+(200, 240, 320) unsigned 8-bit map (15 360 000 B), `tracemalloc`:
+
+| binning | with the pre-cast | without |
+|---|---|---|
+| 2 | 215 040 560 B (14.00x) | 92 160 853 B (6.00x) |
+| 4 | 145 920 512 B (9.50x) | 23 040 288 B (1.50x) |
+| 8 | 128 640 512 B (8.38x) | 5 760 288 B (0.38x) |
+
+`test_binavg_does_not_copy_the_map_to_the_accumulator` pins the
+binning-eight case at `< 2x`, which has more than four times' margin
+on either side. `astype(dtype, copy=False)` at `binning == 1` makes
+the native-input path a view (`is` the input) instead of a full copy.
+
+**The warning and the directory now follow the write decision**
+(fidelity F8, conventions 6). Measured before the fix:
+`write_emsphinx_patterns(existing, uint16_signal, overwrite=False)`
+emitted "... The file is still written ..." and wrote nothing, and
+`overwrite="yes"` raised **after** `_ensure_directory` had created the
+parent. Both are now below `if not write: return` in the writer and
+inside the `if write:` branch of `EMSphInxNamelist.write`.
+
+**The `Attributes` section does not make `:attr:` roles resolve**
+(conventions 3, measured; the review's proposed mechanism does not
+hold). A clean `sphinx-build -E -b html -D nbsphinx_execute=never` was
+parsed for every `py-attr` cross reference on the fourteen new pages:
+`pat_path` and `master_paths` resolve (they are properties and get
+autosummary stubs), while the 28 plain fields do not, with or without
+the section. `custom-class-template.rst` iterates `attributes`, which
+Sphinx fills from class members; an attribute assigned only in
+`__init__` is not one, so no stub page and no `py:attribute` target is
+generated for it. `MasterPatternHarmonics` documents its five instance
+attributes the same way and has stubs for its three properties only,
+so this is the package's pattern rather than this class's defect. The
+section is kept -- the class page now documents all 28 fields, which
+it did not before -- and the roles stay `:attr:`, which is what would
+resolve if the fields ever became properties. Making them resolve
+*now* would mean 28 class-level annotations and 28 new reference pages
+for one class, which the sibling class does not have.
+
+**Other conventions fixes.** `to_string`'s `Returns` gained a
+description, which removes the single new numpydoc warning (RT03) of
+the docs build: `numpydoc.validate` over the 14 public surfaces now
+reports **0** violations outside the repo's own exclusion set. The
+`MasterPatternHarmonics.sample_tilt` role in `to_detector` (an
+instance attribute, so unresolvable for the same reason) is now a
+literal plus a `:class:` link, which resolves and also brings the file
+to 0 docstring lines over 72 characters. The two
+`:class:`OxfordBinaryFileReader`` roles in `get_scan_info` are
+literals, pinned by `test_get_scan_info_links_only_published_names`,
+and the two docstring guard tests of `test_spherical_indexer.py` now
+also walk `oxford_binary.__all__`. The `.. warning:` single-colon
+directive (conventions 9) was **not** changed: it is upstream
+kikuchipy's own spelling in `indexing/_refinement/__init__.py` (2024)
+and in 13 private modules, so a three-file fix would fragment it.
+
+**Gate results** (after the fixes).
+
+| gate | result |
+|---|---|
+| the three new suites, `-n 0`, no env var | 405 passed, 13 skipped |
+| the three new suites, `-n 4`, no env var | 405 passed, 13 skipped |
+| the three new suites, `-n 0`, `KIKUCHIPY_EMSPHINX_DIR` set | **418 passed**, 0 skipped |
+| the three new suites, `-n 4`, env var set | 418 passed, 0 skipped |
+| `tests/test_indexing tests/test_io -k "spherical or sht or emsphinx or oxford" -n 4`, env var set | 2971 passed, 700 skipped (60 s) |
+| `--doctest-modules` on `_spherical` and on `oxford_binary` | 17 passed |
+| `sphinx-build -E -b html -D nbsphinx_execute=never` | exit 0, no new warning |
+| `pre-commit run --files <the 9 changed files>` | clean (ruff-format reflowed one file once) |
+
+**Coverage** (the three new suites with the whole
+`test_oxford_binary.py` rather than its `TestGetScanInfo` alone, 434
+tests, `-n 0`, env var set):
+
+| module | statements | missing | cover |
+|---|---|---|---|
+| `indexing/_spherical/_namelist.py` | 635 | 0 | **100.00 %** |
+| `indexing/_spherical/_pattern_repack.py` | 82 | 0 | **100.00 %** |
+| `io/plugins/oxford_binary/_api.py` | 219 | 2 | 99.09 % |
+
+The two `_api.py` lines are 612 and 614 as before, the version 5
+`map_x`/`map_y` branches of the pre-existing
+`OxfordBinaryFileReader.get_scan()`. The new grammar helpers needed
+one extra probe to close: `0x1p99999` (a `float.fromhex` overflow),
+which the binary also refuses.
+
+**Eleven unkilled mutants closed.** Of the bug-injection review's
+thirteen survivors, two are proved equivalent (unchanged) and eleven
+are now pinned by new tests:
+`test_binfloat_binning_one_returns_float32`,
+`test_the_promoted_first_element_is_a_double_too`, the two
+rectangular `nregions` sanity rows,
+`test_from_kwargs_thetac_is_the_detector_tilt` (which kills both
+`thetac` mutants), `test_the_two_string_delimiter_messages_are_
+distinct`, `test_eq_is_false_when_any_field_differs` (28 parameters),
+`test_from_kwargs_runs_the_sanity_check_itself`,
+`test_crlf_line_endings_parse`,
+`test_binavg_binning_one_returns_the_native_dtype` and
+`test_sanity_check_reports_the_first_failure` (five two-fault cases,
+which pin five order relations of `sanityCheck()`, three of them
+between adjacent checks). Each was
+measured under its mutant and under the pristine tree before it was
+written.

@@ -129,6 +129,75 @@ GOOD_NAMELIST = (
     " vStrs    = 'abc', '123', 'XYZ', '!@#',\n"
 )
 
+# The number token grammar of ``detail::tryParse<T>()`` (``nml.hpp``
+# lines 274-278), probed with 54 tokens through ``IndexEBSD.exe`` on
+# 2026-09-02 (Recorded results).  The extraction consumes the whole
+# token, so it is C's ``strtod`` for the double and a decimal
+# ``strtol`` for the integer: ``"int"`` is a token which stores as an
+# integer, ``"double"`` one which stores as a double and therefore
+# raises for an integer field, and ``None`` one which does not parse
+# at all.  ``float()`` and ``int()`` are both wider than this.  The
+# binary discriminates the three **kinds** (the message names the
+# unparsed token, or "stored type isn't integer", or a bandwidth
+# bound); the values are C's own, since no program prints them.
+NUMBER_TOKENS = [
+    ("68", "int", 68),
+    ("+68", "int", 68),
+    ("-68", "int", -68),
+    ("-0", "int", 0),
+    ("00", "int", 0),
+    ("2147483647", "int", 2147483647),
+    ("-2147483648", "int", -2147483648),
+    ("2147483648", "double", 2147483648.0),
+    ("68.", "double", 68.0),
+    (".5", "double", 0.5),
+    ("5.", "double", 5.0),
+    ("68e0", "double", 68.0),
+    ("1e2", "double", 100.0),
+    ("1e-320", "double", 1e-320),
+    ("1.7976931348623157e308", "double", 1.7976931348623157e308),
+    # hexadecimal parses as a double and never as an integer
+    ("0x44", "double", 68.0),
+    ("0X44", "double", 68.0),
+    ("0x0", "double", 0.0),
+    ("0x10", "double", 16.0),
+    ("0x7fffffff", "double", 2147483647.0),
+    ("-0x44", "double", -68.0),
+    ("0x1p3", "double", 8.0),
+    ("0x1.8", "double", 1.5),
+    ("0x1.8p3", "double", 12.0),
+    ("0xfffffffffffffffffff", "double", 7.555786372591432e22),
+    # not numbers at all
+    ("nan", None, None),
+    ("NaN", None, None),
+    ("inf", None, None),
+    ("infinity", None, None),
+    ("6_8", None, None),
+    ("1_000", None, None),
+    ("1.2.3", None, None),
+    ("12abc", None, None),
+    ("abc", None, None),
+    ("68f", None, None),
+    ("1e", None, None),
+    ("0x", None, None),
+    ("0xg", None, None),
+    ("0b11", None, None),
+    ("--68", None, None),
+    (".", None, None),
+    ("-", None, None),
+    ("+", None, None),
+    ("1d5", None, None),
+    ("1.5d0", None, None),
+    # overflow and underflow set the stream's fail bit
+    ("1e400", None, None),
+    ("-1e400", None, None),
+    ("1e309", None, None),
+    ("1.8e308", None, None),
+    ("1e-400", None, None),
+    ("0x1p99999", None, None),
+    ("0x1p-99999", None, None),
+]
+
 # The eleven error cases of ``nml.cpp`` lines 227-345, in its order
 ERROR_CASES = [
     ("first line key value", " key = 1\n"),
@@ -250,6 +319,10 @@ SANITY_FAILURES = [
     ({"circ_rad": -2}, "circular mask radius must be >= -1"),
     ({"n_regions": -5}, "unreasonable AHE nregions"),
     ({"n_regions": 61}, "unreasonable AHE nregions"),
+    # ``std::min(patDims[0], patDims[1])`` (``nml.hpp`` line 629):
+    # only a rectangular detector separates the minimum from the
+    # maximum, and every other case here is 60 x 60
+    ({"pat_dims": (60, 48), "n_regions": 49}, "unreasonable AHE nregions"),
     ({"delta": 83.0}, "unreasonable EBSD detector width"),
     ({"delta": 1501.0}, "unreasonable EBSD detector width"),
     ({"thetac": -60.1}, "unreasonable camera tilt"),
@@ -269,6 +342,7 @@ SANITY_LIMITS = [
     {"circ_rad": -1},
     {"n_regions": 0},
     {"n_regions": 60},
+    {"pat_dims": (60, 48), "n_regions": 48},
     {"delta": 84.0},
     {"delta": 1500.0},
     {"thetac": -60.0},
@@ -428,6 +502,23 @@ def namelist_with(**overrides):
     return namelist
 
 
+def different_value(value):
+    """Return a value of the same shape which differs from ``value``.
+
+    Lets :data:`FIELDS` be walked one field at a time, so that every
+    field of the namelist is pinned as part of its equality.
+    """
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, str):
+        return value + "x"
+    if isinstance(value, list):
+        return value + ["extra.sht"]
+    if isinstance(value, tuple):
+        return (different_value(value[0]),) + tuple(value[1:])
+    return value + 1
+
+
 def assert_fields_equal(one, two, pctr_rel=0.0):
     """Assert two namelists agree on every field of :data:`FIELDS`.
 
@@ -528,6 +619,94 @@ class TestNameListParser:
         with pytest.raises(ValueError, match="stored type isn't integer"):
             namelist.get_ints("vDoubles")
 
+    def test_the_promoted_first_element_is_a_double_too(self):
+        # the promotion of ``nml.hpp`` lines 400-407 rewrites *every*
+        # element, and only the first one distinguishes it from a
+        # list which was left mixed: ``get_ints`` already raises on
+        # the third element either way
+        namelist = _NameList.from_string(GOOD_NAMELIST)
+        with pytest.raises(ValueError, match="stored type isn't integer"):
+            namelist.get_int("vDoubles")
+        assert namelist.get_double("vDoubles") == 1.0
+
+    @pytest.mark.parametrize(
+        "token, kind, value", NUMBER_TOKENS, ids=[case[0] for case in NUMBER_TOKENS]
+    )
+    def test_number_token_grammar(self, token, kind, value):
+        # the token is lower cased before parsing, which is why the
+        # message of "NaN" names "nan" (measured)
+        text = f"placeholder\n key = {token},\n"
+        if kind is None:
+            message = f'couldn\'t parse token "{token.lower()}" from line 2'
+            with pytest.raises(ValueError, match=re.escape(message)):
+                _NameList.from_string(text)
+            return
+        namelist = _NameList.from_string(text)
+        assert namelist.get_double("key") == value
+        if kind == "int":
+            assert namelist.get_int("key") == value
+        else:
+            with pytest.raises(ValueError, match="stored type isn't integer"):
+                namelist.get_int("key")
+
+    def test_nan_is_not_a_number(self):
+        # the sharpest of the grammar cases: a NaN passes every one
+        # of the thirteen sanity checks, since each of them is a
+        # comparison, and would only die in the program
+        text = ACID_NAMELIST.replace(" delta      = 500,", " delta      = nan,")
+        with pytest.raises(
+            ValueError,
+            match=re.escape('couldn\'t parse token "nan" from line 9'),
+        ):
+            EMSphInxNamelist.from_string(text)
+
+    def test_a_hexadecimal_token_is_a_double(self):
+        # ``bw = 0x44`` is "stored type isn't integer" in the binary
+        # and not a bandwidth of 68 (measured)
+        text = ACID_NAMELIST.replace(" bw         = 68,", " bw         = 0x44,")
+        with pytest.raises(ValueError, match="stored type isn't integer"):
+            EMSphInxNamelist.from_string(text)
+
+    def test_an_empty_value_list_is_a_missing_key(self):
+        # ``at(nm)[0]`` on an empty ``Value`` is undefined behaviour
+        # in the C++: measured, ``IndexEBSD.exe`` exits 3221225477,
+        # an access violation.  The port reports the key as missing,
+        # which keeps every documented exception a ``ValueError``
+        namelist = _NameList.from_string("placeholder\n bw = ,\n")
+        with pytest.raises(
+            ValueError, match=re.escape("couldn't find `bw' in namelist")
+        ):
+            namelist.get_int("bw")
+        # ``getStrings`` returns an empty vector for it, as the C++
+        # does, so the list accessors do not raise
+        assert namelist.get_strings("bw") == []
+
+    def test_an_empty_optional_value_reads_as_empty(self):
+        # ``_optional`` catches the ``ValueError`` above, so the file
+        # is read rather than dying with an ``IndexError``
+        text = ACID_NAMELIST.replace(" patfile", " ipath      = ,\n patfile")
+        namelist = EMSphInxNamelist.from_string(text)
+        assert namelist.ipath == ""
+
+    def test_the_two_string_delimiter_messages_are_distinct(self):
+        # both live in ``nml.hpp`` lines 364-368 and both are a
+        # ``ValueError``, so ``ERROR_CASES`` alone cannot tell them
+        # apart
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "unexpected delimiter between strings in line 2 \" key = '1' '2'\""
+            ),
+        ):
+            _NameList.from_string("placeholder\n key = '1' '2'\n")
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "unexpected delimiter string opening in line 2 \" key = '1', 2\""
+            ),
+        ):
+            _NameList.from_string("placeholder\n key = '1', 2\n")
+
     def test_second_string_whitespace_stripped(self):
         # the sticky ``std::skipws`` of ``nml.hpp`` lines 364-368:
         # measured decisively through the binary, which opened
@@ -609,14 +788,32 @@ class TestNameListParser:
 
     @pytest.mark.parametrize("prefix", ["", "\t"])
     def test_missing_leading_space_message(self, prefix):
-        text = f"placeholder\n a = 1,\n{prefix}b = 2,\n"
+        # the key must be at least two characters long for this error
+        # to be reachable without a leading space: the C++ extracts
+        # the first character as the leading space and the rest of the
+        # key after it, and a key of one character leaves nothing to
+        # extract, which is the *other* failure mode (corrected
+        # 2026-09-02 from "b = 2,", measured through IndexEBSD.exe:
+        # "bb = 2," gives this message, "b = 2," gives "error parsing
+        # line 'b = 2,' from name list" -- Recorded results)
+        text = f"placeholder\n a = 1,\n{prefix}bb = 2,\n"
         with pytest.raises(
             ValueError,
             match=re.escape(
-                f'missing leading space in namelist line 3 "{prefix}b = 2,"'
+                f'missing leading space in namelist line 3 "{prefix}bb = 2,"'
             ),
         ):
             _NameList.from_string(text)
+
+    def test_a_one_character_key_without_a_leading_space_parses_differently(self):
+        # the second failure mode of the line above, measured: the
+        # leading space check is never reached because the key
+        # extraction consumes nothing
+        with pytest.raises(
+            ValueError,
+            match=re.escape("error parsing line 'b = 2,' from name list"),
+        ):
+            _NameList.from_string("placeholder\n a = 1,\nb = 2,\n")
 
     def test_two_leading_spaces_give_a_different_message(self):
         # the ``noskipws`` key extraction fails on the second space,
@@ -627,6 +824,35 @@ class TestNameListParser:
             match=re.escape("error parsing line '  b = 2,' from name list"),
         ):
             _NameList.from_string(text)
+
+    def test_a_line_without_a_delimiter_raises(self):
+        # the key runs to the end of the line, so the delimiter
+        # extraction has nothing left to read
+        with pytest.raises(
+            ValueError, match=re.escape("error parsing line ' bw' from name list")
+        ):
+            _NameList.from_string("placeholder\n bw\n")
+
+    def test_an_unterminated_string_raises(self):
+        with pytest.raises(
+            ValueError,
+            match=re.escape('no closing quote for a token in line 2 " key = \'abc"'),
+        ):
+            _NameList.from_string("placeholder\n key = 'abc\n")
+
+    def test_an_out_of_range_integer_is_a_double(self):
+        # ``tryParse<int>`` fails on a value outside the 32-bit range,
+        # so the double parse wins, as it does for "1.23e4"
+        namelist = _NameList.from_string("placeholder\n key = 99999999999,\n")
+        assert namelist.get_double("key") == 99999999999.0
+        with pytest.raises(ValueError, match="stored type isn't integer"):
+            namelist.get_int("key")
+
+    def test_an_empty_token_is_skipped(self):
+        # ``getline`` yields an empty token between two commas, which
+        # the C++ skips instead of failing to parse
+        namelist = _NameList.from_string("placeholder\n key = 1,,2,\n")
+        assert namelist.get_ints("key") == [1, 2]
 
     def test_duplicate_key_message(self):
         text = "placeholder\n circmask = -1,\n circmask = 0,\n"
@@ -875,6 +1101,65 @@ class TestNamelistTemplate:
         namelist_with(bw=88).write(fpath, overwrite=True)
         assert EMSphInxNamelist.read(fpath).bw == 88
 
+    def test_write_overwrite_none_asks_and_does_not_overwrite(
+        self, tmp_path, monkeypatch
+    ):
+        # the unanswerable prompt is forced rather than left to
+        # pytest's captured standard input, which would block forever
+        # under ``pytest -s``
+        def no_terminal(*args, **kwargs):
+            raise OSError("no raw input")
+
+        monkeypatch.setattr("builtins.input", no_terminal)
+        fpath = tmp_path / "acid.nml"
+        acid_namelist().write(fpath, overwrite=True)
+        before = fpath.read_bytes()
+        with pytest.warns(UserWarning, match="raw input"):
+            namelist_with(bw=88).write(fpath, overwrite=None)
+        assert fpath.read_bytes() == before
+
+    def test_write_bad_overwrite_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="overwrite"):
+            acid_namelist().write(tmp_path / "acid.nml", overwrite="yes")
+
+    def test_a_refused_write_creates_no_directory(self, tmp_path):
+        fpath = tmp_path / "new" / "acid.nml"
+        with pytest.raises(ValueError, match="overwrite"):
+            acid_namelist().write(fpath, overwrite="yes")
+        assert not fpath.parent.exists()
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("ipath", "C:\\data\\"),
+            ("pat_file", "sub\\"),
+            ("master_files", ["ni.sht", "b\\"]),
+            ("data_file", "out\\"),
+            ("qual_name", "qual\\"),
+        ],
+    )
+    def test_write_rejects_a_trailing_backslash(self, tmp_path, field, value):
+        # the writer quotes every string it emits and the parser has
+        # no backslash escape, so a trailing one escapes the closing
+        # quote: measured, "ipath = 'C:\\data\\'," reads back as "no
+        # closing quote for a token in line 7"
+        namelist = namelist_with(**{field: value})
+        with pytest.raises(ValueError, match="backslash"):
+            namelist.to_string()
+        with pytest.raises(ValueError, match="backslash"):
+            namelist.write(tmp_path / "bad.nml", overwrite=True)
+
+    def test_windows_paths_round_trip(self):
+        # only the *trailing* backslash is lossy: a separator inside
+        # the string and a forward slash both come back bitwise
+        namelist = namelist_with(
+            ipath="C:\\data\\in", pat_file="sub\\patterns.h5", opath="C:/data/out"
+        )
+        again = EMSphInxNamelist.from_string(namelist.to_string())
+        assert again.ipath == "C:\\data\\in"
+        assert again.pat_file == "sub\\patterns.h5"
+        assert again.opath == "C:/data/out"
+
 
 # ---------------------- Reading a namelist (D5) --------------------- #
 
@@ -974,6 +1259,10 @@ class TestNamelistRoundTrip:
         fpath.write_text(ACID_NAMELIST, encoding="utf-8")
         assert EMSphInxNamelist.read(fpath) == acid_namelist()
 
+    def test_a_namelist_is_not_equal_to_another_type(self):
+        assert acid_namelist() != "patterns.h5"
+        assert acid_namelist() != object()
+
     @pytest.mark.parametrize(
         "key, field",
         [
@@ -1060,6 +1349,64 @@ class TestNamelistRoundTrip:
         )
         with pytest.raises(ValueError, match=re.escape(SCANDIMS_INTEGER_MESSAGE)):
             EMSphInxNamelist.from_string(text)
+
+    @pytest.mark.parametrize(
+        "value, message",
+        [
+            (" scandims   = -1, 3, 1.5,\n", "non-positive scan dimensions"),
+            (" scandims   = 3, -1, 1.5,\n", "non-positive scan dimensions"),
+            (" scandims   = 0, 3, 1.5,\n", "non-positive scan dimensions"),
+            (" scandims   = -1.5, 3, 1.5,\n", SCANDIMS_INTEGER_MESSAGE),
+        ],
+    )
+    def test_negative_scandims_are_a_sanity_check_failure(self, value, message):
+        # a *whole* negative number passes the integrality test of
+        # ``ebsd/nml.hpp`` line 263 and dies in ``sanityCheck()``
+        # instead, with the other message: measured through
+        # ``IndexEBSD.exe``, which exits 1 with "non-positive scan
+        # dimensions" for "scandims = -1, 3, 1.5, 1.5" and with the
+        # integer message for "-1.5" (Recorded results)
+        text = ACID_NAMELIST.replace(" scandims   = 3, 3, 1.5,\n", value)
+        with pytest.raises(ValueError, match=re.escape(message)):
+            EMSphInxNamelist.from_string(text)
+
+    def test_crlf_line_endings_parse(self):
+        # ``read()`` hides this behind ``Path.read_text``' universal
+        # newlines, so only ``from_string`` sees a carriage return.
+        # The captured ``IndexEBSD -t`` template is CRLF, since the
+        # binary writes in text mode on Windows
+        namelist = EMSphInxNamelist.from_string(ACID_NAMELIST.replace("\n", "\r\n"))
+        assert namelist == acid_namelist()
+        assert namelist.bw == 68
+
+    @pytest.mark.parametrize("field", FIELDS)
+    def test_eq_is_false_when_any_field_differs(self, field):
+        # every field is part of the equality, which the round trip
+        # assertions cannot show: they only ever compare namelists
+        # which are equal
+        one = acid_namelist()
+        two = acid_namelist()
+        assert one == two
+        setattr(two, field, different_value(getattr(two, field)))
+        assert one != two
+        assert two != one
+
+    @pytest.mark.parametrize(
+        "overrides, message",
+        [
+            ({"pat_file": "", "data_file": ""}, "missing input pattern file"),
+            ({"master_files": [], "bw": 8}, "no master pattern files"),
+            ({"circ_rad": -2, "n_regions": -5}, "circular mask radius must be >= -1"),
+            ({"thetac": 61.0, "scan_dims": (0, 3)}, "unreasonable camera tilt"),
+            ({"n_thread": -1, "batch_size": -1}, "negative thread count"),
+        ],
+    )
+    def test_sanity_check_reports_the_first_failure(self, overrides, message):
+        # the order of ``sanityCheck()`` (lines 621-639) decides which
+        # message a user sees, and a single fault per case cannot pin
+        # it: each of these has two faults and must name the earlier
+        with pytest.raises(ValueError, match=re.escape(message)):
+            namelist_with(**overrides).sanity_check()
 
     @pytest.mark.parametrize(
         "value", [" patdims    = 60,\n", " patdims    = 60, 60, 60,\n"]
@@ -1348,6 +1695,20 @@ class TestToFromKwargs:
         with pytest.raises(ValueError, match="roimask"):
             namelist_with(roi_mask="0, 0, 2, 2").to_kwargs()
 
+    def test_roimask_zero_is_no_region_of_interest(self):
+        # ``RoiSelection::from_string`` returns an empty selection for
+        # "0" (``idx/roi.h`` line 592), which the template's own
+        # comment advertises as "index the entire scan"; measured
+        # through ``IndexEBSD.exe``, which accepts "roimask = '0'"
+        # exactly as it accepts "''" and reports "odd number of
+        # points in ROI string" for "'1'"
+        namelist = namelist_with(roi_mask="0")
+        assert namelist.to_kwargs() == acid_namelist().to_kwargs()
+        # the string is stored opaquely, so it is written back as it
+        # was read, where the C++ writer normalises it to ''
+        assert line_of(namelist.to_string(), "roimask") == " roimask    = '0',"
+        assert EMSphInxNamelist.from_string(namelist.to_string()).roi_mask == "0"
+
     def test_to_detector_requires_sample_tilt(self):
         # the namelist has no sample tilt; a silent default was
         # measured in Phase 6 to index about five degrees wrong at
@@ -1417,6 +1778,26 @@ class TestToFromKwargs:
 
     def test_from_kwargs_passes_its_own_sanity_check(self):
         self.built(kp.data.nickel_ebsd_small().detector).sanity_check()
+
+    def test_from_kwargs_runs_the_sanity_check_itself(self):
+        # the documented contract, which the test above cannot show:
+        # it calls ``sanity_check()`` explicitly on the returned
+        # namelist.  A 60 pixel wide detector of 1 micron pixels is
+        # 0.06 mm wide, which the check refuses
+        with pytest.raises(ValueError, match="detector width"):
+            self.built(kp.data.nickel_ebsd_small().detector, delta=1.0)
+
+    def test_from_kwargs_thetac_is_the_detector_tilt(self):
+        # every detector in this suite carries ``tilt=0``, which pins
+        # neither the sign nor the link itself; ``to_detector`` is
+        # pinned by ``test_to_detector_fields`` in the other direction
+        detector = kp.data.nickel_ebsd_small().detector.deepcopy()
+        detector.tilt = 5.0
+        namelist = self.built(detector)
+        assert namelist.thetac == 5.0
+        assert namelist.to_detector(sample_tilt=70.0).tilt == 5.0
+        detector.tilt = -5.0
+        assert self.built(detector).thetac == -5.0
 
     def test_from_kwargs_rejects_azimuthal_twist(self):
         for field in ("azimuthal", "twist"):
@@ -1507,6 +1888,12 @@ class TestToFromKwargs:
     def test_from_kwargs_rejects_an_unknown_vendor(self):
         with pytest.raises(ValueError, match="vendor"):
             self.built(kp.data.nickel_ebsd_small().detector, vendor="TSL")
+
+    def test_from_kwargs_rejects_an_unknown_indexing_argument(self):
+        # a misspelt indexing argument would otherwise be dropped and
+        # the namelist silently built with the default
+        with pytest.raises(ValueError, match="bandwith"):
+            self.built(kp.data.nickel_ebsd_small().detector, bandwith=88)
 
     @pytest.mark.parametrize("chunksize, batch_size", [(None, 0), (1, 1), (32, 32)])
     def test_from_kwargs_chunksize_maps_to_batchsize(self, chunksize, batch_size):

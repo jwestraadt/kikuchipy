@@ -69,8 +69,8 @@ def get_scan_info(filename: str | Path) -> dict:
     binary .ebsp file.
 
     Modelled on the ``EBSPDims`` program of EMSphInx
-    (``programs/ebsp_dims.cpp``), built on
-    :class:`OxfordBinaryFileReader`.
+    (``programs/ebsp_dims.cpp``), built on the same
+    ``OxfordBinaryFileReader`` :func:`~kikuchipy.load` reads with.
 
     Parameters
     ----------
@@ -101,9 +101,9 @@ def get_scan_info(filename: str | Path) -> dict:
         ``False`` when either is ``None``.
 
         Every other value is a plain Python scalar, not a NumPy
-        one: :class:`OxfordBinaryFileReader` reads the file header
-        into 32- and 64-bit NumPy integers, which are cast here so
-        that the dictionary is comparable, printable and JSON
+        one: ``OxfordBinaryFileReader`` reads the file header into
+        32- and 64-bit NumPy integers, which are cast here so that
+        the dictionary is comparable, printable and JSON
         serialisable.  ``dtype`` stays a :class:`numpy.dtype` type.
 
     Raises
@@ -126,7 +126,41 @@ def get_scan_info(filename: str | Path) -> dict:
     >>> len(info["beam_x"]), len(info["beam_y"]), info["is_regular_grid"]
     (3, 3, True)
     """
-    raise NotImplementedError
+    with open(filename, mode="rb") as f:
+        obf = OxfordBinaryFileReader(f)
+
+        n_patterns_present = int(obf.n_patterns_present)
+        field_names = obf.memmap.dtype.names
+        beams = []
+        for name in ("beam_x", "beam_y"):
+            if name in field_names:
+                beams.append(np.unique(obf.memmap[name][..., 0].astype(np.float64)))
+            else:
+                beams.append(None)
+        beam_x, beam_y = beams
+
+        is_regular_grid = (
+            beam_x is not None
+            and beam_y is not None
+            and beam_x.size * beam_y.size == n_patterns_present
+        )
+
+        pattern_bytes = int(obf.n_bytes)
+        info = {
+            "n_patterns": int(obf.n_patterns),
+            "n_patterns_present": n_patterns_present,
+            "all_patterns_present": bool(obf.all_patterns_present),
+            "signal_shape": tuple(int(size) for size in obf.signal_shape),
+            "dtype": obf.dtype,
+            "pattern_bytes": pattern_bytes,
+            "total_bytes": pattern_bytes * n_patterns_present,
+            "version": int(obf.version),
+            "beam_x": beam_x,
+            "beam_y": beam_y,
+            "is_regular_grid": is_regular_grid,
+        }
+
+    return info
 
 
 class OxfordBinaryFileReader:

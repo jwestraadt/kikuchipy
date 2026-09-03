@@ -128,8 +128,14 @@ stated as the equivalence ``binned(flip(x)) == flip(binned(x))``
 rather than as an internal order.
 """
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+from warnings import warn
+
+import dask.array as da
+import h5py
+import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover
     from kikuchipy.signals import EBSD, LazyEBSD
@@ -269,4 +275,168 @@ def write_emsphinx_patterns(
     >>> fname = Path(tempfile.mkdtemp()) / "patterns.h5"
     >>> kp.indexing.write_emsphinx_patterns(fname, s, overwrite=True)
     """
-    raise NotImplementedError
+    from kikuchipy.io._util import _ensure_directory, _overwrite
+
+    if manufacturer not in _MANUFACTURER_FLIP:
+        raise ValueError(
+            f"The manufacturer {manufacturer!r} is not one of "
+            f"{sorted(_MANUFACTURER_FLIP)}, the vendor strings EMSphInx's "
+            "pattern reader accepts. Note that these are not the vendors of "
+            "an EMSphInx namelist, which are a different set"
+        )
+
+    data = signal.data
+    dtype = np.dtype(data.dtype)
+    if dtype.name not in _DTYPES:
+        raise ValueError(
+            f"The signal data type {dtype.name!r} is not one of "
+            f"{list(_DTYPES)}, the pixel types EMSphInx reads"
+        )
+
+    binning = int(binning)
+    if binning < 1:
+        raise ValueError(f"The binning factor {binning} must be at least one")
+    height, width = int(data.shape[-2]), int(data.shape[-1])
+    if height % binning != 0 or width % binning != 0:
+        raise ValueError(
+            f"The binning factor {binning} must divide both signal "
+            f"dimensions {(height, width)}"
+        )
+
+    if flip is None:
+        flip = _MANUFACTURER_FLIP[manufacturer]
+    flip = bool(flip)
+
+    native_dtype = dtype.newbyteorder("=")
+    written_dtype = np.dtype("float32") if bin_to_float else native_dtype
+
+    filename = str(filename)
+    if os.path.splitext(filename)[1] == "":
+        filename += ".h5"
+
+    is_file = os.path.isfile(filename)
+    if overwrite is None:
+        write = _overwrite(filename)
+    elif overwrite is True or (overwrite is False and not is_file):
+        write = True
+    elif overwrite is False and is_file:
+        write = False
+    else:
+        raise ValueError(
+            f"overwrite can only be None, True or False, and not {overwrite}"
+        )
+    if not write:
+        return
+
+    # after the decision, so that a refused write neither warns about
+    # a file it does not write nor leaves a new directory behind
+    if written_dtype != np.uint8:
+        warn(
+            f"The written data type {written_dtype.name!r} is not 'uint8': "
+            "EMSphInx reads HDF5 patterns through a buffered unsigned 8-bit "
+            "read whatever the data set type is, and corrupts every other "
+            "type (measured: an unsigned 16-bit twin of an otherwise correct "
+            "file indexes 38.9 degrees off). The file is still written, as "
+            "the ported program writes it",
+            UserWarning,
+        )
+    _ensure_directory(filename)
+
+    n_patterns = int(np.prod(data.shape[:-2]))
+    patterns = data.reshape((n_patterns, height, width))
+    if flip:
+        patterns = patterns[:, ::-1, :]
+    if bin_to_float:
+        patterns = _bin_float(patterns, binning)
+    else:
+        patterns = _bin_avg(patterns, binning, native_dtype)
+
+    shape = (n_patterns, height // binning, width // binning)
+    with h5py.File(filename, mode="w") as f:
+        f.create_dataset(
+            "Manufacturer",
+            data=manufacturer.encode("ascii"),
+            dtype=h5py.string_dtype(encoding="ascii"),
+        )
+        dataset = _create_patterns_dataset(f, shape, written_dtype)
+        if isinstance(patterns, da.Array):
+            # streams one chunk at a time into the pre-allocated data
+            # set, so the whole map is never held in memory
+            da.store(patterns, dataset)
+        else:
+            dataset[...] = patterns
+
+
+def _create_patterns_dataset(
+    file: h5py.File, shape: tuple[int, int, int], dtype: np.dtype
+) -> h5py.Dataset:
+    """Return a new contiguous, early allocated and unfiltered
+    ``/patterns`` data set, the layout of ``pattern_repack.cpp``
+    lines 199-208.
+
+    Early allocation is what lets the C++ program get a raw binary
+    offset with ``getOffset()``, and what lets a lazy signal be
+    written slab by slab here.  The zero filters are the functional
+    part: a compressed data set is fatal to the reader.
+    """
+    space = h5py.h5s.create_simple(shape)
+    properties = h5py.h5p.create(h5py.h5p.DATASET_CREATE)
+    properties.set_layout(h5py.h5d.CONTIGUOUS)
+    properties.set_alloc_time(h5py.h5d.ALLOC_TIME_EARLY)
+    type_id = h5py.h5t.py_create(dtype, logical=True)
+    identifier = h5py.h5d.create(file.id, b"patterns", type_id, space, properties)
+    return h5py.Dataset(identifier)
+
+
+def _bin_sums(patterns, binning: int, accumulate: type):
+    """Return the ``binning`` x ``binning`` block sums of a stack of
+    patterns, accumulated in ``accumulate``.
+
+    The accumulator is the data type of the summation rather than a
+    cast of the input, which is bitwise the same (measured on the
+    nickel map at twelve binning factors, in both flip directions
+    and for all three input types) and never copies the input: an
+    eager (10000, 480, 640) unsigned 8-bit map would otherwise need
+    a 24 GB 64-bit float temporary, while the C++ ``binAvg()`` bins
+    one pattern at a time.
+    """
+    n_patterns, height, width = patterns.shape
+    reshaped = patterns.reshape(
+        n_patterns, height // binning, binning, width // binning, binning
+    )
+    return reshaped.sum(axis=(2, 4), dtype=accumulate)
+
+
+def _bin_avg(patterns, binning: int, dtype: np.dtype):
+    """Return the block mean of a stack of patterns in its own data
+    type, ``binAvg()`` (``pattern_repack.cpp`` lines 76-98).
+
+    The block sum is accumulated in 64-bit floats, divided by
+    ``binning ** 2`` and, for integer types only, rounded half away
+    from zero, which is ``std::round()``.  The values are
+    non-negative, so that rounding is ``floor(x + 0.5)`` and **not**
+    :func:`numpy.round`, which is banker's rounding and differs on
+    1003 of the 8100 pixels of the small nickel map at binning two.
+    """
+    if binning == 1:
+        # ``copy=False`` because the only conversion this can make is
+        # the byte order one, which a native input does not need
+        return patterns.astype(dtype, copy=False)
+    mean = _bin_sums(patterns, binning, np.float64) / binning**2
+    if np.issubdtype(dtype, np.integer):
+        mean = np.floor(mean + 0.5)
+    return mean.astype(dtype)
+
+
+def _bin_float(patterns, binning: int):
+    """Return the block **sum** of a stack of patterns as 32-bit
+    floats, ``binFloat()`` (``pattern_repack.cpp`` lines 50-67).
+
+    ``binning == 1`` is a plain cast, which completes the dead code
+    of the C++ ``main()``.  The accumulation order is NumPy's
+    pairwise summation, which is the authority here: the mode is
+    unreachable in the shipped binary.
+    """
+    if binning == 1:
+        return patterns.astype(np.float32, copy=False)
+    return _bin_sums(patterns, binning, np.float32)
