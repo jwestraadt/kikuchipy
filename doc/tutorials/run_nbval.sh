@@ -12,6 +12,7 @@ declare -a NOTEBOOKS=(\
   "pattern_matching.ipynb"\
   "pc_extrapolate_plane.ipynb"\
   "pc_fit_plane.ipynb"\
+  "spherical_indexing.ipynb"\
 )
 
 # Append relative path to notebook names

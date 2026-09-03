@@ -18,39 +18,34 @@ Unreleased
 
 Added
 -----
-- ``kikuchipy.indexing.write_emsphinx_patterns()``: write EBSD patterns to the repacked
-  HDF5 layout EMSphInx's ``IndexEBSD`` reads (``PatternRepack`` equivalent plus the
-  required ``Manufacturer`` dataset).
+- Tutorial on spherical indexing, ``doc/tutorials/spherical_indexing.ipynb``, and a
+  section on reading EMSphInx ``*.sht`` master pattern files in the load/save
+  tutorial.
+  (`#12 <https://github.com/jwestraadt/kikuchipy/pull/12>`_)
+- Interoperability with EMSphInx's ``IndexEBSD`` program:
+  ``kikuchipy.indexing.write_emsphinx_patterns()`` writes EBSD patterns to the
+  repacked HDF5 layout it reads (``PatternRepack`` equivalent plus the required
+  ``Manufacturer`` dataset), ``kikuchipy.indexing.EMSphInxNamelist`` reads and writes
+  its namelist input files and converts them to and from spherical-indexing arguments
+  and an ``EBSDDetector``, and ``kikuchipy.io.plugins.oxford_binary.get_scan_info()``
+  probes the scan grid and layout of an ``.ebsp`` file (``EBSPDims`` equivalent).
   (`#10 <https://github.com/jwestraadt/kikuchipy/pull/10>`_)
-- ``kikuchipy.indexing.EMSphInxNamelist``: read and write ``IndexEBSD`` namelist files
-  and convert them to and from spherical-indexing arguments and an ``EBSDDetector``.
-  (`#10 <https://github.com/jwestraadt/kikuchipy/pull/10>`_)
-- ``kikuchipy.io.plugins.oxford_binary.get_scan_info()``: probe the scan grid and layout
-  of an ``.ebsp`` file (``EBSPDims`` equivalent).
-  (`#10 <https://github.com/jwestraadt/kikuchipy/pull/10>`_)
-- Newton refinement of spherical-indexing orientations on the sphere:
-  ``EBSD.refine_orientation_spherical()``, and ``refine=True`` -- the new default,
-  EMSphInx's own -- in ``EBSD.spherical_indexing()`` /
-  ``kikuchipy.indexing.SphericalIndexer`` (pass ``refine=False`` for coarse-only
-  indexing).
-  (`#9 <https://github.com/jwestraadt/kikuchipy/pull/9>`_)
-- Spherical indexing of EBSD patterns against one or more master patterns with
-  ``EBSD.spherical_indexing()``, ``kikuchipy.indexing.SphericalIndexer`` and
-  ``kikuchipy.indexing.SphericalBackProjector``, a CPU port of EMSphInx's
-  ``IndexEBSD``.
-  (`#8 <https://github.com/jwestraadt/kikuchipy/pull/8>`_)
-- ``kikuchipy.indexing.fast_bandwidths()``, the spherical indexing bandwidths with
-  fast transforms.
-  (`#8 <https://github.com/jwestraadt/kikuchipy/pull/8>`_)
-- Reader for EMSphInx ``.sht`` master patterns, ``kp.load("*.sht")`` (io plugin
-  ``emsphinx_master_pattern``).
-  (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
-- New class ``kikuchipy.indexing.MasterPatternHarmonics`` holding an EBSD master
-  pattern's spherical harmonic coefficients, read from and written to EMSphInx ``.sht``
-  files.
-  (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
-- New ``EBSDMasterPattern.get_spherical_harmonics()``, the equivalent of EMSphInx's
-  ``mp2sht``.
+- Spherical indexing of EBSD patterns against one or more master patterns, a CPU port
+  of EMSphInx's ``IndexEBSD``: ``EBSD.spherical_indexing()``,
+  ``kikuchipy.indexing.SphericalIndexer``,
+  ``kikuchipy.indexing.SphericalBackProjector`` and
+  ``kikuchipy.indexing.fast_bandwidths()``. Newton refinement of the correlation
+  maximum on the sphere is on by default (EMSphInx's own default; pass
+  ``refine=False`` for coarse-only indexing), and
+  ``EBSD.refine_orientation_spherical()`` refines orientations from any source, e.g.
+  Hough indexing.
+  (`#8 <https://github.com/jwestraadt/kikuchipy/pull/8>`_,
+  `#9 <https://github.com/jwestraadt/kikuchipy/pull/9>`_)
+- EBSD master patterns as spherical harmonics:
+  ``EBSDMasterPattern.get_spherical_harmonics()`` returning the new class
+  ``kikuchipy.indexing.MasterPatternHarmonics`` (``mp2sht`` equivalent), read from
+  and written to EMSphInx ``*.sht`` files, and ``kp.load("*.sht")`` reading a
+  ``.sht`` master pattern directly (io plugin ``emsphinx_master_pattern``).
   (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
 
 Fixed

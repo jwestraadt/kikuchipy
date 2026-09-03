@@ -269,6 +269,437 @@ rather than argued:
   (17,692 B, `application/vnd.jupyter.widget-state+json`); absent
   from all three committed exemplars -> the D7 strip step.
 
+## Recorded results (implementation, 2026-09-03, this machine)
+
+Same machine as drafting (Windows 11, 20 logical cores, 8 pinned
+dask workers, warm caches), `.venv` Python 3.13.12, pyebsdindex
+0.3.10.1. Everything below was executed, not estimated.
+
+### Build and gate wall clocks
+
+- **V1** `jupyter nbconvert --to notebook --execute
+  --ExecutePreprocessor.timeout=600 --inplace`: exit 0, **77.8 s**
+  wall (incl. uv/kernel startup); a second clean-kernel run on a
+  scratch copy: exit 0, **73.1 s**. No error outputs, no stderr
+  streams, 7 figures, cleanup cell stored output `False`. Both
+  runs printed **bit-identical numbers** in every compared line.
+  The <= 3 min budget is met with 2.3x margin on this machine.
+- **V2** `pytest --nbval ... --nbval-sanitize-with
+  doc/tutorials/tutorials_sanitize.cfg`: **25 passed** (52.8-55.0 s
+  across three runs -- after the first execute, after the markdown
+  polish, and after the `metadata.execution` strip).
+- **V4** html build: **exit 0**, `build succeeded`, 2 min 40 s cold
+  / 14.1 s incremental (see deviation 2 on `nbsphinx_execute`).
+- **V6** linkcheck (shared doctrees): finished with problems, as
+  the spec predicts; 963 rows, 461 working / 65 redirected / 399
+  unchecked / 38 broken.
+- **V8** `pre-commit run --files` over the five notebook/rst/cfg
+  files (`run_nbval.sh` excluded): all hooks **Passed, no
+  modifications**, on three separate invocations.
+
+### Per-cell execution timing (from `metadata.execution`, run 1)
+
+Captured before the block was stripped (deviation 3). Sum of cell
+busy times **53.0 s**; the remaining ~25 s of the 77.8 s wall is
+uv resolution, kernel start and inter-cell overhead.
+
+| cell | s | cell | s |
+|---|---|---|---|
+| C1 imports | 2.13 | C13 export (commented) | 0.00 |
+| C2 load + backgrounds | 3.39 | C14 `fast_bandwidths` | 0.02 |
+| C3 master pattern | 0.02 | **C15 bw sweep** | **17.98** |
+| C4 harmonics bw 188 | 0.07 | C16 phase list | 0.01 |
+| C5 power spectrum | 0.19 | C17 Hough indexing | 4.73 |
+| C6 round trip dim=401 | 0.26 | C18 color key | 0.01 |
+| C7 detector | 0.00 | C19 three-way IPF | 0.27 |
+| C8 back-projection | 0.17 | C20 misorientations | 0.13 |
+| C9 worker pin | 0.00 | C21 refine Hough | 2.98 |
+| **C10 indexing** | **20.33** | C22 histogram | 0.11 |
+| C11 `xmap` repr | 0.01 | C23 `.sht` round trip | 0.04 |
+| C12 score/IQ maps | 0.12 | C24 patterns + namelist | 0.01 |
+| | | C25 cleanup | 0.01 |
+
+### Stored numbers (all frozen anchors re-confirmed)
+
+- Info: "Indexing 4125 pattern(s) in **275** chunk(s) of up to
+  **15** pattern(s)", "Estimated memory per worker: 54 MB";
+  refinement: "Refining **4124** orientation(s) in 275 chunk(s) of
+  up to 15 pattern(s)"; Hough: "PyOpenCL: False", "in 8 chunk(s)".
+- Harmonics repr `MasterPatternHarmonics: bw = 188, ni (m-3m),
+  20.1 keV, 70.0 deg`; back-projection `Image quality: 0.349`.
+- Sweep: median **0.37 / 0.37 / 0.25 deg**, p99 **1.40 / 0.71 /
+  0.69 deg** at bw 53 / 68 / 88 -- identical to the spec.
+- Misorientation prints: to Hough (masked) median **0.23**, p99
+  **0.75**; to shipped (refined) median **0.43**, p99 **1.53** deg.
+- `Median after refinement: 0.042 deg`; cleanup `False`.
+- Speeds (sanitized by regex2, quoted nowhere in prose) ran
+  *faster* than the drafting table: indexing 206.3 patterns/s
+  (recorded 204-230), sweep 459.9 / 246.6 / 114.4 (recorded 401 /
+  228 / 103), Hough 909.1 (913-924), refinement 1523.9 (1167).
+- **V11** size **1,004,294 B** (0.96 MiB), 50 cells (25 markdown,
+  25 code), 7 figures -- in family with hybrid 1.16 MB.
+
+### V3 / V5 / V7 / V9 / V10
+
+- **V3**: `run_nbval.sh` gains one line after `pc_fit_plane.ipynb`
+  (trailing `\` kept, no licenseheaders header);
+  `tutorials_sanitize.cfg` gains regex8 + regex9 byte-for-byte as
+  frozen in D7; `index.rst` gains one line between
+  `pattern_matching` and `hybrid_indexing`.
+- **V5**: the gallery card renders with thumbnail
+  `tutorials_spherical_indexing_36_0.png` (the three-way IPF cell)
+  and tooltip "Spherical harmonic indexing of EBSD patterns", in
+  the Indexing gallery between Pattern matching and Hybrid
+  indexing; 7 figures, 2 Note admonitions, 1 parameter table; the
+  IPF color key sits to the right of the three panels and obscures
+  none of them (inspected in the rendered PNG); **neither hidden
+  cell renders** (0 matches for the hidden-cell text, the cleanup
+  comment and `os.rmdir`); every internal link resolves
+  (`hough_indexing.html#Calibrate-detector-sample-geometry`,
+  `#Pre-indexing-maps`, `../user/related_projects.html`, the 12
+  `../reference/generated/*.html` targets, the two same-page
+  anchors). The `load_save_data` `.sht` section renders with its
+  stored output and the **parenthesised table anchor resolves**
+  (`id="EMSphInx-spherical-harmonics-master-pattern-(.sht)"`), so
+  the D8 fallback was not needed.
+- **V7**: `grep -i pseudo` on the notebook = **0**; the four
+  "dictionary" hits are all DI cross-references (intro, score
+  semantics, What's next) -- none labels the shipped map. EMSphInx
+  (22), PyEBSDIndex (4), EMsoft (4), kikuchipy (33), Lenthe (3),
+  Legendre, Lambert, Newton, Euler, Hough all correctly cased;
+  "Dask" in prose matches the repo's 11 existing uses.
+- **V9**: `git status` clean apart from the five modified files
+  and the new notebook; nothing untracked in `doc/tutorials/`.
+  The `load_save_data.ipynb` diff is **+33 / -0**: one table line
+  plus two cells, no `id` keys added, `nbformat_minor` still 4.
+- **V10**: the rendered `Unreleased -> Added` block is exactly the
+  frozen D9 text -- four bullets, PR links 5/8/9/10/12, empty
+  Fixed/Changed/Removed/Deprecated headers kept. Failure mode 14
+  checked by hand: the three consolidated entries name all nine
+  originals' APIs (3 `.sht`, 3 interop, indexing + bandwidth
+  helper + refinement). The #12 link is V10's post-PR check.
+
+### Deviations, with measurements
+
+1. **V4's scoped grep is not empty**, and the criterion is met
+   only after classifying the hits. `sphinx-build` exits 0. The
+   grep returns (a) **7 sphinx-codeautolink "Could not match
+   transformation of `X`" warnings** on `spherical_indexing.rst`
+   -- a repo-wide class: **129 such warnings across 35 files** in
+   the same build, 8 on `adaptive_histogram_equalization`, 7 on
+   `pc_orientation_dependence`, 6 on `load_save_data`, 5 on
+   `hough_indexing`; they are emitted for every notebook's import
+   block and ours is in family; and (b) one **pre-existing**
+   `load_save_data.ipynb: "nbsphinx-thumbnail" in cell 102:
+   Unsupported output type in output 0: "stream"` -- its thumbnail
+   cell was index **100** at `HEAD` with the same single `stream`
+   output, so all this phase changed is the reported index (+2
+   from the two inserted cells). No warning is attributable to
+   this phase's content, and there is no "isn't included in any
+   toctree" warning (FM7 clear).
+2. **The html and linkcheck builds ran with
+   `-D nbsphinx_execute=never`** instead of validation.md's
+   default configuration. Grounds: both files under test store
+   outputs, so `nbsphinx_execute = "auto"` skips them too and the
+   rendered pages are identical; `never` avoids live-executing the
+   ten unrelated output-less notebooks (`hough_indexing`,
+   `pattern_processing`, `feature_maps`,
+   `geometrical_ebsd_simulations`,
+   `kinematical_ebsd_simulations`, `multivariate_analysis`,
+   `pc_calibration_moving_screen_technique`, `reference_frames`,
+   `virtual_backscatter_electron_imaging`,
+   `visualizing_patterns`). Side effect, recorded so it is not
+   mistaken for a regression: under `never` those notebooks have
+   no outputs, so nbsphinx emits 11 `"nbsphinx-thumbnail" ... No
+   outputs` warnings and their gallery cards fall back to the
+   broken-thumbnail SVG. Neither affects the two changed pages.
+3. **nbconvert also writes a per-cell `metadata.execution`
+   block**, which D7's recipe does not mention. Measured: 25 cells
+   carried one (~6.5 kB), and **no committed tutorial carries one**
+   (`metadata.execution` count over `doc/tutorials/*.ipynb` before
+   this phase: zero). It is the same per-run churn as
+   `metadata.widgets` (17,693 B, stripped per the recipe), so it
+   was stripped too; the remaining cell metadata keys are exactly
+   the exemplars' `nbsphinx`, `nbsphinx-thumbnail`, `tags`. nbval
+   after the strip: 25 passed.
+4. **`load_save_data`'s new code cell stores its output with
+   `execution_count: null`** (rendered `[ ]:`). Stored output was
+   chosen because `nbsphinx_execute = "auto"` does not execute a
+   notebook that already has outputs, so an output-less cell would
+   render as an input with no result beside 42 cells that all show
+   one. No execution number was invented: the file's counts run
+   3-53 in one sequence, so any renumbering would either duplicate
+   a number or touch the 49 following cells and break V9's hunk
+   budget, and two cells (48, 110) already carry `null`.
+5. **The D8 code snippet is one line, not two**:
+   `mp_sht = kp.load(data_path / "emsphinx/ni_small_20kv_bw384.sht")`
+   is 63 characters, so `black-jupyter --line-length=77` unwraps
+   the spec's wrapped form, and V8 requires the hook to make no
+   modification.
+6. **The misorientation print carries labels** ("To Hough
+   (masked):" / "To shipped (refined):"). D5 froze the statistics
+   (median + p99, two decimals, `not_indexed`-masked for the Hough
+   pair), not the label text.
+7. **The refinement median is printed from the masked array.**
+   Plan 1.21 froze `np.median(angles_ref)` while D5 says "the
+   print uses the same mask as above"; both are honoured by
+   defining `angles_ref = ori_ref.angle_with(ori_sph,
+   degrees=True)[mask]`. The value is 0.042 deg either way.
+8. **The IPF color key is placed beside the panels, not over
+   them.** Plan 1.18 left the inset coordinates to implementation
+   against the rendered page (V5). Measured shape:
+   `fig.tight_layout(rect=[0, 0, 0.87, 1])` then
+   `fig.add_axes([0.87, 0.06, 0.13, 0.8], projection="ipf",
+   symmetry=symmetry.Oh)` -- still the `hough_indexing` cell-51
+   `add_axes` + `plot_ipf_color_key` + transparent-patch shape,
+   but in reserved figure space, which makes "does not obscure a
+   map panel" true by construction rather than by luck. The panel
+   titles use `ax.set_title(title, fontsize=13)`: `Axes.set()`
+   rejects `fontsize`, and "Hough + refinement (shipped)"
+   overflows a 4.3 in panel at the notebook's `font.size` of 15.
+9. **The notebook is `nbformat_minor` 5 with cell ids**
+   (`cell-00` ... `cell-49`, deterministic), matching
+   `hough_indexing` -- the structural exemplar -- and the drafting
+   prototype. The repo is split: 7 tutorials use minor 5 with ids,
+   11 use minor 4 without (including `pattern_matching` and
+   `hybrid_indexing`).
+10. **Two markdown-only edits were made after execution**: "so
+    this call is EMSphInx's own namelist defaults" -> "so this
+    call *reproduces* EMSphInx's own namelist defaults", and
+    `"scores"` gained its gloss ("the correlation at the best
+    orientation") in the two-property sentence. Markdown is
+    neither executed nor compared by nbval, so stored outputs
+    still match their sources; re-proved by a full nbval run
+    afterwards (25 passed) and a rebuilt html page.
+11. **Linkcheck: `spherical_indexing.ipynb` has one `broken`
+    row**, `https://github.com/pyxem/kikuchipy/blob/develop/doc/
+    tutorialsspherical_indexing.ipynb` (404). It is the
+    `nbsphinx_prolog`'s "view it on Github" link, whose
+    `env.doc2path(env.docname, base=None)` yields a Windows path
+    (`tutorials\name`) whose backslash is dropped in the URL --
+    **every one of the 19 tutorial notebooks carries exactly this
+    row in the same build**, untouched ones included, and it
+    cannot occur on the Linux RTD builder. All six
+    phase-introduced URLs are ok: Lenthe 2019 DOI `redirected`,
+    EMSphInx GitHub `working`, SHT database `working`, PyEBSDIndex
+    docs `redirected`, both orix targets `working`.
+
+## Recorded results (adversarial review fixes, 2026-09-03, this machine)
+
+Same machine, venv and pin as the implementation section. Every
+finding of the content review and the conventions review was
+re-measured here before it was applied; the probe is
+`p11_fix_probe.py` (session scratchpad) plus the follow-up
+snippets quoted below. The notebook was re-executed in place after
+the edits, so stored outputs match their sources.
+
+### Findings applied, with the measurement that carried them
+
+1. **Power spectrum (cells 9-10) -- applied.** `power_spectrum()`
+   returns 188 values, `P[l]` for `l = 0 ... 187`. The **odd**
+   degrees are numerically zero (median 1.37e-30, max 3.19e-30):
+   the master is centrosymmetric. The **even** degrees do not fall
+   off monotonically: `P[0] = 9.145` (the constant term, **73.3 %**
+   of the total power), `P[2] = 1.80e-05`, rising to a maximum of
+   **2.06e-01 at l = 44**, then decaying to 3.47e-03 at l = 186;
+   even-band means 9.26e-3 / 8.88e-2 / 6.86e-2 / 1.76e-2 / 6.83e-3
+   over [2,20) / [20,50) / [50,90) / [90,130) / [130,188). Plotting
+   all 188 degrees forces a **31.5-decade** y-axis (the odd spikes),
+   which is why the old PNG was a picket fence; the even-only plot
+   spans 5.7 decades and shows the envelope. Fix: cell 10 plots
+   `degrees = np.arange(0, power.size, 2)` against `power[degrees]`
+   with xlabel "Even harmonic degree $l$"; the prose now says the
+   odd degrees vanish (~1e-30), `l = 0` is the mean, the rest peaks
+   near `l = 45` and decays, with **under 1 % of the total power
+   above l = 150** (measured 0.802 %). The refuted sentence ("shows
+   how the spectral content falls off with the harmonic degree")
+   is gone.
+2. **Download size (cell 9 Note) -- applied.** The shipped table in
+   `src/kikuchipy/data/_data.py:564-580` lists **0.2-3.0 GB** per
+   phase (`steel_r` 3.0, `steel_sigma` 1.5, `alpha_almnsi` 1.1,
+   `steel_sigma2` 0.8, `steel_chi` 0.6, four at 0.5; only
+   ni/si/austenite/ferrite are 0.3). "about 300 MB each" was wrong
+   by up to 10x in the one admonition that warns about download
+   weight -> "0.2 to 3 GB each depending on the phase, about 300 MB
+   for nickel". `(1001, 1001)` and "bandwidths up to 500" verified
+   correct ((1001-1)/2 = 500).
+3. **Round trip (cell 11) -- applied.** Measured on the two 401-px
+   arrays: Pearson **r = 0.9599**, z-scored NRMSE **0.283**,
+   gradient energy 0.2873 -> 0.2093, i.e. **-27.1 %**; the rendered
+   panel pair is visibly smoother on the right (inspected). "The
+   difference is barely visible: a bandwidth of 188 retains
+   practically all of the diffraction signal" -> "Fine detail is
+   smoothed by the band limit, but the bands and zone axes that
+   indexing correlates on come back intact", which is what the
+   figure shows and still carries the argument.
+4. **Image quality (cell 17) -- applied.** `xmap.prop["iq"][:4] =
+   [0.2107, 0.2096, 0.1915, 0.1985]` against the bare
+   `projector.unproject(..., return_image_quality=True)` of the same
+   four patterns `[0.3491, 0.3220, 0.3204, 0.3243]` -- **+65.7 %**
+   for pattern (0, 0); the map spans 0.119-0.232, so the printed
+   0.349 is off the top of the cell-23 colorbar. Cause confirmed in
+   `src/kikuchipy/indexing/_spherical/_indexer.py:576-593` and its
+   module docstring (lines 150-155): indexing back-projects
+   `_preprocess_pattern(...)` and the docstring records the same
+   three bands (0.173-0.204 at `n_regions = 10`, 0.289-0.327 at
+   `n_regions = 0`, 0.766-0.779 raw), while
+   `SphericalBackProjector.__init__` takes no preprocessing
+   argument. The sentence now names the `"iq"` property and says
+   the map values are computed after the adaptive histogram
+   equalization and come out lower than the printed one. The
+   "cosine transform" attribution is correct (`_dct_image_quality`,
+   `dctn(..., type=2)`) and was kept.
+5. **Bimodal refinement histogram (cell 43) -- applied.** 4124
+   masked points: **46.4 %** in [0, 0.02) deg, 3.3 % in
+   [0.02, 0.04), 4.0 % in [0.04, 0.06), 5.7 % in [0.06, 0.08),
+   **24.0 %** in [0.08, 0.10), 14.1 % in [0.10, 0.12), 1.8 % in
+   [0.12, 0.14), **0 %** in [0.14, 1.0), 0.6 % (26 points) above
+   1 deg. Quartiles p25 0.0000, p50 **0.0419**, p75 0.0933, p90
+   0.1060, p99 **0.1275** -- the printed median does sit in the
+   trough between the two modes. Prose now names the second mode:
+   "just under half of the points land on the spherical solution to
+   within 0.02 deg, and almost all of the rest within 0.15 deg of
+   it" (measured 99.4 % below 0.14 deg). The frozen print
+   (plan 1.21) was not touched.
+6. **Namelist table (cell 47) -- applied.** `from_kwargs(...)`
+   writes 19 keys; the table mapped 17. Two rows added: `datafile`
+   -> `data_file` (a **required** `from_kwargs` argument, verified
+   at `_namelist.py:1098-1116`, and the one cell 46 passes as
+   `data_file="out.h5"`), and `roimask` (no `from_kwargs`
+   argument; stays at the `__init__` default `''`, the whole scan
+   -- `_namelist.py:1420`). The table now covers all 19 keys and
+   renders as 16 data rows.
+7. **Default-68 attribution (cell 30) -- applied.** D4 freezes the
+   rationale as "EMSphInx's own namelist default and nothing more";
+   "the compromise EMSphInx settles on" ascribed a trade-off
+   judgement to EMSphInx that no cited source states. Now: "is the
+   compromise -- and EMSphInx's own namelist default", which keeps
+   D4's "is the compromise" clause and drops the attribution.
+8. **`load_save_data` naming -- applied.** `doc/user/
+   related_projects.rst:50-51` and `spherical_indexing.ipynb`
+   (cells 9 and 43) call it the **SHT database**; the new
+   `load_save_data` markdown was the only place in `doc/` saying
+   "EMSphInx master pattern library" (grep: 1 hit, now 0). Changed
+   to "the SHT database", inside the already-new cell, so the diff
+   stays +33/-0. NB this edits a string frozen in requirements D8;
+   recorded here as a deviation rather than as a spec correction,
+   since D8's wording is not *wrong*, only inconsistent with the
+   page it links and with the tutorial.
+9. **`.sht` round trip grid (cell 43) -- applied.** `kp.load`
+   synthesizes on `to_master_pattern`'s default grid,
+   `2 * bandwidth + 1` (docstring, `_master_pattern_harmonics.py:
+   1955-1966`): 2*188+1 = **377** here, and 2*384+1 = **769** for
+   the bw-384 `.sht` in `load_save_data` -- both stored outputs
+   confirm it. The sentence now says so, so the 377 after cell 11's
+   `dim=401` no longer reads as lost resolution.
+10. **`not_indexed` point in the IPF panel (cell 36) -- applied.**
+    `ckey.orientation2color` mapped the fill identity rotation to
+    an ordinary colour, so the Hough panel showed no trace of the
+    failure cell 33 describes and cell 38 NaNs. Measured: the point
+    is flat index **3334** (row 44, column 34) and was painted
+    **pure red** `[1.0, 1.1e-16, 0.0]` -- the `[001]` corner of the
+    key, not a subtle artefact, in a map of pastel grains. Added
+    `rgb[xm.phase_id.flatten() == -1] = 1` inside the loop (white,
+    which is orix's own `not_indexed` phase colour -- see the cell
+    32 repr) and cell 33 now says the point is left white in the
+    maps and masked out of the comparisons. Verified: the thumbnail
+    figure still renders and the colour key still sits beside the
+    three panels.
+
+### Findings NOT applied, with the measurement that decides it
+
+11. **`load_save_data`'s `[ ]:` prompt (content 11 / conventions
+    2)** -- kept as deviation 4, and its precedent claim is
+    **sharpened**: the file's 53 code cells carry counts 3-53,
+    **strictly increasing in document order** with one gap (10 ->
+    12) and no duplicates; the two other `execution_count: null`
+    cells are index 48 (fully commented out) and 112 (empty), and
+    **neither has an output**, so ours is the only cell in the file
+    that renders an *empty output prompt*. The three options were
+    measured: renumbering to 32 touches the 49 following cells and
+    breaks V9's hunk budget; inventing the next free integer (54)
+    would be the only decreasing step in an otherwise monotone file
+    and would assert an execution position that never happened;
+    `null` states truthfully that the output was produced outside
+    the numbered run. Kept `null`.
+12. **Cell-id scheme (conventions 1)** -- kept as deviation 9. The
+    reviewer marks it optional and schema-valid; `cell-00 ...
+    cell-49` is deterministic across re-executions (uuid4 ids
+    would churn the diff on every run), which is the property this
+    phase's re-execution loop depends on.
+13. **Roadmap Phase 11 checkboxes (conventions 4)** -- outside this
+    task's write permission (`specs/roadmap.md` is not the
+    validation file); they are ticked at PR time as phases 5/6/7/10
+    were.
+
+### Corrections to the implementation section's deviations
+
+- **Deviation 2 over-attributes the 11 "No outputs" thumbnail
+  warnings** (conventions info 3, confirmed and quantified).
+  Measured over `doc/tutorials/*.ipynb`: **ten** notebooks are
+  fully output-less (`feature_maps`,
+  `geometrical_ebsd_simulations`, `hough_indexing`,
+  `kinematical_ebsd_simulations`, `multivariate_analysis`,
+  `pattern_processing`, `pc_calibration_moving_screen_technique`,
+  `reference_frames`, `virtual_backscatter_electron_imaging`,
+  `visualizing_patterns`) and only those are newly affected by
+  `-D nbsphinx_execute=never`. The eleventh,
+  `hybrid_indexing.ipynb`, ships **17 cells with outputs**, so
+  `nbsphinx_execute = "auto"` does not execute it either and its
+  output-less thumbnail cell 82 emits the same warning **on RTD
+  today** -- pre-existing, not an artefact of the override. The
+  conclusion of deviation 2 (nothing attributable to this phase) is
+  unaffected.
+- **Deviation 4's precedent** -- see item 11 above.
+
+### Re-run validation matrix (after the fixes)
+
+| # | result |
+|---|---|
+| V1 | `nbconvert --execute --inplace`: **exit 0, 81 s** wall; then `metadata.widgets` (17,662 B) and the 25 `metadata.execution` blocks (5,350 B) stripped, as in deviation 3. 50 cells (25 markdown / 25 code), execution counts 1-25 contiguous, **0 error outputs, 0 non-stdout streams**, 7 figures, cleanup cell stored output `False`, no `metadata.widgets`, cell metadata exactly `nbsphinx` x2 + the thumbnail pair on cell 36. Cell busy time 56.9 s (C10 indexing 21.07 s, C15 sweep 19.94 s, C17 Hough 4.68 s, C21 refinement 4.44 s). Budget <= 3 min met. |
+| V1b | clean-kernel re-execution of a scratch copy: **exit 0, 83 s**. Compared cell by cell after nbval's own treatment (coalesce consecutive streams, collapse carriage returns, apply all nine sanitize rules): **0 of 25 code cells differ**. Unsanitized, the only differing lines are the four speed prints (indexing 198.9 vs 196.9, sweep 405.6/220.3/104.2 vs 399.2/225.2/98.2, Hough 922.0 vs 909.7, refinement 991.6 vs 1198.7 patterns/s), all covered by `regex2`. |
+| V2 | `pytest --nbval ... --nbval-sanitize-with tutorials_sanitize.cfg`: **25 passed** in 60.3 s. |
+| V3 | unchanged by the fixes and re-inspected: `index.rst` +1 line between `pattern_matching` and `hybrid_indexing`; `run_nbval.sh` +1 line after `pc_fit_plane.ipynb` with the trailing `\` kept and no licence header; `tutorials_sanitize.cfg` +12 lines, regex8/regex9 byte-for-byte as D7. |
+| V4 | `sphinx-build -b html -D nbsphinx_execute=never`: **exit 0**, `build succeeded`, 22 s incremental. Scoped grep: **7** sphinx-codeautolink "Could not match transformation" on `spherical_indexing.rst` (`time`, `tempfile`, `pathlib`, `orix.quaternion`, `orix.crystal_map`, `numpy`, `matplotlib.pyplot`), 6 of the same class on `load_save_data.rst`, and the pre-existing `load_save_data.ipynb` cell-102 `"nbsphinx-thumbnail" ... Unsupported output type ... "stream"`. No toctree, undefined-label, duplicate-target or docutils warning from any changed file -- the same classification as deviation 1. |
+| V5 | rendered page: **7 figures** (`_10_0`, `_12_0`, `_16_1`, `_23_0`, `_36_0`, `_38_1`, `_42_1`), 2 `admonition note`, 1 table with **17 rows** (header + 16), gallery card with thumbnail `tutorials_spherical_indexing_36_0.png` and tooltip "Spherical harmonic indexing of EBSD patterns" between Pattern matching and Hybrid indexing, IPF colour key beside the three panels, **neither hidden cell renders** (0 matches for the hidden-cell text, the cleanup comment and `os.rmdir`). Every new string renders (`Even harmonic degree`, `centrosymmetric`, `0.2 to 3 GB`, `zone axes that indexing correlates on`, the `iq` qualifier, `EMSphInx's own namelist default`, `two modes`, `left white in the maps below`, `2 * bandwidth + 1`, `377 here`, the `roimask` and `datafile` rows) and every refuted string is gone (`barely visible`, `compromise EMSphInx settles on`, `about 300 MB each`, `falls off with the harmonic degree`). `load_save_data`: the `.sht` section renders, says **SHT database**, stores `(2|769, 769)`, and the parenthesised anchor `id="EMSphInx-spherical-harmonics-master-pattern-(.sht)"` still resolves. The two rewritten figures were inspected as PNGs: the power spectrum is now a legible rise-and-decay curve, and the round-trip pair visibly supports its new caption. |
+| V6 | `sphinx-build -b linkcheck` (shared doctrees): **963 rows, 461 working / 66 redirected / 399 unchecked / 37 broken**, "finished with problems" as the spec predicts. The six phase-introduced URLs are all ok in `output.json` -- Lenthe 2019 DOI `redirected` (linkinghub.elsevier.com), EMSphInx GitHub `working`, SHT database `working`, PyEBSDIndex docs `redirected`, orix `orix.io.save` and `CrystalMap` `working`. The two same-page anchors are `unchecked` as before. The 37 broken rows classify as **19** `nbsphinx_prolog` Windows-path artefacts -- exactly one per tutorial notebook, ours included (deviation 11) -- plus 17 pre-existing external rows (rate-limited DOIs, an EMsoft wiki anchor, a Stack Overflow link, a diffsims anchor) and the `jwestraadt/kikuchipy/pull/12` link, which cannot resolve until the PR exists (V10's post-PR check). |
+| V7 | `grep -i pseudo` = **0**. Four `dictionar*` hits, all DI cross-references (intro x2, score semantics, What's next); none labels the shipped map, whose panel title is still "Hough + refinement (shipped)". Name counts over the file unchanged by the edits: EMSphInx 22, PyEBSDIndex 4, EMsoft 4, kikuchipy 33; no misspelling variant matches. |
+| V8 | `pre-commit run --files` over the five notebook/rst/cfg files (`run_nbval.sh` excluded): ruff, ruff-format, black-jupyter, licenseheaders all **Passed, no modifications**, both before execution (plan 1.4's ordering) and after. |
+| V9 | `git status --short`: the six modified files (`CHANGELOG.rst`, `index.rst`, `load_save_data.ipynb`, `run_nbval.sh`, `tutorials_sanitize.cfg`, this file) plus the untracked notebook; nothing else, nothing untracked in `doc/tutorials/`. `load_save_data.ipynb` still **+33 / -0**, `nbformat_minor` 4, no `id` keys. Both notebooks are byte-identical to `json.dumps(nb, indent=1, ensure_ascii=False) + "\n"`, pure LF, no trailing whitespace, no empty cells. |
+| V10 | `CHANGELOG.rst` untouched by the fixes (+27 / -32 as before); the #12 link check stays sequenced after PR creation. |
+| V11 | **948,974 B** (0.90 MiB), down from 1,004,294 B: the even-degree spectrum PNG is much smaller than the 188-spike one. Still in family with hybrid 1.16 MB. |
+
+### Two markdown-only edits after execution (deviation 10's precedent)
+
+After the re-execution, two of the new sentences were split for
+readability -- the power-spectrum sentence into "…all odd degrees
+vanish … and we plot the even ones." + "The constant term at
+$l = 0$ …", and the image-quality sentence into two ("Indexing
+measures it on the adaptive histogram equalized pattern it
+back-projects rather than on the raw one …"), which also removed a
+"computed … computed there" repetition. Markdown is neither
+executed nor compared by nbval, so stored outputs still match
+their sources; re-proved afterwards by **nbval 25 passed**
+(58.9 s), `pre-commit` **Passed, no modifications**, and a rebuilt
+html page (**exit 0**, `build succeeded`; the scoped grep returns
+only the same 7 codeautolink warnings) in which both paragraphs
+render with well-formed MathJax spans (`\(l\)`, `\(10^{-30}\)`,
+`\(l = 0\)`, `\(l = 45\)`). Final file: 948,974 B, canonical JSON,
+pure LF, 50 cells, cell metadata exactly `nbsphinx` x2 +
+`nbsphinx-thumbnail`/`tags`.
+
+### Working tree after the fixes
+
+`git status --short` is exactly the six intended modifications
+(`CHANGELOG.rst`, `doc/tutorials/index.rst`,
+`doc/tutorials/load_save_data.ipynb`, `doc/tutorials/run_nbval.sh`,
+`doc/tutorials/tutorials_sanitize.cfg`, this file) plus the one
+untracked `doc/tutorials/spherical_indexing.ipynb`; `git diff
+--numstat` is 27/32 CHANGELOG, 1/0 index.rst, 33/0 load_save_data,
+1/0 run_nbval.sh, 12/0 sanitize cfg, and this file append-only
+(0 deletions). No `src/` file changed; nothing untracked in
+`doc/tutorials/` besides the notebook.
+
 ## Definition of done
 
 - [ ] Spec commit: this folder + the plan section-0 amendments
