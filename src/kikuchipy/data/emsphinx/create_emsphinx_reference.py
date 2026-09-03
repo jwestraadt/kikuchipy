@@ -38,8 +38,9 @@ directory:
    :func:`~kikuchipy.indexing.write_emsphinx_patterns` on the
    **canonical route**, i.e. with every writer default
    (``Manufacturer`` EMsoft, rows unflipped), and guard asserts that
-   the written ``/patterns`` data set is ``uint8`` and byte identical
-   to ``signal.data.reshape(-1, h, w)``;
+   the written root ``Manufacturer`` data set is the recorded one and
+   that ``/patterns`` is ``uint8`` and byte identical to
+   ``signal.data.reshape(-1, h, w)``;
 2. copies the in package ``ni_small_20kv_bw384.sht`` master beside it;
 3. builds the name list with
    :meth:`~kikuchipy.indexing.EMSphInxNamelist.from_kwargs` (name list
@@ -51,21 +52,27 @@ directory:
    the output data file -- the payload, five ``float32`` arrays and one
    ``uint8`` one -- and cross checks it against the ``.ang``, whose
    columns are text rounded (Euler at five decimals, ``ci`` = the
-   metric at three, ``iq`` = the image quality at one);
+   metric at three, ``iq`` = the image quality at one).  Only the
+   Euler and the metric columns are cross checked: one decimal
+   resolves nothing on this data set, where a scenario's whole
+   ``iq`` column prints as one or two distinct values, so it cannot
+   discriminate a point from its neighbour;
 6. writes one uncompressed :func:`numpy.savez` file holding those six
    arrays and the provenance the regression tests recompute against,
-   the exact name list text and the ``.6g`` round tripped pattern
-   centre the program used among them.
+   the exact name list text, the ``.6g`` round tripped pattern centre
+   the program used and the md5 of the ``IndexEBSD`` binary itself
+   among them.
 
 Before anything runs, ``git rev-parse HEAD`` of the EMSphInx checkout
 is asserted to be commit ``60f351741036c63a59a6061a7ac2fca4f60f2c64``,
 and the machine wide program lock file is taken, since the programs
 race on one shared FFTW wisdom file.  That wisdom is also why the
-reference bytes are only reproducible **given a fixed wisdom state**:
-the programs plan with ``FFTW_PATIENT`` and import and export
-``<shared data dir>/fftw.wisdom`` at start and exit, and different
-plans round differently, so its md5 is printed before and after the
-sweep.
+reference bytes are only reproducible **given a fixed wisdom state
+and the same built binary**: the programs plan with ``FFTW_PATIENT``
+and import and export ``<shared data dir>/fftw.wisdom`` at start and
+exit, and different plans round differently, so its md5 is printed
+before and after the sweep, while the binary's own md5 is stored in
+every reference.
 
 The equivalent shell commands, with ``EMSPHINX`` the EMSphInx checkout
 built in ``build/Release``::
@@ -94,14 +101,25 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover
+    from kikuchipy.detectors import EBSDDetector
+    from kikuchipy.signals import EBSD
 
 # The EMSphInx commit the references are generated from and the only
 # one this script accepts.  The regression test module keeps its own
 # copy of this literal: the value stored in every reference file is
 # *probed* from the checkout, so the shipped check has power only
 # through that independent duplication.
+#
+# The commit certifies the *source tree* and is blind to uncommitted
+# edits and to a stale or patched build, which is why every reference
+# also stores the md5 of the ``IndexEBSD`` binary it came from: a
+# rebuild whose behaviour change lands inside the parity bands is then
+# still visible in the reference itself.
 EMSPHINX_COMMIT = "60f351741036c63a59a6061a7ac2fca4f60f2c64"
 
 # The in-package master pattern of every scenario, next to this file
@@ -116,8 +134,12 @@ EMSPHINX_COMPATIBLE = True
 MANUFACTURER = "EMsoft"
 FLIP = False
 
-# The canonical route, recorded in every file so that a writer default
-# which changes upstream is visible in the reference itself
+# The canonical route, recorded in every file as the fingerprint of
+# what the shipped bytes were generated on.  Both writer defaults it
+# names are backed by a generation guard rather than by the record
+# alone: a changed ``flip`` default fails the byte-identity guard and
+# a changed ``manufacturer`` default fails the probe of the written
+# root ``Manufacturer`` data set, both in ``_generate``.
 ROUTE = (
     "write_emsphinx_patterns defaults (Manufacturer EMsoft, rows unflipped); "
     "EMSphInxNamelist.from_kwargs with the unrounded pc_average; "
@@ -137,10 +159,12 @@ NAMELIST_FILE = "index.nml"
 DATA_FILE = "out.h5"
 VENDOR_FILE = "out.ang"
 
-# The data file's result data sets, in the order they are stored under
-# ``Scan 1/EBSD/Data``
+# The data file's Euler data sets, in the order they are stored under
+# ``Scan 1/EBSD/Data``.  Named for the three angles only: the test
+# module's ``RESULT_KEYS`` is the full six array payload, so the two
+# names deliberately do not collide.
 DATA_PATH = "Scan 1/EBSD/Data"
-RESULT_KEYS = (("phi1", "Phi1"), ("phi", "Phi"), ("phi2", "Phi2"))
+EULER_KEYS = (("phi1", "Phi1"), ("phi", "Phi"), ("phi2", "Phi2"))
 
 # Generation-time ``.ang`` cross-check tolerances, each exactly twice
 # the deterministic half-ULP bound of the column's fixed precision:
@@ -235,7 +259,7 @@ SUBSET_SLICES = {
 def main(
     output_dir: str | Path | None = None,
     program: str | Path | None = None,
-    scenarios: "list[str] | tuple[str, ...] | None" = None,
+    scenarios: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Path]:
     """Generate the reference files and return their paths.
 
@@ -274,6 +298,13 @@ def main(
         If the EMSphInx checkout is not at :data:`EMSPHINX_COMMIT`, if
         ``IndexEBSD`` exits non-zero, or if any generation-time guard
         fails.
+    TimeoutError
+        If ``program`` is not given and the machine wide program lock
+        ``<temporary directory>/kikuchipy-emsphinx-program.lock`` is
+        held by another process for longer than :data:`LOCK_TIMEOUT`
+        seconds, which a concurrent gated test run does.  A lock older
+        than :data:`LOCK_STALE` seconds is assumed to belong to a
+        killed run and is taken over instead.
     ValueError
         If a scenario name is not one of :data:`SCENARIOS`.
     """
@@ -291,7 +322,7 @@ def main(
 
 
 def _sweep(
-    output_dir: Path, program: Path, selected: "tuple[Scenario, ...]"
+    output_dir: Path, program: Path, selected: tuple[Scenario, ...]
 ) -> dict[str, Path]:
     """Run every selected scenario, check the guards and write the
     files.
@@ -299,14 +330,17 @@ def _sweep(
     Nothing is written before every guard has passed, so a mutated
     route cannot leave a plausible but wrong reference behind.
 
-    The commit is probed **once**, from the checkout holding
-    ``program``, and threaded into every reference: probing it again
-    per scenario would both re-read ``KIKUCHIPY_EMSPHINX_DIR`` -- which
-    a caller passing ``program`` need not have set -- and let the
-    stored value come from a different checkout than the one the guard
+    The commit and the program md5 are probed **once**, from the
+    checkout holding ``program`` and from ``program`` itself, and
+    threaded into every reference: probing the commit again per
+    scenario would both re-read ``KIKUCHIPY_EMSPHINX_DIR`` -- which a
+    caller passing ``program`` need not have set -- and let the stored
+    value come from a different checkout than the one the guard
     validated.
     """
     commit = _check_commit(program)
+    program_md5 = _md5_of_file(program)
+    print(f"{program}: md5 {program_md5}")
     wisdom = _wisdom_path()
     print(f"fftw wisdom before: {_wisdom_state(wisdom)}")
 
@@ -317,7 +351,9 @@ def _sweep(
             run_dir = Path(directory) / scenario.name
             run_dir.mkdir()
             start = time.monotonic()
-            references[scenario.name] = _generate(scenario, program, run_dir, commit)
+            references[scenario.name] = _generate(
+                scenario, program, run_dir, commit, program_md5
+            )
             print(f"  {scenario.name}: {time.monotonic() - start:.2f} s")
 
     _check_across_scenarios(references)
@@ -333,21 +369,31 @@ def _sweep(
     total = 0
     for name, fpath in written.items():
         total += fpath.stat().st_size
+        # the width the pasted block needs to align its md5 with every
+        # other line of the ``# fmt: off`` region in ``_registry.py``,
+        # which ruff-format does not repair
         print(
-            f'    "emsphinx/{fpath.name}":'.ljust(56)
+            f'    "emsphinx/{fpath.name}":'.ljust(67)
             + f' "md5:{_md5_of_file(fpath)}",  # {fpath.stat().st_size} B'
         )
     print(f"total {total} B over {len(written)} files")
     return written
 
 
-def _generate(scenario: Scenario, program: Path, run_dir: Path, commit: str) -> dict:
+def _generate(
+    scenario: Scenario,
+    program: Path,
+    run_dir: Path,
+    commit: str,
+    program_md5: str,
+) -> dict:
     """Return the reference arrays of one scenario, generated in
     ``run_dir``.
 
     ``commit`` is the sha :func:`_check_commit` probed from the
-    checkout holding ``program``, stored as the reference's
-    ``emsphinx_commit``.
+    checkout holding ``program`` and ``program_md5`` the md5 of
+    ``program`` itself, stored as the reference's ``emsphinx_commit``
+    and ``program_md5``.
     """
     from kikuchipy.indexing import EMSphInxNamelist, write_emsphinx_patterns
 
@@ -357,9 +403,15 @@ def _generate(scenario: Scenario, program: Path, run_dir: Path, commit: str) -> 
     # default, so that ``/patterns`` is the flattened signal verbatim
     pattern_path = run_dir / PATTERN_FILE
     write_emsphinx_patterns(pattern_path, signal, overwrite=True)
-    patterns = _read_patterns(pattern_path)
+    patterns, manufacturer = _read_patterns(pattern_path)
     height, width = signal.axes_manager.signal_shape[::-1]
     expected = np.asarray(signal.data).reshape(-1, height, width)
+    if manufacturer != MANUFACTURER:
+        raise RuntimeError(
+            f"{scenario.name}: the repacked patterns declare the manufacturer "
+            f"{manufacturer!r} and not the recorded {MANUFACTURER!r}, so the "
+            "writer default changed and the route is not the canonical one"
+        )
     if patterns.dtype != np.uint8:
         raise RuntimeError(
             f"{scenario.name}: the repacked patterns are {patterns.dtype} and "
@@ -448,6 +500,7 @@ def _generate(scenario: Scenario, program: Path, run_dir: Path, commit: str) -> 
 
     provenance = {
         "emsphinx_commit": np.str_(commit),
+        "program_md5": np.str_(program_md5),
         "bw": np.int64(BANDWIDTH),
         "normed": np.bool_(NORMALIZE),
         "refine": np.bool_(scenario.refine),
@@ -468,7 +521,8 @@ def _generate(scenario: Scenario, program: Path, run_dir: Path, commit: str) -> 
         "preprocessing": np.str_(PREPROCESSING),
         "subset_slice": np.str_(SUBSET_SLICES[scenario.dataset]),
         "emsphinx_compatible": np.bool_(EMSPHINX_COMPATIBLE),
-        "manufacturer": np.str_(MANUFACTURER),
+        # the string read back from the written file, not the literal
+        "manufacturer": np.str_(manufacturer),
         "flip": np.bool_(FLIP),
         "kikuchipy_version": np.str_(_kikuchipy_version()),
     }
@@ -480,6 +534,16 @@ def _check_across_scenarios(references: dict[str, dict]) -> None:
     refined run of the anchor share their preprocessing, so their
     image quality is bitwise equal, and refinement raises the metric
     of every point.
+
+    The strict positivity is an **empirical** property of these nine
+    points and not a monotonicity theorem: the refined normalized
+    score can dip below the coarse one where the window shift chain
+    rule is omitted, which
+    :meth:`~kikuchipy.signals.EBSD.spherical_indexing` documents and
+    the port measured on 4 of the 165 large map points.  Measured
+    margin here, over the nine anchor points: +0.00318 at worst.  A
+    regeneration which trips it is a signal to re-measure, not
+    necessarily a defect.
     """
     coarse = references.get("small_coarse_nr10")
     refined = references.get("small_refined_nr10")
@@ -504,7 +568,9 @@ def _check_across_scenarios(references: dict[str, dict]) -> None:
 # ------------------------- The inputs ------------------------------- #
 
 
-def _dataset(name: str):
+def _dataset(
+    name: str,
+) -> tuple["EBSD", "EBSDDetector", tuple[int, int], tuple[float, float]]:
     """Return the background corrected signal, its single projection
     centre detector, its scan shape and its scan steps.
 
@@ -551,12 +617,21 @@ def _master_path() -> Path:
     return Path(Dataset(f"emsphinx/{MASTER_SHT}").fetch_file_path())
 
 
-def _read_patterns(fpath: Path) -> np.ndarray:
-    """Return the ``/patterns`` data set of a written pattern file."""
+def _read_patterns(fpath: Path) -> tuple[np.ndarray, str]:
+    """Return the ``/patterns`` data set of a written pattern file and
+    its root ``Manufacturer`` string.
+
+    The manufacturer is read back rather than assumed, so that the
+    recorded value is a probe of the writer's default and not a
+    literal which agrees with itself.
+    """
     import h5py
 
     with h5py.File(fpath, mode="r") as f:
-        return np.asarray(f["patterns"])
+        manufacturer = f["Manufacturer"][()]
+        if isinstance(manufacturer, bytes):
+            manufacturer = manufacturer.decode("ascii")
+        return np.asarray(f["patterns"]), str(manufacturer)
 
 
 def _read_data_file(fpath: Path) -> dict[str, np.ndarray]:
@@ -572,7 +647,7 @@ def _read_data_file(fpath: Path) -> dict[str, np.ndarray]:
     arrays = {}
     with h5py.File(fpath, mode="r") as f:
         group = f[DATA_PATH]
-        for key, name in RESULT_KEYS:
+        for key, name in EULER_KEYS:
             arrays[key] = np.asarray(group[name], dtype=np.float32)
         arrays["metric"] = np.asarray(group["Metric"], dtype=np.float32)
         arrays["iq"] = np.asarray(group["IQ"], dtype=np.float32)
@@ -588,6 +663,15 @@ def _check_ang(scenario: Scenario, fpath: Path, arrays: dict) -> None:
     on the Euler angles, one on ``iq`` and three on ``ci`` -- so it is
     a cross-check and not the payload.  Each tolerance is twice the
     deterministic half-ULP bound of its column.
+
+    The Euler and the metric columns are compared and the ``iq``
+    column is **not**: one decimal resolves nothing here.  Measured
+    over the shipped references, a scenario's whole image quality
+    column prints as a single value (``0.2`` on five of the six small
+    scenarios, ``0.3`` on the un-equalised ``nregions`` 0 one) or as
+    two (``0.1`` and ``0.2`` on the large subsets), so the column
+    would pass almost any payload.  The image quality is instead
+    pinned by the shipped bidirectional tests, whose band is 1e-3.
     """
     ang = np.loadtxt(fpath, comments="#")
     euler = np.stack([arrays["phi1"], arrays["phi"], arrays["phi2"]], axis=1)
@@ -761,7 +845,7 @@ def _wisdom_state(fpath: Path) -> str:
 # ---------------------------- Utilities ----------------------------- #
 
 
-def _select(names) -> "tuple[Scenario, ...]":
+def _select(names: list[str] | tuple[str, ...] | None) -> tuple[Scenario, ...]:
     """Return the scenarios of ``names``, all of them by default."""
     if names is None:
         return SCENARIOS

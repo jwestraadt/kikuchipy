@@ -790,3 +790,157 @@ The FFTW wisdom md5 moved again during this pass
 (`cf79bd6b2bb436fdd29b1624bf12829d` after the F1 verification sweep)
 while every `.npz` stayed byte identical, which reproduces the
 weaker-caveat observation of the implementation entry once more.
+
+### 2026-09-03 -- review-fix pass (fidelity, conventions, bug injection; binaries @ 60f3517, Windows, this machine)
+
+Applying the three independent reviews of the implementation at
+`104c721e`. Every numeric claim was re-measured here before acting;
+none had to be disputed. The references were **regenerated** (one
+provenance key added, F4), so the eight md5s change while every
+result array stays byte identical.
+
+**Per finding.**
+
+| # | finding | disposition |
+|---|---|---|
+| F1 / N1 | `_indexer.py` claims a score correlation of 0.94-0.97 | fixed to **0.93-0.97**; re-measured span over all eight scenarios today is **0.9347** (`small_refined_nr7`) to **0.9725** (`large20`). `ebsd.py` ("about 0.95") left as is, it is the mean |
+| F2 | no shipped test anchors the references to ground truth | fixed: `TestReferenceIntegrity::test_references_agree_with_the_stored_crystal_map`, all eight scenarios, no binary and no indexing. Bands `STORED_XMAP_MEDIAN_DEG = 1.2` (the Phase 9 acid band; measured 0.5942-0.7852, 1.53x) and `STORED_XMAP_MAX_DEG = 2.5` (measured 0.9012-1.4777, 1.69x) |
+| F3 | `stretched_pc` is exact only for square detectors | fixed both ways: the docstring now derives `col`/`row` and shows that `pc_z` would need `(w-1)/w` for the columns and `(h-1)/h` for the rows, and the helper **raises `ValueError`** on a non-square shape. Confirmed analytically, not only numerically. The transposed-unpack mutant (S3) is thereby *equivalent*, so no test is needed for it |
+| F4 | `emsphinx_commit` certifies the source tree, not the binary | fixed: every reference now stores `program_md5`, probed once per sweep from the `IndexEBSD` file itself (`a50b275bf58ee9d2c51e8aadb2b6a2b8` here, 4 190 720 B). The optional dirty-tree assertion was **not** added: the EMSphInx checkout carries an unrelated `M .gitignore`, so it would fail the gated regeneration test on this machine for a reason unrelated to the references |
+| F5a | `ROUTE`/`MANUFACTURER`/`FLIP` are literals, not probes | fixed for the one that had no guard: `_read_patterns` now reads the written root `Manufacturer` data set back, `_generate` asserts it equals `MANUFACTURER`, and the **probed** string is what is stored. The comment now says which guard backs which default |
+| F5b / L3 | `iq` is not cross-checked although the docstrings imply it | fixed in both the module docstring and `_check_ang`: it is skipped because one decimal resolves nothing -- measured today, a scenario's whole `iq` column prints as one value (`0.2` on five small scenarios, `0.3` on `nregions` 0) or two (`0.1`/`0.2` on the large subsets) -- and the 1e-3 shipped band is named as what does pin it |
+| F5c | `RESULT_KEYS` means two different things in two files | fixed: the script's is now `EULER_KEYS`, with a comment saying the test module's is the full six-array payload |
+| F5d | `(deltas > 0).all()` is one-sided on a documented non-monotone quantity | **not weakened.** `_check_across_scenarios` now records that the strict positivity is an empirical property of these nine points (margin +0.00318), not a theorem, and that tripping it means re-measure |
+| M1 | the pasted `_registry.py` block is misaligned | fixed: `.ljust(56)` -> `.ljust(67)`, which lands the md5 at column 69. Verified: the only md5 column in the whole of `_registry.py`, before and after, is 68 (0-based) |
+| M2 | `(coarse 0.51)` collides with the unrelated 0.51 sixteen lines above | fixed: "(0.51 with `refine=False`, likewise against `IndexEBSD` and not against the stored orientations above)" |
+| L1 | `main`'s `Raises` omits `TimeoutError` | fixed, naming the lock path, `LOCK_TIMEOUT` and `LOCK_STALE` |
+| L2 | quoted annotations, one unannotated parameter, one missing return | fixed: annotations unquoted, `_select(names)` annotated, `_dataset` given a return annotation through a `TYPE_CHECKING` block (the module stays import safe, which `test_scenario_set_is_complete` relies on) |
+| I1 | `-D nb_execution_mode=off` cannot work in this repo | **no repo change**: that command is not recorded anywhere in this repo (`grep -rn nb_execution_mode` is empty); every recorded incantation, in five earlier specs, already uses `-D nbsphinx_execute=never` |
+| S1 | `misorientation` could drop `degrees=True` unseen | killer added, `TestMeasurementHelpers::test_misorientation_is_in_degrees` |
+| S2 | `pearson` could return 1.0 for any input | killer added, `test_pearson_matches_known_values` |
+| S3 | `stretched_pc` transposed unpack | equivalent after F3; the helper is instead pinned end to end by `test_stretched_pc_emulates_the_emsphinx_pixel_map`, which drives the indexer's own `_pixel_map`/`_directions_to_pixels` and asserts `col' == X (w-1)`, `row' == Y (h-1)` |
+| S4 | `test_orientations_agree` could compare every scenario against the anchor | killer added inline: `scenario_kwargs(ref) == KWARGS_TABLE[name]` **and** `ref["vendor"] == SCENARIO_TABLE[name]["vendor"]`, which covers the EMsoft scenario the kwargs alone cannot |
+| S5 | `_sweep` could store the literal instead of the probe | killer added, `TestGenerationGuards::test_main_refuses_a_wrong_checkout`; needs no binary, and doubles as the pin that the guard fires before `output_dir.mkdir` and before any subprocess |
+| S6 | the three generation-time guards are untested | three killers added, all binary free: `test_the_ang_cross_check_catches_a_wrong_column`, `test_the_acid_guard_is_measured_in_degrees` (a known 2.0 degree turn must measure 2.0, which pins the units of the only oracle in the generation), `test_the_cross_scenario_guard_catches_a_falling_metric` (both branches) |
+| T19 | `patterns_md5` reshape is order invariant | agreed equivalent, no change |
+
+**Mutation kills measured for the new tests** (each mutant applied
+alone, run, restored, md5 verified; pristine baseline green first):
+
+| mutant | test | result |
+|---|---|---|
+| `misorientation` drops `degrees=True` | `test_misorientation_is_in_degrees` | killed |
+| `pearson` reads `corrcoef[0, 0]` | `test_pearson_matches_known_values` | killed |
+| `stretched_pc` `pc_z (w-1)/w` -> `(w+1)/w` | `test_stretched_pc_emulates_the_emsphinx_pixel_map` | killed |
+| `stretched_pc` drops the `0.5/w` offset | same | killed |
+| the square guard removed | `test_stretched_pc_requires_a_square_detector` | killed |
+| every scenario against the anchor reference | `test_orientations_agree` | killed, 5 of 6 params |
+| `_sweep` stores `EMSPHINX_COMMIT` | `test_main_refuses_a_wrong_checkout` | killed |
+| both `.ang` tolerances -> 1e9 | `test_the_ang_cross_check_catches_a_wrong_column` | killed |
+| acid guard measured in radians | `test_the_acid_guard_is_measured_in_degrees` | killed |
+| `(deltas > 0)` -> `(deltas > -1)` | `test_the_cross_scenario_guard_catches_a_falling_metric` | killed |
+| the `iq` equality guard neutered | same | killed |
+| `LARGE_STEPS` large20 15 -> 5 | `test_references_agree_with_the_stored_crystal_map` | killed |
+| ground truth read in transposed scan order | same | killed, 2 params |
+
+**Regeneration.** `main()` was run into a scratch directory first and
+diffed key by key against the shipped files: for all eight,
+`added ['program_md5'] removed [] differ []`. So **every result array
+and every other provenance value is byte identical to `104c721e`**,
+and the format change is the only change. Only then were the files
+copied into the package. Sweep 4.6 s; acid medians printed during it
+(0.7150 / 0.7169 / 0.7213 / 0.7246) reproduce the independent
+measurements below. FFTW wisdom md5 `d2314b1e7d8cbcf3e654eb9aab7dbea4`
+after the sweep (`6a71a7d8b20f24ae11e8bc550ef18470` after the whole
+gate set) -- it moves again while the bytes do not, the same
+observation as the two earlier entries.
+
+**References against the stored crystal map** (the new F2 oracle;
+`nickel_ebsd_large` subset with the scenario's own `inav` step):
+
+| scenario | median | max |
+|---|---|---|
+| `small_coarse_nr10` | 0.7852 | 1.0115 |
+| `small_refined_nr10` | 0.7246 | 0.9477 |
+| `small_refined_nr0` | 0.7150 | 0.9012 |
+| `small_refined_nr7` | 0.7169 | 0.9274 |
+| `small_refined_nr10_gb` | 0.7213 | 0.9497 |
+| `small_refined_emsoft_d500` | 0.7246 | 0.9477 |
+| `large20_refined_nr10` | 0.6039 | 1.4777 |
+| `large165_refined_nr10` | 0.5942 | 1.4777 |
+
+(the two large maxima coincide because `::15` is a subset of `::5`.)
+
+**Re-measured parity bands, bit for bit the table of the two earlier
+entries**: coarse 0.5096 / 0.6044 / 0.6219, r 0.9413, |d|
+0.01392/0.03299, IQ 7.040e-9; refined medians 0.3104-0.3406, maxima
+0.3353-0.3667, r **0.9347-0.9693**; large20 0.3248 / 0.3725, r
+0.9725; large165 0.3390 / 0.4409 / 0.4867, r 0.9444; stretch
+emulation 0.0940 (max 0.1166) against the 0.3404 baseline; EMsoft vs
+Bruker 5.833e-05 deg; refined minus coarse metric +0.00318 to
++0.01868; IQ ranges 0.28900-0.32686 (nr0), 0.18565-0.22098 (nr7),
+0.18734-0.21588 (gb). Regeneration inside the gated tests 1.64 s (six
+small) and 5.35 s (all eight), both bitwise.
+
+**Sizes.** +382 B per file for the added key: 26 674-30 014 B, total
+**217 083 B** (was 214 027). Every file is still a quarter of the
+100 000 B per-file budget.
+
+**Suite runs after the fixes** (17 tests added, none removed, nothing
+weakened):
+
+| configuration | result |
+|---|---|
+| default, `-n 0` | **92 passed, 3 skipped**, 2.81 s |
+| default, `-n 4` | 92 passed, 3 skipped, 9.45 s |
+| gated, `-n 0` | **93 passed, 2 skipped**, 4.75 s |
+| gated, `-n 4` | 93 passed, 2 skipped, 10.29 s |
+| gated `--weekly`, `-n 0` | **95 passed**, 12.19 s |
+| gated `--weekly`, `-n 4` | 95 passed, 17.12 s |
+| `tests/test_indexing tests/test_io tests/test_data -k "spherical or sht or emsphinx or oxford" -n 4`, gated | **3065 passed, 702 skipped**, 47.1 s |
+| `--doctest-modules src/kikuchipy/indexing/_spherical` | 16 passed |
+| `pre-commit run --files <the 13 changed non-spec paths>` | ruff, ruff-format, licenseheaders all pass |
+| `sphinx-build -b html -D nbsphinx_execute=never` | exit 0, no new warning |
+| comment/docstring width | no new line over 72 chars in either file (the two over-length lines are pre-existing) |
+
+**Shipped md5s after the regeneration** (== `_registry.py`, md5 at
+column 69 as the script now prints it):
+
+| file | md5 | bytes |
+|---|---|---|
+| `regression_small_coarse_nr10.npz` | `2965e6ad2ba4bbede120d94d76e36cd9` | 26 690 |
+| `regression_small_refined_nr10.npz` | `084b06ad96c1f1d682e71aca6d2e65db` | 26 686 |
+| `regression_small_refined_nr0.npz` | `0848ed234368d39a9fa62e574dcacebe` | 26 682 |
+| `regression_small_refined_nr7.npz` | `510fc96d4b556902782707d68222edf5` | 26 682 |
+| `regression_small_refined_nr10_gb.npz` | `a34aa4489e04eb9097bc00a956a3c297` | 26 682 |
+| `regression_small_refined_emsoft_d500.npz` | `4702f5ccc69c2814292fe286164fc8f2` | 26 674 |
+| `regression_large20_refined_nr10.npz` | `0a7a2de4f422d919a0683186d3ba1cba` | 26 973 |
+| `regression_large165_refined_nr10.npz` | `7ffc32e0582c052aa16c724111d8141e` | 30 014 |
+
+`IndexEBSD.exe` md5 `a50b275bf58ee9d2c51e8aadb2b6a2b8`, now stored in
+all eight and asserted identical across them by
+`test_every_reference_names_one_program`. A rebuilt binary therefore
+fails the gated bitwise test by name -- which the regeneration
+message now says outright as "Suspect #2" -- rather than silently
+producing references stamped with a commit they did not come from.
+
+**Spec corrections made in place** (no other spec edit): `plan.md`
+5.2 recorded "detector pc left at `pc_average` ... reviewed-only" --
+corrected to a **band kill**, since `index_small`'s memo key includes
+the pc and the stretch test then measures 0.3404 against its 0.2
+band; `requirements.md` Scope and D2 recorded 214,027 B -- corrected
+to 217,083 B for the added key. `plan.md` line 117's a-priori
+"Pearson r 0.94-0.97" is left as the pre-measurement estimate it is
+labelled as; the measured span is recorded here and in the two
+entries above, and the shipped docstring is what was fixed.
+
+**Docs build**: `sphinx-build -b html -D nbsphinx_execute=never doc
+doc/_build/html_p10w` exits 0 (a cold build, so all 159 warnings of
+the tree surface: codeautolink "could not match transformation"
+cache misses, the pre-existing `EBSD.rebin` block quote, four
+numpydoc `EBSD.crop`/`EBSD.rebin` warnings and ten nbsphinx
+thumbnails -- none from anything this pass touched). Both edited
+Notes render: the `EBSD.spherical_indexing` page carries "0.51 with
+`refine=False` ... not against the stored orientations above" and the
+`SphericalIndexer` page "Pearson coefficient of 0.93-0.97", neither
+with a docutils `system-message`.

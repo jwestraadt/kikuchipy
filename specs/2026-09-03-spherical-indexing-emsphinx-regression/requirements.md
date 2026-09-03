@@ -50,7 +50,9 @@ In scope:
   commented template and NumPy stores unicode as UCS-4, so the
   `namelist` array alone is ~16.9 kB. Shipped: 26,292-29,632 B per
   file, 214,027 B total; the per-file rule still holds with 3.4x
-  margin.)
+  margin.) (corrected 2026-09-03 at the review-fix pass: the added
+  `program_md5` provenance key makes it 26,674-30,014 B per file and
+  **217,083 B total**, 3.3x margin.)
 - **Bidirectional regression tests**
   (`tests/test_indexing/test_spherical_emsphinx_regression.py`):
   - *ours-vs-theirs, CI, no binaries* -- **the real CI parity
@@ -282,7 +284,8 @@ configuration):
   summed to 50,450 B over nine; the final eight with the extended
   key set are estimated ~60 kB total; corrected 2026-09-03 at
   implementation: **measured 214,027 B total**, see the correction
-  in Scope). Registry: eight
+  in Scope; corrected 2026-09-03 at the review-fix pass:
+  **217,083 B** after the `program_md5` key). Registry: eight
   `"emsphinx/regression_*.npz"` md5 entries in `_registry_hashes`,
   no `_registry_urls` entries (in-package, the `.sht` precedent).
 

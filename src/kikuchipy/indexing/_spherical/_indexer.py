@@ -1081,7 +1081,7 @@ class SphericalIndexer:
     same geometry as EMSphInx' ``IndexEBSD`` program (commit 60f3517)
     at ``bw`` 68 agrees to a median misorientation of 0.31-0.34
     degrees refined and 0.51 coarse, with the scores correlating at a
-    Pearson coefficient of 0.94-0.97 and the image quality equal to
+    Pearson coefficient of 0.93-0.97 and the image quality equal to
     32-bit float precision (at most 1.4e-8); the regression references
     shipped in ``kikuchipy/data/emsphinx`` enforce those bands on
     every scenario.  Most of the orientation residual is EMSphInx'

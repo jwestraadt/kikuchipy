@@ -429,7 +429,12 @@ review**; the spec-level deltas are marked in `requirements.md`.
      structural kill, not a band kill.
    - **test: detector pc left at `pc_average`**: sub-band
      (~3e-4 px); dies by review + the pc route pin recording what
-     `ref["pc"]` is *for* -- recorded as reviewed-only.
+     `ref["pc"]` is *for* -- recorded as reviewed-only. (corrected
+     2026-09-03 after bug injection: it is a **band kill**, not
+     reviewed-only -- `index_small`'s memo key includes the pc, so
+     the stretch emulation collapses onto the baseline and
+     `test_stretch_emulation_collapses_the_residual` fails at 0.3404
+     against its 0.2 band.)
    - **test: symmetry dropped from the misorientation** (bare
      `Rotation` on either side): the theirs-side bare `Rotation`
      dies loudly (`AttributeError: no attribute 'symmetry'`, orix

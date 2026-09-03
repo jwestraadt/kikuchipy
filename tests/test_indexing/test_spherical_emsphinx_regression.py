@@ -90,6 +90,7 @@ BANDWIDTH = 68
 RESULT_KEYS = ("phi1", "phi", "phi2", "metric", "iq", "phase")
 PROVENANCE_KEYS = (
     "emsphinx_commit",
+    "program_md5",
     "bw",
     "normed",
     "refine",
@@ -217,6 +218,12 @@ SMALL_SCENARIOS = [
     if entry["dataset"] == "nickel_ebsd_small"
 ]
 ANCHOR = "small_refined_nr10"
+
+# The ``inav`` step of each large subset, i.e. the integer of its
+# frozen ``subset_slice`` above.  A wrong step here pairs the
+# references with the wrong scan points, which the ground truth check
+# measures as tens of degrees rather than as its measured 0.6.
+LARGE_STEPS = {"large20_refined_nr10": 15, "large165_refined_nr10": 5}
 
 # The indexing arguments each reference must be compared under,
 # frozen as literals.  ``scenario_kwargs`` derives the same dictionary
@@ -371,6 +378,19 @@ STRETCH_MEDIAN_DEG = 0.2
 # the ``.6g`` rounded name list values (measured 5.83e-5 degrees)
 EMSOFT_VS_BRUKER_DEG = 1e-3
 
+# Ground truth, the one band of this module which compares a shipped
+# reference against an **independent** oracle rather than against
+# kikuchipy: the stored Hough indexed and refined orientations of the
+# two Ni data sets.  Without it every other band is a comparison of
+# two engines which share one recipe, so a shared error in that recipe
+# -- the large map's full map background removal and ``pc_average``
+# above all, which no other shipped assertion touches -- would pass
+# unseen.  The median is the Phase 9 acid band, which a wrong flip
+# pairing measures at about 39.6 degrees; the maximum carries the
+# usual margin over the measured worst.
+STORED_XMAP_MEDIAN_DEG = 1.2  # measured 0.594 to 0.785
+STORED_XMAP_MAX_DEG = 2.5  # measured 0.901 to 1.478
+
 # The constitution's per file rule for in-package data
 FILE_BUDGET_BYTES = 100_000
 
@@ -502,14 +522,34 @@ def misorientation(rotations, ref):
 
 def stretched_pc(pc, shape):
     """Return the pattern centre which emulates EMSphInx' un-ported
-    ``bilinearCoeff`` detector sampling stretch.
+    ``bilinearCoeff`` detector sampling stretch on a **square**
+    detector.
 
-    The stretch is ``x = X (w - 1)`` where kikuchipy uses pixel
-    centres; its exact equivalent in pattern centre space is
-    ``pc' = (0.5/w + pc_x (w-1)/w, 0.5/h + pc_y (h-1)/h,
-    pc_z (w-1)/w)``.
+    The stretch is ``x = X (w - 1)`` where kikuchipy uses the pixel
+    centre convention ``x = X w - 0.5``, with ``X`` the fractional
+    position of a gnomonic coordinate across the detector.  Writing
+    kikuchipy's own column and row maps out,
+
+    - ``col = pc_z h x_g + pc_x w - 0.5``, and
+    - ``row = pc_y h - pc_z h y_g - 0.5``,
+
+    matching them term by term against ``(w - 1) X`` and ``(h - 1) Y``
+    gives ``pc' = (0.5/w + pc_x (w-1)/w, 0.5/h + pc_y (h-1)/h, ...)``
+    -- and, for ``pc_z``, ``pc_z (w-1)/w`` from the columns but
+    ``pc_z (h-1)/h`` from the rows.  **One pattern centre therefore
+    cannot express the stretch on a non-square detector**, so the
+    shape is asserted rather than silently under-collapsing the
+    residual along one axis; every shipped scenario is 60 x 60.
+    ``TestMeasurementHelpers`` pins the identity against the indexer's
+    own geometry code.
     """
     height, width = shape
+    if height != width:
+        raise ValueError(
+            f"the stretch emulation needs a square detector, not {shape}: "
+            "the columns need a pc_z scaled by (w - 1) / w and the rows one "
+            "scaled by (h - 1) / h, which one pattern centre cannot hold"
+        )
     return np.array(
         [
             0.5 / width + pc[0] * (width - 1) / width,
@@ -637,6 +677,40 @@ def large_signal(step):
     return signal.inav[::step, ::step], detector
 
 
+@functools.lru_cache(maxsize=1)
+def large_stored_rotations():
+    """Return the stored orientations of the **full** large map as an
+    ``(rows, columns, 4)`` quaternion array.
+
+    Read from the shipped crystal map of the data set, i.e. the
+    vendor's Hough indexed and refined orientations, which is an
+    oracle independent of both engines.
+    """
+    pytest.importorskip("pooch")
+    signal = kp.data.nickel_ebsd_large(allow_download=True)
+    rows, columns = signal.axes_manager.navigation_shape[::-1]
+    return np.asarray(signal.xmap.rotations.data, dtype=np.float64).reshape(
+        rows, columns, 4
+    )
+
+
+def stored_orientations(name):
+    """Return the stored crystal map orientations of one scenario's
+    scan points, under m-3m.
+
+    The large maps are subset exactly as the references were, i.e.
+    the full map's row major orientations sliced with the scenario's
+    ``inav`` step, which is what ``signal.inav[::step, ::step]``
+    selects.
+    """
+    if SCENARIO_TABLE[name]["dataset"] == "nickel_ebsd_small":
+        data = kp.data.nickel_ebsd_small().xmap.rotations.data
+    else:
+        step = LARGE_STEPS[name]
+        data = large_stored_rotations()[::step, ::step]
+    return Orientation(np.asarray(data, dtype=np.float64).reshape(-1, 4), Oh)
+
+
 def detector_at(reference_pc, detector=None):
     """Return a detector with one projection centre, that of a
     reference.
@@ -695,15 +769,20 @@ def regeneration_message(name, regenerated, shipped):
     Suspect number one is the FFTW wisdom: the programs plan with
     ``FFTW_PATIENT`` and import and export one machine wide wisdom
     file, and different plans round differently, so the reference
-    bytes are a function of its state.  The per array difference is a
-    diagnostic and never an acceptance tolerance -- the contract is
-    bitwise.
+    bytes are a function of its state.  Suspect number two is a
+    rebuilt binary, which ``program_md5`` names outright.  The per
+    array difference is a diagnostic and never an acceptance
+    tolerance -- the contract is bitwise.
     """
     lines = [
         f"the regenerated {name} is not bitwise identical to the shipped reference.",
         "Suspect #1 is the machine's FFTW wisdom: IndexEBSD plans with "
         "FFTW_PATIENT and imports and exports the shared fftw.wisdom at "
         "start and exit, so a changed wisdom can change the last bits.",
+        "Suspect #2 is a rebuilt IndexEBSD: program_md5 pins the exact "
+        "binary the shipped bytes came from, which the commit cannot, so a "
+        "differing program_md5 below means the reference is not from this "
+        "build.",
         "Per-array differences (diagnostic only, the contract is bitwise):",
     ]
     # both are closed again before returning: this runs inside a
@@ -748,6 +827,91 @@ def ni_harmonics():
     cost of the module: under ``pytest -n`` each worker pays it once.
     """
     return MasterPatternHarmonics.from_file(Dataset(NI_SHT).fetch_file_path())
+
+
+# ================= The measurement instruments (D6) ================= #
+
+
+class TestMeasurementHelpers:
+    """Unit tests of the three helpers every band below is measured
+    with.
+
+    A weakened instrument is invisible to the bands themselves: they
+    are one-sided ``<`` assertions, so a misorientation silently
+    returned in radians, or a correlation which is always ``1.0``,
+    makes every one of them pass by a hundred fold margin while
+    measuring nothing.  These pin the instruments against values which
+    are known without any reference file.
+    """
+
+    def test_misorientation_is_in_degrees(self):
+        # dropping ``degrees=True`` inside ``misorientation`` measures
+        # 8.9e-3 to 1.1e-2 against bands of 0.7 to 4.0, i.e. every
+        # orientation band passes with about a hundred fold margin
+        ref = load_reference(ANCHOR)
+        theirs = their_orientations(ref)
+        turn = Rotation.from_axes_angles([0, 0, 1], 2.0, degrees=True)
+        angles = misorientation(Orientation((turn * theirs).data, Oh), ref)
+        assert angles.shape == (9,)
+        assert np.allclose(angles, 2.0, atol=1e-5)
+
+    def test_pearson_matches_known_values(self):
+        # ``corrcoef(...)[0, 0]`` is 1.0 for any input, which would
+        # make ``pearson(...) > r_band`` a tautology in all three
+        # score tests and every recorded r a fabrication
+        assert pearson([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == pytest.approx(-1.0)
+        assert pearson([1.0, 2.0, 3.0], [1.0, 2.0, 4.0]) == pytest.approx(
+            0.9819805060619659
+        )
+        assert pearson([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == pytest.approx(1.0)
+
+    def test_stretched_pc_emulates_the_emsphinx_pixel_map(self):
+        # the emulation validated against the indexer's own geometry
+        # code rather than against a restatement of its closed form:
+        # indexing with the stretched pattern centre must place a
+        # direction exactly where EMSphInx' ``x = X (w - 1)`` sampling
+        # would, with ``X`` the fractional position kikuchipy's own
+        # pixel centre map gives at the unmodified pattern centre
+        from kikuchipy.indexing._spherical._back_projection import (
+            _directions_to_pixels,
+            _pixel_map,
+        )
+
+        ref = load_reference(ANCHOR)
+        detector = detector_at(ref["pc"])
+        height, width = detector.shape
+        stretched = detector_at(stretched_pc(ref["pc"], detector.shape))
+
+        # directions built in the detector frame, so that every one of
+        # them is in front of the detector, and rotated back into the
+        # sample frame the geometry expects
+        matrix = _pixel_map(detector)[0]
+        plane = np.array([[-0.3, -0.2], [0.0, 0.0], [0.25, 0.4], [0.1, -0.35]])
+        normals = np.column_stack([plane, np.ones(len(plane))]) @ matrix
+
+        col, row, in_front = _directions_to_pixels(normals, _pixel_map(detector))
+        assert in_front.all()
+        col_stretched, row_stretched, _ = _directions_to_pixels(
+            normals, _pixel_map(stretched)
+        )
+        assert np.allclose(col_stretched, (col + 0.5) / width * (width - 1), atol=1e-9)
+        assert np.allclose(
+            row_stretched, (row + 0.5) / height * (height - 1), atol=1e-9
+        )
+
+    def test_stretched_pc_requires_a_square_detector(self):
+        # the columns need a pc_z scaled by (w - 1) / w and the rows
+        # one scaled by (h - 1) / h: a non-square scenario must fail
+        # loudly rather than under-collapse the residual along one axis
+        assert np.allclose(
+            stretched_pc([0.4, 0.2, 0.5], (60, 60)),
+            [0.4016666666666667, 0.2050000000000000, 0.4916666666666667],
+            rtol=0,
+            atol=1e-15,
+        )
+        for shape in [(60, 80), (80, 60)]:
+            with pytest.raises(ValueError, match="square detector"):
+                stretched_pc([0.4, 0.2, 0.5], shape)
 
 
 # ==================== The reference files (D2) ====================== #
@@ -820,6 +984,7 @@ class TestReferenceFiles:
             assert ref[key].dtype == np.float64, key
         for key in (
             "emsphinx_commit",
+            "program_md5",
             "vendor",
             "route",
             "dataset",
@@ -843,6 +1008,16 @@ class TestReferenceFiles:
         # time, so this check has power only because the literal above
         # is maintained independently of the script's
         assert str(ref["emsphinx_commit"]) == EMSPHINX_COMMIT
+        # the commit certifies the source tree and is blind to a stale
+        # or patched build, so every reference also names the md5 of
+        # the binary it came from.  That value is machine specific --
+        # a rebuild of the same source is a different file -- so only
+        # its shape is pinned here; ``test_every_reference_names_one_
+        # program`` pins that all eight name the same one, and the
+        # gated regeneration test compares it bitwise against a rerun
+        program_md5 = str(ref["program_md5"])
+        assert len(program_md5) == 32
+        assert set(program_md5) <= set("0123456789abcdef")
         assert int(ref["bw"]) == BANDWIDTH
         assert bool(ref["normed"]) is True
         assert float(ref["sample_tilt"]) == SAMPLE_TILT
@@ -886,14 +1061,54 @@ class TestReferenceFiles:
 
 
 class TestReferenceIntegrity:
-    """Guards which compare one shipped reference with another.
+    """Guards which compare one shipped reference with another, or
+    with the stored crystal map.
 
-    They exercise **no kikuchipy code** and can only fire at
-    regeneration or if the shipped data is edited, so they are not the
-    parity surface: that is ``TestOursVsTheirs*`` plus the route pins.
-    What they buy is that a generation which mixed two runs up, or
-    wrote one run into two files, dies on CI without any binary.
+    Apart from the ground truth check they exercise **no kikuchipy
+    code** and can only fire at regeneration or if the shipped data is
+    edited, so they are not the parity surface: that is
+    ``TestOursVsTheirs*`` plus the route pins.  What they buy is that
+    a generation which mixed two runs up, or wrote one run into two
+    files, dies on CI without any binary.
+
+    ``test_references_agree_with_the_stored_crystal_map`` is the
+    exception and the only shipped assertion which compares a
+    reference against an oracle outside both engines.
     """
+
+    @pytest.mark.parametrize("name", sorted(SCENARIO_TABLE))
+    def test_references_agree_with_the_stored_crystal_map(self, name, record_property):
+        # the anchor of the whole phase: every other band compares two
+        # engines which share one recipe -- the large maps above all,
+        # where both sides remove the background on the full map,
+        # subset afterwards and keep the full map's ``pc_average`` --
+        # so a shared error in that recipe would leave both agreeing
+        # and both wrong.  The vendor's own Hough indexed and refined
+        # orientations do not share it.  Needs no binary and no
+        # indexing: it reads the reference and the shipped crystal map
+        ref = load_reference(name)
+        angles = np.asarray(
+            their_orientations(ref).angle_with(stored_orientations(name), degrees=True),
+            dtype=np.float64,
+        ).ravel()
+        record_property(
+            f"{name}_vs_stored_xmap",
+            f"median {np.median(angles):.4f} max {angles.max():.4f}",
+        )
+        assert angles.size == np.prod(SCENARIO_TABLE[name]["scan_shape"])
+        assert np.median(angles) < STORED_XMAP_MEDIAN_DEG
+        assert angles.max() < STORED_XMAP_MAX_DEG
+
+    def test_every_reference_names_one_program(self, record_property):
+        # one sweep, one binary: a partial regeneration against a
+        # rebuilt IndexEBSD leaves the eight files disagreeing here
+        md5s = {
+            name: str(load_reference(name)["program_md5"]) for name in SCENARIO_TABLE
+        }
+        record_property("program_md5", sorted(set(md5s.values())))
+        assert len(set(md5s.values())) == 1
+        commits = {str(load_reference(name)["emsphinx_commit"]) for name in md5s}
+        assert commits == {EMSPHINX_COMMIT}
 
     def test_emsoft_route_is_close_but_distinct_from_bruker(self, record_property):
         one = load_reference("small_refined_emsoft_d500")
@@ -1010,6 +1225,13 @@ class TestOursVsTheirsSmall:
     @pytest.mark.parametrize("name", SMALL_SCENARIOS)
     def test_orientations_agree(self, name, ni_harmonics, record_property):
         ref = load_reference(name)
+        # the reference under test must be this scenario's own: the
+        # orientation band cannot discriminate the scenarios from one
+        # another -- comparing every one of them against the anchor
+        # reference passes every band -- so the pairing is pinned
+        # structurally, the way ``index_small`` pins the arguments
+        assert scenario_kwargs(ref) == KWARGS_TABLE[name]
+        assert str(ref["vendor"]) == SCENARIO_TABLE[name]["vendor"]
         ours = index_small(name, ni_harmonics)
         angles = misorientation(ours.rotations, ref)
         record_comparison(record_property, name, angles, ours, ref)
@@ -1138,6 +1360,120 @@ class TestOursVsTheirsLarge:
         self._assert_route_pins(name, detector)
 
 
+# ====== The generation-time guards, no binary needed (D8) =========== #
+
+
+class TestGenerationGuards:
+    """The acceptance guards inside the generation script, which no
+    reference byte records.
+
+    Weakening one of them changes no output, so nothing else in this
+    module can observe it: the ``.ang`` cross-check, the acid band
+    against the stored crystal map and the cross-scenario metric check
+    are the script's whole acceptance surface, and the commit guard is
+    what makes the stored ``emsphinx_commit`` and ``program_md5`` mean
+    anything.  All four are exercised here **without a binary**, on
+    synthetic inputs, so they run on CI.
+    """
+
+    def test_main_refuses_a_wrong_checkout(self, tmp_path, monkeypatch):
+        # the guard fires before ``output_dir.mkdir`` and before any
+        # subprocess, so a wrong checkout writes nothing at all.  It
+        # is also the reason the stored commit is worth anything: the
+        # script must probe it rather than store its own literal,
+        # which would agree with the test module's by construction
+        from kikuchipy.data.emsphinx import create_emsphinx_reference as script
+
+        monkeypatch.setattr(script, "_commit", lambda program: "0" * 40)
+        with pytest.raises(RuntimeError, match="not at the pinned"):
+            script.main(
+                tmp_path, program=tmp_path / "IndexEBSD.exe", scenarios=[ANCHOR]
+            )
+        assert list(tmp_path.glob("*.npz")) == []
+
+    def test_the_ang_cross_check_catches_a_wrong_column(self, tmp_path):
+        # both tolerances are live: raising either to a number which
+        # no longer bounds its text rounding would let a payload read
+        # from the wrong data set through
+        from kikuchipy.data.emsphinx import create_emsphinx_reference as script
+
+        arrays = {
+            "phi1": np.array([0.10, 0.20], dtype=np.float32),
+            "phi": np.array([0.30, 0.40], dtype=np.float32),
+            "phi2": np.array([0.50, 0.60], dtype=np.float32),
+            "metric": np.array([0.11, 0.22], dtype=np.float32),
+        }
+
+        def write(euler_shift=0.0, metric_shift=0.0):
+            # the eight columns IndexEBSD writes: the three Euler
+            # angles, x, y, iq, ci and the phase
+            lines = ["# a synthetic header line"]
+            for i in range(2):
+                lines.append(
+                    f"{arrays['phi1'][i] + euler_shift:.5f} "
+                    f"{arrays['phi'][i]:.5f} {arrays['phi2'][i]:.5f} "
+                    f"0.00000 1.50000 0.2 "
+                    f"{arrays['metric'][i] + metric_shift:.3f} 0"
+                )
+            fpath = tmp_path / f"out_{euler_shift}_{metric_shift}.ang"
+            fpath.write_text("\n".join(lines) + "\n")
+            return fpath
+
+        scenario = script.SCENARIOS[0]
+        # the agreeing control passes: the residual is the text
+        # rounding alone
+        script._check_ang(scenario, write(), arrays)
+        with pytest.raises(RuntimeError, match="disagree"):
+            script._check_ang(scenario, write(euler_shift=1e-3), arrays)
+        with pytest.raises(RuntimeError, match="disagree"):
+            script._check_ang(scenario, write(metric_shift=1e-2), arrays)
+
+    def test_the_acid_guard_is_measured_in_degrees(self):
+        # the one place the generation compares against an oracle
+        # outside both engines.  Measured in radians it would read
+        # 0.0126 against a band of 1.2 and be permanently vacuous, so
+        # a known 2 degree turn of the stored map must measure 2
+        from kikuchipy.data.emsphinx import create_emsphinx_reference as script
+
+        stored = kp.data.nickel_ebsd_small().xmap.rotations
+        turn = Rotation.from_axes_angles([0, 0, 1], 2.0, degrees=True)
+        euler = np.asarray((turn * stored).to_euler(), dtype=np.float64)
+        arrays = {
+            key: euler[:, i].astype(np.float32)
+            for i, key in enumerate(("phi1", "phi", "phi2"))
+        }
+        assert script._median_against_stored_xmap(arrays) == pytest.approx(
+            2.0, abs=1e-3
+        )
+        assert script.ACID_MEDIAN_DEG == 1.2
+
+    def test_the_cross_scenario_guard_catches_a_falling_metric(self):
+        # and a preprocessing which drifted between the coarse and the
+        # refined run of one anchor, which is what the equal image
+        # quality means
+        from kikuchipy.data.emsphinx import create_emsphinx_reference as script
+
+        iq = np.array([0.17, 0.20], dtype=np.float32)
+        coarse = {"iq": iq, "metric": np.array([0.50, 0.60], dtype=np.float32)}
+        refined = {"iq": iq, "metric": np.array([0.55, 0.62], dtype=np.float32)}
+        script._check_across_scenarios(
+            {"small_coarse_nr10": coarse, "small_refined_nr10": refined}
+        )
+        falling = {"iq": iq, "metric": np.array([0.55, 0.59], dtype=np.float32)}
+        with pytest.raises(RuntimeError, match="not above the coarse"):
+            script._check_across_scenarios(
+                {"small_coarse_nr10": coarse, "small_refined_nr10": falling}
+            )
+        drifted = {
+            "iq": np.array([0.17, 0.21], dtype=np.float32),
+            "metric": refined["metric"],
+        }
+        with pytest.raises(RuntimeError, match="bitwise equal"):
+            script._check_across_scenarios(
+                {"small_coarse_nr10": coarse, "small_refined_nr10": drifted}
+            )
+
+
 # ========= Regeneration, the EMSphInx binaries (D8, local) ========== #
 
 
@@ -1170,6 +1506,7 @@ class TestRegenerateReferences:
             assert_regenerated_bitwise({"small_refined_nr0": fpath})
         message = str(error.value)
         assert "fftw.wisdom" in message
+        assert "program_md5 pins the exact binary" in message
         assert "the contract is bitwise" in message
         assert "nregions: differs" in message
         assert "iq: float64(9,) vs float32(9,)" in message

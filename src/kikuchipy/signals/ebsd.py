@@ -2196,7 +2196,9 @@ class EBSD(KikuchipySignal2D):
         **Agreement with EMSphInx.** On identical inputs at a
         bandwidth of 68, the refined orientations agree with those of
         EMSphInx' ``IndexEBSD`` program (commit 60f3517) to a median
-        misorientation of about 0.34 degrees (coarse 0.51), the scores
+        misorientation of about 0.34 degrees (0.51 with
+        ``refine=False``, likewise against ``IndexEBSD`` and not
+        against the stored orientations above), the scores
         correlate at a Pearson coefficient of about 0.95 and the image
         quality is equal to 32-bit float precision; the regression
         references shipped with the package enforce these numbers.
