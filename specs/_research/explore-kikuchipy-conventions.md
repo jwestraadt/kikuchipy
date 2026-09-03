@@ -287,6 +287,16 @@ Tutorials index is pulled into `doc/user/index.rst` L13–18 (`../tutorials/inde
 Reality check: the variable in `src/kikuchipy/__init__.py` L22–37 is **`credits`** (comment L22: “Initial committer first, then sorted by line contributions”), *not* `__credits__`. `.zenodo.json` holds `{"creators": [{"name", "orcid", "affiliation"}, …]}` in the same order (13 entries).
 PR template also requires it (`.github/pull_request_template.md` L25).
 
+### 3.9 Addendum (2026-09-03, `specs/2026-09-03-spherical-indexing-tutorial/requirements.md` D3/D5/D7; plan 0.4) — tutorial-drafting measurements
+
+- **Two-mode notebook precedent, measured**: `hough_indexing.ipynb` is committed output-less and is live-executed by `nbsphinx_execute = "auto"` at docs-build time; `pattern_matching.ipynb` (and `hybrid_indexing.ipynb`) ship stored outputs, are *skipped* by nbsphinx and compared digit-for-digit by the weekly nbval job. The dev guide's threshold (§3.2 output policy) is the RTD build limit (15 min / 3 GB) plus its own operative paragraph “For computationally expensive notebooks however, we store the cell outputs so the documentation doesn't take too long to build”; quantified per requirements D7: the two heavy `spherical_indexing.ipynb` cells (21.2 s + 20.7 s on 8 workers of 20 real cores) scale with real cores, so on the ~2-vCPU RTD builder the notebook alone estimates **4–6 min — a third of the whole 15-min budget** → it stores.
+- **nbval stream handling**: nbval coalesces consecutive stream outputs and collapses carriage returns before comparing, which is what lets stored multi-update dask ProgressBar/tqdm streams pass against a re-run whose update count differs — the comparison lands on the final line.
+- **`EBSD.hough_indexing()` prints its info message regardless of `verbose`**; its PyOpenCL availability line is machine-dependent (→ sanitize regex8).
+- **`EBSD.spherical_indexing`'s “in N chunk(s)” info line depends on `dask.config`'s `num_workers`** (honoured via `_n_workers()`) — stored-output notebooks pin `dask.config.set(num_workers=8)` so chunk lines and memory warnings are machine-independent.
+- **`jupyter nbconvert --execute` adds a notebook-level `metadata.widgets` state block** (measured 17.7 kB of per-run tqdm widget model ids) that must be stripped before commit: no committed tutorial carries one (they store widget-*view* outputs only) and nbval does not compare notebook-level metadata, so it would be pure diff churn.
+- **Shipped-map provenance**: the `s.xmap` crystal maps shipped with `nickel_ebsd_small`/`nickel_ebsd_large` are **Hough (PyEBSDIndex) + refinement** results from upstream 0.8.0 (pyxem/kikuchipy#578, pyxem/kikuchipy#584), **not** dictionary indexing — tutorials comparing against them must label them so.
+- **`licenseheaders` hook scope**: the GPL `licenseheaders` pre-commit hook rewrites `.sh` files (probed: it prepends a 19-line `##` header to the header-less `doc/tutorials/run_nbval.sh`) but reports “File not supported” for `.ipynb`/`.rst`/`.cfg`; pre-commit.ci skips the hook (`ci: skip`) and no local git pre-commit hook is installed, so only an explicit `pre-commit run --files` would stamp it.
+
 ---
 
 ## 4. Data module conventions
