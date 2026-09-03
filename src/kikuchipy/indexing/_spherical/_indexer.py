@@ -1077,6 +1077,20 @@ class SphericalIndexer:
     real data run, so this is a contract statement rather than an
     observed regression.
 
+    **Agreement with EMSphInx.**  Indexing the same patterns with the
+    same geometry as EMSphInx' ``IndexEBSD`` program (commit 60f3517)
+    at ``bw`` 68 agrees to a median misorientation of 0.31-0.34
+    degrees refined and 0.51 coarse, with the scores correlating at a
+    Pearson coefficient of 0.93-0.97 and the image quality equal to
+    32-bit float precision (at most 1.4e-8); the regression references
+    shipped in ``kikuchipy/data/emsphinx`` enforce those bands on
+    every scenario.  Most of the orientation residual is EMSphInx'
+    deliberately un-ported ``bilinearCoeff`` detector sampling stretch
+    of up to half a pixel: emulating it in pattern centre space
+    collapses the refined median to 0.07-0.09 degrees while
+    *worsening* agreement with the stored orientations, so the port
+    keeps kikuchipy's pixel centre convention.
+
     **EMSphInx parity** needs ``emsphinx_compatible=True`` **both**
     here and in
     :meth:`~kikuchipy.indexing.MasterPatternHarmonics.from_master_pattern`,

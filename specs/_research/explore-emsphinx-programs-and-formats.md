@@ -455,6 +455,8 @@ Confirmed against `benchmarks/GPU_test_cpu.h5` (dumped live): exactly the above,
 
 Two implementation quirks to reproduce or fix in Python: `save()` recomputes `ipfMap/xcMap/iqMap` from **`om.front()`** inside the per-map loop rather than `om[i]` (`idx.hpp:351-353`), so for multi-phase/psym runs every `Scan i` gets the *first* map's images; and `XC Map`/`IQ Map` are created with a 2-D dataspace taken from a 3-element `dims` array (`:366-367`).
 
+**Addendum (2026-09-03, `specs/2026-09-03-spherical-indexing-emsphinx-regression/requirements.md` D3)**: the `Scan 1/EBSD/Data` dtypes are confirmed by measurement on the Phase 10 canonical route -- `Phase` is **uint8** exactly as tabled above (Phase 9 D7, `specs/2026-09-02-sht-interop/requirements.md`, had recorded float32 for it -- corrected by measurement), Phi1/Phi/Phi2/Metric/IQ are float32; the datafile, not the `.ang`, is the Phase 10 reference payload.
+
 ### 4.2 Vendor files
 
 `OrientationMap::write(fileName)` (`orientation_map.hpp:584-613`) dispatches by extension: `.hdf/.h5/.hdf5` → `writeH5` into a group literally named `"Scan 1"`; otherwise try `toTSL().write()` (`.ang`), then `toHKL().write()` (`.ctf`).
@@ -480,6 +482,8 @@ then one row per point, row-major `j` outer / `i` inner:
 `phi1 Phi phi2 x y iq ci phase [sem [fit]]` with widths/precisions `%9.5f %9.5f %9.5f %12.5f %12.5f %7.1f %6.3f %2d`. Euler angles in **radians** (TSL native). `toTSL()` (`:297-354`) allocates with `tokenCount = 8`, i.e. **no SEM/Fit columns**; `ci` ← EMSphInx `metric`, `iq` ← `imQual`; `x[i] = xStep*i`, `y[j] = yStep*j`; phase indices are copied 0-based; `phaseList[i].num = i+1`, `sym = pg.tslNum()`.
 
 Verified against `benchmarks/GPU_test_cpu.ang`: 34 header lines then 149776 data rows (149810 total), `Symmetry 43` (m-3m), `LatticeConstants 2.866 …` (Fe bcc), `x-star 0.480000 y-star 0.505000 z-star 0.560001`, `NCOLS_ODD/EVEN 407`, `NROWS 368`, and exactly **5727 rows with CI > 0** — matching the ROI `63, 21, 83, 69` ⇒ 83×69 = 5727 indexed points. Un-indexed points are written as all-zero rows (with `-0.00000` for phi1).
+
+**Addendum (2026-09-03, `specs/2026-09-03-spherical-indexing-emsphinx-regression/requirements.md` D3)**: the `.ang` data columns are written under `std::fixed` (`tsl.hpp:783-794`): Euler at `setprecision(5)` (measured max |ang - h5| = 5.0e-6 rad vs the datafile, exactly the half-ULP bound), ci = the Metric at `setprecision(3)` (max 5.0e-4), iq = the IQ at `setprecision(1)` ({0.1, 0.2, 0.3} observed -- Phase 9's "constant 0.2" explained); the `.ang` is a text-rounded cross-check only, never the Phase 10 payload.
 
 **`.ctf`** — `include/xtal/vendor/hkl.hpp`, `writeCtfHeader` (`:468-507`):
 ```

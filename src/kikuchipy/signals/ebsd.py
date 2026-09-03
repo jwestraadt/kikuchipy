@@ -2193,6 +2193,21 @@ class EBSD(KikuchipySignal2D):
         default bandwidth and is
         ``SphericalIndexer.half_cell_degrees``.
 
+        **Agreement with EMSphInx.** On identical inputs at a
+        bandwidth of 68, the refined orientations agree with those of
+        EMSphInx' ``IndexEBSD`` program (commit 60f3517) to a median
+        misorientation of about 0.34 degrees (0.51 with
+        ``refine=False``, likewise against ``IndexEBSD`` and not
+        against the stored orientations above), the scores
+        correlate at a Pearson coefficient of about 0.95 and the image
+        quality is equal to 32-bit float precision; the regression
+        references shipped with the package enforce these numbers.
+        Most of the orientation residual is EMSphInx' deliberately
+        un-ported detector sampling stretch of up to half a pixel:
+        emulating it collapses the median to about 0.09 degrees while
+        *worsening* agreement with the stored orientations, so
+        kikuchipy keeps its own pixel center convention.
+
         **Memory.** Each Dask worker holds one correlation kit, about
         21, 45, 98 and 207 MB at bandwidths 53, 68, 88 and 113 with
         one phase, and one more correlation cube per additional phase
