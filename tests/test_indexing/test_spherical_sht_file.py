@@ -50,7 +50,6 @@ Covers the ".sht codec" assertions of
 import ast
 from functools import lru_cache
 import hashlib
-import os
 from pathlib import Path
 import re
 import struct
@@ -157,37 +156,17 @@ def _read(name: str) -> _sht_file.ShtFile:
     return _sht_file.read_sht(_data_path(name))
 
 
-def _emsphinx_dir() -> Path:
-    """Return the EMSphInx checkout, skipping if it is not set up.
+def _emsphinx_ni_file(emsphinx_dir: Path) -> Path:
+    """Return the shipped EMSphInx Ni file, skipping if missing.
 
-    The local gated tests need ``KIKUCHIPY_EMSPHINX_DIR`` to point at
-    a checkout with the built programs and the shipped Ni file.
+    The gate itself lives in the shared ``emsphinx_dir`` fixture of
+    the root ``conftest.py``, which every locally gated test of the
+    project uses; only this file name is specific to this module.
     """
-    value = os.environ.get("KIKUCHIPY_EMSPHINX_DIR")
-    if not value:
-        pytest.skip(
-            "KIKUCHIPY_EMSPHINX_DIR is not set; set it to an EMSphInx "
-            "checkout with build/Release/{mp2sht,sht2png} and "
-            "data/'Ni {20kV 75.7deg}.sht' to run this test"
-        )
-    return Path(value)
-
-
-def _emsphinx_ni_file() -> Path:
-    """Return the shipped EMSphInx Ni file, skipping if missing."""
-    fpath = _emsphinx_dir() / "data" / "Ni {20kV 75.7deg}.sht"
+    fpath = emsphinx_dir / "data" / "Ni {20kV 75.7deg}.sht"
     if not fpath.is_file():
         pytest.skip(f"{fpath} not found in the EMSphInx checkout")
     return fpath
-
-
-def _emsphinx_program(name: str) -> Path:
-    """Return an EMSphInx program, skipping if it is not built."""
-    directory = _emsphinx_dir() / "build" / "Release"
-    for candidate in (directory / f"{name}.exe", directory / name):
-        if candidate.is_file():
-            return candidate
-    pytest.skip(f"{name} not built in {directory}")
 
 
 def _md5(fpath: Path) -> str:
@@ -761,8 +740,10 @@ class TestEmsphinxShippedFile:
     tests need ``KIKUCHIPY_EMSPHINX_DIR``.
     """
 
-    def test_emsphinx_binaries_the_shipped_file_parses(self, record_property):
-        fpath = _emsphinx_ni_file()
+    def test_emsphinx_binaries_the_shipped_file_parses(
+        self, emsphinx_dir, record_property
+    ):
+        fpath = _emsphinx_ni_file(emsphinx_dir)
         sht = _sht_file.read_sht(fpath)
         assert fpath.stat().st_size == SHT_FILE_SIZE
         assert sht.header.software_version == "ve49ad6b"
@@ -779,8 +760,10 @@ class TestEmsphinxShippedFile:
         assert sht.crc == 0xF2AF93EF
         record_property("emsphinx_shipped_crc", hex(sht.crc))
 
-    def test_emsphinx_binaries_the_shipped_payload_has_the_recorded_dc_term(self):
-        sht = _sht_file.read_sht(_emsphinx_ni_file())
+    def test_emsphinx_binaries_the_shipped_payload_has_the_recorded_dc_term(
+        self, emsphinx_dir
+    ):
+        sht = _sht_file.read_sht(_emsphinx_ni_file(emsphinx_dir))
         alm = _sht_file.unpack_harmonics(
             sht.harmonics.packed,
             sht.harmonics.bandwidth,
@@ -789,15 +772,19 @@ class TestEmsphinxShippedFile:
         )
         assert alm[0, 0].real == pytest.approx(-3.2555, abs=1e-3)
 
-    def test_emsphinx_binaries_the_shipped_file_rewrites_byte_identically(self):
-        fpath = _emsphinx_ni_file()
+    def test_emsphinx_binaries_the_shipped_file_rewrites_byte_identically(
+        self, emsphinx_dir
+    ):
+        fpath = _emsphinx_ni_file(emsphinx_dir)
         data = fpath.read_bytes()
         assert _sht_file.sht_file_to_bytes(_sht_file.read_sht(data)) == data
 
-    def test_emsphinx_binaries_the_shipped_count_matches_the_payload(self):
+    def test_emsphinx_binaries_the_shipped_count_matches_the_payload(
+        self, emsphinx_dir
+    ):
         # validation.md lines 21-22 ask for these on *every* .sht in
         # the suite, the shipped one included
-        fpath = _emsphinx_ni_file()
+        fpath = _emsphinx_ni_file(emsphinx_dir)
         sht = _sht_file.read_sht(fpath)
         harmonics = sht.harmonics
         assert harmonics.doub_cnt == _sht_file.num_harmonics(
@@ -806,8 +793,10 @@ class TestEmsphinxShippedFile:
         payload_offset = sht.block_offsets["payload"]
         assert len(harmonics.packed) * 8 == fpath.stat().st_size - payload_offset - 4
 
-    def test_emsphinx_binaries_the_shipped_payload_packs_back_bitwise(self):
-        sht = _sht_file.read_sht(_emsphinx_ni_file())
+    def test_emsphinx_binaries_the_shipped_payload_packs_back_bitwise(
+        self, emsphinx_dir
+    ):
+        sht = _sht_file.read_sht(_emsphinx_ni_file(emsphinx_dir))
         harmonics = sht.harmonics
         alm = _sht_file.unpack_harmonics(
             harmonics.packed,
@@ -1267,11 +1256,11 @@ class TestLicenceHygiene:
 
 class TestEmsphinxBinaries:
     def test_emsphinx_binaries_sht2png_accepts_every_generated_fixture(
-        self, emsphinx_synthetic_sht_files, tmp_path
+        self, emsphinx_program, emsphinx_synthetic_sht_files, tmp_path
     ):
         import subprocess
 
-        program = _emsphinx_program("sht2png")
+        program = emsphinx_program("sht2png")
         files = emsphinx_synthetic_sht_files()
         for space_group, fpath in sorted(files.items()):
             out = tmp_path / f"sg{space_group:03d}.png"
