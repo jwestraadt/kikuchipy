@@ -1819,7 +1819,15 @@ def _evaluate_harmonics(alm, direction):
     (``a_{l,-m} Y_{l,-m} = conj(a_{lm} Y_{lm})``), so every ``m > 0``
     entry contributes twice its real part.
     """
-    from scipy.special import sph_harm_y
+    try:
+        from scipy.special import sph_harm_y
+    except ImportError:  # SciPy < 1.15 (the oldest-deps CI matrix)
+        from scipy.special import sph_harm
+
+        def sph_harm_y(n, m, theta, phi):
+            # Same value and Condon-Shortley phase; the pre-1.15 name
+            # takes (order, degree, azimuth, polar) instead.
+            return sph_harm(m, n, phi, theta)
 
     x, y, z = (float(v) for v in np.asarray(direction).ravel())
     theta = np.arccos(np.clip(z, -1.0, 1.0))
