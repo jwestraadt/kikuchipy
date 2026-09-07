@@ -116,9 +116,9 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] signed commits pushed; PR #12 opened
 
 ## Phase 12 -- `spherical-indexing-gpu` (spec `2026-09-07-spherical-gpu`)
-- [ ] `_gpu.py` (three-stage CuPy gate + Windows DLL shim, xp-agnostic device pipeline for stages 4-6, VRAM batch model + OOM halving, per-call `_GpuSession`)
-- [ ] `backend="cpu"|"gpu"` on `SphericalIndexer`/`EBSD.spherical_indexing` + the `_index_chunk` batched restructure + `gpu_memory_per_batch_bytes` (CPU default bitwise-unchanged, pinned)
-- [ ] tests -- default-suite numpy-xp oracle + validation logic; local `cupy_gpu` gated parity/determinism/throughput suite (KIKUCHIPY_NO_GPU_TESTS kill switch; measured pins machine-specific: RTX 2000 Ada 8 GB)
-- [ ] performance go/no-go: GPU >= same-machine idle 8-worker CPU throughput on the `nickel_ebsd_large` route at bw 68, else a recorded negative result (projection band ~850-1500 pat/s refined, review-corrected, recorded as expectation, not gate)
-- [ ] adversarial review + fixes (incl. the device mutation list)
-- [ ] signed commits; PR opened (next free number; #15 expected)
+- [x] `_gpu.py` (three-stage CuPy gate + Windows DLL shim, xp-agnostic device pipeline for stages 4-6, VRAM batch model + OOM halving, per-call `_GpuSession`) -- 100 % coverage (296 stmts); VRAM model calibrated vs live pool high-waters (g(68) model 49.9 MB vs 52.4 measured)
+- [x] `backend="cpu"|"gpu"` on `SphericalIndexer`/`EBSD.spherical_indexing` + the `_index_chunk` batched restructure + `gpu_memory_per_batch_bytes` (CPU default bitwise-unchanged, pinned; CPU suite 3188 passed / 0 failed after the epilogue extraction)
+- [x] tests -- default-suite numpy-xp oracle + validation logic; local `cupy_gpu` gated parity/determinism/throughput suite (KIKUCHIPY_NO_GPU_TESTS kill switch; measured pins machine-specific: RTX 2000 Ada 8 GB) -- gated 103 passed / 0 skipped under KIKUCHIPY_EXPECT_GPU=1; parity exact everywhere measured (IQ bitwise, 0 winner flips, refined miso 0.0 deg, batch invariance bitwise)
+- [x] performance go/no-go: PASS -- 940.7 pat/s best-of-3 refined at bw 68 vs the pinned 236.0 pat/s idle-CPU floor (3.99x, inside the review-corrected 850-1500 band); bw 88 measured 465 pat/s, below its recorded expectation band, explanation recorded
+- [x] adversarial review + fixes (incl. the device mutation list) -- 20 findings dispositioned; 4 surviving mutants killed by strengthened tests, kills verified by re-injection
+- [x] signed commits; PR #15 opened into fork `develop`
