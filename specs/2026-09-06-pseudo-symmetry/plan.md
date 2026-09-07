@@ -434,6 +434,16 @@ definition-of-done gate (validation.md).
 5. **Local hcp/TiAl masters**: which EMsoft master h5 files exist on
    this machine (exact filenames + phases) for the
    `KIKUCHIPY_LOCAL_MASTERS_DIR` skip-if-absent tests?
+   **ANSWERED 2026-09-07: `Ti-alpha-master-20kV.h5`** (hcp Ti alpha,
+   space group 194 / point group 6/mmm, 20 kV EMsoft master; the
+   user's `KIKUCHIPY_LOCAL_MASTERS_DIR` is
+   `C:\Users\westraadt.1\Repos\openECCI_RKD\data`, read-only, never
+   copied into the repo).  The filename is first in
+   `LOCAL_MASTER_CANDIDATES`; the `TestLocalMasters` pins are
+   measured on it (validation.md Recorded results, 2026-09-07
+   local-masters gate -- the drafted cutoff-0.5/intensity>=0.5
+   expectation was refuted there and re-pinned at the measured
+   0.38-0.40 cutoff plateau).
 6. **Folder name**: keep `specs/2026-09-06-pseudo-symmetry` with the
    deviation recorded in the roadmap line (provisional), or rename
    to match branch `spherical-pseudo-symmetry` before anything
