@@ -1151,3 +1151,278 @@ skipped, 0 failed** (51 s); full-repo collection clean at **4833
 tests** (4831 Stage A + the implementation-gate un-normalised-path
 test + the P11 killer); ruff check + format clean on the changed
 files; `_pseudo_symmetry.py` coverage 100.00 %.
+
+### 2026-09-07 (local-masters gate: Ti alpha master wired, open question 9.5 answered)
+
+Open question 9.5 is answered: the user's local EMsoft master is
+**`Ti-alpha-master-20kV.h5`** (hcp Ti alpha, space group 194, point
+group 6/mmm, 20 kV) in
+`KIKUCHIPY_LOCAL_MASTERS_DIR=C:\Users\westraadt.1\Repos\openECCI_RKD\data`
+(read-only input, never copied into the repo).  The filename now
+heads `LOCAL_MASTER_CANDIDATES`; the four other drafted names stay
+as recognised fallbacks, but the pinned tests skip on any non-Ti
+candidate because every pin below is Ti-measured.  Probe scripts
+(session scratchpad, each `uv run python <script>`):
+`probe_ti_psym.py` (first-run probe), `probe_ti_investigate.py`
+(flag investigation + coarse sweep), `probe_ti_cutoff_fine.py`
+(plateau search), `probe_ti_pins.py` (pin values).
+
+1. **DRAFTED EXPECTATION REFUTED**: the drafted
+   `test_local_master_finds_operators` asserted a non-empty return
+   at `exclude_symmetry=True`, cutoff 0.5, with intensities
+   >= 0.5.  Measured at bw 68 (and 88): **zero operators at cutoff
+   0.5** -- the genuine pseudo-symmetry families sit at normalized
+   intensities **0.4223-0.4633** (bw 68) and ~0.370 (bw 88), below
+   the drafted floor.  The test is replaced by the four
+   `TestLocalMasters` tests with the pins below; the refuted
+   expectation is kept executable as
+   `test_ti_master_empty_at_the_drafted_cutoff` (0 ops at 0.5).
+2. **Why the harmonics report `n_fold=1, mirror=False`,
+   investigated and pinned** (`test_ti_master_metadata_and_flag_
+   downgrade`): the file's phase metadata is CORRECT -- space group
+   194, point group 6/mmm, proper subgroup 622; `kp.load` reports
+   them and `point_group_flags` claims (6, True).  The downgrade
+   happens in `validate_flags`: the coefficients genuinely carry a
+   relative power of **4.119e-04** (bw 68; 4.705e-04 at bw 88) in
+   the orders m % 6 != 0 and **7.338e-08** (8.219e-08) in the odd
+   l + m entries, both above the 1e-8 tolerance, so both flags are
+   downgraded WITH A WARNING (n_fold via the divisor ladder all the
+   way to 1: even the 2-fold reads 8.804e-07).  Root cause is the
+   data representation, not a Phase 8 defect: the **square Lambert
+   grid shares a 4-fold axis with cubic masters but cannot carry a
+   6-fold about z exactly**, so any hexagonal EMsoft master
+   interpolated from that grid leaks m % 6 power at interpolation
+   scale (the m-row power spectrum confirms it: the strongest
+   non-DC rows are all multiples of 6, the leak is the ~4e-4
+   remainder).  The guard behaves exactly as designed -- loud
+   warning, conservative flags whose only cost is correlator
+   plane-skipping speed -- and the `exclude_symmetry` filter is
+   unaffected (it reads `phase.point_group.proper_subgroup`, never
+   the flags), which is why the proper-D6 removal worked all
+   along.  Verdict: recorded data-representation quirk, no code
+   change.
+3. **Proper-family rediscovery pinned**
+   (`test_ti_master_rediscovers_proper_hexagonal_ops`, bw 68,
+   cutoff 0.5, `exclude_symmetry=False`): **9 operators** -- seven
+   180-deg two-folds and one 60-deg z pair -- each within
+   **0.002 deg** (measured max; pinned 0.05) of an exact proper 622
+   rotation; intensities **1.493989-1.534829**, above one per the
+   stalled-v_max convention exactly as on the Ni route (pinned: top
+   1.5348 rel 0.05, floor 1.42, descending).  At bw 88 the same
+   count 9 appears with the 120-deg pair instead of the 60-deg one
+   (1.3863-1.4185) -- recorded, not pinned (the pinned route is
+   bw 68).
+4. **Genuine pseudo-symmetry pinned**
+   (`test_ti_master_genuine_pseudo_symmetry_families`, bw 68,
+   `exclude_symmetry=True`): the orchestrated 0.40-0.48 window
+   holds NO stable interior set (54 ops at 0.40 is a plateau EDGE;
+   cliffs at 0.405/0.41/0.415 -> 38/22/18 ops; 0 from 0.435), so
+   the probe extended downward and found the plateau: **cutoffs
+   0.38, 0.39 and 0.40 return the IDENTICAL 54-operator set**;
+   pinned cutoff **0.39** (mid-plateau, nearest candidate-gate
+   boundary >= 0.0095 v_max away on either side).  The
+   non-monotonicity is EMSphInx-faithful: the candidate gate reads
+   GRID values (`>= v_max * cutoff * 0.95`) while the keep gate
+   reads REFINED intensities, so raising the cutoff can drop
+   bright refined peaks whose grid voxels sit just under the gate.
+   Pins: count **54**; intensities **0.4223184-0.4633365** (bounds
+   (0.40, 0.49), descending); every operator **>= 60.64 deg**
+   (measured min; floored at 30) from any proper 622 rotation;
+   rotation-angle families **{83.3, 90.0, 104.5, 128.1, 138.6,
+   180.0} deg** (within-family spread < 0.06 deg; family tolerance
+   pinned 1.0 deg).  Leading rows: four-fold degenerate
+   90/104.5/138.6-deg families at 0.4633-0.4573, then the
+   83.3/128.1/180 tail.  At bw 88 the families differ
+   (~118.98/180/83.47/128.99 deg at ~0.370) -- recorded, not
+   pinned.
+5. **Test evidence (2026-09-07)**: with
+   `KIKUCHIPY_LOCAL_MASTERS_DIR` set, `TestLocalMasters` -> **4
+   passed** (1.0 s, `-n 0`), and the whole
+   `test_spherical_pseudo_symmetry.py` -> **48 passed, 7 skipped**
+   at `-n 0` (3.0 s) and `-n 4` (7.5 s).  Without the env var the
+   file gives **44 passed, 11 skipped** at `-n 0` (2.3 s) and
+   `-n 4` (7.5 s) -- the four local tests skip cleanly with the
+   filename-naming reason, the mechanism suite untouched.  A noisy
+   side effect recorded: every `find_pseudo_symmetry_operators`
+   call on the Ti harmonics re-warns from its internal DC-removed
+   copies (the leaked power fraction rises to ~1.8e-2 once the DC
+   row is gone); harmless under the repo's warning filters and
+   silenced in the cached test helper, asserted in the flag test.
+   After the ruff-format pass the file re-runs **48 passed, 7
+   skipped** and the full spherical selection (`-k "spherical"
+   -n 4`, env var unset) gives **3122 passed, 741 skipped, 0
+   failed** (70 s; 741 = the fix-stage 738 + the three new local
+   skips).
+
+### 2026-09-07 (tutorial gate: `doc/tutorials/pseudo_symmetry.ipynb`)
+
+The plan 6.2 tutorial deliverable is amended by orchestrator
+instruction: instead of appending a `##` section to
+`doc/tutorials/spherical_indexing.ipynb` (which carries the user's
+uncommitted edits and stays untouched, per the 0.2 never-sweep
+amendment and open question 9.8), the pseudo-symmetry tutorial
+ships as a NEW standalone notebook
+`doc/tutorials/pseudo_symmetry.ipynb` that cross-references the
+spherical indexing tutorial in prose.  Built to the Phase 11
+conventions: kernelspec `kikuchipy-spherical`, stored outputs,
+executed via the frozen recipe (`uv run --with ipykernel jupyter
+nbconvert --to notebook --execute --inplace`, `metadata.widgets`
+stripped, trailing newline), `nbgallery` entry in
+`doc/tutorials/index.rst` (after `spherical_indexing`), NOTEBOOKS
+entry in `doc/tutorials/run_nbval.sh` (alphabetical), no new
+sanitize rules needed (the stored streams are covered by the
+existing regex1/regex2/regex9), `black-jupyter`/`ruff` clean.
+
+- **Narrative**: (a) what pseudo-symmetry is, the Lenthe/Singh/
+  De Graef prediction paper and the EMSphInx heritage, with the
+  one-sentence honest note that the shipped CLI's psym loop is
+  silently inert; (b) discovery on the shipped Ni master at bw 68
+  (`exclude_symmetry=False`, cutoff 0.5: 23 rows, intensities
+  1.4739/1.3042 + one 0.8529 edge duplicate, the stalled-v_max
+  above-one teaching; `True`: empty -- "Ni has no genuine
+  pseudo-symmetry"); (c) manufactured pseudo-symmetry: single-copy
+  +z 120-deg blend at weight 0.7/bw 60 rediscovers the built-in
+  operator at 0.175 deg / intensity 0.5039 (the lam/(1+lam^2)
+  narrative), then the validated D9.5 two-copy [1, 2, 3] blend at
+  weight 0.95/bw 53 on a 3x3 noisy map through the public
+  `EBSD.spherical_indexing`: without ops all nine points land
+  119.7-120.0 deg off (pseudo basin), with ops all nine rescue to
+  0.04-0.36 deg, `pseudo_symmetry_index` == 1 everywhere, score
+  gains 0.001-0.005 -- shown as the thumbnail map figure; (d) the
+  real Ti alpha master (guarded): flag-downgrade warning explained,
+  proper-622 rediscovery, the cutoff-knob teaching with the
+  measured 0.39-plateau numbers, and the honest-negative
+  confusion measurement -- patterns at nine seeded random
+  orientations, noise sigma 10/40/80 on uint8, indexed with all 54
+  discovered operators: **0/9 variants ever win at every noise
+  level**, max disorientation to truth 0.41/0.48/0.61 deg -- the
+  moderate-intensity (~0.46) Ti operators do NOT confuse spherical
+  indexing at this geometry/bandwidth, recorded as the honest
+  finding; (e) psymfile round trip (written conjugate rows shown,
+  read-back deviation 0.0 deg); (f) summary.
+- **Graceful degradation**: the Ti section guards on
+  `KIKUCHIPY_LOCAL_MASTERS_DIR` + file existence; a markdown
+  alert-info box states the requirement; the five Ti-dependent
+  code cells carry `nbval-ignore-output` tags (the repo's existing
+  practice for environment-dependent outputs), so nbval passes
+  regardless of the file.
+- **Execution evidence (2026-09-07)**: executed WITH the file (env
+  var set) in ~40 s wall -- stored outputs include the full Ti
+  section; a scratch copy executed WITHOUT the env var completes
+  with **zero error outputs** and the guard cell printing the
+  "not available" notice (cells no-op).  nbval against the stored
+  notebook: **16/16 code cells pass WITH the env var** (10.4 s)
+  and **16/16 WITHOUT it** (7.0 s), sanitize cfg applied.
+- Recorded for the orchestrator: the CHANGELOG `Added` entry from
+  the fix stage names the features but not the tutorial; whether a
+  tutorial line is added is left to the commit stage.
+
+### 2026-09-07 (tutorial review fixes: `pseudo_symmetry.ipynb` + wiring)
+
+The adversarial review of the tutorial/test-wiring deliverables
+returned 1 blocker, 1 major, 2 minors and 2 nits.  Dispositions
+(applied unless stated); the notebook was fully re-executed with the
+Ti master afterwards and every gate re-verified below.
+
+1. **Blocker, machine-local kernelspec (APPLIED), with a CORRECTION
+   to the tutorial-gate record above**: the notebook shipped with
+   kernelspec `kikuchipy-spherical`, a user-level kernelspec that
+   exists only on this machine, so the weekly CI nbval job
+   (`run_nbval.sh` passes neither `--nbval-current-env` nor
+   `--nbval-kernel-name`) would have failed every cell with
+   NoSuchKernel -- and the PR-level CI does not run nbval, so an
+   autonomous merge-on-green would not have caught it.  The
+   tutorial-gate record's "Built to the Phase 11 conventions:
+   kernelspec `kikuchipy-spherical`" was factually wrong: every
+   committed tutorial, including `spherical_indexing.ipynb` at the
+   branch point 8fa250d8, uses kernelspec `python3` / "Python 3
+   (ipykernel)"; only the user's UNCOMMITTED spherical_indexing
+   working-tree edits carry kikuchipy-spherical, so the CI risk was
+   introduced solely by this deliverable, not inherited from Phase
+   11.  `metadata.kernelspec` is now `python3` / "Python 3
+   (ipykernel)" (what c989c6dd shipped), and all re-execution and
+   nbval evidence below ran under that kernel.
+2. **Major, cell 5 prose refuted by measurement (APPLIED)**: the
+   weakest Ni row (0.8529) is NOT "a slightly displaced edge
+   duplicate" -- the review's re-measurement maps the 23 returned
+   operators one-to-one onto the 23 non-identity proper Oh
+   rotations (23 distinct nearest-op indices, min pairwise distance
+   88.7 deg, no duplicates of any kind); the 0.8529 row is the
+   180-deg two-fold about ~[0, 1, -1] recovered 1.995 deg
+   displaced, every other row at 0.000 deg.  The parenthetical now
+   asserts only the measured facts: identity absent (edge cell),
+   the other 23 proper rotations each recovered exactly once, the
+   weakest a two-fold about 2 deg away from the exact rotation.
+3. **Minor, username/path leakage in stored outputs (APPLIED,
+   beyond the suggested minimum)**: 11 occurrences of the local
+   Windows username (cell 19's full Ti path stdout + UserWarning
+   location lines in cells 20/22/27) against zero in every
+   committed tutorial.  Cell 19 now prints only the file name; cell
+   20 catches the two downgrade warnings and prints their messages
+   (keeping the teaching display, dropping the path-bearing
+   location line); cell 22 silences the repeats via
+   `warnings.filterwarnings` after cell 21's discussion (cell 2
+   gains the `warnings` import).  Post-execution measurement: **0
+   occurrences of the username and 0 stderr outputs anywhere in the
+   stored notebook** (the review's suggested minimum would have
+   left 2 in cell 20's banner).
+4. **Minor, missing CHANGELOG line (APPLIED)**: "Tutorial on
+   pseudo-symmetry operator discovery and variant indexing,
+   `doc/tutorials/pseudo_symmetry.ipynb`." added at the top of
+   Unreleased/Added citing PR #14 (the next number on the fork --
+   the highest existing issue/PR is #13; to be corrected at PR time
+   if the opened PR draws a different number).  The commit-stage
+   exclusions the finding restates (the user's uncommitted
+   `spherical_indexing.ipynb` edits and
+   `specs/2026-08-16-constitution/upstream-issue.md`) remain the
+   orchestrator's to honour.
+5. **Nit, unexplained 1.779e-02 re-warn in cell 22's stderr
+   (APPLIED)**: cell 21 gained the reconciling half-sentence (the
+   finder's internal working copies re-validate with the constant
+   background removed, where the leaked fraction of the remaining
+   power reads larger, about 2e-2) and announces the silencing;
+   with the cell-22 filter the re-warn no longer appears at all.
+6. **Nit, unsanitized dask progress-line COUNTS in cells 12/14
+   (REJECTED -- premise refuted by measurement)**: nbval's
+   `coalesce_streams` removes every carriage return not followed by
+   a newline TOGETHER with the text before it on that line
+   (`carriagereturn_pat` = `^.*\r(?=[^\n])`, multiline, applied to
+   both the stored and the fresh side before comparison), and
+   dask's ProgressBar emits all intermediate updates as
+   `\r`-prefixed chunks with a single trailing newline after the
+   100% line -- so ONLY the final `100% Completed | TIME` line
+   survives coalescing, regardless of how many 0%-updates a slower
+   machine emits; regex1 then sanitizes the time.  Demonstrated
+   live: this re-execution stored a DIFFERENT update pattern in
+   cell 12 (0%/5%/100% vs the reviewed 0%/0%/100%) and nbval still
+   passes 16/16 both ways against it.  No sanitize-cfg change made;
+   the same mechanism protects `spherical_indexing.ipynb`'s stored
+   progress lines, so no repo-wide robustness gap exists here.
+
+**Re-verification evidence (2026-09-07, after the fixes)**:
+
+- Full re-execution WITH the Ti master (`KIKUCHIPY_LOCAL_MASTERS_DIR`
+  set) via the frozen nbconvert recipe under the `python3` kernel:
+  execution counts sequential 1-16, zero error outputs, zero stderr
+  outputs; per-cell `execution` metadata stripped and
+  `metadata.widgets` absent (the committed-tutorial convention,
+  which the reviewed copy had also deviated from); all narrative
+  numbers reproduced exactly (Ni 23 rows at 1.4739/1.3042/0.8529
+  and 0 at `exclude_symmetry=True`; blend misorientations, rescue
+  map and score gains; Ti 9-operator and 54-operator sets; the
+  honest-negative 0/9 lines at 0.41/0.48/0.61 deg; the psymfile
+  round trip).
+- No-env-var path: a scratch copy executed without the env var --
+  zero error outputs, zero stderr, the guard cell prints the "not
+  available" notice, all five Ti cells no-op (0 outputs), execution
+  counts sequential.
+- nbval against the stored notebook (the `run_nbval.sh` flags):
+  **16/16 WITH the env var (14.6 s) and 16/16 WITHOUT it (9.5 s)**.
+- `tests/test_indexing/test_spherical_pseudo_symmetry.py`: WITH the
+  env var **48 passed, 7 skipped** at `-n 0` (5.4 s) and `-n 4`
+  (10.0 s); WITHOUT it **44 passed, 11 skipped** at `-n 0` (4.1 s)
+  and `-n 4` (9.9 s) -- tallies identical to the local-masters-gate
+  record.
+- pre-commit hooks (ruff, ruff-format, black-jupyter,
+  licenseheaders) pass on the notebook both before and after the
+  re-execution, no files modified.

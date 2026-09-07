@@ -38,8 +38,9 @@ sections of ``specs/2026-09-06-pseudo-symmetry/validation.md``:
   empty-set refusal.
 - ``TestExports``: the four public names of D10.
 - ``TestLocalMasters``: the ``KIKUCHIPY_LOCAL_MASTERS_DIR``
-  skip-if-absent mechanism tests (D9.6), dormant until open
-  question 9.5 supplies filenames.
+  skip-if-absent tests (D9.6) on the user's Ti alpha master
+  ``Ti-alpha-master-20kV.h5`` (open question 9.5 answered
+  2026-09-07), pins measured on first execution.
 - ``TestIndexEBSDPsymFile`` (gated): the D1 inertness pin and the
   D5/D6 error paths against the shipped binary.
 - ``TestMasterXcorrParity`` (gated): the D8.1 stdout parity, the
@@ -66,6 +67,7 @@ import h5py
 import numpy as np
 from orix.crystal_map import Phase
 from orix.quaternion import Rotation
+from orix.quaternion.symmetry import D6 as PROPER_D6
 from orix.quaternion.symmetry import O as PROPER_OH
 import pytest
 
@@ -231,16 +233,59 @@ MASTERXCORR_QUAT_ATOL = 2e-6
 MASTERXCORR_INTENSITY_RTOL = 0.05
 
 # Candidate file names of the local hcp/TiAl EMsoft masters (D9.6).
-# PROVISIONAL until open question 9.5 supplies the user's actual
-# filenames; the skip reason names them so the dormant tests are
-# self-documenting
+# Open question 9.5 ANSWERED 2026-09-07: the user's file is the hcp
+# Ti alpha 20 kV master ``Ti-alpha-master-20kV.h5`` (space group 194,
+# point group 6/mmm), first in the tuple; the remaining names stay as
+# recognised fallbacks but every measured pin below covers the Ti
+# alpha file only (the pinned tests skip on any other candidate)
 LOCAL_MASTERS_ENV = "KIKUCHIPY_LOCAL_MASTERS_DIR"
+TI_LOCAL_MASTER = "Ti-alpha-master-20kV.h5"
 LOCAL_MASTER_CANDIDATES = (
+    TI_LOCAL_MASTER,
     "ti_alpha_mc_mp_20kv.h5",
     "mg_mc_mp_20kv.h5",
     "ti64_alpha_mc_mp_20kv.h5",
     "tial_gamma_mc_mp_20kv.h5",
 )
+
+# MEASURED-THEN-PINNED (2026-09-07, local-masters gate; recorded in
+# validation.md): the Ti alpha master at the ``NI_BANDWIDTH`` 68
+# route.  The DRAFTED expectation (non-empty at
+# ``exclude_symmetry=True``, cutoff 0.5, intensities >= 0.5) was
+# REFUTED by the first execution: the genuine pseudo-symmetry
+# families sit at normalized intensities 0.4223-0.4633, so cutoff
+# 0.5 returns zero operators.  The pinned cutoff 0.39 is the middle
+# of the measured plateau: cutoffs 0.38, 0.39 and 0.40 return the
+# identical 54-operator set, while 0.405/0.41/0.415/0.435 sit on
+# cliffs (38/22/18/0 ops -- the candidate gate reads GRID values,
+# ``>= v_max * cutoff * 0.95``, while the keep gate reads REFINED
+# intensities, so the returned set is not monotone in the cutoff;
+# EMSphInx-faithful behaviour).  Within the plateau the nearest
+# candidate-gate boundary is >= 0.0095 v_max away on either side.
+TI_PSEUDO_CUTOFF = 0.39
+TI_PSEUDO_COUNT = 54
+# measured 0.4223184-0.4633365; rel ~0.05 both ways
+TI_PSEUDO_INTENSITY_BOUNDS = (0.40, 0.49)
+# measured minimum misorientation of any returned operator to the
+# nearest proper 622 rotation: 60.64 deg; floored at ~2x margin --
+# the operators are genuinely far from every true symmetry
+TI_PSEUDO_TRUE_FLOOR_DEG = 30.0
+# measured rotation-angle families (deg, spread < 0.06 within each):
+# four-fold degenerate 90/104.5/138.6 leaders at 0.4633-0.4573 and
+# the 83.3/128.1/180 tail at 0.4332-0.4223
+TI_PSEUDO_ANGLE_FAMILIES_DEG = (83.3, 90.0, 104.5, 128.1, 138.6, 180.0)
+TI_PSEUDO_FAMILY_TOL_DEG = 1.0
+
+# MEASURED-THEN-PINNED (2026-09-07): ``exclude_symmetry=False`` at
+# cutoff 0.5 rediscovers nine proper hexagonal (622) rotations --
+# seven 180 deg two-folds and one 60 deg z pair -- each within
+# 0.002 deg of an exact proper 622 rotation, intensities
+# 1.493989-1.534829 (above one per the stalled-v_max convention,
+# exactly as on the Ni route)
+TI_PROPER_COUNT = 9
+TI_PROPER_ANGLE_TOL_DEG = 0.05
+TI_PROPER_TOP_INTENSITY = 1.5348
+TI_PROPER_MIN_INTENSITY = 1.42
 
 
 # ----------------------------- Helpers ------------------------------ #
@@ -303,6 +348,40 @@ def angles_to_proper_oh(operators):
     proper = Rotation(PROPER_OH.data)
     angles = np.rad2deg((ops.outer(~proper)).angle)
     return angles.reshape(ops.size, proper.size).min(axis=1)
+
+
+def angles_to_proper_d6(operators):
+    """Return each operator's angle in degrees to the nearest of the
+    12 proper 622 rotations."""
+    ops = operators.flatten()
+    proper = Rotation(PROPER_D6.data)
+    angles = np.rad2deg((ops.outer(~proper)).angle)
+    return angles.reshape(ops.size, proper.size).min(axis=1)
+
+
+@functools.lru_cache(maxsize=1)
+def _ti_local_master(path_str):
+    """Return the loaded local Ti alpha master, cached (the load
+    costs ~3 s)."""
+    return kp.load(path_str, projection="lambert", hemisphere="both")
+
+
+@functools.lru_cache(maxsize=1)
+def ti_local_harmonics(path_str):
+    """Return the Ti alpha harmonics at ``NI_BANDWIDTH``, cached.
+
+    The expected flag-downgrade warning (the square Lambert grid
+    cannot carry the 6 fold about z exactly, see
+    ``TestLocalMasters``) is silenced here; the dedicated flag test
+    asserts it on a fresh construction.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="The coefficients carry a relative power"
+        )
+        return MasterPatternHarmonics.from_master_pattern(
+            _ti_local_master(path_str), bandwidth=NI_BANDWIDTH
+        )
 
 
 def write_text(path, text):
@@ -1032,10 +1111,18 @@ class TestExports:
 
 
 class TestLocalMasters:
-    """Skip-if-absent mechanism tests on user-supplied EMsoft
-    masters with genuine pseudo-symmetry (D9.6).  Dormant until open
-    question 9.5 supplies the actual filenames; the candidate names
-    below are provisional and the skip reason states them."""
+    """Skip-if-absent tests on the user-supplied EMsoft Ti alpha
+    master (D9.6; open question 9.5 answered 2026-09-07 with
+    ``Ti-alpha-master-20kV.h5``).
+
+    All pins are measured on that file at bw 68 (2026-09-07,
+    validation.md Recorded results).  The drafted expectation
+    (non-empty at ``exclude_symmetry=True``, cutoff 0.5, intensities
+    >= 0.5) was refuted on first execution and replaced by the
+    ``TI_PSEUDO_*`` pins.  The mechanism stays skip-if-absent: no
+    env var, no candidate file, or a non-Ti candidate all skip with
+    a reason naming the expected filenames.
+    """
 
     def _local_master_path(self):
         value = os.environ.get(LOCAL_MASTERS_ENV)
@@ -1049,33 +1136,102 @@ class TestLocalMasters:
         for name in LOCAL_MASTER_CANDIDATES:
             candidate = directory / name
             if candidate.is_file():
+                if name != TI_LOCAL_MASTER:
+                    pytest.skip(
+                        f"found {name}, but the measured pins of this "
+                        f"class cover {TI_LOCAL_MASTER} only"
+                    )
                 return candidate
         pytest.skip(
             f"none of {', '.join(LOCAL_MASTER_CANDIDATES)} found in {directory}"
         )
 
-    def test_local_master_finds_operators(self, record_property):
-        # a genuinely pseudo-symmetric phase returns a non-empty
-        # set at ``exclude_symmetry=True``.  Intensity/angle pins
-        # are MEASURED-THEN-PINNED on the first execution
-        # (FIXME-pin: record via ``record_property`` output).
-        # [D9.6, roadmap box 2]
+    def test_ti_master_metadata_and_flag_downgrade(self):
+        # WHY the harmonics report ``n_fold=1, mirror=False`` on a
+        # 6/mmm phase, pinned: the phase metadata is CORRECT (space
+        # group 194, point group 6/mmm, proper subgroup 622) and
+        # ``point_group_flags`` claims (6, True), but the master's
+        # square Lambert grid cannot carry a 6 fold about z exactly
+        # (the grid shares a 4 fold axis, not a 6 fold), so the
+        # stored pattern leaks a relative power of ~4.1e-4 into the
+        # orders m % 6 != 0 (and ~7e-8 into odd l + m), far above
+        # the 1e-8 tolerance, and ``validate_flags`` downgrades both
+        # flags WITH A WARNING, by design.  A data-representation
+        # property of hexagonal masters on the square Lambert grid,
+        # not a defect: the flags only gate correlator plane
+        # skipping (speed), and the exclusion filter reads the
+        # phase's proper subgroup, not the flags.  [D9.6]
         path = self._local_master_path()
-        master = kp.load(path, projection="lambert", hemisphere="both")
-        harmonics = MasterPatternHarmonics.from_master_pattern(
-            master, bandwidth=NI_BANDWIDTH
-        )
+        master = _ti_local_master(str(path))
+        assert master.phase.point_group.name == "6/mmm"
+        assert master.phase.point_group.proper_subgroup.name == "622"
+        with pytest.warns(UserWarning, match="downgraded to 1"):
+            harmonics = MasterPatternHarmonics.from_master_pattern(
+                master, bandwidth=NI_BANDWIDTH
+            )
+        assert harmonics.n_fold == 1
+        assert harmonics.has_equatorial_mirror is False
+
+    def test_ti_master_rediscovers_proper_hexagonal_ops(self, record_property):
+        # ``exclude_symmetry=False`` at cutoff 0.5 returns the
+        # proper hexagonal families -- the D9.1 mechanism replayed
+        # on a real hcp master: nine rotations (seven 180 deg
+        # two-folds, one 60 deg z pair), each within 0.002 deg
+        # (measured) of an exact proper 622 rotation, intensities
+        # above one per the stalled-v_max convention.  [D9.6]
+        path = self._local_master_path()
         result = find_pseudo_symmetry_operators(
-            harmonics,
+            ti_local_harmonics(str(path)),
+            bandwidth=NI_BANDWIDTH,
+            cutoff=0.5,
+            exclude_symmetry=False,
+        )
+        record_property("ti_proper_intensities", result.intensities.tolist())
+        assert result.operators.size == TI_PROPER_COUNT
+        assert (angles_to_proper_d6(result.operators) <= TI_PROPER_ANGLE_TOL_DEG).all()
+        assert result.intensities[0] == pytest.approx(TI_PROPER_TOP_INTENSITY, rel=0.05)
+        assert (result.intensities >= TI_PROPER_MIN_INTENSITY).all()
+        assert (np.diff(result.intensities) <= 0).all()
+
+    def test_ti_master_genuine_pseudo_symmetry_families(self, record_property):
+        # the genuine pseudo-symmetry of the real material at the
+        # measured plateau cutoff: 54 operators at intensities
+        # 0.4223-0.4633, every one at least 60 deg (measured; floored
+        # at 30) from any proper 622 rotation, in the six measured
+        # rotation-angle families.  [D9.6, roadmap box 2]
+        path = self._local_master_path()
+        result = find_pseudo_symmetry_operators(
+            ti_local_harmonics(str(path)),
+            bandwidth=NI_BANDWIDTH,
+            cutoff=TI_PSEUDO_CUTOFF,
+            exclude_symmetry=True,
+        )
+        record_property("ti_pseudo_count", int(result.operators.size))
+        record_property("ti_pseudo_intensities", result.intensities.tolist())
+        assert result.operators.size == TI_PSEUDO_COUNT
+        low, high = TI_PSEUDO_INTENSITY_BOUNDS
+        assert (result.intensities >= low).all()
+        assert (result.intensities <= high).all()
+        assert (np.diff(result.intensities) <= 0).all()
+        assert (angles_to_proper_d6(result.operators) >= TI_PSEUDO_TRUE_FLOOR_DEG).all()
+        rotation_angles = np.rad2deg(result.operators.angle)
+        families = np.asarray(TI_PSEUDO_ANGLE_FAMILIES_DEG)
+        distances = np.abs(rotation_angles[:, np.newaxis] - families).min(axis=1)
+        assert (distances <= TI_PSEUDO_FAMILY_TOL_DEG).all()
+
+    def test_ti_master_empty_at_the_drafted_cutoff(self):
+        # the executable record of the REFUTED drafted expectation:
+        # at ``exclude_symmetry=True`` and the drafted cutoff 0.5
+        # the return is EMPTY -- the genuine families sit at ~0.46,
+        # below the drafted 0.5 floor.  [D9.6]
+        path = self._local_master_path()
+        result = find_pseudo_symmetry_operators(
+            ti_local_harmonics(str(path)),
             bandwidth=NI_BANDWIDTH,
             cutoff=0.5,
             exclude_symmetry=True,
         )
-        record_property("local_master", str(path.name))
-        record_property("local_ops_count", int(result.operators.size))
-        record_property("local_intensities", result.intensities.tolist())
-        assert result.operators.size > 0
-        assert (result.intensities >= 0.5).all()
+        assert result.operators.size == 0
 
 
 # ------------------ IndexEBSD psymfile pins (gated) ----------------- #

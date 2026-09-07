@@ -12,6 +12,7 @@ declare -a NOTEBOOKS=(\
   "pattern_matching.ipynb"\
   "pc_extrapolate_plane.ipynb"\
   "pc_fit_plane.ipynb"\
+  "pseudo_symmetry.ipynb"\
   "spherical_indexing.ipynb"\
 )
 

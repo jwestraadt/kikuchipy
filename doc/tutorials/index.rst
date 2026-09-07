@@ -42,6 +42,7 @@ Indexing
     hough_indexing
     pattern_matching
     spherical_indexing
+    pseudo_symmetry
     hybrid_indexing
     pc_orientation_dependence
     pc_fit_plane
