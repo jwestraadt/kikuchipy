@@ -1291,8 +1291,9 @@ class TestNickelLargeSubset:
 # --------------- Pseudo-symmetry (Phase 8 spec D2/D4/D9) ------------- #
 
 # Constants of ``specs/2026-09-06-pseudo-symmetry`` (requirement IDs
-# in the docstrings; MEASURED-THEN-PINNED values carry a FIXME-pin
-# marker per requirements D11).
+# in the docstrings; the measured-then-pinned values were filled
+# 2026-09-07 at the implementation gate, see validation.md Recorded
+# results).
 
 # A wrong operator for m-3m Ni: 30 degrees about z is not in Oh
 PSYM_WRONG_OP_DEG = 30.0
@@ -1303,9 +1304,11 @@ PSYM_WRONG_OP_DEG = 30.0
 KILLER_AXIS = (1.0, 2.0, 3.0)
 KILLER_ANGLE_DEG = 25.0
 
-# MEASURED-THEN-PINNED (FIXME-pin): cross-engine winner agreement
-# at the perturbed point, degrees
-KILLER_WINNER_TOL_DEG = 2.0
+# Cross-engine winner agreement at the perturbed point, degrees
+# (measured 2026-09-07: 0.465 deg under m-3m -- the two engines'
+# shared systematic residual against the stored orientations --
+# pinned at ~2.2x)
+KILLER_WINNER_TOL_DEG = 1.0
 
 
 def psym_z_ops(degrees=PSYM_WRONG_OP_DEG):
@@ -1423,6 +1426,6 @@ class TestPseudoSymmetryOps:
         xmap_sph = index_default(pseudo_symmetry_ops=ops_read, refine=True)
         assert np.allclose(xmap_sph.pseudo_symmetry_index, 0)
         # the engines agree on the recovered winner at the
-        # perturbed point (MEASURED-THEN-PINNED band, FIXME-pin)
+        # perturbed point (measured 0.465 deg, pinned at ~2.2x)
         angle = misorientation(xmap_sph.rotations[0], xmap_ncc.rotations[0])
         assert float(angle.max()) < KILLER_WINNER_TOL_DEG

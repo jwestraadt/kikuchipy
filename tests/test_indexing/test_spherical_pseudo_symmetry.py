@@ -107,16 +107,31 @@ NI_SMALL_SHT = "emsphinx/ni_small_20kv_bw384.sht"
 # D8 discipline ``fast_size(2 bw - 1) == 2 bw - 1`` (135 = 27 x 5)
 NI_BANDWIDTH = 68
 
-# Bandwidth of the synthetic blend tests (105 = 3 x 5 x 7)
-BLEND_BANDWIDTH = 53
+# Bandwidth of the synthetic blend tests.  MEASURED CORRECTION at the
+# implementation gate (2026-09-07, recorded in validation.md): the
+# drafted 53 is unusable for the neutral-flag blends -- at odd
+# ``slP`` the identity cell sits at the stored beta edge and the D3.3
+# identity-cell-seeded reference refinement Newton-steps off the
+# gimbal-degenerate edge into a negative stationary value (measured
+# ``v_max = -0.256673`` at bw 53 against a true peak of 2.428933),
+# poisoning every normalized intensity.  At an EVEN ``slP`` the
+# translated identity cell is exactly the identity, the reference
+# refine returns the true peak, and the blend intensities match the
+# D9.2 "expected ~0.5" narrative (measured 0.5039 at weight 0.7).
+# 60 gives ``fast_size(119) = 120`` (even, 2^3 x 3 x 5); note it is
+# therefore a second non-coincident bandwidth beside
+# ``NON_COINCIDENT_BANDWIDTH``
+BLEND_BANDWIDTH = 60
 
 # The scan-shape killer bandwidth (D3.4 recorded deviation):
 # 2 x 64 - 1 = 127 is prime, so ``fast_size(127) == 128 != 127`` and
 # the correlator's true cube shape ``(65, 128, 128)`` differs from
 # the flat ``sl = 2 bw - 1`` indexing the C++ mis-scans with -- the
-# ONE regime in this suite where the slP-vs-sl mutant of plan 7.2 is
-# visible (every other bandwidth here satisfies
-# ``fast_size(2 bw - 1) == 2 bw - 1``)
+# planted-peak unit test below is the direct slP-vs-sl mutant killer
+# of plan 7.2 (since the implementation-gate blend correction,
+# ``BLEND_BANDWIDTH`` is a second non-coincident regime, so the
+# mutant now also corrupts every blend test; the Ni routes at 68 and
+# 88 stay coincident)
 NON_COINCIDENT_BANDWIDTH = 64
 
 # The stated cutoff of the D9.1 Ni pins.  Binary-measured guidance
@@ -124,24 +139,29 @@ NON_COINCIDENT_BANDWIDTH = 64
 # exactly 22 proper-Oh rows and at 0.5 one extra displaced edge row
 NI_CUTOFF = 0.9
 
-# MEASURED-THEN-PINNED (FIXME-pin at the implementation gate): the
-# D9.1 positive-count pin.  Binary-measured 22 at bw 88 on the h5
-# route: 24 proper Oh rotations minus the identity (whose cell sits
-# at the stored beta edge; the identity-seeded reference refinement
-# stalls at 0.719309 of the peak) minus one C2' merged by the
-# 4-fold gamma folding.  Re-measure on the .sht/bw-68 route.
+# MEASURED-THEN-PINNED (2026-09-07, implementation gate): the D9.1
+# positive-count pin.  Binary-measured 22 at bw 88 on the h5 route
+# and kikuchipy-measured 22 on this .sht/bw-68 route (recorded in
+# validation.md): 24 proper Oh rotations minus the identity (whose
+# cell sits at the stored beta edge; the identity-seeded reference
+# refinement stalls below the true peaks) minus one C2' merged by
+# the folding.
 NI_OPS_COUNT = 22
 
-# MEASURED-THEN-PINNED (FIXME-pin): per-operator angular tolerance
-# to the nearest proper Oh rotation, degrees
-NI_OH_ANGLE_TOL_DEG = 1.0
+# MEASURED-THEN-PINNED (2026-09-07): per-operator angular tolerance
+# to the nearest proper Oh rotation, degrees.  Measured maximum
+# 1.9948 on the .sht/bw-68 route (a single displaced near-C2'
+# glide-edge row at intensity 0.949; the bulk sit far closer);
+# pinned at 1.25x
+NI_OH_ANGLE_TOL_DEG = 2.5
 
-# MEASURED-THEN-PINNED (FIXME-pin): the largest normalized
-# intensity.  Binary-measured 1.3521 at bw 88 (ABOVE one: the
-# reference maximum is the identity-cell-seeded refinement, which
-# stalls below the true peaks -- this refutes the drafted
-# "intensities ~1.0" expectation, recorded in validation.md)
-NI_TOP_INTENSITY = 1.35
+# MEASURED-THEN-PINNED (2026-09-07): the largest normalized
+# intensity, measured 1.495790 on the .sht/bw-68 route (ABOVE one:
+# the reference maximum is the identity-cell-seeded refinement,
+# which stalls below the true peaks -- this refutes the drafted
+# "intensities ~1.0" expectation, recorded in validation.md;
+# binary-measured 1.3521 at bw 88 on the h5 route)
+NI_TOP_INTENSITY = 1.4958
 
 # The synthetic blends: weight and explicit cutoff far below the
 # expected relative intensity (D9.2 decouples this from the default
@@ -149,19 +169,32 @@ NI_TOP_INTENSITY = 1.35
 BLEND_WEIGHT = 0.7
 BLEND_CUTOFF = 0.25
 
-# MEASURED-THEN-PINNED (FIXME-pin): angular tolerance of a
-# recovered blend operator to the constructed one, degrees
-BLEND_ANGLE_TOL_DEG = 1.0
+# MEASURED-THEN-PINNED (2026-09-07): angular tolerance of a
+# recovered blend operator to the constructed one, degrees.
+# Measured 0.1748 for the on-sum-grid 120/60 degree operators and
+# 0.4221 for the off-grid one at bw 60; pinned at ~2x the worst
+BLEND_ANGLE_TOL_DEG = 0.85
 
-# MEASURED-THEN-PINNED (FIXME-pin): relative-intensity band of a
+# MEASURED-THEN-PINNED (2026-09-07): relative-intensity band of a
 # recovered blend operator, ``lam / (1 + lam^2)``-ish for weight
-# ``lam``; pinned from measurement, not from the formula
-BLEND_INTENSITY_BOUNDS = (0.2, 0.8)
+# ``lam`` (0.4698 for 0.7).  Measured 0.5039 at bw 60; pinned at
+# rel 0.05
+BLEND_INTENSITY_BOUNDS = (0.48, 0.53)
 
 # An off-grid z angle for the 0.95 search-factor pin: not a
-# multiple of the alpha/gamma cell 360 / (2 x 53 - 1) = 3.4286 deg
-# nor of its half
+# multiple of the alpha/gamma sum cell 360 / 120 = 3 deg nor of its
+# half at ``BLEND_BANDWIDTH`` (100.7 / 3 = 33.57)
 OFF_GRID_ANGLE_DEG = 100.7
+
+# MEASURED-THEN-PINNED (2026-09-07): the discriminating cutoff of
+# the off-grid 0.95-factor pin.  Measured at bw 60: the off-grid
+# operator's brightest grid voxel reads 0.4800 of ``v_max`` while
+# its refined intensity is 0.5510, so with 0.49 the candidate gate
+# ``>= v_max * 0.49 * 0.95 = 0.4655 v_max`` admits the voxel and
+# the keep gate ``0.5510 >= 0.49`` retains it, while a port which
+# drops the 0.95 factor gates at ``0.49 v_max > 0.4800 v_max`` and
+# loses the operator
+OFF_GRID_CUTOFF = 0.49
 
 # The two-phase rotated-copy oracle (D2.6c): tolerance per the
 # Phase 6 margin convention on the composed-orientation identity
@@ -187,8 +220,14 @@ MASTERXCORR_VMAX_TWO_FILE = 0.972597
 # six (D2.7): half an ulp is 5e-7, doubled for the comparison so
 # the conjugation killer keeps its teeth (1e-4 would blunt it)
 MASTERXCORR_QUAT_ATOL = 2e-6
-# MEASURED-THEN-PINNED (FIXME-pin): kikuchipy-vs-binary intensity
-# band, awaiting the kikuchipy side
+# MEASURED-THEN-PINNED (2026-09-07, implementation gate; validated
+# again at the review and fix gates): kikuchipy-vs-binary relative
+# intensity band.  Fix-stage measurement on the parity route (bw 88,
+# cutoff 0.9, Ni h5, 22 bijectively matched rows, recorded in
+# validation.md): max relative deviation 2.852e-5 (mean 8.9e-6), so
+# 0.05 stands as measured-sufficient with ~1750x margin -- it is
+# deliberately NOT tightened to that scale because the same band
+# also guards the never-yet-executed Al two-master weekly route
 MASTERXCORR_INTENSITY_RTOL = 0.05
 
 # Candidate file names of the local hcp/TiAl EMsoft masters (D9.6).
@@ -535,8 +574,9 @@ class TestFindPseudoSymmetryOperators:
         )
         record_property("ni_ops_count", int(result.operators.size))
         record_property("ni_intensities", result.intensities.tolist())
-        # MEASURED-THEN-PINNED count (FIXME-pin: re-measure on this
-        # .sht/bw-68 route at the implementation gate)
+        # MEASURED-THEN-PINNED count, re-measured on this
+        # .sht/bw-68 route at the implementation gate (2026-09-07):
+        # 22, agreeing with the binary's bw-88 h5 count
         assert result.operators.size == NI_OPS_COUNT
         angles = angles_to_proper_oh(result.operators)
         assert (angles < NI_OH_ANGLE_TOL_DEG).all()
@@ -669,6 +709,62 @@ class TestFindPseudoSymmetryOperators:
             )
             assert np.asarray(indices).ravel().tolist() == [expected]
 
+    def test_local_maxima_agree_with_a_brute_force_reference(self):
+        # the review-gate mutation killer (P11, recorded in
+        # validation.md 2026-09-07): a scan which never compares one
+        # plane of the 3 x 3 x 3 neighbourhood (e.g. the mutant
+        # ``neighborhood[:2]``, dropping the k+1 plane) survived the
+        # whole prior suite -- its spurious keeps refine into
+        # already-found peaks on every routed cube.  Here one probe
+        # pair is planted per neighbour offset on an otherwise
+        # sub-threshold random cube: the probe voxel (0.9) is beaten
+        # ONLY by its single planted neighbour (1.0), so a scan
+        # which skips ANY of the 26 comparisons wrongly keeps the
+        # corresponding probe.  The kept set must equal a
+        # brute-force 26-neighbour reference computed in-test (by
+        # fixture construction, exactly the 26 planted maxima).
+        # Every candidate is interior, so both glide semantics agree
+        # and the flag is threaded through both ways.  [D3.4]
+        shape = (13, 24, 24)
+        rng = np.random.default_rng(11)
+        xc = rng.uniform(0.0, 0.2, shape)
+        offsets = [
+            (dk, dn, dm)
+            for dk in (-1, 0, 1)
+            for dn in (-1, 0, 1)
+            for dm in (-1, 0, 1)
+            if (dk, dn, dm) != (0, 0, 0)
+        ]
+        # probe-pair bases on a step-4 interior grid: members deviate
+        # at most one voxel from their base, so voxels of different
+        # pairs are at least two apart and never neighbours
+        bases = [
+            (k, n, m)
+            for k in range(2, shape[0] - 2, 4)
+            for n in range(2, shape[1] - 2, 4)
+            for m in range(2, shape[2] - 2, 4)
+        ]
+        assert len(bases) >= len(offsets)
+        expected = []
+        for base, offset in zip(bases, offsets):
+            neighbor = tuple(b + d for b, d in zip(base, offset))
+            xc[base] = 0.9
+            xc[neighbor] = 1.0
+            expected.append(int(np.ravel_multi_index(neighbor, shape)))
+        threshold = 0.5
+        brute = []
+        for k, n, m in zip(*np.nonzero(xc >= threshold)):
+            block = xc[k - 1 : k + 2, n - 1 : n + 2, m - 1 : m + 2]
+            assert block.shape == (3, 3, 3)  # interior by construction
+            if xc[k, n, m] >= block.max():
+                brute.append(int(np.ravel_multi_index((k, n, m), shape)))
+        assert sorted(brute) == sorted(expected)
+        for compatible in (True, False):
+            indices = _pseudo_symmetry._local_maxima(
+                xc, threshold=threshold, emsphinx_compatible=compatible
+            )
+            assert np.asarray(indices).ravel().tolist() == sorted(expected)
+
     def test_volume_shape_at_a_non_coincident_bandwidth(self):
         # the volume-shape pin repeated where it discriminates: at
         # bandwidth 64 the true ``(65, 128, 128)`` shape refutes any
@@ -757,16 +853,15 @@ class TestFindPseudoSymmetryOperators:
         # ``v_max * cutoff * 0.95`` candidate gate (the 0.95
         # "factor" of master_xcorr.cpp line 61) exists exactly so
         # such peaks survive the scan.  A port which drops the
-        # factor loses this operator at a cutoff riding the peak's
-        # grid value.  MEASURED-THEN-PINNED feasibility (FIXME-pin:
-        # the discriminating cutoff is measured at the
-        # implementation gate; recorded fallback per validation.md
-        # is a threshold sweep on ``_local_maxima``).  [D3.4]
+        # factor loses this operator at ``OFF_GRID_CUTOFF``, which
+        # rides the peak's measured grid value (0.4800 < 0.49 <=
+        # 0.4800 / 0.95; measured 2026-09-07, the implementation
+        # gate).  [D3.4]
         s = z_rotation(OFF_GRID_ANGLE_DEG)
         result = find_pseudo_symmetry_operators(
             blended_harmonics(s),
             bandwidth=BLEND_BANDWIDTH,
-            cutoff=BLEND_CUTOFF,
+            cutoff=OFF_GRID_CUTOFF,
             exclude_symmetry=True,
         )
         assert result.operators.size > 0
@@ -1295,7 +1390,9 @@ class TestMasterXcorrParity:
                 "which an earlier printed row already claimed"
             )
             matched.add(best)
-            # MEASURED-THEN-PINNED intensity band (FIXME-pin)
+            # the MEASURED-THEN-PINNED intensity band (measured max
+            # relative deviation 2.852e-5 on this route, 2026-09-07;
+            # see the constant)
             assert ours.intensities[best] == pytest.approx(
                 theirs[i, 0], rel=MASTERXCORR_INTENSITY_RTOL
             )

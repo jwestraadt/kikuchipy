@@ -686,9 +686,13 @@ roadmap Phase 8 test box, is layered, the limitation documented, and
 1. **Ni mechanism tests** (in-package `.sht` + small master, default
    suite). **Positive-count pin**: with `exclude_symmetry=False` at
    a stated cutoff, `find_pseudo_symmetry_operators` on the Ni
-   master autocorrelation must return the identity plus (close to)
-   the 24 proper Oh rotations (Phase 4 measured exactly this cube,
-   roadmap.md:66), with a per-op angular tolerance and intensities
+   master autocorrelation must return the measured proper-Oh subset
+   (AMENDED 2026-09-07: 22 rows -- the identity is NOT returned,
+   its cell sits at the stored beta edge and the identity-seeded
+   refine stalls, and one folded C2' is absorbed by dedup; the
+   drafted "identity plus close-to-24" phrasing is withdrawn; Phase
+   4 measured this cube, roadmap.md:66), with a per-op angular
+   tolerance and intensities
    measured-then-pinned (execution-gated placeholders).
    **AMENDED 2026-09-07**: the drafted "intensities ~1.0 with
    identity == 1.0" expectation is withdrawn -- the 2026-09-07

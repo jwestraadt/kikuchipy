@@ -119,7 +119,8 @@ a variant of a map rotation ``rot`` is ``op * rot`` in orix
 left-composition.  A psymfile row is the **conjugate** ``~op``, which
 is what EMSphInx' ``q0 * q`` indexing loop consumes to realise the
 same variant, and :func:`read_emsphinx_psym_file` conjugates back on
-read.  Round trip ``read(write(ops)) == ops`` exactly.
+read.  Round trip ``read(write(ops)) == ops`` exactly, modulo the
+reader's identity-skip rule (documented on both functions).
 
 References
 ----------
@@ -133,9 +134,21 @@ from pathlib import Path
 
 import numpy as np
 from orix.quaternion import Rotation
+from orix.quaternion.symmetry import C1
 
+from kikuchipy.indexing._spherical._euler import (
+    rotation_from_zyz,
+    zyz_to_quaternion,
+)
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
+)
+from kikuchipy.indexing._spherical._xcorr import (
+    SphericalCrossCorrelator,
+    _extract_neighborhood,
+    _find_peak,
+    euler_to_index,
+    index_to_euler,
 )
 
 # How far below the requested cutoff the local maxima scan searches,
@@ -163,7 +176,10 @@ _IDENTITY_ROW = (1.0, 0.0, 0.0, 0.0)
 _ANGLE_FILE_TYPES = ("eu", "om", "ax", "ro", "qu", "ho", "cu")
 
 
-@dataclass(frozen=True)
+# ``eq=False``: the generated ``__eq__`` would compare the ndarray
+# and Rotation fields elementwise, so ``bool()`` of a comparison
+# would raise instead of answering
+@dataclass(frozen=True, eq=False)
 class PseudoSymmetryOperators:
     """Pseudo-symmetry operators detected on a master pattern's
     rotational cross-correlation, ordered by descending intensity.
@@ -184,8 +200,11 @@ class PseudoSymmetryOperators:
     intensities
         Cross-correlation intensity of every operator in a 64-bit
         float array of the operators' shape, normalized by the
-        refined global maximum, so the identity peak of an
-        autocorrelation is one.
+        reference maximum refined from the identity cell
+        (autocorrelation) or from the interpolated coarse argmax
+        (two-phase mode).  Values above one occur when that seeded
+        refinement undershoots the true peak, as it does when the
+        identity cell sits at the stored beta edge.
     volume
         The full ``(bwP, slP, slP)`` 64-bit float cross-correlation
         cube when the operators were found with ``keep_volume=True``,
@@ -254,12 +273,49 @@ def read_emsphinx_psym_file(filename: str | Path) -> Rotation:
     (``include/idx/master.hpp``, lines 220-233) over the EMsoft angle
     file grammar (``include/xtal/vendor/emsoft.hpp``, lines 48-145).
     Near-identity rows are kept, as in EMSphInx; they merely
-    re-converge to the global peak when used.  One recorded
-    deviation: non-unit rows are silently unitized by the orix
+    re-converge to the global peak when used.  Two recorded
+    deviations: non-unit rows are silently unitized by the orix
     :class:`~orix.quaternion.Rotation` constructor, where EMSphInx
-    uses the raw values.
+    uses the raw values; and the header is tokenised uniformly,
+    where the C++ reads the type token as exactly two characters
+    *before* imbuing its comma-as-whitespace locale
+    (``rotations.hpp`` lines 1213-1215), so the binary rejects
+    ``qu,2`` yet accepts ``q u`` and this reader does the opposite
+    in both corners (real psymfiles carry neither).
     """
-    raise NotImplementedError
+    text = Path(filename).read_text()
+    # the custom ctype of ``emsoft.hpp`` (lines 110-121) makes the
+    # comma whitespace, so the grammar is purely token based; an
+    # empty file reads as an empty type token
+    tokens = text.replace(",", " ").split()
+    token = "".join(tokens[:1])
+    if token != "qu":
+        raise ValueError(
+            "only quaternion ('qu') angle files are supported for "
+            f"pseudo-symmetry, not {token!r} (the EMsoft angle file "
+            f"types are {', '.join(_ANGLE_FILE_TYPES)})"
+        )
+    # a missing or non-integer count and a non-numeric row entry all
+    # raise their own ValueError
+    count = int("".join(tokens[1:2]))
+    values = tokens[2:]
+    if len(values) != 4 * count:
+        few_or_many = "not enough" if len(values) < 4 * count else "too many"
+        raise ValueError(
+            f"{few_or_many} numbers in {filename}: the count promises "
+            f"{count} quaternions ({4 * count} numbers) but {len(values)} "
+            "follow"
+        )
+    numbers = np.array([float(value) for value in values], dtype=np.float64)
+    rows = numbers.reshape(count, 4)
+    # the exact float equality identity skip of ``master.hpp`` lines
+    # 227-231; ``==`` treats -0.0 as 0.0, as the C++ does
+    rows = rows[~(rows == np.array(_IDENTITY_ROW)).all(axis=1)]
+    if rows.shape[0] == 0:
+        return Rotation.empty()
+    # the D2.4 conjugation at the file boundary: a file row is the
+    # conjugate of the public NCC-convention operator
+    return ~Rotation(rows)
 
 
 def write_emsphinx_psym_file(filename: str | Path, operators: Rotation) -> None:
@@ -292,12 +348,24 @@ def write_emsphinx_psym_file(filename: str | Path, operators: Rotation) -> None:
     precision.
 
     Round trip: ``read_emsphinx_psym_file`` of the written file
-    reproduces ``operators`` exactly (the identity-skip rule of the
-    reader cannot trigger, since an exact-identity operator would
-    have been refused here as pure waste is not: it is written as
-    given).
+    reproduces ``operators`` exactly, modulo the reader's
+    identity-skip rule: only an *empty* operator set is refused
+    here, so an exact-identity operator is written as given (its
+    conjugate is itself) and the reader then silently skips that
+    row.
     """
-    raise NotImplementedError
+    operators = operators.flatten()
+    if operators.size == 0:
+        raise ValueError("cannot write an empty operator set to a psymfile")
+    # the D2.4 conjugation at the file boundary: EMSphInx' ``q0 * q``
+    # loop (``indexer.hpp`` line 248) consumes the conjugate of the
+    # NCC-convention operator to realise the ``op * rot`` variant
+    rows = (~operators).data.reshape(-1, 4)
+    lines = ["qu", str(int(operators.size))]
+    for row in rows:
+        lines.append(" ".join(repr(float(component)) for component in row))
+    with open(filename, "w", newline="\n") as file:
+        file.write("\n".join(lines) + "\n")
 
 
 def find_pseudo_symmetry_operators(
@@ -338,7 +406,8 @@ def find_pseudo_symmetry_operators(
     cutoff
         Relative intensity in ``[0, 1]`` below which peaks are
         dropped, 0.5 by default.  Intensities are normalized by the
-        refined global maximum.
+        seeded reference maximum of the ``Notes``, so they can
+        exceed one.
     exclude_symmetry
         Whether to drop operators equivalent to a true proper
         rotation of the first phase's point group, and to dedup the
@@ -346,7 +415,9 @@ def find_pseudo_symmetry_operators(
         (about 2.56 degrees of quaternion-dot half-angle).  Default
         is ``True``.  ``False`` reproduces the raw C++ stdout list,
         true-symmetry operators and surviving refined duplicates
-        included, which is the binary parity setting.
+        included, which is the binary parity setting.  A harmonics
+        without a phase or point group excludes against the
+        identity only.
     keep_volume
         Whether to return the full correlation cube, ``False`` by
         default.
@@ -389,11 +460,126 @@ def find_pseudo_symmetry_operators(
     convention, see the module documentation.
 
     An autocorrelation is inversion symmetric, so its operator set
-    is closed under inversion: the identity peak and inverse pairs
-    are expected, and ``exclude_symmetry=True`` on a phase with no
-    genuine pseudo-symmetry (e.g. Ni, m-3m) returns an empty set.
+    is closed under inversion: inverse pairs are expected (the
+    identity peak itself sits at the stored beta edge for odd cube
+    sides and may not be returned), and ``exclude_symmetry=True`` on
+    a phase with no genuine pseudo-symmetry (e.g. Ni, m-3m) returns
+    an empty set.  When no local maximum reaches the candidate gate
+    the result is empty too, where the C++ CLI exits with an error
+    message instead (lines 176-179, a recorded library-vs-CLI
+    deviation).
     """
-    raise NotImplementedError
+    bandwidth = int(bandwidth)
+    # reuse the indexer's bandwidth rule; imported lazily so this
+    # module does not pull the indexer's dask dependencies in
+    from kikuchipy.indexing._spherical._indexer import _BANDWIDTH_LIMITS
+
+    smallest, largest = _BANDWIDTH_LIMITS
+    if bandwidth < smallest or bandwidth > largest:
+        raise ValueError(
+            f"Bandwidth {bandwidth} is an unreasonable bandwidth "
+            f"(should be [{smallest}, {largest}])"
+        )
+    cutoff = float(cutoff)
+    if not 0.0 <= cutoff <= 1.0:
+        raise ValueError(f"`cutoff` must lie in [0, 1], not {cutoff}")
+    emsphinx_compatible = bool(emsphinx_compatible)
+
+    # DC-removed copies at the requested bandwidth; the caller's
+    # objects are never modified (``master_xcorr.cpp`` lines 69-76;
+    # ``resize`` of a stored higher-bandwidth file is the recorded
+    # non-equivalence with computing at ``bandwidth`` directly)
+    def prepared(h: MasterPatternHarmonics) -> MasterPatternHarmonics:
+        if h.bandwidth != bandwidth:
+            h = h.resize(bandwidth)
+        return h.remove_dc()
+
+    first = prepared(harmonics)
+    auto = second_harmonics is None
+    second = first if auto else prepared(second_harmonics)
+
+    # one full un-normalised correlation cube, folded by the FIRST
+    # master's symmetry flags only (lines 50, 80-82)
+    n_fold = first.n_fold
+    mirror = first.has_equatorial_mirror
+    flm = first.alm
+    gln = second.alm
+    correlator = SphericalCrossCorrelator(bandwidth)
+    xc = correlator.compute(flm, gln, n_fold, mirror)
+    slp = correlator.side_length
+
+    # the reference maximum ``vMax`` (lines 85-92), whose seed is a
+    # requirement (D3.3): the auto mode refines from the
+    # un-interpolated near-identity grid cell -- the C++
+    # ``idxIdent = (bw-1) sl sl + (bw/2) sl + bw/2`` translated to
+    # the nearest-to-identity cell of the true grid, with which it
+    # coincides whenever ``slP == 2 bw - 1`` -- and the two-file
+    # mode from the sub-pixel interpolated coarse argmax
+    if auto:
+        zyz_seed = index_to_euler(euler_to_index(np.zeros(3), slp), slp)
+    else:
+        peak_index = int(_find_peak(xc))
+        zyz_seed, _, _ = correlator.interp_peak(peak_index, emsphinx_compatible)
+    _, v_max = correlator.refine_zyz(flm, gln, n_fold, mirror, zyz_seed)
+
+    # 26-neighbour local maxima at ``>= vMax cutoff 0.95`` over the
+    # true ``(bwP, slP, slP)`` cube (lines 104-140 with the recorded
+    # scan-shape deviation), then the 2 degree quaternion-dot
+    # half-angle dedup of grid maxima, keeping the brighter (lines
+    # 148-166)
+    v_min = v_max * cutoff * _CANDIDATE_FACTOR
+    flat = xc.reshape(-1)
+    indices = _local_maxima(xc, v_min, emsphinx_compatible)
+
+    operators = Rotation.empty()
+    intensities = np.empty(0, dtype=np.float64)
+    if indices.size:
+        grid_zyz = np.stack(
+            [index_to_euler(_flat_to_knm(index, slp), slp) for index in indices]
+        )
+        grid_intensities = flat[indices] / v_max
+        keep = _dedup_keep_brighter(zyz_to_quaternion(grid_zyz), grid_intensities)
+        grid_zyz = grid_zyz[keep]
+        grid_intensities = grid_intensities[keep]
+        # sort descending by grid intensity (line 174), Newton-refine
+        # EVERY survivor from its un-interpolated grid Euler (lines
+        # 182-186), then re-sort and keep ``>= cutoff`` (lines
+        # 190-195).  After refinement there is NO second dedup
+        order = np.argsort(-grid_intensities, kind="stable")
+        grid_zyz = grid_zyz[order]
+        refined_zyz = np.empty_like(grid_zyz)
+        refined = np.empty(grid_zyz.shape[0], dtype=np.float64)
+        for i in range(grid_zyz.shape[0]):
+            zyz, value = correlator.refine_zyz(flm, gln, n_fold, mirror, grid_zyz[i])
+            refined_zyz[i] = zyz
+            refined[i] = value / v_max
+        order = np.argsort(-refined, kind="stable")
+        keep = refined[order] >= cutoff
+        refined_zyz = refined_zyz[order][keep]
+        intensities = refined[order][keep]
+        if refined_zyz.shape[0]:
+            # the D2 conversion: the NCC-convention operator of a
+            # refined peak
+            operators = rotation_from_zyz(refined_zyz)
+
+    if exclude_symmetry and operators.size:
+        # a harmonics without a phase or point group excludes
+        # against the identity only, i.e. the proper rotations of C1
+        point_group = C1
+        if first.phase is not None and first.phase.point_group is not None:
+            point_group = first.phase.point_group
+        # ``operators`` arrive sorted descending in intensity, the
+        # dedup precondition of ``_exclude_true_ops``
+        keep = _exclude_true_ops(operators, point_group)
+        operators = operators[keep]
+        intensities = intensities[keep]
+
+    return PseudoSymmetryOperators(
+        operators=operators,
+        intensities=np.asarray(intensities, dtype=np.float64),
+        volume=xc if keep_volume else None,
+        bandwidth=bandwidth,
+    )
 
 
 def _local_maxima(
@@ -433,7 +619,36 @@ def _local_maxima(
     recorded deviation that it runs over the true cube shape rather
     than flat-indexing with ``sl = 2 bw - 1``.
     """
-    raise NotImplementedError
+    xc = np.ascontiguousarray(np.asarray(xc, dtype=np.float64))
+    bwp, slp = int(xc.shape[0]), int(xc.shape[1])
+    flat = xc.reshape(-1)
+    threshold = float(threshold)
+    emsphinx_compatible = bool(emsphinx_compatible)
+    # ascending flat indices are the C++ scan order: k outer, then n,
+    # then m (lines 108-111)
+    candidates = np.flatnonzero(flat >= threshold)
+    neighborhood = np.empty((3, 3, 3), dtype=np.float64)
+    kept = []
+    for index in candidates:
+        index = int(index)
+        k, n, m = _flat_to_knm(index, slp)
+        _extract_neighborhood(
+            flat, slp, bwp, k, n, m, emsphinx_compatible, neighborhood
+        )
+        # ``>=`` all 26 neighbours, ties kept (lines 114-140); the
+        # centre slot compared with itself is vacuously true
+        if (neighborhood[1, 1, 1] >= neighborhood).all():
+            kept.append(index)
+    return np.asarray(kept, dtype=np.intp)
+
+
+def _flat_to_knm(index: int, slp: int) -> tuple[int, int, int]:
+    """Return the ``(k, n, m)`` grid indices of a flat cube index,
+    i.e. beta, gamma and alpha, inverting
+    ``index = k slP^2 + n slP + m``."""
+    k, remainder = divmod(int(index), slp * slp)
+    n, m = divmod(remainder, slp)
+    return k, n, m
 
 
 def _dedup_keep_brighter(
@@ -463,12 +678,41 @@ def _dedup_keep_brighter(
     Port of ``master_xcorr.cpp`` lines 148-166 ("this is extremely
     arbitrary"), applied to grid maxima **before** refinement only.
     """
-    raise NotImplementedError
+    quaternions = np.asarray(quaternions, dtype=np.float64).reshape(-1, 4)
+    intensities = np.asarray(intensities, dtype=np.float64).reshape(-1)
+    n = quaternions.shape[0]
+    keep = np.zeros(n, dtype=bool)
+    # the growing kept list of the C++, replacements in place so a
+    # later candidate measures against the survivor (lines 148-166)
+    kept_quaternions: list[np.ndarray] = []
+    kept_sources: list[int] = []
+    for i in range(n):
+        if kept_quaternions:
+            dots = np.minimum(
+                1.0, np.abs(np.asarray(kept_quaternions) @ quaternions[i])
+            )
+            angles = np.degrees(np.arccos(dots))
+            # the strictly-less nearest search keeps the FIRST
+            # minimum, as the C++ ``<`` does (lines 150-157)
+            nearest = int(np.argmin(angles))
+            if angles[nearest] < _DEDUP_HALF_ANGLE_DEG:
+                # within two degrees: keep only the brighter of the
+                # two, replacing the kept slot in place (lines
+                # 160-163; a tie keeps the incumbent)
+                if intensities[i] > intensities[kept_sources[nearest]]:
+                    keep[kept_sources[nearest]] = False
+                    keep[i] = True
+                    kept_quaternions[nearest] = quaternions[i]
+                    kept_sources[nearest] = i
+                continue
+        keep[i] = True
+        kept_quaternions.append(quaternions[i])
+        kept_sources.append(i)
+    return keep
 
 
 def _exclude_true_ops(
     operators: Rotation,
-    intensities: np.ndarray,
     point_group,
 ) -> np.ndarray:
     """Return a boolean keep mask dropping true-symmetry operators
@@ -477,9 +721,9 @@ def _exclude_true_ops(
     Parameters
     ----------
     operators
-        Candidate operators, descending in intensity.
-    intensities
-        Their intensities.
+        Candidate operators.  Precondition: sorted descending in
+        intensity, so the in-order dedup keeps the brighter of a
+        duplicate pair.
     point_group
         :class:`orix.quaternion.symmetry.Symmetry` of the first
         phase, whose **proper** rotations are the exclusion set.
@@ -498,5 +742,26 @@ def _exclude_true_ops(
     232-261, applied to the *returned* list under
     ``exclude_symmetry=True`` -- a recorded deviation, since the C++
     runs them only for ``pseudo.svg`` and never filters its stdout.
+    A second recorded deviation from that SVG-stage pair: the dedup
+    here measures a candidate against the *kept* operators only (the
+    frozen D3.7 reading), where the literal C++ duplicate check
+    (lines 255-261, ``for j < i``) also measures against earlier
+    above-cutoff candidates already dropped as true-symmetry
+    matches -- a candidate within the 0.999 cosine of such a
+    dropped-but-not-kept earlier candidate, while itself clearing
+    every true rotation, survives here and not there.
     """
-    raise NotImplementedError
+    quaternions = operators.flatten().data.reshape(-1, 4)
+    # the true-symmetry filter (lines 242-250) and the duplicate
+    # filter against earlier kept operators (lines 254-261, with the
+    # D3.7 kept-versus-kept reading) share the threshold, so kept
+    # operators simply grow the exclusion set
+    exclusion = point_group.proper_subgroup.data.reshape(-1, 4)
+    keep = np.zeros(quaternions.shape[0], dtype=bool)
+    for i in range(quaternions.shape[0]):
+        quaternion = quaternions[i]
+        if np.abs(exclusion @ quaternion).max() > _EXCLUDE_COSINE:
+            continue
+        keep[i] = True
+        exclusion = np.vstack([exclusion, quaternion[np.newaxis]])
+    return keep

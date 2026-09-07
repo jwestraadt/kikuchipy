@@ -851,11 +851,14 @@ class TestIndexPatterns:
     def test_the_graph_metadata_is_truthful(self):
         # without an explicit ``chunks=`` the graph declares the
         # shape ``(9, 1, 1)`` -- measured -- which computes correctly
-        # but lies to anything slicing before the compute
+        # but lies to anything slicing before the compute.  Width 7
+        # since the D4 packed-row amendment of spec
+        # 2026-09-06-pseudo-symmetry (was 6; correction recorded in
+        # that spec's validation.md, 2026-09-07)
         indexer = ni_indexer()
         patterns = da.from_array(np.array(ni_patterns()), chunks=(4, -1, -1))
         results = _map_chunks(patterns, indexer, 2)
-        assert results.shape == (9, 2, 6)
+        assert results.shape == (9, 2, 7)
         assert results.chunks[0] == patterns.chunks[0]
         assert results.dtype == np.float64
 
@@ -912,9 +915,9 @@ class TestIndexPatterns:
 # ------------- Pseudo-symmetry indexing (Phase 8 spec D4/D5) -------- #
 
 # Constants of ``specs/2026-09-06-pseudo-symmetry`` (requirement IDs
-# in the test docstrings).  Values marked MEASURED-THEN-PINNED carry
-# a FIXME-pin marker and are replaced by dated measurements at the
-# implementation gate (requirements D11).
+# in the test docstrings).  The measured-then-pinned values were
+# filled 2026-09-07 at the implementation gate; the measurements and
+# their recipes are in validation.md Recorded results.
 
 # A wrong operator: 30 degrees about z is NOT a proper Oh rotation
 WRONG_OP_DEG = 30.0
@@ -922,29 +925,46 @@ WRONG_OP_DEG = 30.0
 # A true operator: 90 degrees about z IS a proper Oh rotation
 TRUE_OP_DEG = 90.0
 
-# MEASURED-THEN-PINNED (FIXME-pin): relative near-equality of a
-# true-symmetry variant's score and the base score
-TRUE_OP_TIE_RTOL = 5e-3
+# Relative near-equality of a true-symmetry variant's score and the
+# base score (measured 2026-09-07: max 4.65e-5 over the nine
+# patterns, pinned at ~2.2x)
+TRUE_OP_TIE_RTOL = 1e-4
 
-# MEASURED-THEN-PINNED (FIXME-pin): misorientation tolerance between
-# a kept variant row and the operator composed onto the base row,
-# degrees
-RANKED_VARIANT_TOL_DEG = 1.0
+# Misorientation tolerance between a kept variant row and the
+# operator composed onto the base row, degrees (measured 2026-09-07:
+# 0.0 -- exact for z operators, whose variant peak is the base peak
+# shifted in gamma by the master's own 4-fold periodicity; pinned at
+# ~2x the Newton stop scale ``eps pi / bw`` = 0.027 deg at bw 68)
+RANKED_VARIANT_TOL_DEG = 0.05
 
-# MEASURED-THEN-PINNED (FIXME-pin): two variants converged into the
-# same peak agree to this misorientation, degrees
-DUPLICATE_ROW_TOL_DEG = 0.2
+# Two variants converged into the same peak agree to this
+# misorientation, degrees (measured 2026-09-07: 0.0, same scale
+# rationale as above)
+DUPLICATE_ROW_TOL_DEG = 0.05
 
-# The D9.5 rescue scenario levers (all build-measured; FIXME-pin:
-# every value below is a placeholder until the construction is
-# measured deterministic, with the recorded fallback of
-# validation.md if none is)
+# The two duplicate variant rows' scores agree to this relative
+# difference -- the Newton stop tolerance's second-order lag
+# (measured 2026-09-07: 1.38e-6, pinned at ~2.2x)
+DUPLICATE_ROW_SCORE_RTOL = 3e-6
+
+# The D9.5 rescue scenario levers (build-measured 2026-09-07, see
+# validation.md Recorded results: the drafted single-copy +z blend
+# was REFUTED by measurement -- its base peak outweighs the variant
+# by ``(1 + lam^2) / lam`` ~ 2x and the Ni function's exact 4-fold z
+# symmetry adds degenerate ghost families -- so the construction is
+# the 3-fold two-copy blend about a general axis, whose true peak
+# ``1 + 2 lam^2`` exceeds the two pseudo peaks ``2 lam + lam^2`` by
+# only ``(1 - lam)^2`` = 0.25 %, small enough for the coarse grid
+# to decide the basin.  Measured at these levers: off_true 119.80,
+# off_pseudo 0.287, winner index 1, score gain +0.0016, rescue
+# error 0.309 deg; every neighbouring seed {0, 1} and sigma
+# {10, 25} also passes, so the pin is not razor-edge)
 RESCUE_SEED = 8
 RESCUE_BANDWIDTH = 53
 RESCUE_WEIGHT = 0.95
 RESCUE_NOISE_SIGMA = 40.0
-RESCUE_PSEUDO_TOL_DEG = 5.0
-RESCUE_TRUE_TOL_DEG = 3.0
+RESCUE_PSEUDO_TOL_DEG = 0.6
+RESCUE_TRUE_TOL_DEG = 0.65
 
 
 def z_op(degrees):
@@ -1039,11 +1059,13 @@ class TestPseudoSymmetryIndexing:
         # exactly equivalent one, so its variant refines into an
         # equally deep peak: the winner index may be 0 or 1, the
         # base wins exact ties (the ``upper_bound`` strictly-beats
-        # rule -- the D4 tie pin), and the two scores are
-        # MEASURED-THEN-PINNED near equal.  The exact-tie clause is
-        # DATA-DEPENDENT (independently refined floats may never tie
-        # bitwise, leaving it vacuously true); the deterministic pin
-        # lives in the forced-tie test below.  [D4]
+        # rule -- the D4 tie pin), and the two scores are near equal
+        # (measured 2026-09-07: max rel 4.65e-5, the variant
+        # epsilon-beating the base on all nine patterns).  The
+        # exact-tie clause is DATA-DEPENDENT (independently refined
+        # floats may never tie bitwise, leaving it vacuously true);
+        # the deterministic pin lives in the forced-tie test below.
+        # [D4]
         indexer = SphericalIndexer(
             ni_harmonics(NI_BANDWIDTH),
             ni_detector(),
@@ -1141,6 +1163,28 @@ class TestPseudoSymmetryIndexing:
         assert np.array_equal(results["zyz"][0, 0], coarse["zyz"][0, 0])
         assert results["scores"][0, 0] == coarse["scores"][0, 0]
 
+    def test_variants_on_the_un_normalised_path(self):
+        # the ``normalize=False`` twin of the loop: variants route
+        # through the shared un-normalised prototype's ``refine_zyz``
+        # and behave exactly as on the normalized path -- a true Oh
+        # operator's variant refines into the equivalent peak with a
+        # near-equal score (measured max rel 4.79e-5, inside the
+        # same pin) and the winner index stays in {0, 1}.  Added at
+        # the implementation gate for coverage of the un-normalised
+        # variant branch, recorded in validation.md 2026-09-07.
+        # [D4]
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            normalize=False,
+            pseudo_symmetry_ops=z_op(TRUE_OP_DEG),
+        )
+        results = indexer.index_patterns(ni_patterns()[:1], n_best=2, progressbar=False)
+        index = results["pseudo_symmetry_index"][0]
+        scores = results["scores"][0]
+        assert set(index.tolist()) == {0, 1}
+        assert scores[1] == pytest.approx(scores[0], rel=TRUE_OP_TIE_RTOL)
+
     def test_n_best_ranked_variants(self):
         # ``n_best = 1 + n_ops``: the base and every variant are
         # kept, scores descend, the variant column names the
@@ -1199,7 +1243,7 @@ class TestPseudoSymmetryIndexing:
             < DUPLICATE_ROW_TOL_DEG
         )
         assert results["scores"][0, b] == pytest.approx(
-            results["scores"][0, a], rel=1e-6
+            results["scores"][0, a], rel=DUPLICATE_ROW_SCORE_RTOL
         )
 
     def test_row_width_seven_and_fill(self):
@@ -1250,16 +1294,20 @@ class TestPseudoSymmetryIndexing:
         # demonstrably lands in the pseudo basin without operators
         # (pinned), while ``pseudo_symmetry_ops`` recovers the true
         # orientation at a higher score with a non-zero winner
-        # index.  Every lever and tolerance is build-measured
-        # (FIXME-pin); if no deterministic construction survives
-        # measurement, the recorded fallback of validation.md
-        # replaces this body and the limitation is recorded there.
-        # [D4, D9.5]
-        s = z_op(120.0)
+        # index.  The construction is the build-measured 3-fold
+        # two-copy blend ``f + lam (f.rotate(S) + f.rotate(~S))``
+        # about a general axis: its true peak ``1 + 2 lam^2``
+        # exceeds each pseudo peak ``2 lam + lam^2`` by only
+        # ``(1 - lam)^2``, so the coarse grid decides the basin
+        # while the always-refined variants recover the true peak.
+        # (The drafted single-copy +z blend was refuted by
+        # measurement -- see the lever constants above and the
+        # 2026-09-07 record in validation.md.)  [D4, D9.5]
+        s = Rotation.from_axes_angles([1, 2, 3], np.deg2rad(120.0))
         harmonics = ni_harmonics(RESCUE_BANDWIDTH)
-        rotated = harmonics.rotate(s)
         blend = MasterPatternHarmonics(
-            harmonics.alm + RESCUE_WEIGHT * rotated.alm,
+            harmonics.alm
+            + RESCUE_WEIGHT * (harmonics.rotate(s).alm + harmonics.rotate(~s).alm),
             phase=Phase("blend", point_group="1"),
         )
         master = blend.to_master_pattern()

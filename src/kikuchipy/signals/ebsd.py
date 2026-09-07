@@ -2040,9 +2040,11 @@ class EBSD(KikuchipySignal2D):
             zero padding and is therefore faster.
         n_best
             Number of candidates to keep per pattern. Default is 1.
-            Each phase contributes exactly one candidate, so rows
-            beyond the number of phases are filled with an invalid
-            phase, see the ``Notes``.
+            Each phase contributes exactly one candidate, plus one
+            per pseudo-symmetry operator for the single phase when
+            ``pseudo_symmetry_ops`` is given, so rows beyond the
+            number of candidates are filled with an invalid phase,
+            see the ``Notes``.
         navigation_mask
             A boolean mask equal to the signal's navigation (map)
             shape, where only patterns equal to ``False`` are indexed.
@@ -2061,7 +2063,9 @@ class EBSD(KikuchipySignal2D):
             Default is ``True``, EMSphInx' own default. Pass
             ``False`` for the coarse grid orientations alone, which
             costs 5-21 % less time (measured refined to coarse
-            ratios 1.05-1.27x) and gives scores which are not
+            ratios 1.05-1.27x, without pseudo-symmetry operators --
+            an operator adds one Newton refinement per pattern
+            whatever this flag says) and gives scores which are not
             comparable with the refined ones, see the ``Notes``.
         n_regions
             Number of tiles along each detector axis of the adaptive
@@ -2089,8 +2093,13 @@ class EBSD(KikuchipySignal2D):
             the highest score wins. If given, the returned crystal
             map has the property ``"pseudo_symmetry_index"`` with the
             1-based index of the winning operator, ``0`` where the
-            unmodified orientation won. Requires a single phase.
-            ``None`` by default.
+            unmodified orientation won and ``-1`` where the pattern
+            was masked or failed; with ``n_best`` greater than one
+            the 2-D property ``"nbest_pseudo_symmetry_index"`` holds
+            the variant index of every kept candidate, beside
+            ``"nbest_phase_id"``. Requires a single phase. ``None``
+            by default; a size-0 rotation is equivalent to ``None``
+            (no variants, no property).
         chunksize
             Number of patterns to index per chunk. If not given, it is
             estimated from the bandwidth, the number of patterns and
@@ -2107,6 +2116,11 @@ class EBSD(KikuchipySignal2D):
             and ``"iq"``, the correlation and the image quality. With
             ``n_best`` greater than one, the property
             ``"nbest_phase_id"`` holds the phase of every candidate.
+            With ``pseudo_symmetry_ops``, the property
+            ``"pseudo_symmetry_index"`` holds the winning variant
+            index, and with ``n_best`` greater than one
+            ``"nbest_pseudo_symmetry_index"`` the index of every
+            candidate.
 
         Raises
         ------
@@ -2173,12 +2187,36 @@ class EBSD(KikuchipySignal2D):
         way becomes a failed pattern where the coarse path would have
         kept it. No such failure was observed on any real data run.
 
-        **One candidate per phase.** ``n_best`` counts phases, not
-        peaks: every phase contributes its single best rotation, so a
-        row beyond the number of phases keeps the invalid phase
-        ``-1``, the identity rotation and a score of ``0``. Only
-        phases which win at least one point appear in
-        ``xmap.phases``; the losing ones stay in
+        **Pseudo-symmetry variants are always Newton refined**,
+        whatever ``refine`` says, exactly as EMSphInx always refines
+        them. With ``refine=False`` a run with operators therefore
+        mixes an interpolated coarse base score with analytic variant
+        scores in one ranked list -- EMSphInx' own metric
+        inconsistency, preserved -- so prefer the default
+        ``refine=True`` whenever operators are given. On an exact
+        score tie the base orientation stays ahead of its variants.
+        There is no dedup of variants: two operators whose variants
+        Newton-converge into the same peak (operators near a true
+        symmetry, a strong signal) both keep their rows at
+        ``n_best > 1``, distinguished only by their variant index,
+        as in EMSphInx. Each operator costs one Newton refinement
+        per pattern, measured 0.92-1.04 ms per operator at a
+        bandwidth of 68 on the Ni master against 17.6 ms for the
+        full per-pattern pipeline (56.8, 54.0, 51.4 and 46.0
+        patterns per second at 0, 1, 2 and 4 operators on one
+        worker); the automatic chunk sizing knows nothing of this
+        per-operator cost, so prefer a smaller explicit
+        ``chunksize`` for runs with many operators.
+
+        **One candidate per phase**, plus one per pseudo-symmetry
+        operator for the single phase when ``pseudo_symmetry_ops`` is
+        given (up to ``1 + n_ops`` candidates); secondary peaks of
+        one phase are still not extracted. ``n_best`` counts
+        candidates, not peaks, so a row at or beyond the number of
+        candidates (``P (1 + N)`` with ``P`` phases and ``N``
+        operators) keeps the invalid phase ``-1``, the identity
+        rotation and a score of ``0``. Only phases which win at least
+        one point appear in ``xmap.phases``; the losing ones stay in
         ``SphericalIndexer.phases`` and in the ``"nbest_phase_id"``
         property. A rotated copy of a structure is indistinguishable
         from it by design, since the correlation peak does not change
@@ -2354,6 +2392,13 @@ class EBSD(KikuchipySignal2D):
         phase_id[keep] = res["phase_id"]
         iq = np.zeros(n_all, dtype=np.float64)
         iq[keep] = res["iq"]
+        # Present exactly when operators were passed (a size-0
+        # rotation is ``None``-equivalent); masked points keep the
+        # fill ``-1`` of the result contract
+        psym_index = None
+        if indexer.pseudo_symmetry_ops is not None:
+            psym_index = np.full((n_all, n_best), -1, dtype=np.int32)
+            psym_index[keep] = res["pseudo_symmetry_index"]
 
         # ``scores`` first, as dictionary and Hough indexing list it
         prop = {}
@@ -2365,7 +2410,13 @@ class EBSD(KikuchipySignal2D):
             # A crystal map holds one phase per point, so the phase of
             # every candidate goes into its own property
             prop["nbest_phase_id"] = phase_id
+            if psym_index is not None:
+                prop["nbest_pseudo_symmetry_index"] = psym_index
         prop["iq"] = iq
+        if psym_index is not None:
+            # The winner-only property, the exact mirror of the NCC
+            # ``refine_orientation`` contract
+            prop["pseudo_symmetry_index"] = psym_index[:, 0]
 
         step_sizes = tuple(a.scale for a in am.navigation_axes[::-1])
         xmap_kw, _ = create_coordinate_arrays(nav_shape, step_sizes)

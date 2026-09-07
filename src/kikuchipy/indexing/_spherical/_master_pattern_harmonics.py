@@ -2123,8 +2123,37 @@ class MasterPatternHarmonics:
         construction and visualization tool and never a per pattern
         operation.
         """
-        raise NotImplementedError(
-            "Rotating spherical harmonic coefficients is not implemented yet"
+        from orix.crystal_map import Phase
+
+        from kikuchipy.indexing._spherical._euler import quaternion_to_zyz
+        from kikuchipy.indexing._spherical._wigner import rotate_harmonics
+
+        # The frozen Wigner identity: ``rotate_harmonics(alm, zyz)``
+        # synthesizes ``g(n) = f((~R) * n)`` with
+        # ``R = Rotation(zyz_to_quaternion(zyz))``, so passing the ZYZ
+        # angles whose quaternion is the given rotation realises the
+        # active contract above exactly
+        zyz = quaternion_to_zyz(rotation.data).reshape(3)
+        alm = rotate_harmonics(self.alm, zyz)
+        if self.phase is None:
+            phase = None
+        else:
+            # The uniform neutralization: a phase whose point group
+            # claims no z fold and no equatorial mirror, keeping the
+            # material identity.  The constructor derives the flags
+            # from this point group and a claim of no symmetry never
+            # warns nor downgrades
+            phase = Phase(
+                name=self.phase.name,
+                point_group="1",
+                structure=self.phase.structure,
+            )
+        return type(self)(
+            alm,
+            phase=phase,
+            beam_energy=self.beam_energy,
+            sample_tilt=self.sample_tilt,
+            original_metadata=deepcopy(self.original_metadata),
         )
 
     def power_spectrum(self) -> np.ndarray:
