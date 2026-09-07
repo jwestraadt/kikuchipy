@@ -2008,6 +2008,7 @@ class EBSD(KikuchipySignal2D):
         gaussian_background: bool = False,
         circular_mask: bool = False,
         emsphinx_compatible: bool = True,
+        pseudo_symmetry_ops: Rotation | None = None,
         chunksize: int | None = None,
         verbose: int = 1,
     ) -> CrystalMap:
@@ -2077,6 +2078,19 @@ class EBSD(KikuchipySignal2D):
             the two defects of its peak interpolation. Default is
             ``True``, which EMSphInx parity requires, see the
             ``Notes``.
+        pseudo_symmetry_ops
+            Pseudo-symmetry operators to test at every map point, as
+            an :class:`~orix.quaternion.Rotation` of any shape
+            (flattened internally), in the convention of
+            :meth:`refine_orientation`: each map point's candidates
+            are its best orientation and that orientation with each
+            operator applied, every operator candidate is Newton
+            refined whatever ``refine`` says, and the candidate with
+            the highest score wins. If given, the returned crystal
+            map has the property ``"pseudo_symmetry_index"`` with the
+            1-based index of the winning operator, ``0`` where the
+            unmodified orientation won. Requires a single phase.
+            ``None`` by default.
         chunksize
             Number of patterns to index per chunk. If not given, it is
             estimated from the bandwidth, the number of patterns and
@@ -2297,6 +2311,7 @@ class EBSD(KikuchipySignal2D):
             bandwidth=bandwidth,
             normalize=normalize,
             refine=refine,
+            pseudo_symmetry_ops=pseudo_symmetry_ops,
             signal_mask=signal_mask,
             n_regions=n_regions,
             gaussian_background=gaussian_background,

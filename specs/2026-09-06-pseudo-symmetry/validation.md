@@ -49,8 +49,10 @@ uv run pytest tests/test_indexing tests/test_signals -k "spherical" -n 4
   bw 68 or 88): the return holds the identity plus (close to) the
   24 proper Oh rotations (Phase 4 measured exactly this cube,
   roadmap.md:66); each op within an MTP angular tolerance of a
-  proper Oh rotation; intensities ~1.0 within MTP; identity peak
-  intensity == 1.0 within MTP (kills a wrong `v_max`); intensities
+  proper Oh rotation; intensities MTP (AMENDED 2026-09-07: the
+  drafted "~1.0 with identity == 1.0" expectation is withdrawn --
+  the identity-seeded refine's stalled `v_max` makes values above 1
+  the faithful expectation, see Recorded results); intensities
   sorted descending. [D9.1, roadmap box 2]
 - `test_ni_ops_subset_of_oh` / `test_ni_exclude_symmetry_empty`
   (`True` -> zero operators): both sequenced after the count pin so
@@ -293,3 +295,264 @@ the failing-tests gate (placeholder inventory), the implementation
 gate (measurements + pins, with recipes), and the review gate
 (re-measurements), each in its own dated subsection, per the Phase
 10 pattern.
+
+### 2026-09-07 (failing-tests gate, Stage A)
+
+Measurements taken before any Phase 8 implementation exists, from
+pure geometry (merged `_euler`/`_wigner`/`_xcorr` code) and from the
+shipped `MasterXcorr.exe` (60f3517, `build/Release`, machine-wide
+program lock held, isolated temp CWDs).  Scripts:
+`phase8_geometry_measurements.py` and `phase8_masterxcorr_runs.py`
+(session scratchpad; commands `uv run python <script>`).  Pinned
+into the failing tests where noted; everything needing
+`find_pseudo_symmetry_operators` or the indexing loop stays a
+`MEASURED-THEN-PINNED` FIXME-pin placeholder.
+
+1. **D2 seed-chain identity, machine-verified** (was line-verified
+   only, D11): over 2000 random `(zyz, op)` pairs,
+   `rotation_to_zyz(op * rotation_from_zyz(zyz))` equals the literal
+   C++ chain `qu2zyz(zyz2qu(zyz) * q_file)` with `q_file = (~op).data`
+   to a worst deviation of **8.882e-16 rad** (quaternion components
+   2.22e-16).  The spec's 1e-14 pin stands with ~11x margin; pinned
+   in `test_seed_chain_matches_cpp`.
+2. **D2.6a golden literal**: `op = from_axes_angles([1, 2, 3],
+   25 deg)` gives `(~op).data =` `0.9762960071199334
+   -0.057845920020143056 -0.11569184004028611 -0.17353776006042917`
+   (`op * op` = 50 deg, non-involutory confirmed).  Frozen file body
+   `"qu\n1\n<row>\n"` pinned bytes-exact in
+   `test_write_golden_bytes`.
+3. **Two-phase direction, machine-verified** (D2.6c/D3.9): at bw 24
+   on a random real spectrum, the peak of
+   `correlate(f, rotate_harmonics(f, zyz_r))` with
+   `zyz_r = (0.9, 0.7, -0.4)` lands on
+   `rotation_from_zyz(zyz_r)` to 0.000000 deg while its inverse is
+   97.884642 deg away.  Hence for `h2 = h.rotate(S)` the returned
+   operator is exactly `~S` (equivalently: the phase-1 equivalent of
+   a phase-2 orientation is `op * O_2`, consistent with the Phase 6
+   composed-orientation identity).  Exact-direction assertions
+   pinned in `test_two_phase_rotated_copy`.
+4. **MasterXcorr.exe runs, bw 88, EMsoft `ni_mc_mp_20kv.h5`
+   (cached), each ~1 s** (`MasterXcorr 88 <cutoff> <ni.h5>`):
+   - Single-file (auto) mode, cutoff 0.9: `maximum intensity:
+     0.719309`; **22 printed rows** -- 7 at intensity 1.3521 (the
+     three 180-degree axis rotations, four 90-degree z/x-adjacent
+     ops as printed) and 15 at 1.2082 (the eight 120-degree <111>
+     ops, remaining 90-degree and 180-degree <110> ops).  Cutoff
+     0.5 adds one row: `0.8653  0.000000 0.012636 -0.703813
+     0.710273` (a displaced near-C2' at the glide edge); 23 local
+     maxima extracted in both runs.
+   - **Two findings that REFUTE drafted D9.1 expectations** (D11
+     correction path; requirements.md amendment left to the
+     orchestrator since this stage only appends here): (a) the
+     **identity peak is NOT in the printed list** -- its cell sits
+     at the stored beta edge (beta = -pi/175) and the identity-cell
+     seeded reference refinement stalls at 0.719309 = 74 % of the
+     true peak value (0.972597); (b) consequently the printed
+     **intensities sit ABOVE one** (1.3521/1.2082), not "~1.0", and
+     the "identity peak intensity == 1.0" pin is unsatisfiable as
+     drafted.  The kikuchipy port reproduces the same seeds (D3.3),
+     so the parity pins in the failing tests use the measured
+     22-row/1.3521/1.2082/0.719309 values instead; the v_max mutant
+     of plan 7.2 still dies (an argmax-seeded v_max rescales every
+     intensity to 1.0000/0.8936, far outside the 5 % band).
+   - **D8.2i correction, measured**: `masterFile1 == masterFile2`
+     is a FILENAME STRING comparison (`master_xcorr.cpp:87`), so
+     "the same ni h5 passed TWICE" (same spelling) does NOT
+     exercise the two-file branch -- output byte-identical to the
+     single-file run.  Passing the same file under two path
+     SPELLINGS (backslash vs forward slash) does: `maximum
+     intensity: 0.972597` (coarse-argmax seeding), intensities
+     1.0000 (7 rows), 0.8936 (15 rows), 0.6400 (edge row, cutoff
+     0.5).  `test_two_file_branch_same_master` keeps its planned
+     name and uses the two-spellings route; both v_max values are
+     pinned at rel 0.05.
+   - Stdout format facts of D2.7 confirmed: intensity at fixed
+     precision 4, quaternion via `Quat::to_string(6)` with a
+     leading alignment space per non-negative component (double
+     spaces present); the four hard-coded CWD outputs
+     (`pseudo_sym.h5` 21.6 MB, `.xdmf`, two SVGs) confirmed
+     written, so every exe run keeps its isolated CWD.
+5. **Placeholder inventory (FIXME-pin markers in the committed
+   failing tests)**: `NI_OPS_COUNT`/`NI_OH_ANGLE_TOL_DEG`/
+   `NI_TOP_INTENSITY` (pure-Python .sht/bw-68 route),
+   `BLEND_ANGLE_TOL_DEG`/`BLEND_INTENSITY_BOUNDS`, the off-grid
+   0.95-factor discriminating cutoff, `MASTERXCORR_INTENSITY_RTOL`,
+   `TRUE_OP_TIE_RTOL`, `RANKED_VARIANT_TOL_DEG`,
+   `DUPLICATE_ROW_TOL_DEG`, `KILLER_WINNER_TOL_DEG`, and every
+   `RESCUE_*` lever/tolerance of the D9.5 scenario (deterministic
+   construction still to be established, fallback recorded in the
+   test docstring).
+6. **Stage A test-design deviations, recorded for the review**:
+   (a) `test_dedup_three_deg_pair` is implemented at unit level on
+   `_dedup_keep_brighter` with BOTH discriminating geometries (3
+   and 6 degrees of misorientation, i.e. 1.5 and 3 degrees of
+   quaternion-dot half-angle) -- validation.md's "3 deg apart in
+   quaternion-dot space ... one kept" is internally inconsistent
+   with D3.5's frozen metric (at 3 deg of half-angle nothing
+   merges); the end-to-end blend construction is deferred to the
+   implementation-gate measurement.  (b)
+   `test_spherical_indexing_perturbation_oracle` asserts index 0
+   everywhere with unmoved winners: the NCC 2/1/0 scheme perturbs a
+   STARTING map, which from-scratch global indexing does not have;
+   the exact NCC indices live in
+   `test_conjugation_killer_via_psymfile` and the nonzero spherical
+   winner-index path in `test_rescue_scenario` (D9.5).  (c) The
+   D9.6 local-master candidate filenames are provisional
+   placeholders pending open question 9.5.
+7. **Gated binary tests first-executed (Stage A bonus; they need no
+   Phase 8 kikuchipy code)**, `KIKUCHIPY_EMSPHINX_DIR` set to the
+   local checkout, machine-wide lock via the `emsphinx_program`
+   fixture, command `KIKUCHIPY_EMSPHINX_DIR=... uv run pytest
+   tests/test_indexing/test_spherical_pseudo_symmetry.py::TestIndexEBSDPsymFile
+   -n 0 -q`:
+   - **All four `TestIndexEBSDPsymFile` tests PASS (1.2 s)** -- the
+     D1 inertness baseline is now executable-verified, not only
+     line-verified: one-op psymfile run exits 0 and writes `Scan 1`
+     + `Scan 2` (unpadded names); `Scan 1` is data-set-level equal
+     to the no-psymfile run excluding the `EMheader`
+     StartTime/StopTime/PatPerS fields (image maps never compared);
+     `Scan 2/EBSD/Data` carries Phase = 255 (uint8), Metric = 0,
+     IQ = 0 and a Phi1/Phi/Phi2 triple whose rotation is the
+     identity to < 1e-4 deg -- exactly the corrected D1 ground
+     truth.  The eu-type, count-mismatch and two-master+psymfile
+     error paths all exit non-zero.  These gated tests pass at the
+     failing-tests stage BY DESIGN: they pin the shipped binary,
+     not Phase 8 code.
+   - `TestMasterXcorrParity::test_two_file_branch_same_master` run
+     gated: the exe leg (two path spellings, argmax-seeded
+     `maximum intensity` 0.972597, top row 1.0000) passes its
+     assertions and the test then fails on
+     `find_pseudo_symmetry_operators`'s `NotImplementedError` -- the
+     right reason -- validating the stdout parser and both vMax
+     pins against the real binary.
+8. **Whole-suite health at the failing-tests stage**: `uv run
+   pytest tests/test_indexing tests/test_signals -k "spherical"
+   -n 4 -q` gives **52 failed, 3063 passed, 738 skipped in 139 s**;
+   the 52 failures are exactly the new Phase 8 tests (51
+   `NotImplementedError`, 1 the `(9, 2, 6) != (9, 2, 7)` row-width
+   assertion), and full-repo collection is clean (4822 tests).  The
+   8 new tests that PASS at this stage are deliberate pins of
+   state the skeleton already establishes: the four export names +
+   sorted `__all__` + docstring hygiene, the refine-rows-stay-6
+   split-constant pin, and the two amended signature pins
+   (`pseudo_symmetry_ops: None` in both frozen-defaults dicts, plus
+   the after-`emsphinx_compatible` placement pin).
+
+### 2026-09-07 (failing-tests gate, Stage A -- test-critic fixes)
+
+The Stage A test-critic review returned 3 majors, 5 minors and 3
+nits against the committed failing tests.  Dispositions (applied
+unless stated), with the re-run evidence at the end:
+
+1. **Major, slP-vs-sl scan mutant unkillable (APPLIED)**: every
+   drafted bandwidth satisfied `fast_size(2*bw-1) == 2*bw-1`, so
+   the D3.4 recorded deviation (scan the true `(bwP, slP, slP)`
+   cube) had no killer despite plan 7.2 naming one.  Added
+   `NON_COINCIDENT_BANDWIDTH = 64` (127 prime, `fast_size` 128) and
+   two tests: `test_local_maxima_finds_a_planted_off_fast_grid_peak`
+   (unit, synthetic `(65, 128, 128)` cube, planted interior peak
+   pinned by exact flat index, a super-threshold non-maximum
+   shoulder rejected, `emsphinx_compatible` threaded both ways) and
+   `test_volume_shape_at_a_non_coincident_bandwidth` (the volume
+   shape where it discriminates).
+2. **Major, D3 step-1 "caller's objects never modified" uncovered
+   (APPLIED)**: added `test_callers_harmonics_are_never_modified`
+   (auto and two-phase modes; `alm` snapshot compared
+   `np.array_equal` after the call) -- kills the removeDC-in-place
+   mutant, which idempotence hides from every value test, and
+   protects the suite's lru-cached shared harmonics.
+3. **Major, hollow "NOT inversion closed" claim on the ni/al weekly
+   run (APPLIED in the test file; wording here is the
+   orchestrator's)**: Ni and Al are both fcc m-3m in the same
+   EMsoft setting, so the cross-master peak set is (near-)identity
+   composed with proper Oh -- inversion closed and
+   conjugation-blind like the Ni autocorrelation parity.
+   `test_two_master_parity_al`'s docstring now states this honestly:
+   NO binary run anywhere compares kikuchipy's quaternion DIRECTION;
+   that burden rests wholly on the pure-Python D2.6c rotated-copy
+   oracle (machine-verified, inverse 97.9 deg away) plus the D2
+   derivation.  **Recorded oracle gap**: a systematic error in the
+   D2 derivation itself would leave kikuchipy self-consistent yet
+   divergent from EMSphInx undetected.  The critic's candidate
+   closer -- MasterXcorr on ni.h5 vs a rotated-ni EMsoft h5 written
+   by the test -- is REJECTED for this phase: it needs harmonic
+   synthesis onto the EMsoft Lambert grid plus an EMsoft-h5 writer
+   the binary accepts, machinery outside Phase 8 scope; revisit if
+   the D8.5 manual `feature/GPU` rebuild oracle is run, which also
+   closes the direction question.  This item must reach the
+   orchestrator's amendment pass (the automated/weekly sections
+   above still carry the refuted wording).
+4. **Minor, data-dependent tie pin (APPLIED)**: added
+   `test_a_forced_exact_tie_keeps_the_base_first` (indexer suite):
+   monkeypatched `correlate` AND `refine_zyz` return one fixed
+   score, so base and variant tie exactly on every pattern and the
+   `upper_bound` strictly-beats rule must keep the base row first
+   with index 0 -- the plan-7.2 tie-rule-inversion killer made
+   deterministic, in the file's established monkeypatch style.
+   `test_true_op_ties_base` keeps its measured-tie clause but its
+   docstring now names it data-dependent.
+5. **Minor, rescue fixture intensity scale (APPLIED)**:
+   `test_rescue_scenario` now calls `get_patterns(...,
+   dtype_out=np.uint8)`, rescaling synthesis to [0, 255] so the
+   sigma-40 noise and the `clip(0, 255).astype(uint8)` perturb
+   rather than destroy the signal -- a structural fixture bug that
+   risked the implementation-gate measurement concluding "no
+   deterministic construction survives" for a fixable reason.
+6. **Minor, error paths pinned returncode only (APPLIED)**: the
+   three gated rejection tests now also pin the thrown message in
+   stdout+stderr (`index_ebsd.cpp:193` prints `e.what()` to
+   stdout): "only quaternion angle files are supported", "not
+   enough orientions in angle file" (the binary's own typo), and
+   "psuedo-symmetry files currently only supported for single phase
+   indexing" -- fail-for-the-right-reason by construction,
+   re-verified against the shipped exe (all four gated tests pass,
+   0.8 s).
+7. **Minor, dedup keep-the-last-seen mutant (APPLIED)**:
+   `test_dedup_three_deg_pair` gained the mirrored brighter-FIRST
+   geometry (intensities [0.9, 0.7] -> keep [True, False]).
+8. **Minor, no frozen-defaults pin on `find_` (APPLIED)**: added
+   `test_signature_defaults_are_the_d3_frozen_ones` (defaults dict
+   per the suite's freeze convention, `cutoff` deliberately
+   excluded per open question 9.4, keyword-only tail pinned).  It
+   passes at this stage (a signature pin on the skeleton), raising
+   the deliberate Stage A passes from 8 to 9.  The critic's
+   observation that no test toggles `emsphinx_compatible=False` on
+   `find_` is PARTIALLY addressed: the new `_local_maxima` unit
+   test threads the flag both ways (interior peak, semantics agree);
+   an edge-glide discriminating case remains an implementation-gate
+   review item.
+9. **Nit, misleading test name (APPLIED)**:
+   `test_ni_identity_plus_oh_count` renamed
+   `test_ni_proper_oh_count` to match the measured 22-row,
+   identity-absent reality.  The automated section above and the
+   D9.1 wording still carry the drafted name/phrasing -- orchestrator
+   amendment pending.
+10. **Nit, stale collection count (APPLIED as a correction here)**:
+    the Stage A record's "4822 tests" was stale; the critic
+    measured 4826 on the same tree and the post-fix tree collects
+    **4831 tests, cleanly** (4826 + the 5 new tests).
+11. **Nit, blanket `except Exception: skip` in `_full_ni_h5_path`
+    (APPLIED)**: the `Dataset` is now constructed OUTSIDE the try
+    (a registry typo raises `KeyError` loudly) and the except is
+    narrowed to `(ImportError, ValueError)`; the Al fetch in the
+    weekly test got the same treatment.  Of the two kin: the
+    MasterXcorr parity nearest-matching is now asserted to be a
+    BIJECTION in both parity tests (a duplicated match can no
+    longer mask a missing peak under count parity); the absence of
+    a direct find_-side no-post-refinement-dedup test (D3.6) is
+    ACCEPTED as a recorded review item -- the indexer-side
+    `test_duplicate_variant_rows_survive` pin and the D8.1 count
+    parity (which fails if a second dedup collapses the two
+    surviving refined duplicates the binary prints) carry it until
+    the implementation-gate review.
+
+**Re-run evidence (2026-09-07, post-fix)**: the four Phase 8 files
+(`test_spherical_indexer.py`, `test_spherical_pseudo_symmetry.py`,
+`test_ebsd_spherical_indexing.py`,
+`test_spherical_master_pattern_harmonics.py`) give **56 failed, 323
+passed, 17 skipped in 17 s** at `-n 4` (`-n 0` runs of the two
+touched files first): the 56 = the prior 52 + the 4 new
+right-reason failures, all 55 `NotImplementedError` plus the one
+expected `(9, 2, 6) != (9, 2, 7)` row-width assertion; the gated
+`TestIndexEBSDPsymFile` passes 4/4 against the shipped exe with the
+new message pins; full-repo collection is clean at **4831 tests**.

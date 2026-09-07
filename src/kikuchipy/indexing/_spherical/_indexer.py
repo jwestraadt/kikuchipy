@@ -310,6 +310,8 @@ from kikuchipy.indexing._spherical._xcorr import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
+    from orix.quaternion import Rotation
+
     from kikuchipy.detectors import EBSDDetector
 
 # The golden ratio reciprocal of ``BatchEstimate()``
@@ -323,6 +325,16 @@ _BATCH_TIME_SCALE = 1e-8
 # Number of packed columns of one result row: the three ZYZ Euler
 # angles, the score, the phase identifier and the image quality
 _ROW_WIDTH = 6
+
+# The split row widths of the packed-row contract amendment (D4 of
+# spec 2026-09-06-pseudo-symmetry): INDEXING rows widen to seven
+# columns -- the six above plus a trailing pseudo-symmetry variant
+# index (0.0 = the base orientation won, i = ``ops[i - 1]``, -1.0 on
+# fill rows and failed patterns) -- while REFINE-ONLY rows stay at
+# six.  ``_ROW_WIDTH`` above is rewired onto this split at the
+# implementation gate; until then the indexing path still packs six
+_ROW_WIDTH_INDEX = 7
+_ROW_WIDTH_REFINE = 6
 
 # Warn when the estimated memory of all workers together exceeds this
 _MEMORY_WARNING_BYTES = 2 * 1024**3
@@ -480,6 +492,39 @@ def _insert_candidate(
     rows[index, 3] = score
     rows[index, 4] = phase_id
     rows[index, 5] = image_quality
+
+
+def _variant_seed_zyz(zyz: np.ndarray, op: "Rotation") -> np.ndarray:
+    """Return the seed ZYZ Euler angles of one pseudo-symmetry
+    variant of a phase's best orientation.
+
+    Parameters
+    ----------
+    zyz
+        ``(3,)`` passive ZYZ Euler angles of the phase's best
+        (post-optional-refine) orientation, the raw grid quantity.
+    op
+        One pseudo-symmetry operator in the NCC convention: the
+        variant's map rotation is ``op * rotation_from_zyz(zyz)``.
+
+    Returns
+    -------
+    seed
+        ``(3,)`` 64-bit float ZYZ Euler angles of the variant, i.e.
+        ``rotation_to_zyz(op * rotation_from_zyz(zyz))``, from which
+        the variant is always Newton refined.
+
+    Notes
+    -----
+    Port of the seed chain of ``Indexer<Real>::indexImage()``
+    (``include/idx/indexer.hpp``, lines 242-249):
+    ``q0 = zyz2qu(zyz)``, ``qp = q0 * q_file``,
+    ``seed = qu2zyz(qp)``, where ``q_file = (~op).data`` is the
+    psymfile row of the operator.  The two chains are the same map:
+    ``~(op * ~Q0) = Q0 * (~op)`` in Hamilton algebra, measured equal
+    to 8.9e-16 radians over 2000 random pairs (recorded 2026-09-07).
+    """
+    raise NotImplementedError
 
 
 def _index_chunk(
@@ -897,6 +942,17 @@ class SphericalIndexer:
         for the coarse grid result alone.  A refined score is the
         analytic correlation at the refined rotation and is **not**
         comparable with a coarse one, see the ``Notes``.
+    pseudo_symmetry_ops
+        Pseudo-symmetry operators to test at every map point, as an
+        :class:`~orix.quaternion.Rotation` of any shape (flattened
+        internally), in the convention of
+        :meth:`kikuchipy.signals.EBSD.refine_orientation`: each
+        operator's candidate orientation is the operator composed
+        onto that phase's best orientation, and every such candidate
+        is always Newton refined, whatever ``refine`` says, exactly
+        as EMSphInx always refines its pseudo-symmetric candidates.
+        ``None`` by default.  Requires a single phase.  A size-0
+        rotation is equivalent to ``None``.
     signal_mask
         Boolean mask of the detector shape in kikuchipy polarity,
         ``True`` = ignore the pixel, as in
@@ -1136,6 +1192,7 @@ class SphericalIndexer:
         bandwidth: int = 68,
         normalize: bool = True,
         refine: bool = True,
+        pseudo_symmetry_ops: "Rotation | None" = None,
         signal_mask: np.ndarray | None = None,
         n_regions: int = 10,
         gaussian_background: bool = False,
@@ -1149,6 +1206,14 @@ class SphericalIndexer:
                 f"Bandwidth {bandwidth} is an unreasonable bandwidth "
                 f"(should be [{smallest}, {largest}])"
             )
+
+        # The pseudo-symmetry loop of ``indexImage()``
+        # (``indexer.hpp`` lines 241-261) lands at the
+        # implementation gate of spec 2026-09-06-pseudo-symmetry;
+        # validation (flatten, size-0 None-equivalence, the
+        # single-phase rule) and threading land with it
+        if pseudo_symmetry_ops is not None:
+            raise NotImplementedError("pseudo_symmetry_ops is not implemented yet")
 
         if isinstance(harmonics, MasterPatternHarmonics):
             phases = (harmonics,)
@@ -1294,6 +1359,7 @@ class SphericalIndexer:
         self.bandwidth = bandwidth
         self.normalize = bool(normalize)
         self.refine = bool(refine)
+        self.pseudo_symmetry_ops = None
         self.projector = projector
         self.correlators = correlators
         self.correlator = correlator

@@ -54,6 +54,9 @@ Submodules
 ``_preprocessing``
     EMSphInx pattern preprocessing: Gaussian background, mosaic
     adaptive histogram equalisation.
+``_pseudo_symmetry``
+    Pseudo-symmetry operator prediction (the ``MasterXcorr`` port)
+    and the EMSphInx psymfile codec.
 ``_sht``
     Discrete spherical harmonic transform on those grids.
 ``_sht_file``

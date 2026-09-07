@@ -625,12 +625,31 @@ drafting** (D11).
    matches within an MTP band, and for Ni both engines find the
    identity + proper-Oh set. This pins the whole un-conjugated
    prediction space.
+   **AMENDED 2026-09-07 (Stage A binary measurement, validation.md
+   Recorded results)**: the exe's auto-mode `v_max` comes from the
+   identity-cell-seeded refine, which STALLS at 74 % of the true
+   peak on the Ni h5 at bw 88 (measured `v_max = 0.719309`), so
+   printed intensities EXCEED 1 (22 rows at cutoff 0.9: 7 at
+   1.3521, 15 at 1.2082 -- proper Oh minus identity minus one
+   folded C2'; one further edge row 0.8653 appears at cutoff 0.5).
+   The drafted "identity + proper-Oh set with intensities ~1.0"
+   expectation is withdrawn for the exe route; the parity test pins
+   the measured rows, and the kikuchipy-side values stay MTP at the
+   implementation gate (a faithful port of the same seeding is
+   expected to reproduce the stall).
 2. **Two-phase (cross-master) oracle runs**: the two-file branch is
    the one mode that can expose a conjugation/argument-order error
    the autocorrelation killers cannot (D2.6c). Two runs:
-   (i) **mandatory local-gated discriminator** -- the same ni h5
-   passed TWICE (exercises the two-file branch: argmax seeding
-   instead of the identity cell; no new data needed);
+   (i) **mandatory local-gated discriminator** -- the ni h5 passed
+   under two different PATH SPELLINGS of the same file (exercises
+   the two-file branch: argmax seeding instead of the identity
+   cell; no new data needed). **AMENDED 2026-09-07**: the drafted
+   "same path twice" run is vacuous -- the auto/two-file branch is
+   selected by FILENAME STRING equality (`master_xcorr.cpp:87`), so
+   identical spellings are byte-identical to auto mode; two
+   spellings of one file route through the two-file branch
+   (measured: `v_max = 0.972597` argmax-seeded, top intensities
+   1.0000/0.8936/0.6400 -- pinned in the gated test);
    (ii) a **true two-master parity run** against
    `ebsd_master_pattern("al")` (weekly, download-gated, ~0.3 GB
    cached per tech-stack.md:50; skip cleanly without pooch) -- if
@@ -670,7 +689,14 @@ roadmap Phase 8 test box, is layered, the limitation documented, and
    master autocorrelation must return the identity plus (close to)
    the 24 proper Oh rotations (Phase 4 measured exactly this cube,
    roadmap.md:66), with a per-op angular tolerance and intensities
-   ~1.0 measured-then-pinned (execution-gated placeholders). The
+   measured-then-pinned (execution-gated placeholders).
+   **AMENDED 2026-09-07**: the drafted "intensities ~1.0 with
+   identity == 1.0" expectation is withdrawn -- the 2026-09-07
+   `MasterXcorr.exe` measurement (validation.md Recorded results)
+   shows intensities are normalised by the identity-seeded refine's
+   stalled `v_max` (74 % of the true peak on Ni at bw 88), so
+   values above 1 are the faithful expectation; the kikuchipy-side
+   pins stay MTP at the implementation gate. The
    subset-of-Oh and `exclude_symmetry=True`-empty tests remain but
    are sequenced after the count pin so neither is vacuous. Wrong
    op (30 deg z-rotation, not in Oh) ->

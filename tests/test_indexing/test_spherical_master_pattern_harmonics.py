@@ -1808,11 +1808,141 @@ class TestDescribeAndRepr:
         assert "rotations are ? with pijk = 1" in harmonics.describe()
 
 
+def _evaluate_harmonics(alm, direction):
+    """Evaluate the real function of a coefficient array at one unit
+    direction, through :func:`scipy.special.sph_harm_y` -- machinery
+    independent of the package's own transforms, so the direction
+    oracle below is not circular.
+
+    Only orders ``m >= 0`` are stored; the ``-m`` term of a real
+    function is the conjugate of the ``+m`` one
+    (``a_{l,-m} Y_{l,-m} = conj(a_{lm} Y_{lm})``), so every ``m > 0``
+    entry contributes twice its real part.
+    """
+    from scipy.special import sph_harm_y
+
+    x, y, z = (float(v) for v in np.asarray(direction).ravel())
+    theta = np.arccos(np.clip(z, -1.0, 1.0))
+    phi = np.arctan2(y, x)
+    bandwidth = alm.shape[0]
+    value = 0.0
+    for degree in range(bandwidth):
+        for order in range(degree + 1):
+            term = alm[order, degree] * sph_harm_y(degree, order, theta, phi)
+            value += term.real if order == 0 else 2.0 * term.real
+    return float(value)
+
+
 class TestRotate:
-    def test_rotate_defers_to_phase_three(self):
-        harmonics = MasterPatternHarmonics(np.zeros((4, 4), np.complex128))
-        with pytest.raises(NotImplementedError, match="Phase 3"):
-            harmonics.rotate(Rotation.identity())
+    """``MasterPatternHarmonics.rotate`` per D7 of the Phase 8 spec
+    (``specs/2026-09-06-pseudo-symmetry``): the active-rotation
+    contract ``g(n) = f((~rotation) n)`` on top of the tested
+    ``_wigner.rotate_harmonics``, with uniform symmetry-flag
+    neutralization.  Replaces the pinned ``NotImplementedError``
+    stub test (plan 0.5).  [D7]"""
+
+    @staticmethod
+    def _random_harmonics(bandwidth=8):
+        return MasterPatternHarmonics(_legendre_alm(bandwidth))
+
+    def test_rotate_composition(self):
+        # ``h.rotate(r1).rotate(r2) == h.rotate(r2 * r1)`` on the
+        # coefficients.  [D7]
+        harmonics = self._random_harmonics()
+        r1 = Rotation.from_axes_angles([1.0, 2.0, 3.0], 0.7)
+        r2 = Rotation.from_axes_angles([-1.0, 0.5, 2.0], 1.1)
+        chained = harmonics.rotate(r1).rotate(r2)
+        direct = harmonics.rotate(r2 * r1)
+        assert np.allclose(chained.alm, direct.alm, atol=1e-12)
+
+    def test_rotate_direction(self):
+        # the synthesis oracle: the rotated synthesis at the north
+        # pole equals the unrotated function at ``(~R) * e_z``,
+        # evaluated through scipy.  The probe function is a generic
+        # random spectrum and the axis is generic, so the flipped
+        # direction ``f(R n)`` gives a different value.  The scipy
+        # evaluator itself is validated against the unrotated
+        # synthesis first.  [D7]
+        from orix.vector import Vector3d
+
+        harmonics = self._random_harmonics()
+        dim = 2 * harmonics.bandwidth + 1
+        center = dim // 2
+
+        unrotated = harmonics.to_master_pattern(dim=dim).data
+        pole_value = _evaluate_harmonics(harmonics.alm, (0.0, 0.0, 1.0))
+        assert unrotated[0][center, center] == pytest.approx(pole_value, abs=1e-8)
+
+        rotation = Rotation.from_axes_angles([1.0, 2.0, 3.0], 0.9)
+        rotated = harmonics.rotate(rotation).to_master_pattern(dim=dim).data
+        north = ((~rotation) * Vector3d.zvector()).data.ravel()
+        south = ((~rotation) * -Vector3d.zvector()).data.ravel()
+        assert rotated[0][center, center] == pytest.approx(
+            _evaluate_harmonics(harmonics.alm, north), abs=1e-8
+        )
+        assert rotated[1][center, center] == pytest.approx(
+            _evaluate_harmonics(harmonics.alm, south), abs=1e-8
+        )
+        # and the flipped direction is measurably different, so the
+        # oracle bites
+        wrong = (rotation * Vector3d.zvector()).data.ravel()
+        assert (
+            abs(
+                _evaluate_harmonics(harmonics.alm, north)
+                - _evaluate_harmonics(harmonics.alm, wrong)
+            )
+            > 1e-3
+        )
+
+    def test_rotate_identity_noop(self):
+        # a no-op on the COEFFICIENTS only: the returned object's
+        # flags are still neutralized by the uniform D7 rule, so
+        # the assertion never compares the full object.  Resized to
+        # a small bandwidth: ``rotate`` allocates a full Wigner
+        # table of the bandwidth.  [D7]
+        ni = _ni_harmonics_from_file().resize(32)
+        returned = ni.rotate(Rotation.identity())
+        assert np.allclose(returned.alm, ni.alm, atol=1e-12)
+
+    def test_rotate_round_trip(self):
+        # ``rotate(R).rotate(~R)`` recovers the coefficients.  [D7]
+        harmonics = self._random_harmonics()
+        rotation = Rotation.from_axes_angles([0.3, -1.0, 0.4], 1.3)
+        returned = harmonics.rotate(rotation).rotate(~rotation)
+        assert np.allclose(returned.alm, harmonics.alm, atol=1e-12)
+
+    def test_rotate_neutralizes_symmetry_flags(self):
+        # the uniform rule: whatever the rotation, the returned
+        # object claims no z fold and no equatorial mirror, since a
+        # rotation about anything but z falsifies both and the
+        # correlator folds its cube by these very flags.  [D7]
+        ni = _ni_harmonics_from_file().resize(32)
+        assert ni.n_fold == 4
+        assert ni.has_equatorial_mirror is True
+        for rotation in (
+            Rotation.identity(),
+            Rotation.from_axes_angles([0, 0, 1], 0.5),
+            Rotation.from_axes_angles([1, 1, 0], 0.5),
+        ):
+            returned = ni.rotate(rotation)
+            assert returned.n_fold == 1
+            assert returned.has_equatorial_mirror is False
+
+    def test_rotate_matches_rotate_harmonics(self):
+        # the plumbing pin: ``h.rotate(R)`` is
+        # ``rotate_harmonics(h.alm, zyz)`` for the derived
+        # ``zyz = quaternion_to_zyz(R.data)``, i.e. the zyz whose
+        # ``Rotation(zyz_to_quaternion(zyz))`` is ``R`` -- the
+        # frozen Wigner identity of the tech stack.  [D7]
+        from kikuchipy.indexing._spherical._euler import quaternion_to_zyz
+        from kikuchipy.indexing._spherical._wigner import rotate_harmonics
+
+        harmonics = self._random_harmonics()
+        rotation = Rotation.from_axes_angles([2.0, -1.0, 1.0], 0.8)
+        zyz = quaternion_to_zyz(rotation.data)[0]
+        expected = rotate_harmonics(harmonics.alm, zyz)
+        returned = harmonics.rotate(rotation)
+        assert np.allclose(returned.alm, expected, atol=1e-12)
 
 
 class TestSymmetryGuardOnConstruction:

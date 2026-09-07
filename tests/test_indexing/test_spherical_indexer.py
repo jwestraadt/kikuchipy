@@ -52,6 +52,7 @@ import dask
 import dask.array as da
 import numpy as np
 from orix.crystal_map import Phase
+from orix.quaternion import Rotation
 import pytest
 
 import kikuchipy as kp
@@ -65,15 +66,25 @@ from kikuchipy.indexing._spherical import (
     _pattern_repack,
 )
 from kikuchipy.indexing._spherical._back_projection import SphericalBackProjector
+from kikuchipy.indexing._spherical._euler import (
+    quaternion_to_zyz,
+    rotation_from_zyz,
+    rotation_to_zyz,
+    zyz_to_quaternion,
+)
 from kikuchipy.indexing._spherical._indexer import (
     SphericalIndexer,
     _batch_estimate,
     _map_chunks,
+    _variant_seed_zyz,
 )
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
 )
-from kikuchipy.indexing._spherical._preprocessing import _circular_mask
+from kikuchipy.indexing._spherical._preprocessing import (
+    _circular_mask,
+    _preprocess_pattern,
+)
 from kikuchipy.indexing._spherical._xcorr import (
     NormalizedSphericalCrossCorrelator,
 )
@@ -270,6 +281,7 @@ class TestSphericalIndexerConstruction:
             "bandwidth": 68,
             "normalize": True,
             "refine": True,
+            "pseudo_symmetry_ops": None,
             "signal_mask": None,
             "n_regions": 10,
             "gaussian_background": False,
@@ -895,6 +907,406 @@ class TestIndexPatterns:
         # dask calls the function once on an empty block to build the
         # graph's meta, which is not a chunk of patterns
         assert sorted(size for size in sizes if size > 0) == [1, 4, 4]
+
+
+# ------------- Pseudo-symmetry indexing (Phase 8 spec D4/D5) -------- #
+
+# Constants of ``specs/2026-09-06-pseudo-symmetry`` (requirement IDs
+# in the test docstrings).  Values marked MEASURED-THEN-PINNED carry
+# a FIXME-pin marker and are replaced by dated measurements at the
+# implementation gate (requirements D11).
+
+# A wrong operator: 30 degrees about z is NOT a proper Oh rotation
+WRONG_OP_DEG = 30.0
+
+# A true operator: 90 degrees about z IS a proper Oh rotation
+TRUE_OP_DEG = 90.0
+
+# MEASURED-THEN-PINNED (FIXME-pin): relative near-equality of a
+# true-symmetry variant's score and the base score
+TRUE_OP_TIE_RTOL = 5e-3
+
+# MEASURED-THEN-PINNED (FIXME-pin): misorientation tolerance between
+# a kept variant row and the operator composed onto the base row,
+# degrees
+RANKED_VARIANT_TOL_DEG = 1.0
+
+# MEASURED-THEN-PINNED (FIXME-pin): two variants converged into the
+# same peak agree to this misorientation, degrees
+DUPLICATE_ROW_TOL_DEG = 0.2
+
+# The D9.5 rescue scenario levers (all build-measured; FIXME-pin:
+# every value below is a placeholder until the construction is
+# measured deterministic, with the recorded fallback of
+# validation.md if none is)
+RESCUE_SEED = 8
+RESCUE_BANDWIDTH = 53
+RESCUE_WEIGHT = 0.95
+RESCUE_NOISE_SIGMA = 40.0
+RESCUE_PSEUDO_TOL_DEG = 5.0
+RESCUE_TRUE_TOL_DEG = 3.0
+
+
+def z_op(degrees):
+    """Return a rotation about +z by ``degrees``."""
+    return Rotation.from_axes_angles([0, 0, 1], np.deg2rad(degrees))
+
+
+def cpp_seed_zyz(zyz, op):
+    """Return the literal C++ psym seed chain
+    ``qu2zyz(zyz2qu(zyz) * q_file)`` with ``q_file = (~op).data``
+    (``indexer.hpp`` lines 242-249), through ``_euler``."""
+    q0 = Rotation(zyz_to_quaternion(np.asarray(zyz, dtype=np.float64)))
+    return quaternion_to_zyz((q0 * ~op).data)[0]
+
+
+def misorientation_deg(zyz_a, zyz_b):
+    """Return the misorientation angle in degrees between the map
+    rotations of two ZYZ triples."""
+    a = rotation_from_zyz(np.asarray(zyz_a, dtype=np.float64))
+    b = rotation_from_zyz(np.asarray(zyz_b, dtype=np.float64))
+    return float(np.rad2deg((a * ~b).angle).max())
+
+
+class TestPseudoSymmetryIndexing:
+    """The ``pseudo_symmetry_ops`` indexing loop of the Phase 8 spec
+    (``indexer.hpp`` lines 228-261 under the D1 baseline).
+    [D2, D4, D5]"""
+
+    def test_seed_chain_matches_cpp(self):
+        # the D2 unit pin: the variant seed equals the literal C++
+        # chain ``qu2zyz(q0 * q_file)`` to 1e-14, and equals the
+        # kikuchipy composition ``rotation_to_zyz(op *
+        # rotation_from_zyz(zyz))`` -- the identity behind D2.2,
+        # measured equal to 8.9e-16 over 2000 random pairs
+        # (recorded 2026-09-07).  [D2, D4]
+        rng = np.random.default_rng(42)
+        for _ in range(25):
+            zyz = np.array(
+                [
+                    rng.uniform(0, 2 * np.pi),
+                    rng.uniform(0.05, np.pi - 0.05),
+                    rng.uniform(0, 2 * np.pi),
+                ]
+            )
+            op = Rotation.from_axes_angles(
+                rng.normal(size=3), rng.uniform(0.05, np.pi - 0.05)
+            )
+            seed = _variant_seed_zyz(zyz, op)
+            expected = cpp_seed_zyz(zyz, op)
+            assert np.allclose(seed, expected, atol=1e-14, rtol=0)
+            composed = rotation_to_zyz(op * rotation_from_zyz(zyz))[0]
+            assert np.allclose(seed, composed, atol=1e-14, rtol=0)
+
+    def test_ops_multi_phase_raises(self):
+        # mirrors EMSphInx's hard throw (``idx.hpp`` lines 190-192)
+        # with the frozen kikuchipy message.  [D5]
+        with pytest.raises(
+            ValueError,
+            match="pseudo_symmetry_ops currently requires a single phase",
+        ):
+            SphericalIndexer(
+                [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics()],
+                ni_detector(),
+                pseudo_symmetry_ops=z_op(WRONG_OP_DEG),
+            )
+
+    def test_wrong_op_index_zero(self):
+        # a 30 degree z rotation is no symmetry of m-3m: its
+        # variants always lose, every winner keeps index 0 and the
+        # winning rows are bitwise the no-ops rows (the base
+        # candidate's path is untouched by the loop).
+        # [D4, D9.1, roadmap box 2]
+        plain = ni_indexer(refine=True)
+        with_ops = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            pseudo_symmetry_ops=z_op(WRONG_OP_DEG),
+        )
+        results_plain = plain.index_patterns(ni_patterns(), progressbar=False)
+        results_ops = with_ops.index_patterns(ni_patterns(), progressbar=False)
+        assert "pseudo_symmetry_index" in results_ops
+        assert "pseudo_symmetry_index" not in results_plain
+        index = results_ops["pseudo_symmetry_index"]
+        assert index.shape == (9, 1)
+        assert index.dtype == np.int32
+        assert np.array_equal(index, np.zeros((9, 1), np.int32))
+        for key in ("zyz", "scores", "phase_id", "iq"):
+            assert np.array_equal(results_ops[key], results_plain[key])
+
+    def test_true_op_ties_base(self):
+        # a true Oh operator maps the winning orientation onto an
+        # exactly equivalent one, so its variant refines into an
+        # equally deep peak: the winner index may be 0 or 1, the
+        # base wins exact ties (the ``upper_bound`` strictly-beats
+        # rule -- the D4 tie pin), and the two scores are
+        # MEASURED-THEN-PINNED near equal.  The exact-tie clause is
+        # DATA-DEPENDENT (independently refined floats may never tie
+        # bitwise, leaving it vacuously true); the deterministic pin
+        # lives in the forced-tie test below.  [D4]
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            pseudo_symmetry_ops=z_op(TRUE_OP_DEG),
+        )
+        results = indexer.index_patterns(ni_patterns(), n_best=2, progressbar=False)
+        index = results["pseudo_symmetry_index"]
+        scores = results["scores"]
+        assert np.isin(index[:, 0], [0, 1]).all()
+        assert scores[:, 1] == pytest.approx(scores[:, 0], rel=TRUE_OP_TIE_RTOL)
+        exact_tie = scores[:, 0] == scores[:, 1]
+        assert (index[exact_tie, 0] == 0).all()
+
+    def test_a_forced_exact_tie_keeps_the_base_first(self, monkeypatch):
+        # the DETERMINISTIC D4 tie-rule pin, in the file's own
+        # monkeypatch style (``test_an_equal_score_ranks_after_the
+        # _earlier_phase``): every coarse correlate and every
+        # variant ``refine_zyz`` returns the same fixed score, so
+        # the base and its variant tie EXACTLY on every pattern and
+        # the ``upper_bound`` strictly-beats rule must place the
+        # base row first with index 0.  A ``lower_bound`` port (the
+        # plan-7.2 tie-rule inversion) puts the variant first and
+        # dies here on every row, not only on a lucky bitwise tie.
+        # [D4]
+        def fixed_correlate(self, gln, **kwargs):
+            return np.array([0.5, 0.5, 0.5]), 0.75
+
+        def fixed_refine(self, gln, zyz, **kwargs):
+            return np.asarray(zyz, dtype=np.float64), 0.75
+
+        monkeypatch.setattr(
+            NormalizedSphericalCrossCorrelator, "correlate", fixed_correlate
+        )
+        monkeypatch.setattr(
+            NormalizedSphericalCrossCorrelator, "refine_zyz", fixed_refine
+        )
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            refine=False,
+            pseudo_symmetry_ops=z_op(WRONG_OP_DEG),
+        )
+        results = indexer.index_patterns(ni_patterns()[:1], n_best=2, progressbar=False)
+        scores = results["scores"][0]
+        index = results["pseudo_symmetry_index"][0]
+        assert scores[0] == 0.75
+        assert scores[1] == 0.75
+        assert index.tolist() == [0, 1]
+
+    def test_variants_refined_at_refine_false(self):
+        # ``refine=False`` skips the base refinement but NEVER the
+        # variant one (``indexer.hpp`` line 252 against 230, the
+        # preserved asymmetry): the variant row carries the analytic
+        # ``refine_zyz`` value from the C++ seed of the COARSE base,
+        # not an interpolated one.  [D4]
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            refine=False,
+            pseudo_symmetry_ops=z_op(WRONG_OP_DEG),
+        )
+        pattern = np.array(ni_patterns()[:1])
+        results = indexer.index_patterns(pattern, n_best=2, progressbar=False)
+        index = results["pseudo_symmetry_index"][0]
+        assert index[0] == 0
+        assert index[1] == 1
+
+        # the expected variant, computed through the same pipeline:
+        # coarse base (no refinement), the C++ seed chain, one
+        # analytic Newton refinement
+        plain = ni_indexer()
+        coarse = plain.index_patterns(pattern, progressbar=False)
+        seed = cpp_seed_zyz(coarse["zyz"][0, 0], z_op(WRONG_OP_DEG))
+        projector = plain.projector
+        dim = projector.dim
+        processed = _preprocess_pattern(
+            pattern[0],
+            good_pixels=None,
+            gaussian_background=False,
+            n_regions=10,
+            emsphinx_compatible=True,
+        )
+        north, south, _ = projector.unproject(
+            processed,
+            out=(np.zeros((dim, dim)), np.zeros((dim, dim))),
+            return_image_quality=True,
+        )
+        gln = projector.sht.analyze(north, south)
+        correlator = plain.correlators[0].clone()
+        zyz_expected, score_expected = correlator.refine_zyz(gln, seed)
+
+        assert results["scores"][0, 1] == pytest.approx(score_expected, rel=1e-10)
+        assert np.allclose(results["zyz"][0, 1], zyz_expected, atol=1e-10)
+        # and the base row is the coarse row, untouched
+        assert np.array_equal(results["zyz"][0, 0], coarse["zyz"][0, 0])
+        assert results["scores"][0, 0] == coarse["scores"][0, 0]
+
+    def test_n_best_ranked_variants(self):
+        # ``n_best = 1 + n_ops``: the base and every variant are
+        # kept, scores descend, the variant column names the
+        # operator each row came from, the row orientations are the
+        # operators composed onto the base, and the one row past
+        # the candidate count keeps the amended fill
+        # ``(0, 0, 0, 0, -1, 0, -1)``.  [D4]
+        ops = Rotation(np.vstack((z_op(TRUE_OP_DEG).data, z_op(180.0).data)))
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            pseudo_symmetry_ops=ops,
+        )
+        results = indexer.index_patterns(ni_patterns()[:1], n_best=4, progressbar=False)
+        scores = results["scores"][0]
+        index = results["pseudo_symmetry_index"][0]
+        assert (np.diff(scores[:3]) <= 0).all()
+        assert set(index[:3].tolist()) == {0, 1, 2}
+        base_row = int(np.flatnonzero(index[:3] == 0)[0])
+        base = rotation_from_zyz(results["zyz"][0, base_row])
+        for row in range(3):
+            k = int(index[row])
+            expected = base if k == 0 else ops[k - 1] * base
+            row_rotation = rotation_from_zyz(results["zyz"][0, row])
+            angle = np.rad2deg((row_rotation * ~expected).angle).max()
+            assert angle < RANKED_VARIANT_TOL_DEG
+        # the fill row: identity zyz, zero score and iq, phase -1,
+        # variant index -1
+        assert np.array_equal(results["zyz"][0, 3], np.zeros(3))
+        assert scores[3] == 0.0
+        assert results["phase_id"][0, 3] == -1
+        assert index[3] == -1
+
+    def test_duplicate_variant_rows_survive(self):
+        # there is NO post-refinement dedup in the indexing loop
+        # (D3.6/D4, matching EMSphInx): two operators whose
+        # variants Newton-converge into the same peak both keep
+        # their rows, distinguished only by the variant index.
+        # [D4, D3.6]
+        ops = Rotation(
+            np.vstack((z_op(TRUE_OP_DEG).data, z_op(TRUE_OP_DEG + 1.0).data))
+        )
+        indexer = SphericalIndexer(
+            ni_harmonics(NI_BANDWIDTH),
+            ni_detector(),
+            pseudo_symmetry_ops=ops,
+        )
+        results = indexer.index_patterns(ni_patterns()[:1], n_best=3, progressbar=False)
+        index = results["pseudo_symmetry_index"][0]
+        assert set(index.tolist()) == {0, 1, 2}
+        variant_rows = np.flatnonzero(index != 0)
+        assert variant_rows.size == 2
+        a, b = variant_rows
+        assert (
+            misorientation_deg(results["zyz"][0, a], results["zyz"][0, b])
+            < DUPLICATE_ROW_TOL_DEG
+        )
+        assert results["scores"][0, b] == pytest.approx(
+            results["scores"][0, a], rel=1e-6
+        )
+
+    def test_row_width_seven_and_fill(self):
+        # the D4 packed-row amendment: INDEXING rows are width 7
+        # with and without operators (one shape through
+        # ``_map_chunks``), the trailing column is the variant
+        # index and the full fill row is
+        # ``(0, 0, 0, 0, -1, 0, -1)``.  [D4]
+        assert _indexer._ROW_WIDTH_INDEX == 7
+        indexer = ni_indexer()
+        patterns = da.from_array(np.array(ni_patterns()), chunks=(4, -1, -1))
+        results = _map_chunks(patterns, indexer, 2)
+        assert results.shape == (9, 2, 7)
+
+        flat = np.full((1, 60, 60), 37, np.uint8)
+        rows = _indexer._index_chunk(flat, indexer, 2)
+        assert rows.shape == (1, 2, 7)
+        assert np.array_equal(rows[0, 0], [0, 0, 0, 0, -1, 0, -1])
+        assert np.array_equal(rows[0, 1], [0, 0, 0, 0, -1, 0, -1])
+
+    def test_refine_rows_stay_width_six(self):
+        # the other half of the split: refine-only rows keep width
+        # 6 and the ``refine_patterns`` contract is untouched
+        # (provisional on open question 9.1).  [D4]
+        assert _indexer._ROW_WIDTH_REFINE == 6
+        indexer = ni_indexer()
+        patterns = da.from_array(np.array(ni_patterns()[:2]), chunks=(2, -1, -1))
+        zyz = da.zeros((2, 3), chunks=((2,), (3,)))
+        phase_id = da.zeros(2, dtype=np.int32, chunks=(2,))
+        lazy = _indexer._map_refine_chunks(patterns, zyz, phase_id, indexer)
+        assert lazy.shape == (2, 6)
+
+        results = indexer.index_patterns(ni_patterns()[:2], progressbar=False)
+        refined = indexer.refine_patterns(
+            ni_patterns()[:2],
+            results["zyz"][:, 0],
+            results["phase_id"][:, 0],
+            progressbar=False,
+        )
+        assert refined["zyz"].shape == (2, 3)
+        assert refined["scores"].shape == (2,)
+        assert refined["phase_id"].shape == (2,)
+        assert refined["iq"].shape == (2,)
+
+    def test_rescue_scenario(self, record_property):
+        # the D9.5 rescue: a fixed-seed noisy pattern set from a
+        # strong synthetic blend, constructed so the coarse search
+        # demonstrably lands in the pseudo basin without operators
+        # (pinned), while ``pseudo_symmetry_ops`` recovers the true
+        # orientation at a higher score with a non-zero winner
+        # index.  Every lever and tolerance is build-measured
+        # (FIXME-pin); if no deterministic construction survives
+        # measurement, the recorded fallback of validation.md
+        # replaces this body and the limitation is recorded there.
+        # [D4, D9.5]
+        s = z_op(120.0)
+        harmonics = ni_harmonics(RESCUE_BANDWIDTH)
+        rotated = harmonics.rotate(s)
+        blend = MasterPatternHarmonics(
+            harmonics.alm + RESCUE_WEIGHT * rotated.alm,
+            phase=Phase("blend", point_group="1"),
+        )
+        master = blend.to_master_pattern()
+        detector = ni_detector()
+        true_rotation = Rotation.from_axes_angles([1, 2, 1], np.deg2rad(40.0))
+        # ``dtype_out`` matters: the uint8 request rescales the
+        # synthesized intensities to [0, 255], so the sigma-40 noise
+        # perturbs the signal instead of burying the raw float
+        # synthesis range under the clip below (review-corrected
+        # 2026-09-07)
+        patterns = master.get_patterns(
+            true_rotation, detector, compute=True, dtype_out=np.uint8
+        ).data.reshape((-1, 60, 60))
+        rng = np.random.default_rng(RESCUE_SEED)
+        noisy = patterns + rng.normal(0.0, RESCUE_NOISE_SIGMA, patterns.shape)
+        noisy = np.clip(noisy, 0, 255).astype(np.uint8)
+
+        without = SphericalIndexer(
+            blend, detector, bandwidth=RESCUE_BANDWIDTH
+        ).index_patterns(noisy, progressbar=False)
+        winner = rotation_from_zyz(without["zyz"][0, 0])
+        off_true = float(np.rad2deg((winner * ~true_rotation).angle).max())
+        pseudo_variants = [s * true_rotation, ~s * true_rotation]
+        off_pseudo = min(
+            float(np.rad2deg((winner * ~variant).angle).max())
+            for variant in pseudo_variants
+        )
+        record_property("rescue_off_true_deg", off_true)
+        record_property("rescue_off_pseudo_deg", off_pseudo)
+        # the pinned pseudo-basin landing of the no-ops run
+        assert off_true > 30.0
+        assert off_pseudo < RESCUE_PSEUDO_TOL_DEG
+
+        ops = Rotation(np.vstack((s.data, (~s).data)))
+        with_ops = SphericalIndexer(
+            blend,
+            detector,
+            bandwidth=RESCUE_BANDWIDTH,
+            pseudo_symmetry_ops=ops,
+        ).index_patterns(noisy, progressbar=False)
+        rescued = rotation_from_zyz(with_ops["zyz"][0, 0])
+        assert int(with_ops["pseudo_symmetry_index"][0, 0]) != 0
+        assert with_ops["scores"][0, 0] > without["scores"][0, 0]
+        assert (
+            float(np.rad2deg((rescued * ~true_rotation).angle).max())
+            < RESCUE_TRUE_TOL_DEG
+        )
 
 
 # ------------------------- Memory model (D8) ------------------------ #

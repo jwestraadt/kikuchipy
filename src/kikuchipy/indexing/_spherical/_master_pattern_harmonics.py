@@ -2091,26 +2091,40 @@ class MasterPatternHarmonics:
         )
 
     def rotate(self, rotation: Rotation) -> MasterPatternHarmonics:
-        """Return coefficients of the rotated master pattern.
+        """Return the coefficients of the master pattern actively
+        rotated by a rotation.
 
         Parameters
         ----------
         rotation
-            The rotation.
+            The rotation, of size one.
 
         Returns
         -------
         harmonics
-            New instance.
+            New instance whose synthesized function is
+            ``g(n) = f((~rotation) * n)``, i.e. a feature of ``f``
+            at a direction ``n0`` moves to ``rotation * n0``.  The
+            composition identity is
+            ``h.rotate(r1).rotate(r2) == h.rotate(r2 * r1)`` on the
+            coefficients.
 
-        Raises
-        ------
-        NotImplementedError
-            Always, until the Wigner-d tables arrive.
+        Notes
+        -----
+        The returned object's symmetry flags are **neutralized**:
+        its phase is replaced so that ``n_fold == 1`` and
+        ``has_equatorial_mirror == False``, since a rotation about
+        anything but the z axis falsifies both flags and the uniform
+        rule is the safe one.  Reassign the phase explicitly when a
+        rotation about z should keep its folding.
+
+        This allocates a full Wigner d table of the bandwidth, 5.0
+        MB at a bandwidth of 68 and 906 MB at 384, so it is a
+        construction and visualization tool and never a per pattern
+        operation.
         """
         raise NotImplementedError(
-            "Rotating spherical harmonic coefficients requires the Wigner-d "
-            "tables of Phase 3 (sht-wigner-d)"
+            "Rotating spherical harmonic coefficients is not implemented yet"
         )
 
     def power_spectrum(self) -> np.ndarray:
