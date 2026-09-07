@@ -2471,25 +2471,10 @@ class SphericalCrossCorrelator:
         _extract_neighborhood(
             self.xc.reshape(-1), slp, bwp, k, n, m, bool(emsphinx_compatible), nh
         )
-        x = np.zeros(3)
-        peak = _interpolate_maxima(nh, x)
-        if emsphinx_compatible:
-            # the x[2] bounds bug of line 421
-            largest = max(abs(x[0]), max(abs(x[1]), abs(x[0])))
-        else:
-            largest = max(abs(x[0]), max(abs(x[1]), abs(x[2])))
-        if largest > 1:
-            # do not step too far in case we are near a degeneracy
-            x[:] = 0.0
-            peak = nh[1, 1, 1]
-        zyz = np.array(
-            [
-                ((m + x[2]) * 4 - slp) * math.pi / (2 * slp),
-                ((k + x[0]) * 2 - slp) * math.pi / slp,
-                ((n + x[1]) * 4 - slp) * math.pi / (2 * slp),
-            ]
-        )
-        return zyz, float(peak), x
+        # the shared neighborhood-fed epilogue (spec
+        # 2026-09-07-spherical-gpu, D2 stage 7): one source of truth
+        # for the bounds bug, the step rejection and the grid formula
+        return self._interp_peak_from_neighborhood(index, nh, bool(emsphinx_compatible))
 
     def _interp_peak_from_neighborhood(
         self,
@@ -2539,10 +2524,33 @@ class SphericalCrossCorrelator:
             Sub-pixel offset of the maximum from the centre, exactly
             zero when the step was rejected.
         """
-        raise NotImplementedError(
-            "spherical-indexing-gpu skeleton: implemented at the "
-            "implementation gate of specs/2026-09-07-spherical-gpu"
+        index = int(index)
+        slp = self.side_length
+        # detail::extractInds(), lines 1249-1255
+        k, remainder = divmod(index, slp * slp)
+        n, m = divmod(remainder, slp)
+        # a float32 device gather is accepted and promoted; for the
+        # CPU path's own 64-bit contiguous ``nh`` this is a no-op
+        nh = np.ascontiguousarray(neighborhood, dtype=np.float64)
+        x = np.zeros(3)
+        peak = _interpolate_maxima(nh, x)
+        if emsphinx_compatible:
+            # the x[2] bounds bug of line 421
+            largest = max(abs(x[0]), max(abs(x[1]), abs(x[0])))
+        else:
+            largest = max(abs(x[0]), max(abs(x[1]), abs(x[2])))
+        if largest > 1:
+            # do not step too far in case we are near a degeneracy
+            x[:] = 0.0
+            peak = nh[1, 1, 1]
+        zyz = np.array(
+            [
+                ((m + x[2]) * 4 - slp) * math.pi / (2 * slp),
+                ((k + x[0]) * 2 - slp) * math.pi / slp,
+                ((n + x[1]) * 4 - slp) * math.pi / (2 * slp),
+            ]
         )
+        return zyz, float(peak), x
 
     def correlate(
         self,

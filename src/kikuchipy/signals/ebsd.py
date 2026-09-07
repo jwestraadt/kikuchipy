@@ -2147,6 +2147,12 @@ class EBSD(KikuchipySignal2D):
             master pattern has no phase or two share a name; or for
             any error of
             :class:`~kikuchipy.indexing.SphericalIndexer`.
+        MemoryError
+            With ``backend="gpu"``, if the device runs out of memory
+            even at a device batch size of one (the batch size is
+            halved and the run retried before this raises); see the
+            GPU paragraph of the Notes.  There is never a silent
+            fallback to the CPU backend.
 
         Warns
         -----
@@ -2291,6 +2297,27 @@ class EBSD(KikuchipySignal2D):
         :meth:`~kikuchipy.indexing.MasterPatternHarmonics.from_master_pattern`,
         since the master pattern normalization quirk is frozen into
         the coefficients when they are built.
+
+        **The GPU backend** (``backend="gpu"``) runs the coarse
+        correlation stages in 32-bit precision on the device while
+        every other stage, the Newton refinement included, stays
+        64-bit on the host. Consequences: results are bitwise
+        deterministic from run to run on one device, driver and
+        batch size, but agree with the CPU backend to small measured
+        tolerances rather than bitwise (the image quality is bitwise
+        equal; refined orientations and scores land within pinned
+        bands recorded for one machine); the coarse scores of a
+        ``refine=False`` run come off the 32-bit correlation cube,
+        so a score-sensitive coarse-only workflow should use
+        ``backend="cpu"``, the full-precision reference. The device
+        batch size is ``chunksize``, chosen from a device memory
+        model (:meth:`kikuchipy.indexing.SphericalIndexer.\
+gpu_memory_per_batch_bytes`) and the measured free device memory
+        when not given; an out-of-memory error halves it and retries
+        the run, and only a halving which bottoms out at one raises
+        a :class:`MemoryError` naming the remedies. There is never a
+        silent fallback to the CPU backend: the backend choice is
+        explicit because it affects results.
         """
         am = self.axes_manager
         nav_shape = am.navigation_shape[::-1]

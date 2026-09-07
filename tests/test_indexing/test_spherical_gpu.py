@@ -48,12 +48,13 @@ marker of ``conftest.py`` is deliberately NOT reused.  **GitHub CI
 green is zero evidence for the GPU path**: every gated check is a
 local definition-of-done gate.
 
-Values marked ``FIXME-pin`` are MEASURED-THEN-PINNED placeholders
-(requirements D3/D4/D5/D8/D12): they are replaced by dated measured
-values at the implementation gate and recorded in validation.md
-"Recorded results".  Every GPU pin is machine-specific (NVIDIA RTX
-2000 Ada Generation Laptop GPU, 8 GB, cc 8.9, driver 595.71, CuPy
-14.2.0, Windows 11) and says so where it is pinned.
+Every measured-then-pinned (MTP) constant of requirements
+D3/D4/D5/D8/D12 was filled with a dated measured value at the
+2026-09-07 implementation gate; the measurements and their recipes
+are recorded in validation.md "Recorded results".  Every GPU pin is
+machine-specific (NVIDIA RTX 2000 Ada Generation Laptop GPU, 8 GB,
+cc 8.9, driver 595.71, CuPy 14.2.0, Windows 11) and says so where
+it is pinned.
 """
 
 import functools
@@ -62,6 +63,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import types
 import warnings
 
@@ -112,61 +114,97 @@ XP_BANDWIDTH_NI = 32
 LARGE_STEP_20PT = 15
 LARGE_STEP_165PT = 5
 
-# ------------- MEASURED-THEN-PINNED placeholders (MTP) -------------- #
+# ------------------ MEASURED-THEN-PINNED (MTP) ---------------------- #
 #
-# FIXME-pin: every value below is a drafting-stage placeholder from
-# the a-priori reasoning of requirements D3/D4/D5 and is replaced by
-# a dated measured value (with the ~2x margin convention) at the
-# implementation gate; the measurement is recorded in validation.md
-# "Recorded results".  GPU pins are machine-specific (RTX 2000 Ada
-# 8 GB, driver 595.71, CuPy 14.2.0).
+# Every value below was a drafting-stage placeholder from the
+# a-priori reasoning of requirements D3/D4/D5 and was replaced by a
+# dated measured value (with the ~2x margin convention) at the
+# 2026-09-07 implementation gate; the measurements are recorded in
+# validation.md "Recorded results".  GPU pins are machine-specific
+# (RTX 2000 Ada 8 GB, driver 595.71, CuPy 14.2.0).
 
-# FIXME-pin [D11.1/D3]: relative band of the numpy-xp float32 cube
-# against the float64 CPU cube, as atol = scale * max|cube|
-XP_CUBE_ATOL_SCALE = 1e-5
+# MEASURED 2026-09-07 (implementation gate) [D11.1/D3]: relative
+# band of the numpy-xp float32 cube against the float64 CPU cube, as
+# atol = scale * max|cube|.  Measured max over all 50 oracle cases
+# (bw 16/20 x n_fold {1,4} x mirror x both normalize branches x 3
+# cubes each, + the real Ni bw-32 case both branches, identical
+# seeds): 1.350e-07 under the shipped D3.2 choice (i) all-c64 G
+# build (1.479e-07 under the measured-and-rejected c128-multiply
+# alternative); every argmax cell agreed exactly.  Pinned at ~2x.
+# Recorded in validation.md "Recorded results" with the command.
+# NUMPY-XP ONLY (review-noted 2026-09-07): numpy.fft computes each
+# separable stage at complex128 and re-rounds while cupy.fft
+# accumulates in true complex64, so the measured CUPY cube error
+# (3.44e-7 at the implementation gate, 3.59e-7 worst at the review)
+# already EXCEEDS this constant -- never reuse it for a device-side
+# cube assert (device parity is governed by the D4 end-to-end bands)
+XP_CUBE_ATOL_SCALE = 3e-7
 
-# FIXME-pin [D4.2]: exact winner flip COUNTS on the small sets (a
-# fraction is unmeasurable at N = 9/20, review-corrected); expected 0
+# MEASURED 2026-09-07 (implementation gate) [D4.2]: exact winner
+# flip COUNTS -- measured 0 phase flips AND 0 winner-cell flips on
+# the 9-pattern small set and the 20-pt large subset (script
+# ``gpu_parity_measure.py``, recorded in validation.md); pinned at
+# the measured counts
 REFINED_FLIP_COUNT_SMALL = 0
 REFINED_FLIP_COUNT_20PT = 0
 
-# FIXME-pin [D4.2, weekly]: the flip-RATE pin lives on the 165-pt run
+# MEASURED 2026-09-07 [D4.2, weekly]: the flip-RATE pin on the
+# 165-pt run -- measured agreement 1.0 (165/165 within the miso
+# band, 0 cell flips); pinned at 0.99, which allows one flip at
+# N = 165 (the ~2x-margin convention applied to a count)
 REFINED_AGREEMENT_RATE_165PT = 0.99
 
-# FIXME-pin [D4.4]: refined-to-refined misorientation bands, degrees
-# (expected median << 0.05; a-priori ceiling half a grid cell,
-# 1.33 deg at bw 68; sanity anchor: far inside the 0.31-0.34 deg
-# CPU-vs-EMSphInx band)
-REFINED_MISO_MEDIAN_DEG = 0.05
-REFINED_MISO_MAX_DEG = 1.34
+# MEASURED 2026-09-07 [D4.4]: refined-to-refined misorientation --
+# measured median AND max exactly 0.0 deg on all three data sets
+# (small, 20-pt, 165-pt: the coarse argmax cell never moved and the
+# float64 Newton refinement reconverges below the quaternion
+# angle_with resolution).  Pinned with generous absolute margin over
+# the numerical zero, still 50-130x inside the drafted a-priori
+# bands and ~300x inside the 0.31-0.34 deg CPU-vs-EMSphInx anchor
+REFINED_MISO_MEDIAN_DEG = 0.001
+REFINED_MISO_MAX_DEG = 0.01
 
-# FIXME-pin [D4.5]: score bands (same scale by construction -- the
-# anti-EMSphInx-defect requirement; their CPU/CUDA scales diverged
-# ~7x)
-SCORE_PEARSON_MIN = 0.9999
-REFINED_SCORE_REL_DIFF = 1e-4
-COARSE_SCORE_REL_DIFF = 1e-5
+# MEASURED 2026-09-07 [D4.5]: score bands (same scale by
+# construction -- the anti-EMSphInx-defect requirement; their
+# CPU/CUDA scales diverged ~7x).  Measured: Pearson r = 1.0 to ten
+# printed digits on every set; refined relative |diff| max 8.4e-11
+# (small set, worst of all sets, re-measured after the D3.2
+# spectrum-precision decision landed); coarse (refine=False)
+# relative |diff| max 1.3e-7 (the f32-cube surface).  Pinned with
+# the ~2x margin convention
+SCORE_PEARSON_MIN = 0.999999
+REFINED_SCORE_REL_DIFF = 2e-10
+COARSE_SCORE_REL_DIFF = 3e-7
 
-# FIXME-pin [D4.3]: coarse argmax-cell agreement (recorded, not the
-# gate -- D4.4 is)
-COARSE_CELL_AGREEMENT_MIN = 0.9
+# MEASURED 2026-09-07 [D4.3]: coarse argmax-cell agreement
+# (recorded, not the gate -- D4.4 is) -- measured 1.0 (9/9); the pin
+# 0.99 requires all nine at N = 9 and communicates the measurement
+COARSE_CELL_AGREEMENT_MIN = 0.99
 
-# FIXME-pin [D9]: pseudo-symmetry winner-index flip count on the
-# 9-pattern set with a true 90-deg-z operator (a true op guarantees
-# near-ties, so the measured count may be pinned above zero)
+# MEASURED 2026-09-07 [D9]: pseudo-symmetry winner-index flip count
+# on the 9-pattern set with a true 90-deg-z operator -- measured 0
+# flips over all 18 (n_best=2) rows despite the guaranteed
+# near-ties; pinned at the measured count
 PSYM_INDEX_FLIP_COUNT = 0
 
-# FIXME-pin [D8.2]: g(bw) calibration bands, bytes.  The bw-68 band
-# brackets the ~50 MB drafting anchor (measured <= 1.4 GB pool
-# high-water at B=32 -> real working set ~40-44 MB/pattern); the
-# bw-88 band brackets the ~110 MB scaling ESTIMATE (no separable
-# pipeline was measured at bw 88 while drafting)
-VRAM_G68_BOUNDS = (35_000_000, 65_000_000)
-VRAM_G88_BOUNDS = (70_000_000, 150_000_000)
+# MEASURED 2026-09-07 (implementation gate) [D8.2]: g(bw)
+# calibration bands, bytes, machine-specific (RTX 2000 Ada 8 GB,
+# driver 595.71, CuPy 14.2.0).  The component-sum model returns
+# 49,866,256 at bw 68 and 108,293,856 at 88; measured mempool
+# working sets of the full device stages 4-6 (residents excluded):
+# bw 68 B=32 -> 52.4 MB/pattern unpruned (n_fold 1) and 37.6 pruned
+# (n_fold 4); bw 88 B=8 -> 82.3 pruned -- the ~5 % the unpruned
+# bw-68 run sits above the sum is pool block granularity, absorbed
+# by the half-free-VRAM headroom.  The bands bracket the model
+# values; recorded with the command in validation.md
+VRAM_G68_BOUNDS = (45_000_000, 55_000_000)
+VRAM_G88_BOUNDS = (95_000_000, 120_000_000)
 
-# FIXME-pin [D8.3]: per-phase resident band at bw 68 (~11 MB
-# drafting: A/A2 c64 + table f32 + r_den f32)
-VRAM_RESIDENT68_BOUNDS = (6_000_000, 20_000_000)
+# MEASURED 2026-09-07 (implementation gate) [D8.3]: per-phase
+# resident term at bw 68 -- the model returns 11,245,840 (A/A2 c64 +
+# table f32 + r_den f32) and the measured resident pool usage is
+# 11.2 MB, matching to pool granularity; band brackets the model
+VRAM_RESIDENT68_BOUNDS = (10_000_000, 12_500_000)
 
 # MEASURED 2026-09-07 (failing-tests gate, review-corrected)
 # [D12.1]: the idle-machine 8-worker CPU baseline on the
@@ -223,12 +261,6 @@ def _cupy_gpu_skip_reason() -> "str | None":
         )
     try:
         _gpu._verify_gpu_or_raise()
-    except NotImplementedError:
-        return (
-            "the three-stage CuPy gate of _gpu.py is not implemented "
-            "yet (failing-tests stage of specs/2026-09-07-spherical-"
-            "gpu); the gated suite arms at the implementation gate"
-        )
     except Exception as error:
         # The gate's own frozen message is the instruction-bearing
         # skip reason, one per failing stage (D10.2)
@@ -384,6 +416,17 @@ def run_xp_pipeline(flm, gln_batch, n_fold, mirror, r_den=None, table=None):
         table = _gpu._sanitized_table(correlator.wigner_d_half_pi)
     a, a2 = _gpu._build_a_tables(np, flm, table)
     g, g2 = _gpu._build_g_batch(np, gln_batch, table, bandwidth)
+    # The D3 dtype seam pinned at the oracle (review-added
+    # 2026-09-07, kills the survived force-complex128 mutant M10):
+    # every accuracy band below is an upper bound a silently more
+    # accurate complex128 GEMM would trivially satisfy, while
+    # doubling the device working set (the D8 model lies ~2x) and
+    # regressing the G build ~4.7x -- so the frozen choice (i)
+    # all-complex64 is pinned as a dtype, not inferred from error
+    assert a.dtype == np.complex64
+    assert a2.dtype == np.complex64
+    assert g.dtype == np.complex64
+    assert g2.dtype == np.complex64
     batch_size = int(gln_batch.shape[0])
     # Deliberately DIRTY (NaN-seeded), never pre-zeroed: the frozen D2
     # freshness rule says ``_spectrum_batch`` re-zeroes (or fully
@@ -461,8 +504,9 @@ def assert_refined_parity(
     cpu, gpu, flip_count, miso_median_deg, miso_max_deg, score_rel_diff
 ):
     """The shared D4 refined-to-refined parity block: IQ bitwise,
-    winner flip count, misorientation and score bands (all
-    FIXME-pin placeholders until the implementation gate)."""
+    winner flip count, misorientation and score bands (every band a
+    dated measured pin since the 2026-09-07 implementation gate;
+    the measurements are in validation.md "Recorded results")."""
     # D4.1: IQ bitwise -- the free wiring probe
     assert np.array_equal(cpu["iq"], gpu["iq"])
     # D4.2: winner agreement as an exact COUNT at small N.  The
@@ -473,8 +517,8 @@ def assert_refined_parity(
     # ``test_coarse_cell_agreement`` vocabulary) -- a GPU argmax
     # landing on a different near-tied cell counts as a flip even
     # when Newton reconverges inside the miso band
-    # (review-strengthened).  Both counts share the FIXME-pin; the
-    # implementation gate splits the constant if they measure apart
+    # (review-strengthened).  Both counts measured 0 on every set
+    # at the implementation gate, so they share the pinned constant
     flips = int((cpu["phase_id"][:, 0] != gpu["phase_id"][:, 0]).sum())
     assert flips == flip_count
     side = SphericalCrossCorrelator(NI_BANDWIDTH).side_length
@@ -491,10 +535,16 @@ def assert_refined_parity(
     assert float(rel_diff(cpu["scores"], gpu["scores"]).max()) <= score_rel_diff
 
 
-def make_fake_cupy(version="14.2.0", device_count=1, device_error=None, fft_error=None):
+def make_fake_cupy(
+    version="14.2.0",
+    device_count=1,
+    device_error=None,
+    fft_error=None,
+    matmul_error=None,
+):
     """Return a fake :mod:`cupy` stand-in for the gate seams: enough
-    ``cuda.runtime``/``fft``/array surface for the three probes, with
-    plantable failures."""
+    ``cuda.runtime``/``fft``/``matmul``/array surface for the three
+    probes, with plantable failures."""
 
     class FakeCudaRuntimeError(Exception):
         pass
@@ -513,6 +563,11 @@ def make_fake_cupy(version="14.2.0", device_count=1, device_error=None, fft_erro
 
             return call
 
+    def fake_matmul(*args, **kwargs):
+        if matmul_error is not None:
+            raise matmul_error
+        return np.matmul(*args, **kwargs)
+
     fake = types.SimpleNamespace()
     fake.__version__ = version
     fake.cuda = types.SimpleNamespace(
@@ -522,6 +577,7 @@ def make_fake_cupy(version="14.2.0", device_count=1, device_error=None, fft_erro
         )
     )
     fake.fft = _FftNamespace()
+    fake.matmul = fake_matmul
     for name in ("asarray", "array", "ascontiguousarray"):
         setattr(fake, name, np.asarray)
     for name in ("ones", "zeros", "arange", "empty"):
@@ -674,17 +730,30 @@ class TestAvailabilityGate:
         # stage (c): import + device probe succeed while the first
         # FFT dies (the probe-measured Windows failure mode) -> the
         # message names BOTH remedies: the CUDA Toolkit and the
-        # nvidia wheels
-        fake = make_fake_cupy(
-            fft_error=ImportError("DLL load failed while importing cufft")
-        )
-        monkeypatch.setitem(sys.modules, "cupy", fake)
-        with pytest.raises(RuntimeError) as info:
-            _gpu._verify_gpu_or_raise()
-        message = str(info.value)
-        assert "cuFFT" in message
-        assert "CUDA Toolkit" in message
-        assert "nvidia-cufft-cu12" in message
+        # nvidia wheels.  Second shape (review-added hardening,
+        # 2026-09-07): the FFT succeeds but the tiny cuBLAS probe
+        # GEMM dies (nvidia-cufft-cu12 installed WITHOUT
+        # nvidia-cublas-cu12, measured live) -- same frozen message,
+        # whose remedy already names both wheels; without the GEMM
+        # probe this install passes the gate and dies mid-run at the
+        # first spectrum GEMM with a cryptic DLL error
+        for fake in (
+            make_fake_cupy(
+                fft_error=ImportError("DLL load failed while importing cufft")
+            ),
+            make_fake_cupy(
+                matmul_error=ImportError("DLL load failed while importing cublas")
+            ),
+        ):
+            monkeypatch.setattr(_gpu, "_gate_result", None)
+            monkeypatch.setitem(sys.modules, "cupy", fake)
+            with pytest.raises(RuntimeError) as info:
+                _gpu._verify_gpu_or_raise()
+            message = str(info.value)
+            assert "cuFFT" in message
+            assert "CUDA Toolkit" in message
+            assert "nvidia-cufft-cu12" in message
+            assert "nvidia-cublas-cu12" in message
 
     def test_gate_stage_order_and_caching(self, monkeypatch, fresh_gate):
         # the frozen order -- import, device, shim, probe (the
@@ -725,9 +794,36 @@ class TestAvailabilityGate:
         with pytest.raises(ImportError, match="cached-failure sentinel"):
             _gpu._verify_gpu_or_raise()
         assert calls == ["import"]
-        with pytest.raises(ImportError, match="cached-failure sentinel"):
+        with pytest.raises(ImportError, match="cached-failure sentinel") as info:
             _gpu._verify_gpu_or_raise()
         assert calls == ["import"]
+        # review-fixed 2026-09-07: the cached verdict re-raises a
+        # FRESH copy (same type, same args) with the cached instance
+        # as its cause, so the one cached object's __traceback__
+        # never grows across raises and two threads never raise the
+        # same instance concurrently
+        assert isinstance(info.value.__cause__, ImportError)
+        assert info.value is not info.value.__cause__
+
+    def test_gate_failure_cache_unreconstructible(self, monkeypatch, fresh_gate):
+        # the fallback arm of the fresh-copy re-raise: an exception
+        # type whose signature defeats ``type(e)(*e.args)`` still
+        # re-raises the cached instance itself (never masks the
+        # verdict with a TypeError)
+        class OneShotError(Exception):
+            def __init__(self, message, *, flag):
+                super().__init__(message)
+                self.flag = flag
+
+        def failing_import():
+            raise OneShotError("unreconstructible sentinel", flag=True)
+
+        monkeypatch.setattr(_gpu, "_import_cupy", failing_import)
+        with pytest.raises(OneShotError, match="unreconstructible sentinel"):
+            _gpu._verify_gpu_or_raise()
+        with pytest.raises(OneShotError, match="unreconstructible sentinel") as info:
+            _gpu._verify_gpu_or_raise()
+        assert info.value.flag is True  # the cached instance itself
 
     def test_dll_shim_is_silent(self, monkeypatch, capsys):
         # D6.5: silent no-op off Windows and with no nvidia
@@ -768,6 +864,29 @@ class TestAvailabilityGate:
         assert captured.out == ""
         assert captured.err == ""
 
+    def test_dll_shim_listdir_failure_is_silent(self, monkeypatch, tmp_path, capsys):
+        # review-fixed 2026-09-07: ``os.listdir(base)`` sat OUTSIDE
+        # the shim's try, so an ACL-restricted or concurrently-
+        # removed ``site-packages/nvidia`` subtree (isdir passed,
+        # listdir raises) escaped the D6.5 silent contract, surfaced
+        # from ``_verify_gpu_or_raise`` as a raw non-actionable
+        # OSError and was cached as the permanent gate verdict for
+        # the process.  Now the listing failure is swallowed like a
+        # registration failure: silent ``None``, no output
+        fake_nvidia = types.ModuleType("nvidia")
+        fake_nvidia.__path__ = [str(tmp_path)]
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setitem(sys.modules, "nvidia", fake_nvidia)
+
+        def failing_listdir(path):
+            raise PermissionError(f"listing refused: {path}")
+
+        monkeypatch.setattr(os, "listdir", failing_listdir)
+        assert _gpu._add_nvidia_dll_directories() is None
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
     def test_no_module_scope_cupy_import(self):
         # D6.1: never at module scope.  Source-level: no top-level
         # cupy import in ``_gpu.py``; process-level: a fresh
@@ -798,7 +917,17 @@ class TestPipelineNumpyXp:
 
     @pytest.mark.parametrize("bandwidth", [XP_BANDWIDTH_EVEN, XP_BANDWIDTH_ODD])
     @pytest.mark.parametrize(
-        "n_fold,mirror", [(1, False), (1, True), (4, False), (4, True)]
+        "n_fold,mirror",
+        [
+            (1, False),
+            (1, True),
+            (2, False),
+            (3, False),
+            (3, True),
+            (4, False),
+            (4, True),
+            (6, True),
+        ],
     )
     def test_pipeline_numpy_xp_matches_cpu(self, bandwidth, n_fold, mirror):
         # both the un-normalized (r_den None) and normalized (r_den
@@ -807,7 +936,13 @@ class TestPipelineNumpyXp:
         # columns flip, invisible at even n_fold); bw 16 (slP 32,
         # bwP 17) exercises the even-slP n >= bw guard and the
         # m = bw column; the raw-table NaN mutant is self-revealing
-        # (an all-NaN cube).  [D2/plan 7.2]
+        # (an all-NaN cube).  n_fold {2, 3, 6} (review-added
+        # 2026-09-07): the pruning/sign family beyond {1, 4} -- an
+        # ODD n_fold > 1 (incl. the hexagonal-downgrade product 3)
+        # is exactly where a wrong (-1)**(j+m)/pruning interaction
+        # hides at n_fold 4; the review's adversarial grid measured
+        # worst rel err 1.33e-7 there, inside the pinned band.
+        # [D2/plan 7.2]
         flm = random_spectrum(bandwidth, n_fold, mirror, seed=bandwidth)
         correlator = SphericalCrossCorrelator(bandwidth)
         slp = correlator.side_length
@@ -828,8 +963,8 @@ class TestPipelineNumpyXp:
             for b, (cube, index) in enumerate(zip(cubes, indices)):
                 # cube values within the f32 band -- the mutant
                 # killer (every sign/conj/slice/norm mutant perturbs
-                # the cube asymmetrically).  FIXME-pin
-                # (XP_CUBE_ATOL_SCALE): measured then pinned
+                # the cube asymmetrically).  XP_CUBE_ATOL_SCALE
+                # measured then pinned (2026-09-07)
                 atol = XP_CUBE_ATOL_SCALE * float(np.abs(cube).max())
                 np.testing.assert_allclose(xc[b], cube, rtol=0, atol=atol)
                 # identical argmax cell, with one documented escape:
@@ -884,7 +1019,7 @@ class TestPipelineNumpyXp:
             ncc.flm, gln_batch, ncc.n_fold, ncc.mirror, None, table=table
         )
         assert int(indices[0]) == int(index_plain)
-        atol = XP_CUBE_ATOL_SCALE * float(np.abs(xc_cpu).max())  # FIXME-pin
+        atol = XP_CUBE_ATOL_SCALE * float(np.abs(xc_cpu).max())  # pinned
         np.testing.assert_allclose(xc[0], xc_cpu, rtol=0, atol=atol)
         # normalized branch, the REAL reciprocal denominator
         _, indices_norm, _ = run_xp_pipeline(
@@ -942,6 +1077,18 @@ class TestPipelineNumpyXp:
             for n0 in (0, 1, slp // 2, slp - 1)
             for m0 in (0, slp // 2, slp - 1)
         ]
+        # the documented even-slP clamp set is exactly
+        # (bwP-1, bwP-2, m0) and (bwP-1, n0, bwP-2) (the
+        # _extract_neighborhood docstring) -- the grid above never
+        # reaches n0 = bwP-2 or m0 = bwP-2, so without these the
+        # "incl. the even-slP one-past clamp" claim was vacuous
+        # (implementation-gate fix, recorded: the clamp branch was
+        # provably unexercised; strengthen-only)
+        centers += [
+            (bwp - 1, bwp - 2, 0),
+            (bwp - 1, bwp - 2, slp // 2),
+            (bwp - 1, 0, bwp - 2),
+        ]
         centers += [
             tuple(map(int, (rng.integers(bwp), rng.integers(slp), rng.integers(slp))))
             for _ in range(20)
@@ -979,7 +1126,11 @@ class TestPipelineNumpyXp:
             (1, slp // 2, 0),
             (bwp - 2, 0, slp - 1),
             (bwp - 1, slp - 1, slp // 2),
-            (bwp - 1, slp - 1, slp - 1),  # incl. the even-slP clamp
+            (bwp - 1, slp - 1, slp - 1),
+            # the ACTUAL even-slP clamp center family is
+            # (bwP-1, bwP-2, m0) (implementation-gate fix, recorded:
+            # the row above never reaches the clamp branch)
+            (bwp - 1, bwp - 2, slp - 1),
         ]
         centers += [
             tuple(map(int, (rng.integers(bwp), rng.integers(slp), rng.integers(slp))))
@@ -1163,6 +1314,130 @@ class TestPipelineNumpyXp:
         assert np.array_equal(values[keep], batch_values[:3])
 
 
+def numpy_gpu_session(indexer, batch_size):
+    """Return a numpy-backed stand-in honouring the ``_GpuSession``
+    attribute contract ``_index_chunk_gpu`` consumes (``xp``,
+    ``fft``, ``lock``, ``batch_size``, ``table``, ``a_tables``,
+    ``r_dens``, ``fxc``) -- the D11.1 xp-agnostic lever applied to
+    the INTEGRATION layer, so the device-independent guard and
+    exception arms of ``_index_chunk_gpu`` run on CI (review-added
+    2026-09-07, the amended D11 convention)."""
+    table64 = _gpu._sanitized_table(indexer.wigner_d_half_pi)
+    if indexer.normalize:
+        sources = [(c.flm, c.r_den) for c in indexer.correlators]
+    else:
+        sources = [(flm, None) for flm, _, _ in indexer.spectra]
+    session = types.SimpleNamespace()
+    session.xp = np
+    session.fft = np.fft
+    session.lock = threading.Lock()
+    session.batch_size = int(batch_size)
+    session.table = table64.astype(np.float32)
+    session.a_tables = tuple(
+        _gpu._build_a_tables(np, flm, table64) for flm, _ in sources
+    )
+    session.r_dens = tuple(
+        None if r_den is None else np.ascontiguousarray(r_den, dtype=np.float32)
+        for _, r_den in sources
+    )
+    slp = int(indexer.side_length)
+    bwp = slp // 2 + 1
+    session.fxc = np.zeros((session.batch_size, slp, slp, bwp), dtype=np.complex64)
+    return session
+
+
+class TestIndexChunkGpuNumpySession:
+    """``_index_chunk_gpu`` driven end to end under a numpy-backed
+    session: the enumerated NEW integration arms with no gated test
+    (pass-1 guard-(b)/exception, the normalized-path pseudo-symmetry
+    variant seeding, the ``_to_host`` numpy branch, pass-3
+    guard-(c)/exception) run and are pinned on CI (review-added
+    2026-09-07, closing the union-coverage major finding under the
+    amended D11 convention).  [D2/D7.4/D9/D11]"""
+
+    def test_pass1_failures_and_normalized_psym_variants(self, monkeypatch):
+        # patterns: 0 normal, 1 constant (guard a), 2 degenerating
+        # to a constant AFTER preprocessing (guard b -- the pass-1
+        # ``continue``), 3 raising inside preprocessing (the pass-1
+        # per-pattern except arm), 4 normal; the CPU
+        # ``_index_chunk`` runs under the SAME plants, so the failed
+        # rows must be the identical fill rows on both paths
+        patterns = np.array(ni_patterns()[:5])
+        patterns[1] = 47
+        for i in (0, 4):
+            assert int(patterns[i, 0, 0]) not in (251, 252)
+        patterns[2, 0, 0] = 251
+        patterns[3, 0, 0] = 252
+        assert np.ptp(patterns[2]) != 0 and np.ptp(patterns[3]) != 0
+        original = _preprocess_pattern
+
+        def planted(pattern, **kwargs):
+            marker = int(pattern[0, 0])
+            if marker == 251:
+                return np.zeros((60, 60))  # guard (b): constant
+            if marker == 252:
+                raise RuntimeError("planted preprocessing failure")
+            return original(pattern, **kwargs)
+
+        monkeypatch.setattr(_indexer, "_preprocess_pattern", planted)
+        ops = Rotation.from_axes_angles([0, 0, 1], np.deg2rad(90))
+        indexer = ni_indexer(bandwidth=XP_BANDWIDTH_NI, pseudo_symmetry_ops=ops)
+        session = numpy_gpu_session(indexer, batch_size=4)
+        got = _indexer._index_chunk_gpu(patterns, indexer, 2, session)
+        want = _indexer._index_chunk(patterns, indexer, 2)
+        assert got.shape == want.shape == (5, 2, 7)
+        # the three failed patterns carry the exact fill rows on
+        # both paths (D7.4: excluded from the device batch)
+        fill = np.array([0.0, 0.0, 0.0, 0.0, -1.0, 0.0, -1.0])
+        for i in (1, 2, 3):
+            assert np.array_equal(got[i], np.broadcast_to(fill, (2, 7))), i
+            assert np.array_equal(want[i], np.broadcast_to(fill, (2, 7))), i
+        # the two kept patterns: phase and pseudo-symmetry winner
+        # columns equal, IQ bitwise (host stages shared), refined
+        # orientations and scores inside the D4-vocabulary bands
+        kept = [0, 4]
+        assert np.array_equal(got[kept, :, 4], want[kept, :, 4])  # phase
+        assert np.array_equal(got[kept, :, 6], want[kept, :, 6])  # psym
+        assert np.array_equal(got[kept, :, 5], want[kept, :, 5])  # iq
+        angles = misorientation_deg(want[kept, 0, :3], got[kept, 0, :3])
+        assert float(angles.max()) <= REFINED_MISO_MAX_DEG
+        assert (
+            float(rel_diff(want[kept, :, 3], got[kept, :, 3]).max())
+            <= COARSE_SCORE_REL_DIFF
+        )
+
+    def test_pass3_guard_and_exception_arms(self, monkeypatch):
+        # pass 3 keeps the per-pattern isolation contract: an
+        # epilogue which raises (the except arm) or produces a
+        # non-finite winning row (guard c) fails THAT pattern alone
+        # into the fill row, never the chunk
+        patterns = np.array(ni_patterns()[:3])
+        indexer = ni_indexer(bandwidth=XP_BANDWIDTH_NI, refine=False)
+        session = numpy_gpu_session(indexer, batch_size=4)
+        calls = []
+        original = SphericalCrossCorrelator._interp_peak_from_neighborhood
+
+        def planted(self, index, nh, emsphinx_compatible):
+            calls.append(int(index))
+            if len(calls) == 2:
+                raise RuntimeError("planted epilogue failure")
+            zyz, peak, x = original(self, index, nh, emsphinx_compatible)
+            if len(calls) == 3:
+                return np.array([zyz[0], np.nan, zyz[2]]), peak, x
+            return zyz, peak, x
+
+        monkeypatch.setattr(
+            SphericalCrossCorrelator, "_interp_peak_from_neighborhood", planted
+        )
+        got = _indexer._index_chunk_gpu(patterns, indexer, 1, session)
+        assert len(calls) == 3  # one epilogue call per kept pattern
+        fill = np.array([0.0, 0.0, 0.0, 0.0, -1.0, 0.0, -1.0])
+        assert np.array_equal(got[1, 0], fill)  # the raising pattern
+        assert np.array_equal(got[2, 0], fill)  # the non-finite row
+        assert got[0, 0, 4] == 0.0  # the untouched pattern indexed
+        assert got[0, 0, 3] > 0.0
+
+
 # --------------------- Batch model and helpers ---------------------- #
 
 
@@ -1174,7 +1449,7 @@ class TestBatchModel:
     def test_vram_model_and_default_batch(self):
         g68 = _gpu._gpu_memory_per_pattern_bytes(68)
         g88 = _gpu._gpu_memory_per_pattern_bytes(88)
-        # FIXME-pin (D8.2 calibration): drafting bands around the
+        # D8.2 calibration (pinned 2026-09-07): bands around the
         # ~50 MB measured anchor at bw 68 and the ~110 MB scaling
         # ESTIMATE at bw 88; calibrated from measured pool
         # high-water marks at the implementation gate
@@ -1198,7 +1473,8 @@ class TestBatchModel:
         without = _gpu._gpu_resident_bytes_per_phase(68, False)
         # ``r_den`` is resident only when normalizing (D2 stage-6)
         assert with_r_den > without
-        # FIXME-pin: the ~11 MB drafting band at bw 68
+        # pinned 2026-09-07: the ~11 MB band at bw 68 (model 11.25
+        # MB, measured resident 11.2 MB -- validation.md)
         assert VRAM_RESIDENT68_BOUNDS[0] <= with_r_den <= VRAM_RESIDENT68_BOUNDS[1]
         assert _gpu._gpu_resident_bytes_per_phase(88, True) > with_r_den
 
@@ -1224,6 +1500,29 @@ class TestBatchModel:
         assert indexer.gpu_memory_per_batch_bytes(
             64
         ) > indexer.gpu_memory_per_batch_bytes(32)
+
+    def test_gpu_memory_helper_rejects_batch_below_one(self):
+        # the documented ValueError arm (review-added 2026-09-07:
+        # the guard was enumerated as uncovered at the
+        # implementation gate; device-independent logic is
+        # default-covered per the amended D11 convention)
+        indexer = ni_indexer(refine=False)
+        for batch_size in (0, -1):
+            with pytest.raises(ValueError, match="at least one"):
+                indexer.gpu_memory_per_batch_bytes(batch_size)
+
+    def test_to_host_both_branches(self):
+        # ``_to_host`` (review-added 2026-09-07, same convention):
+        # the numpy branch is a plain view/copy, the ``.get`` branch
+        # (cupy's D2H spelling) is delegated
+        host = np.arange(3.0)
+        assert np.array_equal(_indexer._to_host(host), host)
+
+        class WithGet:
+            def get(self):
+                return np.full(2, 7.0)
+
+        assert np.array_equal(_indexer._to_host(WithGet()), np.full(2, 7.0))
 
     def test_gpu_memory_helper_makes_no_device_query(self):
         # pure model math: the call must not import cupy (the
@@ -1293,6 +1592,38 @@ class TestFixtureGating:
         assert re.search(r"@pytest\.mark\.gpu\b", source) is None
 
 
+class TestExpectGpuCanary:
+    """The green-by-skip guard (review-added 2026-09-07, survived
+    mutant M13): on the dedicated GPU machine the entire gated suite
+    -- the local definition-of-done gate -- silently turns into
+    skips with pytest exit 0 when the gate or the load-bearing
+    Windows DLL shim regresses, because the ``cupy_gpu`` fixture is
+    an availability probe by design (D10).  Setting
+    ``KIKUCHIPY_EXPECT_GPU`` (the dedicated-machine gated-run recipe
+    does) arms this canary: a machine which EXPECTS the gated suite
+    to run then FAILS loudly on any gate/shim regression instead of
+    skipping 80+ tests in silence."""
+
+    def test_gate_passes_when_gpu_expected(self):
+        if not os.environ.get("KIKUCHIPY_EXPECT_GPU"):
+            pytest.skip(
+                "KIKUCHIPY_EXPECT_GPU is not set; set it in the "
+                "gated-run command on machines where the gated GPU "
+                "suite is expected to run, so a gate or DLL-shim "
+                "regression fails this canary instead of silently "
+                "skipping the whole gated suite"
+            )
+        if os.environ.get("KIKUCHIPY_NO_GPU_TESTS"):
+            pytest.skip("the KIKUCHIPY_NO_GPU_TESTS kill switch wins")
+        if os.environ.get("PYTEST_XDIST_WORKER") is not None:
+            pytest.skip("structural xdist skip; the canary guards -n 0 runs only")
+        reason = _cupy_gpu_skip_reason()
+        assert reason is None, (
+            "KIKUCHIPY_EXPECT_GPU is set but the gated GPU suite "
+            f"would skip here: {reason}"
+        )
+
+
 # ================== Locally gated GPU suite (D10) =================== #
 #
 # Everything below needs the ``cupy_gpu`` fixture: it runs ONLY at
@@ -1315,7 +1646,8 @@ class TestGatedGate:
 
 class TestGatedParity:
     """The D4 parity oracle: the CPU backend is the reference for
-    every GPU output.  All bands FIXME-pin until measured."""
+    every GPU output.  All bands measured-then-pinned 2026-09-07
+    (implementation gate), machine-specific."""
 
     def test_iq_bitwise_vs_cpu(self, cupy_gpu):
         # D4.1: preprocessing and the DCT IQ never leave the host --
@@ -1367,7 +1699,7 @@ class TestGatedParity:
         agreement = float(np.mean(angles <= REFINED_MISO_MAX_DEG))
         record_property("agreement_rate", agreement)
         record_property("miso_median_deg", float(np.median(angles)))
-        assert agreement >= REFINED_AGREEMENT_RATE_165PT  # FIXME-pin
+        assert agreement >= REFINED_AGREEMENT_RATE_165PT  # pinned (measured 1.0)
         assert float(np.median(angles)) <= REFINED_MISO_MEDIAN_DEG
         assert pearson(cpu["scores"], gpu["scores"]) >= SCORE_PEARSON_MIN
 
@@ -1382,7 +1714,7 @@ class TestGatedParity:
         cells_gpu = [euler_to_index(z, side) for z in gpu["zyz"][:, 0]]
         agreement = float(np.mean([a == b for a, b in zip(cells_cpu, cells_gpu)]))
         record_property("coarse_cell_agreement", agreement)
-        assert agreement >= COARSE_CELL_AGREEMENT_MIN  # FIXME-pin (recorded)
+        assert agreement >= COARSE_CELL_AGREEMENT_MIN  # pinned (measured 1.0; recorded)
 
     def test_refine_false_coarse_scores(self, cupy_gpu):
         # D3.4/D4.5: coarse interpolated scores off the f32 cube
@@ -1484,8 +1816,8 @@ class TestGatedPseudoSymmetryAndPhases:
         )
         assert "pseudo_symmetry_index" in cpu
         assert "pseudo_symmetry_index" in gpu
-        # FIXME-pin (PSYM_INDEX_FLIP_COUNT): a true op guarantees
-        # near-ties, so the measured flip count may pin above zero
+        # PSYM_INDEX_FLIP_COUNT pinned at the measured 0 (2026-09-07):
+        # the true op guarantees near-ties, yet no row flipped
         flips = int(
             (cpu["pseudo_symmetry_index"] != gpu["pseudo_symmetry_index"]).sum()
         )
@@ -1496,10 +1828,64 @@ class TestGatedPseudoSymmetryAndPhases:
             REFINED_SCORE_REL_DIFF
         )
 
-    def test_multiphase_dual_backend(self, cupy_gpu):
+    def test_psym_normalized_dual_backend(self, cupy_gpu):
+        # review-added 2026-09-07: the pinned D9 test above is the
+        # UN-normalized twin per spec, leaving the normalized-path
+        # GPU variant seeding (the default configuration) with no
+        # gated test; the review's live probe measured 0 index
+        # flips, miso exactly 0.0 deg and score rel diff 8.4e-11 on
+        # this route -- inside every shared pin
+        ops = Rotation.from_axes_angles([0, 0, 1], np.deg2rad(90))
+        cpu, gpu = dual_backend_results(
+            ni_patterns(),
+            indexer_kwargs={"pseudo_symmetry_ops": ops},
+            n_best=2,
+        )
+        assert "pseudo_symmetry_index" in cpu
+        assert "pseudo_symmetry_index" in gpu
+        flips = int(
+            (cpu["pseudo_symmetry_index"] != gpu["pseudo_symmetry_index"]).sum()
+        )
+        assert flips <= PSYM_INDEX_FLIP_COUNT
+        angles = misorientation_deg(cpu["zyz"][:, 0], gpu["zyz"][:, 0])
+        assert float(np.median(angles)) <= REFINED_MISO_MEDIAN_DEG
+        assert float(rel_diff(cpu["scores"], gpu["scores"]).max()) <= (
+            REFINED_SCORE_REL_DIFF
+        )
+
+    def test_multiphase_dual_backend(self, cupy_gpu, monkeypatch):
         # same-symmetry sign-scrambled second phase: winner phase
         # parity per pattern kills cross-phase table/r_den/n_fold
         # mix-ups.  [D2/plan 7.2]
+        #
+        # Review-strengthened 2026-09-07 (survived mutant M21): a
+        # wrong-phase ``r_den`` (``r_dens[p] -> r_dens[0]``) passed
+        # BOTH multiphase tests on the real GPU -- the scrambled
+        # phase's r_den differs ~10 % smoothly (measured max rel
+        # diff 1.03e-1 at bw 68), which moves no sharp argmax cell
+        # on this data, and with n_best=1 the phase-1 row quantities
+        # never surface.  The wiring is therefore pinned by
+        # IDENTITY: the stage-6 seam must receive each phase's OWN
+        # resident, ``session.r_dens[p]``, in phase order
+        received = []
+        original_argmax = _gpu._scale_argmax_batch
+
+        def spying_argmax(xp, xc, r_den):
+            received.append(r_den)
+            return original_argmax(xp, xc, r_den)
+
+        monkeypatch.setattr(_gpu, "_scale_argmax_batch", spying_argmax)
+        sessions = []
+        original_session = _gpu._GpuSession
+
+        class SpyingSession(original_session):
+            def __init__(self, indexer, batch_size):
+                super().__init__(indexer, batch_size)
+                # capture the resident OBJECTS at build: ``close()``
+                # empties ``self.r_dens`` before the asserts run
+                sessions.append(tuple(self.r_dens))
+
+        monkeypatch.setattr(_gpu, "_GpuSession", SpyingSession)
         phases = [ni_harmonics(NI_BANDWIDTH), scrambled_harmonics("m-3m")]
         results = {}
         for backend in ("cpu", "gpu"):
@@ -1511,6 +1897,16 @@ class TestGatedPseudoSymmetryAndPhases:
         assert float(rel_diff(cpu["scores"], gpu["scores"]).max()) <= (
             REFINED_SCORE_REL_DIFF
         )
+        # the M21 kill: per chunk, the seam saw phase 0's then phase
+        # 1's OWN resident object, never a repeat of phase 0's
+        assert len(sessions) == 1
+        r_dens = sessions[0]
+        assert len(r_dens) == 2
+        assert r_dens[0] is not r_dens[1]
+        assert received, "the GPU path must route through _scale_argmax_batch"
+        assert len(received) % 2 == 0
+        for i, r_den in enumerate(received):
+            assert r_den is r_dens[i % 2], i
 
     def test_multiphase_mixed_symmetry_dual_backend(self, cupy_gpu):
         # review-added (D2 freshness rule): the second phase carries
@@ -1569,10 +1965,10 @@ class TestGatedDeterminism:
             assert np.array_equal(value, second[key]), key
 
     def test_batch_size_invariance(self, cupy_gpu, record_property):
-        # D5.3: MEASURED across B in {8, 32, default}.  Written as
-        # bitwise; if the implementation-gate measurement refutes
-        # bitwise, the pin is relaxed to the measured tolerance and
-        # the deviation recorded in validation.md (FIXME-pin)
+        # D5.3: MEASURED across B in {8, 32, default} at the
+        # 2026-09-07 implementation gate -- BITWISE (the D7.3
+        # uniform-batch-shape padding delivered), so the bitwise
+        # assert is the pin and no deviation was recorded
         results = [
             ni_indexer(backend="gpu").index_patterns(
                 ni_patterns(), chunksize=chunksize, progressbar=False
@@ -1640,9 +2036,28 @@ class TestGatedRobustness:
             return original(xp, fft_ns, fxc, n_fold)
 
         monkeypatch.setattr(_gpu, "_inverse_fft_batch", flaky)
+        # Review-strengthened 2026-09-07 (survived mutant M12b): the
+        # halving itself was asserted only in the session-build twin,
+        # so a window-(b)-only never-halving retry loop
+        # (``batch_size //= 1``) passed here -- the planted OOM fires
+        # once, the retry at the UNCHANGED size succeeds, and a
+        # persistent real-world mid-compute OOM would then loop
+        # forever instead of flooring at B = 1.  The session spy
+        # pins the rebuild at HALF the original batch size
+        built = []
+        original_session = _gpu._GpuSession
+
+        class SpyingSession(original_session):
+            def __init__(self, indexer, batch_size):
+                built.append(batch_size)
+                super().__init__(indexer, batch_size)
+
+        monkeypatch.setattr(_gpu, "_GpuSession", SpyingSession)
+        monkeypatch.setattr(_indexer, "_GpuSession", SpyingSession, raising=False)
         indexer = ni_indexer(backend="gpu")
         results = indexer.index_patterns(ni_patterns(), chunksize=8, progressbar=False)
         assert len(calls) >= 2
+        assert built == [8, 4]  # rebuilt at half the original B
         reference = ni_indexer(backend="cpu").index_patterns(
             ni_patterns(), progressbar=False
         )
@@ -1676,6 +2091,86 @@ class TestGatedRobustness:
         assert "VRAM" in message
         assert "bandwidth" in message.lower()  # the smaller-bandwidth remedy
         assert re.search(r"backend\s*=\s*['\"]cpu['\"]", message)  # the cpu remedy
+
+    def test_oom_mid_compute_below_batch_one_raises_memory_error(
+        self, cupy_gpu, monkeypatch
+    ):
+        # the window-(b) TWIN of the floor above (review-added
+        # 2026-09-07: the AlwaysOom session exercises only window
+        # (a), so the mid-compute B = 1 re-raise -- the D8.4
+        # display-attached external-pressure scenario -- was never
+        # executed by any test): a persistent OOM inside the compute
+        # at an explicit chunksize of 1 must raise the same frozen
+        # MemoryError, never loop or fall back to the CPU
+        cp = cupy_gpu
+
+        def always_oom(xp, fft_ns, fxc, n_fold):
+            raise cp.cuda.memory.OutOfMemoryError(0, 0)
+
+        monkeypatch.setattr(_gpu, "_inverse_fft_batch", always_oom)
+        indexer = ni_indexer(backend="gpu")
+        with pytest.raises(MemoryError) as info:
+            indexer.index_patterns(ni_patterns()[:2], chunksize=1, progressbar=False)
+        message = str(info.value)
+        assert re.search(r"(?<!\d)68(?!\d)", message)
+        assert re.search(r"\d[\d,_.]*\s*(GiB|GB|MiB|MB|KiB|kB|KB|bytes?)\b", message)
+        assert "VRAM" in message
+        assert "bandwidth" in message.lower()
+        assert re.search(r"backend\s*=\s*['\"]cpu['\"]", message)
+
+    def test_oom_real_pool_limit_floor(self, cupy_gpu):
+        # review-added 2026-09-07: a REAL cupy pool limit (30 MB,
+        # the review's repro) drives the D8.4 machinery without any
+        # monkeypatch -- session builds fail through window (a) down
+        # to B = 1 (which fits), the B = 1 compute then exceeds the
+        # limit through window (b), and the frozen MemoryError
+        # surfaces.  Also pins the leak fix: the bottomed-out error
+        # path must not leave the dead batch pinned via exception-
+        # traceback frames (measured pre-fix: 22.6 MB still
+        # allocated after the caught MemoryError; post-fix ~74 kB)
+        cp = cupy_gpu
+        pool = cp.get_default_memory_pool()
+        pool.free_all_blocks()
+        cp.fft.config.get_plan_cache().clear()
+        pool.set_limit(size=30_000_000)
+        try:
+            indexer = ni_indexer(backend="gpu")
+            with pytest.raises(MemoryError) as info:
+                indexer.index_patterns(ni_patterns()[:2], progressbar=False)
+            message = str(info.value)
+            assert re.search(r"(?<!\d)68(?!\d)", message)
+            assert "VRAM" in message
+            assert re.search(r"backend\s*=\s*['\"]cpu['\"]", message)
+            # the leak pin: with the fix the pool holds at most the
+            # plan-cache residue right after the handled error --
+            # far below the ~22.6 MB a pinned dead B = 1 batch costs
+            assert int(pool.used_bytes()) <= 8_000_000
+        finally:
+            pool.set_limit(size=0)
+            pool.free_all_blocks()
+        # the realistic recovery path: a clean GPU run in the same
+        # process after the limit lifts must succeed end to end
+        results = ni_indexer(backend="gpu").index_patterns(
+            ni_patterns(), chunksize=8, progressbar=False
+        )
+        assert results["zyz"].shape == (9, 1, 3)
+        assert np.all(results["phase_id"][:, 0] != -1)
+
+    def test_oom_message_defensive_free_vram_query(self, cupy_gpu, monkeypatch):
+        # the defensive ``memGetInfo`` catch of
+        # ``_gpu_out_of_memory_error`` (review-added 2026-09-07:
+        # enumerated as uncovered): a failing free-VRAM query while
+        # composing the D8.4 MemoryError must not mask the error --
+        # the message reports 0 MB free and keeps every remedy
+        def failing_mem_get_info():
+            raise RuntimeError("driver wedged")
+
+        monkeypatch.setattr(cupy_gpu.cuda.runtime, "memGetInfo", failing_mem_get_info)
+        error = ni_indexer(backend="gpu")._gpu_out_of_memory_error()
+        message = str(error)
+        assert isinstance(error, MemoryError)
+        assert "0 MB of free VRAM" in message
+        assert re.search(r"backend\s*=\s*['\"]cpu['\"]", message)
 
     def test_device_error_propagates(self, cupy_gpu, monkeypatch):
         # review-added D7.7/D14.8: a non-OOM device-stage exception
@@ -1778,6 +2273,51 @@ class TestGatedRobustness:
         message = indexer.get_info_message(9, chunksize=100_000)
         assert "VRAM" in message
         assert "exceed" in message.lower()
+
+    def test_verbose_gpu_info_line_default_chunksize(self, cupy_gpu):
+        # the ``chunksize=None`` device branch of the info message
+        # (review-added 2026-09-07: enumerated as uncovered at the
+        # implementation gate): the batch size must be resolved from
+        # the VRAM model exactly as ``index_patterns`` resolves it
+        indexer = ni_indexer(backend="gpu")
+        message = indexer.get_info_message(9)
+        assert "VRAM" in message
+        match = re.search(r"Device batch size: (\d+) pattern", message)
+        assert match is not None
+        batch_size = int(match.group(1))
+        assert 1 <= batch_size <= 64  # the D8.2 clamp
+        assert re.search(r"\d[\d,_.]*\s*(GiB|GB|MiB|MB|KiB|kB|KB|bytes?)\b", message)
+
+    def test_progressbar_gpu_smoke(self, cupy_gpu, capsys):
+        # the GPU-path ProgressBar branch (review-added 2026-09-07:
+        # every gated run passed ``progressbar=False``, leaving the
+        # branch uncovered): the default progress bar wraps the
+        # device-path compute and the run completes
+        results = ni_indexer(backend="gpu").index_patterns(
+            ni_patterns()[:2], chunksize=2, progressbar=True
+        )
+        assert results["zyz"].shape == (2, 1, 3)
+        captured = capsys.readouterr()
+        assert "100%" in captured.out or "#" in captured.out
+
+    def test_session_dtypes(self, cupy_gpu):
+        # the D3 dtype contract pinned on the REAL session
+        # (review-added 2026-09-07, the M10 device-side twin of the
+        # ``run_xp_pipeline`` seam asserts): the resident table is
+        # float32, the A/A2 spectrum residents and the batch buffer
+        # complex64, the reciprocal denominator float32
+        indexer = ni_indexer(backend="gpu")
+        session = _gpu._GpuSession(indexer, 2)
+        try:
+            assert session.table.dtype == np.float32
+            for a, a2 in session.a_tables:
+                assert a.dtype == np.complex64
+                assert a2.dtype == np.complex64
+            for r_den in session.r_dens:
+                assert r_den.dtype == np.float32
+            assert session.fxc.dtype == np.complex64
+        finally:
+            session.close()
 
     def test_indexer_holds_no_device_state(self, cupy_gpu):
         # D7.2: the session is per-call; after a run the indexer
