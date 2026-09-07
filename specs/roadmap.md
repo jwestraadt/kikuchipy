@@ -122,3 +122,47 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] performance go/no-go: PASS -- 940.7 pat/s best-of-3 refined at bw 68 vs the pinned 236.0 pat/s idle-CPU floor (3.99x, inside the review-corrected 850-1500 band); bw 88 measured 465 pat/s, below its recorded expectation band, explanation recorded
 - [x] adversarial review + fixes (incl. the device mutation list) -- 20 findings dispositioned; 4 surviving mutants killed by strengthened tests, kills verified by re-injection
 - [x] signed commits; PR #15 opened into fork `develop`
+
+---
+
+# Feature path: HREBSD-DIC (branch `hrebsd-dic`; spec `2026-09-07-hrebsd-dic`)
+
+Separate from the completed spherical phases above; nothing here touches the
+spherical mission or its criteria. Homography-based HR-EBSD by
+inverse-compositional Gauss-Newton DIC (Ernould et al. 2020/2022) plus the
+analysis chain (strain/stress/rotation, HR-KAM, PC shift, scalar GND), written
+new from the literature -- no upstream source implements the chain
+(EMsoftOO's EMHREBSDDIC is a WIP equation-level reference only, never a
+regression target). **Branch policy (user decision 2026-09-07): every commit
+of this feature stays on `hrebsd-dic`, pushed to origin but NEVER merged into
+`develop`; no PR into `develop` is opened.** The gate list matches the
+spherical phases except the two PR gates are replaced by "signed commits
+pushed to origin/hrebsd-dic + boxes ticked here"; fork CI triggers on push as
+well as PRs (corrected 2026-09-07 at spec review), so pushes of `hrebsd-dic`
+run the full matrix as an extra signal (failing-tests commits are pushed
+together with their implementation commit, never alone), while the local
+gates recorded in
+`specs/2026-09-07-hrebsd-dic/validation.md` carry the recorded verification
+burden (incl. a recorded local oldest-matrix run per stage). Stages
+A -> B -> C, one spec folder.
+
+## Stage A -- IC-GN engine (`EBSD.hrebsd_dic`)
+- [ ] `src/kikuchipy/indexing/_hrebsd/` engine: numba bicubic kernel (D3), band-pass/border/dead-band preprocessing (D4), phase-XC initial guess (D5), IC-GN with accumulated-W re-warp + corner-norm convergence (D2), homography<->Fe with per-point PC/DD and the beam-scan correction applied BEFORE conversion (D6), `EBSD.hrebsd_dic()` with the frozen signature returning a CrystalMap with homography/Fe/residual/iteration/convergence/grain/reference props (D15); explicit reference modes (`reference="auto"` stubs NotImplementedError until Stage B)
+- [ ] failing tests first: V0 kernel equality, V1 round trips + direction pin, V2 warp-refit (MTP pins), V3 deformed-master homography recovery, V4 pure-rotation frame/sign pins, V6 PC-shift phantom sign pins, determinism/NaN/mask/get_map_data pins
+- [ ] measured + recorded: D3 bicubic-vs-quintic decision, D17 f32/f64 verdict, D6.3 signs, D5 capture range, performance baselines
+- [ ] adversarial review (fidelity/theory + conventions/integration + mutation list) + fixes; coverage 100 % of Stage A `_hrebsd/` modules; full suite green; oldest-matrix run recorded
+- [ ] signed commits pushed to origin/hrebsd-dic (no PR)
+
+## Stage B -- strain/stress/rotation + references + PC + HR-KAM
+- [ ] polar decomposition + Biot strain (D8), traction-free sigma33=0 closure with user 6x6 Voigt stiffness / deviatoric fallback (D9), stress + von Mises/hydrostatic/principal maps (D10), `segment_grains` + per-grain best-IQ auto-reference wired into `reference="auto"` (D11), `hrebsd_kam` in mrad (D12), `hrebsd_pc_shift` (D13), `hrebsd_strain_stress` + `voigt_stiffness` public (D15)
+- [ ] failing tests first: closure/Bond-rotation/derived-map pins, segmentation suite, V3 strain half, V7 KAM identity, V6 function tests
+- [ ] Si-wafer noise-floor benchmark recorded (strain/rotation/KAM floors; preprocessing/border/KAM sweeps resolve plan open questions 2-4, 10)
+- [ ] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
+- [ ] signed commits pushed to origin/hrebsd-dic (no PR)
+
+## Stage C -- GND + tutorial
+- [ ] `hrebsd_gnd`: exact alpha_i3 + the d/dx3-neglect extra components (Pantleon-tier assumption, D14.2), detector-frame antisymmetry fix, OpenXY 3/5/9-component estimators with literal prefactor pins, m^-2 log-scale maps (D14)
+- [ ] failing tests first: V7 constant-curvature oracle (validated against the math, never another code), end-to-end curvature tolerance (MTP), NaN safety, Si GND floor recorded
+- [ ] `doc/tutorials/hrebsd_dic.ipynb` (synthetic walk-through + Si noise floor + map gallery + documented limitations), index.rst + nbval wiring, CHANGELOG (fork-only wording), bibliography keys
+- [ ] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
+- [ ] signed commits pushed to origin/hrebsd-dic (no PR)

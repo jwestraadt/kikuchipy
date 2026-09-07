@@ -51,3 +51,15 @@ multi-crystal `.sht` files, big-endian `.sht`, `.sht` versions other than 1.1; a
 - FFTW (GPL) is not used; `scipy.fft` (BSD-3) instead. miniz (MIT) not needed.
 - Patent: EMSphInx README says "the central indexing algorithm is covered by a provisional patent application". The Google Patents queries run on 2026-08-16 (archived with query strings, counts and hits in `specs/_research/patent-search-2026-08-16.md`) surfaced **no granted or published patent** on this algorithm; the only filings surfaced for inventor Lenthe were 2024 Gatan/EDAX applications (WO2025184557A1, US20260002896A1) on other subjects. A 2019 provisional that was converted would have published by ~2021. This is a negative result from a bounded search, not proof; the residual uncertainty is flagged to the pyxem maintainers (issue + `pyxem.team@gmail.com`) before any upstream merge, and fork work proceeds.
 - kikuchipy policy (`doc/dev/licensing_considerations.rst`): GPL-derived code may not be imported from BSD-3 files; every PR states that BSD opt-out is impossible for EMSphInx-derived modules.
+
+## Fork-only feature path: HREBSD-DIC (added 2026-09-07)
+
+Beside the spherical mission above, the fork carries a second, fork-only
+feature path: homography-based high-angular-resolution EBSD by
+inverse-compositional Gauss-Newton DIC (Ernould et al. 2020/2022), with
+elastic strain/rotation/stress maps, HR-KAM, PC-shift analysis and scalar GND
+density maps -- written new from the literature (no upstream source implements
+the analysis chain). Spec: `specs/2026-09-07-hrebsd-dic/`. It lives
+permanently on branch `hrebsd-dic` and is never merged into `develop` (no PR;
+user decision 2026-09-07); the spherical mission, deliverables and success
+criteria above are unaffected by it.

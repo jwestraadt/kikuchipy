@@ -82,3 +82,56 @@ Documentation-only phases skip the failing-tests gate; they also skip the
 CHANGELOG gate unless they ship a user-visible documentation deliverable
 (Phase 0 did not; Phase 11 does) -- the roadmap's gate sentence as amended by
 plan 0.1 of `specs/2026-09-03-spherical-indexing-tutorial/`.
+
+## HREBSD-DIC feature path (branch `hrebsd-dic`; spec `2026-09-07-hrebsd-dic`; added 2026-09-07)
+
+Everything above applies on `hrebsd-dic` too, with these additions and
+scopings:
+
+- **No new required dependency.** The DIC engine and analysis chain are
+  numpy/scipy/numba/dask + scikit-image (already required) + orix >= 0.12.1;
+  `skimage.registration.phase_cross_correlation` (upsampled-DFT subpixel
+  registration) supplies the initial guess -- with the recorded caveat that
+  the function does not exist at pyproject's declared scikit-image floor
+  0.16.2 (it landed in `skimage.registration` in 0.18); the effective, tested
+  floor for this feature path is the CI oldest job's pin 0.21.0, which the
+  spec's local oldest-matrix recipe pins explicitly (spec D18).
+  `skimage.transform.ProjectiveTransform`/`warp` are TEST-ORACLE-ONLY imports
+  for this feature (an independent warper for the warp-refit oracle), never
+  imported by any `_hrebsd/` module in `src/` (the pre-existing upstream
+  import in `detectors/_fit_projection_center.py` backing `fit_pc` is
+  untouched).
+- **Numba bicubic interpolation kernel**: `scipy.ndimage.map_coordinates` is
+  not numba-jittable, so the IC-GN inner loop uses a hand-written bicubic
+  B-spline kernel (`@njit(cache=True, nogil=True)`, no `parallel=True`,
+  `.py_func` tested) over `scipy.ndimage.spline_filter` coefficients, pinned
+  <= 1e-12 against `map_coordinates(order=3, prefilter=False, mode="mirror")`
+  (spec D3; interpolation order is measured then pinned there).
+- **Stiffness input convention**: elastic constants exist nowhere in the
+  dependency set and none are added -- the user supplies a 6x6 Voigt matrix in
+  GPa, CRYSTAL frame, Voigt order (11, 22, 33, 23, 13, 12), engineering-shear
+  convention in the Hooke product; convenience builder
+  `kp.indexing.voigt_stiffness` for cubic/hexagonal; rotated crystal->sample
+  internally per point (spec D9).
+- **Float discipline**: the float64-throughout rule above is EMSphInx-scoped;
+  HREBSD-DIC uses f64 for every solver accumulator with f32 bulk
+  pattern/coefficient storage measured-then-pinned (spec D17).
+- **Branch/CI**: `hrebsd-dic` is pushed to origin but NEVER merged into
+  `develop` and no PR into `develop` is opened (user decision 2026-09-07);
+  fork CI triggers on push as well as PRs (`.github/workflows/tests.yml`;
+  corrected 2026-09-07 at spec review), so pushes of `hrebsd-dic` run the
+  full matrix as an EXTRA signal (failing-tests commits ride along with their
+  stage's implementation commit, never pushed alone -- the spec plan's push
+  policy); the local gates recorded in
+  `specs/2026-09-07-hrebsd-dic/validation.md` (full-suite runs,
+  recorded coverage commands, a recorded local oldest-matrix run per stage)
+  carry the recorded verification burden. CHANGELOG entries on the branch cite
+  the spec folder instead of a PR link (recorded deviation from the PR-link
+  convention above).
+- **Conventions provenance**: HREBSD conventions are re-derived from Ernould
+  (AIEP 223 (2022) Ch. 2) and pinned by synthetic oracles; EMsoftOO's
+  `EMHREBSDDIC` (BSD-3) is an equation-level cross-reference only -- its
+  quirks (inverted-diagonal shape function + global sign flip, hardcoded
+  70 deg sample tilt, mixed units, Fehat from uncorrected homographies,
+  zeroed non-converged points, progressive warp-of-warp) are recorded
+  deviations in spec D1-D6 and never reproduced; no binary oracle exists.
