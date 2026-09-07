@@ -142,7 +142,21 @@ everywhere inside the engine.**
 1. Pattern coordinates: `x` = column index (right-positive), `y` =
    row index (down-positive), origin at the upper-left pixel
    center, in binned pixels -- the numpy array frame of the
-   kikuchipy `EBSD` signal.
+   kikuchipy `EBSD` signal. **Dated correction 2026-09-07 (Stage A
+   failing-tests gate, measurement): the PC offset carries a
+   half-pixel term, `x_from_PC = col + 0.5 - PCx_px` and
+   `y_from_PC = row + 0.5 - PCy_px`** -- see D1.3. The Bruker
+   fractions of D1.2 are measured from the detector EDGE, while a
+   column INDEX names a pixel CENTRE, so the two differ by half a
+   binned pixel. MEASURED, not argued: mapping
+   `EBSDDetector.sample_to_detector` into this frame and scaling
+   every direction cosine to `z = DD_px` reproduces
+   `col + 0.5 - PCx_px` to 2e-14 px over a whole 40 by 60 detector
+   (`tests/test_indexing/test_hrebsd_engine.py`,
+   `TestPcCentredFrame::test_pc_centred_frame_matches_kikuchipy_geometry`;
+   recorded in validation.md). Dropping the term would give every
+   PC-derived quantity a systematic half-pixel offset against
+   `fit_pc`, `extrapolate_pc` and every stored projection centre.
 2. PC in pixels from the stored Bruker fractions
    (`_ebsd_detector.py:212-268`): `PCx_px = pcx * Nx`,
    `PCy_px = pcy * Ny`, `DD_px = pcz * Ny` (Bruker `pcz` is DD in
@@ -151,7 +165,11 @@ everywhere inside the engine.**
    flip, `mod_HREBSDDIC.f90:917`, is an EMsoft-convention artifact
    and never appears here.)
 3. DIC coordinates are PC-centered on the GRAIN REFERENCE's PC:
-   `xi = (x - PCx_px_ref, y - PCy_px_ref)`, ONE common frame for
+   `xi = (col + 0.5 - PCx_px_ref, row + 0.5 - PCy_px_ref)` (the
+   pixel-centre form of D1.1's dated correction, 2026-09-07; an
+   earlier draft wrote `xi = (x - PCx_px_ref, y - PCy_px_ref)`
+   without the half-pixel term, which the measurement above
+   refutes), ONE common frame for
    the reference and every target of that grain during DIC
    (correction 2026-09-07, spec review: an earlier draft centered
    each pattern on its OWN PC, which would absorb the pure-PC-

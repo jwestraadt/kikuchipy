@@ -55,7 +55,20 @@ uv run pytest tests/test_indexing tests/test_signals -k "hrebsd" -n 4
   gradient planes vs `map_coordinates` derivative-of-spline
   reference. [D3]
 - `test_mirror_boundary`: near-edge evaluations match the mirror
-  reference; no extrapolation blow-up. [D3]
+  reference; no extrapolation blow-up -- the blow-up arm asserts
+  the mirrored values stay inside the pattern's own range plus
+  `MIRROR_OVERSHOOT_TOL` (MTP; added 2026-09-07 at the review, the
+  drafted `< 4 * span` band being unfalsifiable under mirror-mode
+  interpolation). [D3]
+- `test_order_ab_harness` (measurement harness, Stage A gate;
+  added 2026-09-07 at the review): the D3 bicubic-vs-quintic A/B
+  of plan open question 1, run where the accuracy difference
+  originates -- both interpolators against an ANALYTIC
+  band-limited ground truth on random interior points, with a
+  timing arm. Bicubic stays the default unless quintic buys more
+  than 2x accuracy at under 1.5x cost, which the test asserts
+  literally and which a re-pin must record here with its date.
+  [D3]
 
 ### V1 -- Algebraic round trips (`test_hrebsd_homography.py`) -- Stage A
 
@@ -120,14 +133,68 @@ import, D18), refit with the engine, compare `h_fit` to `h_true`.
   f32 vs f64 coefficient storage on the V2 batch; verdict pinned
   per D17 and recorded below. [D17]
 - `test_two_runs_bitwise`: identical inputs + chunking give
-  bitwise-identical props (grain-ordering restoration, D16). [D16]
+  bitwise-identical props (D16). [D16]
+- `test_multiple_grains_are_restored_to_map_order` (added
+  2026-09-07 at the review): a 2-grain map
+  (`grain_labels = [[0, 0, 1], [0, 1, 1]]`,
+  `reference = [0, 2]`) with a DIFFERENT known warp per point;
+  each point's fit must be closer to ITS OWN imposed homography
+  than to any other point's (a tolerance-free ordering pin), the
+  grain identifiers and reference indices must match the labels,
+  and `chunksize=1` must agree bitwise with `chunksize=6`. The
+  drafted suite never called the engine with more than one grain
+  (every call passed a `(row, col)` reference, which D11.3 defines
+  as ONE implicit grain), so the D16 grain-by-grain reordering
+  contract and the plan-2.5 "grain order not restored" mutant were
+  unexercised. [D11/D16]
+- `test_reference_state_precompute` (added 2026-09-07 at the
+  review): `ReferenceState.steepest_descent`,
+  `.hessian`, `.reference` and `.reference_norm` against a plain
+  numpy assembly of D2.1's literal `GJ` and
+  `H = (2/ref_norm^2) sum GJ GJ^T`, plus explicit
+  not-close arms for the swapped-gradient and flipped-perspective
+  variants. Kills the plan-2.5 mutants "swap gx/gy in GJ",
+  "flip a GJ perspective-term sign" and "Hessian from target
+  gradients" DETERMINISTICALLY: all three leave the zero-gradient
+  fixed point (or the optimum) unchanged, so `converged is True`
+  is not a reliable killer for any of them. [D2.1]
+- `test_iterations_match_the_hand_built_update` (added 2026-09-07
+  at the review): one and two iterations of the engine from an
+  explicit seed against an independent accumulated-W IC-GN
+  assembled in the test from `_interpolation` and
+  `_preprocessing` only, to `UPDATE_RULE_TOL` (MTP). The
+  two-iteration arm is THE killer of "re-warp the warped target"
+  (D2.3's accumulated-W deviation, whose effect D2.3 puts at
+  1e-4..1e-6, three orders below `WARP_REFIT_TOL_480`); the
+  one-iteration arm pins the update side `W <- W . W(dp)^-1`, the
+  `H dp = -g` sign and the `W33` renormalization at ENGINE level.
+  [D2.3]
 - `test_border_and_dead_band`: SR excludes the border and the
-  cross; a warped feature outside the SR does not influence the
-  fit (planted-defect test). [D4]
+  cross; a planted feature there leaks into the fit by no more
+  than `BORDER_LEAK_TOL` / `DEAD_BAND_LEAK_TOL` (MTP), and by
+  strictly less than the same feature does when the border is NOT
+  excluded (the contrast arm). **Corrected 2026-09-07 at the
+  review**: the drafted arms demanded BITWISE identical fits,
+  which no D3/D4-conformant implementation can deliver -- the
+  D4.1 band-pass and the D3 spline prefilter are both
+  whole-pattern operations, so a planted defect reaches every
+  kept pixel (measured: max 0.055 intensity units of 242 through
+  the band-pass alone, median 3.2e-5). [D4]
 - `test_get_map_data_2d_prop_pin`: the D15.7 verification on the
   installed orix, result recorded. [D15]
 
-### V3 -- Deformed-master end-to-end oracle (`test_hrebsd_deformed_master.py`) -- Stage A engine half, Stage B tensor half
+### V3 -- Deformed-master end-to-end oracle (`test_hrebsd_engine.py`, `TestDeformedMaster`) -- Stage A engine half, Stage B tensor half
+
+(File-layout deviation, recorded 2026-09-07 at the Stage A
+failing-tests gate: V3, V4 and V6's pattern halves were drafted for
+`test_hrebsd_deformed_master.py`, `test_hrebsd_rotation.py` and
+`test_hrebsd_pc_shift.py` and are instead folded into
+`test_hrebsd_engine.py`, because all three need the same
+projection helper, the same cached 480 px reference and the same
+engine fixtures; splitting them would either duplicate the helper
+or add a shared conftest for three test classes. The analytic half
+of V6 stays in `test_hrebsd_geometry.py`. Stage B's tensor halves
+may still take their own files.)
 
 The primary end-to-end oracle. Test-local projection helper
 reimplements `EBSDMasterPattern.get_patterns`' geometry with an
@@ -147,6 +214,19 @@ PC, DD)` with the D7 frame chain minded (theory report section
   within `DEFORMED_MASTER_H_TOL` (MTP) of exact; at 480x480
   detector from the shipped Ni Lambert master
   (`nickel_ebsd_master_pattern_small`, both hemispheres). [D2-D7]
+- `test_deformed_master_fe_through_the_engine` (added 2026-09-07
+  at the review): the SAME imposed deformations carried through
+  `run_hrebsd_dic` on a 2-point map of identical projection
+  centres, asserting `properties["Fe"][i].reshape(3, 3)` within
+  `DEFORMED_MASTER_FE_TOL` (MTP) of the imposed reduced tensor.
+  The drafted suite pinned no `Fe` VALUE anywhere at engine level
+  (every `Fe` assertion was NaN, the identity, or one route
+  against another), so the D15.6 wiring -- DD in binned pixels,
+  the `pcy`/`pcz` roles, row-major flattening, which pattern is
+  reference and which target -- survived untested end to end even
+  though `homography_to_fe` itself is pinned literally in V1. The
+  cases are the ASYMMETRIC ones (pure rotation, mixed), since a
+  symmetric tensor is transposition-blind. [D6/D15.6]
 - `test_deformed_master_strain_recovery` (Stage B): through
   `hrebsd_strain_stress` with the matching stiffness, at a
   GENERIC (low-symmetry-position) crystal orientation (added
@@ -161,7 +241,7 @@ PC, DD)` with the D7 frame chain minded (theory report section
   measurably different e33 on a non-deviatoric F (kills a
   fallback-always mutant). [D9]
 
-### V4 -- Pure-rotation analytic cases (`test_hrebsd_rotation.py`) -- Stage A frames, Stage B split
+### V4 -- Pure-rotation analytic cases (`test_hrebsd_engine.py`, `TestPureRotations`; see the V3 file-layout note) -- Stage A frames, Stage B split
 
 - `test_in_plane_rotation`: pure rotation about the detector
   normal at 0.1-5 deg (deformed-master patterns): recovered
@@ -206,7 +286,7 @@ cleanly without the `tests` extra (tech-stack.md:16).
   mean when the per-point PC from `extrapolate_pc` is used;
   plane-fit comparison recorded. [D13]
 
-### V6 -- PC-shift phantom oracle (`test_hrebsd_pc_shift.py`) -- Stage A geometry, Stage B function
+### V6 -- PC-shift phantom oracle (`test_hrebsd_engine.py`, `TestPcShiftPhantom`, plus the analytic half in `test_hrebsd_geometry.py`; see the V3 file-layout note) -- Stage A geometry, Stage B function
 
 - `test_phantom_uncorrected`: identity-F deformed-master patterns
   generated on a per-point-PC grid (each pattern projected with
@@ -216,7 +296,20 @@ cleanly without the `tests` extra (tech-stack.md:16).
   (D6.2: translation `gamma = delta = PC_t - PC_ref` px, scaling
   `alpha_s` = the DD ratio) to
   `PC_PHANTOM_TOL` (MTP). THE sign pin of D6.3 -- the passing
-  sign set is recorded in requirements D6 with the date. [D6]
+  sign set is recorded in requirements D6 with the date. **Map
+  geometry pinned 2026-09-07 (Stage A failing-tests gate, review
+  fix): the phantom map is `navigation_shape=(2, 3)` with
+  `step_sizes=(400.0, 400.0)` on the 480 px oracle detector, NOT a
+  single-row map with 1.5 unit steps. `extrapolate_pc` builds
+  `d_pcy`/`d_pcz` from the ROW offset only, so a one-row map has
+  `alpha_s = 1` and `gamma_y = 0` identically and `gamma_x` of
+  0.02 to 0.04 px, i.e. at or below the cross-interpolator
+  systematic; neither the DD-ratio orientation nor the `gamma_y`
+  sign would be exercised by any assertion. MEASURED per-point
+  offsets of the pinned map: `gamma_x` to -11.43 px, `gamma_y` to
+  -5.37 px, `alpha_s` to 1.00806, every one of them far above the
+  0.01 to 0.05 px DIC floor and inside the 24 px border budget.**
+  [D6]
 - `test_phantom_corrected`: correction ENABLED: `Fe = I`
   everywhere to the interpolation floor; strain phantom killed.
   [D6]
@@ -328,7 +421,7 @@ cleanly without the `tests` extra (tech-stack.md:16).
 | D15 | API/naming/props/get_map_data | signature pins; props pins; V2 get_map_data pin | A-C |
 | D16 | dask pairing, determinism, memory note | bitwise test; lazy test; info-message pin | A |
 | D17 | f32/f64 discipline | V2 dtype A/B, verdict recorded | A |
-| D18 | deps/licensing | conventions review; import audit (no new deps; skimage.transform never in `_hrebsd/`; skimage >= 0.21.0 tested floor via the oldest-matrix recipe) | A-C |
+| D18 | deps/licensing | conventions review; import audit -- `test_hrebsd_engine.py::TestImportAudit` walks every `_hrebsd/` module source for `skimage.transform` and for `sympy` (added 2026-09-07 at the review: the drafted suite left this to the reviewer's eye alone); skimage >= 0.21.0 tested floor via the oldest-matrix recipe | A-C |
 
 ## Performance (recorded baselines, never gates -- D16)
 
@@ -431,3 +524,84 @@ requirements.md). This section is filled at each stage's
 failing-tests gate (placeholder inventory), implementation gate
 (measurements + pins, with recipes), and review gate
 (re-measurements), each in its own dated subsection.
+
+### 2026-09-07 (Stage A failing-tests gate, adversarial review fixes)
+
+Machine: the 20-core Windows 11 laptop of the spherical phases,
+Python 3.12 in `.venv`. Every number below comes from a library
+measurement that needs NO `_hrebsd` implementation, so it stands
+before the engine lands.
+
+1. **D1 half-pixel correction (requirements D1.1/D1.3, amended
+   with this date).** Recipe:
+   `tests/test_indexing/test_hrebsd_engine.py`,
+   `TestPcCentredFrame::test_pc_centred_frame_matches_kikuchipy_geometry`,
+   both parametrizations, currently PASSING. Mapping
+   `EBSDDetector.sample_to_detector` into the spec's y-down
+   detector frame and scaling every direction cosine to
+   `z = DD_px` reproduces `col + 0.5 - PCx_px` and
+   `row + 0.5 - PCy_px` to under 1e-9 px (measured worst 1.8e-14 px
+   over a 40 by 60 detector). The literal D1.3 form
+   `xi = col - PCx_px` is refuted; requirements D1.1 and D1.3 carry
+   the dated correction and the constant `DETECTOR_Y_FLIP` records
+   the y-axis relation.
+2. **V6 phantom map geometry (see V6 above).** Recipe:
+   `EBSDDetector.extrapolate_pc(pc_indices=[0, 0],
+   navigation_shape=..., step_sizes=...)` on the oracle detector
+   (480 px, binning 1, px_size 70, `pc = (0.4210, 0.5794,
+   0.5049)`, sample tilt 70 deg). Measured per-point offsets in
+   binned px, `(gamma_x, gamma_y, alpha_s - 1)`: the drafted
+   `(1, 3)` map with 1.5 unit steps gives at best
+   `(-0.043, 0.0, 0.0)`; the pinned `(2, 3)` map with 400.0 unit
+   steps gives up to `(-11.43, -5.37, 8.06e-3)`. The drafted
+   closed form (`alpha_s = DD_target / DD_reference`,
+   `gamma = PC_target - PC_reference`) was additionally checked
+   directly against the projected patterns: warping the reference
+   by it and differencing against the pattern projected at that
+   point's own PC minimizes the residual exactly at the drafted
+   parameters (median residual 0.171 at the closed form versus
+   0.246 with `gamma_x` off by 0.05 px, on a 242 intensity scale),
+   and the FLIPPED DD ratio raises the worst residual from 12.0 to
+   71.0. The remaining residual is the skimage warper's own
+   interpolation error at the band edges. This does NOT yet pin
+   D6.3: the sign set is pinned by the fitted homographies at the
+   implementation gate.
+3. **IC-GN update-rule separations** (the band
+   `UPDATE_RULE_TOL` must clear). Recipe: the hand-built
+   accumulated-W IC-GN of `test_hrebsd_engine.py`
+   (`hand_built_icgn`) run with scipy stand-ins for the
+   not-yet-written kernel (`spline_filter` plus
+   `map_coordinates(order=3, prefilter=False, mode="mirror")`,
+   finite-difference gradient planes), on the 480 px oracle
+   reference warped by the seed-17 half-budget homography and seeded
+   0.3 px off. The loop recovers `h_true` to 1.8e-3 px, which is the
+   cross-interpolator systematic against skimage's warper and
+   confirms the D2 signs as drafted. Mutant separations from the
+   correct loop, in the corner-displacement metric: composing the
+   update as `W(dp)^-1 . W` 2.5e-3 px at one iteration and 8.2e-5 px
+   at two; a flipped perspective-term sign 4.2e-3 px; warping the
+   WARPED target 1.7e-3 px at two iterations and 0 at one (the two
+   schemes coincide on the first); `H dp = +g` 0.77 px; swapped
+   `gx`/`gy` 0.76 px. So the two smallest are three to four orders
+   above the expected engine-versus-hand-built agreement, and the
+   implementation gate must pin `UPDATE_RULE_TOL` at or below
+   1e-6 px for them to die.
+4. **Test-file layout deviation**: recorded in the V3 heading
+   above.
+5. **MTP placeholder inventory after the review fixes**
+   (`test_hrebsd_engine.py`): `WARP_REFIT_TOL_480`,
+   `WARP_REFIT_TOL_60`, `ROTATION_TOL_RAD`,
+   `INTENSITY_SCALE_GENERIC_TOL`, `DEFORMED_MASTER_H_TOL`,
+   `DEFORMED_MASTER_FE_TOL`, `PC_PHANTOM_TOL`,
+   `PC_PHANTOM_FE_TOL`, `PC_PHANTOM_TRANSLATION_TOL`,
+   `PC_ROUTE_EQUIVALENCE_TOL`, `UPDATE_RULE_TOL`,
+   `BORDER_LEAK_TOL`, `DEAD_BAND_LEAK_TOL`;
+   (`test_hrebsd_interpolation.py`): `KERNEL_F32_TOL`,
+   `GRADIENT_FINITE_DIFFERENCE_TOL`, `MIRROR_OVERSHOOT_TOL`. All
+   are `None` and raise the "unfilled MEASURED-THEN-PINNED
+   placeholder" assertion until the implementation gate fills them
+   with dated values and recipes. `WARP_REFIT_TOL_480` and
+   `ROTATION_TOL_RAD` were live drafting seeds (0.1 px, 1e-5 rad)
+   and were emptied at this review: a seed 2 to 10 times above the
+   expected achievable error is an acceptance gate that passes a
+   mediocre implementation silently.

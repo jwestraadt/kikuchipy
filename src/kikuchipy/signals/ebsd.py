@@ -2477,6 +2477,213 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
 
         return xmap
 
+    def hrebsd_dic(
+        self,
+        xmap: CrystalMap,
+        detector: EBSDDetector,
+        *,
+        reference: str | tuple[int, int] | np.ndarray = "auto",
+        grain_labels: np.ndarray | None = None,
+        misorientation_threshold: float = 5.0,
+        filter_cutoffs: tuple = (0.05, None),
+        window: bool = False,
+        border: float = 0.05,
+        dead_band: tuple | None = None,
+        interpolation: str = "bicubic",
+        upsample_factor: int = 16,
+        max_iterations: int = 50,
+        min_step: float = 1e-3,
+        step_scale: float = 1.0,
+        navigation_mask: np.ndarray | None = None,
+        chunksize: int | None = None,
+        verbose: int = 1,
+    ) -> CrystalMap:
+        """Measure relative elastic deformation by high angular
+        resolution EBSD (HREBSD) with inverse-compositional
+        Gauss-Newton digital image correlation (IC-GN DIC).
+
+        Every pattern is correlated with a reference pattern of its
+        own grain through an eight degree-of-freedom homography,
+        which is converted to the reduced elastic deformation
+        gradient of the detector frame. The strain, rotation and
+        stress split of that tensor is a separate step, see
+        ``See Also``.
+
+        Parameters
+        ----------
+        xmap
+            Crystal map of the same navigation shape as the signal,
+            taken as an argument exactly as the refinement methods
+            take it, never from :attr:`xmap` implicitly. Its
+            orientations are used but never modified, and they are
+            the orientations of the returned map.
+        detector
+            EBSD detector with either one projection center (PC) or
+            one per map point. With a single PC, per-point PCs are
+            derived internally with the beam-scan model of
+            :meth:`~kikuchipy.detectors.EBSDDetector.extrapolate_pc`
+            anchored at the reference pattern's scan position.
+        reference
+            Which pattern each point is correlated with. ``"auto"``
+            (default) segments grains and picks the highest image
+            quality pattern of each, and is not implemented yet. A
+            ``(row, col)`` tuple makes one global reference for the
+            whole map. An integer array of flat map indices, one per
+            grain label, requires *grain_labels*.
+        grain_labels
+            Grain map of the navigation shape with 0-based labels and
+            ``-1`` outside any grain. If not given, grains are
+            segmented internally.
+        misorientation_threshold
+            Grain boundary misorientation angle in degrees used by
+            the internal segmentation. Default is 5.0.
+        filter_cutoffs
+            ``(high_pass, low_pass)`` cut-off frequencies of the
+            in-engine band-pass filter, as fractions of the pattern
+            width, either of which may be ``None``. Default is
+            ``(0.05, None)``.
+        window
+            Whether to apply a Hann window over the subregion.
+            Default is ``False``.
+        border
+            Border excluded from every edge of the subregion, as a
+            fraction of the pattern side. Default is 0.05.
+        dead_band
+            ``(x0, x1, y0, y1)`` cross of dead camera pixel columns
+            and rows excluded from the subregion, in binned pixels.
+            If not given, nothing is excluded.
+        interpolation
+            Interpolation of the warped patterns. Default is
+            ``"bicubic"``.
+        upsample_factor
+            Subpixel precision, one over this in pixels, of the phase
+            cross-correlation which seeds every fit. Default is 16.
+        max_iterations
+            Maximum number of Gauss-Newton iterations per pattern.
+            Default is 50.
+        min_step
+            Convergence threshold in binned pixels on the largest
+            displacement the increment warp induces over the four
+            subregion corners. Default is 1e-3.
+        step_scale
+            Factor applied to every Gauss-Newton increment. Default
+            is 1.0, plain Gauss-Newton.
+        navigation_mask
+            A boolean mask equal to the signal's navigation (map)
+            shape, where only patterns equal to ``False`` are
+            correlated. If not given, all patterns are correlated.
+        chunksize
+            Number of patterns to correlate per chunk. If not given,
+            it is estimated from the pattern shape, the number of
+            patterns and the number of Dask workers.
+        verbose
+            Which information to print. Options are 0 - no output,
+            1 - information, progress bar and timing (default).
+
+        Returns
+        -------
+        xmap_out
+            A crystal map with the input orientations and phases
+            unchanged and the properties ``"homography"`` (n, 8),
+            ``"Fe"`` (n, 9), ``"residual"`` (n,),
+            ``"num_iterations"`` (n,), ``"norm_dp"`` (n,),
+            ``"converged"`` (n,), ``"grain_id"`` (n,) and
+            ``"reference_index"`` (n,), see the ``Notes``.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``reference="auto"``, which arrives with the grain
+            segmentation of a later release.
+        ValueError
+            If the detector shape and the signal shape differ; if the
+            crystal map's shape and the signal's navigation shape
+            differ; if the signal has no navigation axis or more than
+            two; if ``navigation_mask`` is not a boolean NumPy array
+            of the navigation shape with at least one ``False``
+            entry; if the detector carries neither one projection
+            center nor one per map point; or for any invalid
+            correlation parameter.
+
+        Warns
+        -----
+        UserWarning
+            If at least one pattern did not converge or failed, since
+            a failed pattern is never raised on.
+
+        See Also
+        --------
+        kikuchipy.detectors.EBSDDetector.extrapolate_pc
+        kikuchipy.detectors.EBSDDetector.fit_pc
+
+        Notes
+        -----
+        The algorithm is the homography IC-GN DIC of Ernould et al.,
+        Acta Materialia 191 (2020) 131-148 and Advances in Imaging
+        and Electron Physics 223 (2022) chapter 2, whose conventions
+        are re-derived here from the published equations rather than
+        taken from any implementation.
+
+        **One unit system.** Every internal coordinate is a binned
+        detector pixel: the column runs right, the row runs down, and
+        the origin is the projection center of the grain's reference
+        pattern. The projection centers enter as
+        ``PCx_px = pcx * ncols``, ``PCy_px = pcy * nrows`` and
+        ``DD_px = pcz * nrows`` from the stored Bruker fractions,
+        with no sign flip.
+
+        **The result is relative.** Every quantity is measured
+        against the reference pattern of the point's own grain, whose
+        flat map index is stored as ``"reference_index"``, so points
+        of different grains are not comparable with one another. An
+        absolute measurement against a simulated reference is not
+        offered.
+
+        **The properties.** ``"homography"`` holds the RAW fitted
+        eight parameters, including the rigid translation the
+        beam-scan projection center change induces, because that
+        translation is itself the signal a projection center analysis
+        reads. ``"Fe"`` holds the reduced deformation gradient in the
+        detector frame, row-major, from which the beam-scan phantom
+        has been removed analytically before the conversion.
+        ``"residual"`` is the final zero-mean normalized sum of
+        squared differences, and ``"norm_dp"`` the final corner
+        displacement in binned pixels. Two dimensional properties are
+        retrieved by reshaping,
+        ``xmap.prop["Fe"].reshape(ny, nx, 9)``, rather than through
+        :meth:`~orix.crystal_map.CrystalMap.get_map_data`, which is
+        documented for scalar properties.
+
+        **Non-converged points are kept, never zeroed.** A point
+        which reaches ``max_iterations`` keeps its last iterate with
+        ``"converged"`` equal to ``False``, and every quantity
+        derived from it downstream is NaN. A pattern which fails
+        outright, having no variance or a non-finite criterion, gets
+        NaN properties.
+
+        **Limitations of this release, each documented rather than
+        silently absorbed.** Optical and radial distortion of the
+        detector is NOT corrected, which matters for strains in the
+        1e-4 to 2e-3 band on lens-coupled detectors and much less on
+        fiber-coupled or direct detectors. The initial guess is a
+        translation only phase cross-correlation, so the capture
+        range in rotation is finite. Cross-grain absolute comparison,
+        simulated references and a tetragonality map are out of
+        scope.
+
+        **Precision scales with the pattern size.** Published IC-GN
+        homography HREBSD reaches strains of about 8e-5 at 960 by 960
+        pixels. The 60 by 60 pixel data sets shipped with kikuchipy
+        sit one to two orders above that and are for demonstration
+        and testing only.
+
+        **Memory.** Each grain reference holds about five subregion
+        sized planes, roughly 4.6 MB at 480 by 480 pixels, and one
+        such state is resident per Dask worker while that grain is
+        correlated.
+        """
+        raise NotImplementedError
+
     def refine_orientation_spherical(
         self,
         xmap: CrystalMap,
