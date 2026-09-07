@@ -65,6 +65,10 @@ from kikuchipy.indexing._spherical._indexer import SphericalIndexer, _index_chun
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
 )
+from kikuchipy.indexing._spherical._pseudo_symmetry import (
+    read_emsphinx_psym_file,
+    write_emsphinx_psym_file,
+)
 from kikuchipy.indexing._spherical._wigner import rotate_harmonics
 from kikuchipy.indexing._spherical._xcorr import (
     NormalizedSphericalCrossCorrelator,
@@ -306,6 +310,7 @@ class TestSignature:
             "gaussian_background": False,
             "circular_mask": False,
             "emsphinx_compatible": True,
+            "pseudo_symmetry_ops": None,
             "chunksize": None,
             "verbose": 1,
         }
@@ -1281,3 +1286,146 @@ class TestNickelLargeSubset:
         assert np.median(angles) < ROADMAP_MEDIAN
         assert np.percentile(angles, 95) < WEEKLY_P95
         assert angles.max() < WEEKLY_MAX
+
+
+# --------------- Pseudo-symmetry (Phase 8 spec D2/D4/D9) ------------- #
+
+# Constants of ``specs/2026-09-06-pseudo-symmetry`` (requirement IDs
+# in the docstrings; the measured-then-pinned values were filled
+# 2026-09-07 at the implementation gate, see validation.md Recorded
+# results).
+
+# A wrong operator for m-3m Ni: 30 degrees about z is not in Oh
+PSYM_WRONG_OP_DEG = 30.0
+
+# The non-involutory conjugation-killer operator of D2.6b: ~25
+# degrees about a low-symmetry axis (its square is a 50 degree
+# rotation, so the inversion pair cannot mask a conjugation error)
+KILLER_AXIS = (1.0, 2.0, 3.0)
+KILLER_ANGLE_DEG = 25.0
+
+# Cross-engine winner agreement at the perturbed point, degrees
+# (measured 2026-09-07: 0.465 deg under m-3m -- the two engines'
+# shared systematic residual against the stored orientations --
+# pinned at ~2.2x)
+KILLER_WINNER_TOL_DEG = 1.0
+
+
+def psym_z_ops(degrees=PSYM_WRONG_OP_DEG):
+    """Return the NCC oracle's ``+z``/``-z`` operator pair."""
+    return Rotation.from_axes_angles([[0, 0, 1], [0, 0, -1]], np.deg2rad(degrees))
+
+
+class TestPseudoSymmetryOps:
+    """``pseudo_symmetry_ops`` on ``EBSD.spherical_indexing``:
+    parameter threading, the ``"pseudo_symmetry_index"`` property
+    plumbing and the cross-engine conjugation killer.
+    [D2, D4, D9.3]"""
+
+    def test_the_parameter_sits_after_emsphinx_compatible(self):
+        # the D4 frozen placement: appended after
+        # ``emsphinx_compatible`` and before ``chunksize``, a
+        # recorded deviation from the NCC siblings' mid-signature
+        # position.  [D4]
+        names = list(inspect.signature(kp.signals.EBSD.spherical_indexing).parameters)
+        position = names.index("pseudo_symmetry_ops")
+        assert names[position - 1] == "emsphinx_compatible"
+        assert names[position + 1] == "chunksize"
+
+    def test_pseudo_symmetry_index_only_with_ops(self):
+        # the property exists exactly when operators were passed,
+        # the NCC contract (``_refinement.py`` creates it only when
+        # ``pseudo_symmetry_checked``).  [D4]
+        plain = index_default()
+        assert "pseudo_symmetry_index" not in plain.prop
+        with_ops = index_default(pseudo_symmetry_ops=psym_z_ops(), refine=True)
+        assert "pseudo_symmetry_index" in with_ops.prop
+
+    def test_prop_dtype_and_shape(self):
+        # winner-only 1-D int32 at ``n_best=1``; at ``n_best > 1``
+        # the winner-only property PLUS the per-rank 2-D
+        # ``"nbest_pseudo_symmetry_index"`` beside
+        # ``"nbest_phase_id"``.  [D4]
+        ops = psym_z_ops()
+        one = index_default(pseudo_symmetry_ops=ops, refine=True)
+        index = one.prop["pseudo_symmetry_index"]
+        assert index.shape == (9,)
+        assert index.dtype == np.int32
+        assert "nbest_pseudo_symmetry_index" not in one.prop
+
+        two = index_default(pseudo_symmetry_ops=ops, refine=True, n_best=2)
+        winner = two.prop["pseudo_symmetry_index"]
+        ranked = two.prop["nbest_pseudo_symmetry_index"]
+        assert winner.shape == (9,)
+        assert winner.dtype == np.int32
+        assert ranked.shape == (9, 2)
+        assert ranked.dtype == np.int32
+        assert "nbest_phase_id" in two.prop
+        assert np.array_equal(ranked[:, 0], winner)
+
+    def test_spherical_indexing_perturbation_oracle(self):
+        # the NCC perturbation scheme
+        # (``test_ebsd_refinement.py`` lines 617-670) cannot map
+        # verbatim onto from-scratch indexing: the coarse search is
+        # GLOBAL, so on the unperturbed shipped patterns the base
+        # candidate is the true basin and no wrong-op variant can
+        # win -- the honest expectation here is index 0 everywhere
+        # with the winners unmoved, which is exactly the D9.1
+        # "wrong op -> index 0" pin at signal level.  The nonzero
+        # winner-index path is carried by the rescue scenario
+        # (D9.5, indexer suite) and the exact NCC indices by the
+        # killer below.  Recorded Stage A deviation from
+        # validation.md's literal 2/1/0 expectation.  [D4, D9.1]
+        ops = psym_z_ops()
+        xmap = index_default(pseudo_symmetry_ops=ops, refine=True)
+        assert np.allclose(xmap.pseudo_symmetry_index, 0)
+        angles = misorientation(xmap.rotations, stored_rotations())
+        assert np.median(angles) < PINNED_MEDIAN
+        assert angles.max() < PINNED_MAX
+
+    def test_conjugation_killer_via_psymfile(self, tmp_path):
+        # THE decisive cross-engine conjugation test (D2.6b): one
+        # non-involutory operator survives a psymfile write/read
+        # round trip and feeds BOTH engines.  The NCC engine (an
+        # independent detector-space implementation) recovers the
+        # exact 1-based index on a map perturbed by ``~op`` -- a
+        # conjugation error anywhere in the codec flips the read
+        # operator to ``~op``, the recovering variant lands 50
+        # degrees off and the exact-index assertion dies.  The
+        # spherical engine indexes the same patterns from scratch
+        # with the same read operators, and the two engines'
+        # winners at the perturbed point must agree.
+        # [D2.6b, D6, D9.3]
+        op = Rotation.from_axes_angles(KILLER_AXIS, np.deg2rad(KILLER_ANGLE_DEG))
+        path = tmp_path / "ops.txt"
+        write_emsphinx_psym_file(path, op)
+        ops_read = read_emsphinx_psym_file(path)
+        assert np.array_equal(ops_read.data, op.data)
+
+        signal = ni_signal()
+        xmap = signal.xmap.deepcopy()
+        xmap._rotations[0] = ((~op) * xmap.rotations[0]).data
+        signal_mask = ~np.asarray(
+            kp.filters.Window("circular", signal._signal_shape_rc), dtype=bool
+        )
+        xmap_ncc = signal.refine_orientation(
+            xmap=xmap,
+            detector=signal.detector,
+            master_pattern=kp.data.nickel_ebsd_master_pattern_small(
+                energy=20, projection="lambert"
+            ),
+            energy=20,
+            signal_mask=signal_mask,
+            pseudo_symmetry_ops=ops_read,
+            trust_region=[2, 2, 2],
+        )
+        expected = np.zeros(9, dtype=np.int32)
+        expected[0] = 1
+        assert np.allclose(xmap_ncc.pseudo_symmetry_index, expected)
+
+        xmap_sph = index_default(pseudo_symmetry_ops=ops_read, refine=True)
+        assert np.allclose(xmap_sph.pseudo_symmetry_index, 0)
+        # the engines agree on the recovered winner at the
+        # perturbed point (measured 0.465 deg, pinned at ~2.2x)
+        angle = misorientation(xmap_sph.rotations[0], xmap_ncc.rotations[0])
+        assert float(angle.max()) < KILLER_WINNER_TOL_DEG

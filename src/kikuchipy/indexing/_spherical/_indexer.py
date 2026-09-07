@@ -36,6 +36,17 @@
 #   :func:`_batch_estimate`
 # - ``Indexer<Real>::indexImage()`` (lines 216-270), as
 #   :func:`_index_chunk`
+# - the pseudo-symmetry loop of ``indexImage()`` (lines 241-261), as
+#   the variant loop of :func:`_index_chunk` with
+#   :func:`_variant_seed_zyz` (spec ``2026-09-06-pseudo-symmetry``).
+#   The reference semantics are the literal loop at 60f3517 plus the
+#   two-line wiring which exists only on the author's own
+#   ``feature/GPU`` branch (``idx.hpp`` line 386 and ``clone()`` at
+#   ``indexer.hpp`` line 244 there): the shipped CLI declares,
+#   reserves and reads ``pSym`` but never populates it, so its
+#   pseudo-symmetry is silently inert.  The loop's asymmetry is
+#   preserved: variants are ALWAYS Newton refined (line 252) while
+#   the base candidate honours the ``ref`` flag (line 230)
 # - ``Indexer<Real>::computeHarmonics()`` (lines 312-318), as the
 #   preprocess, back-project and analyse steps of :func:`_index_chunk`
 # - ``Indexer<Real>::correlate()`` (lines 326-331), as the per phase
@@ -71,13 +82,7 @@
 # ``_back_projection.SphericalBackProjector`` and the two correlators
 # of ``_xcorr``, so no interface hierarchy is ported.
 #
-# The following are deliberately **not** ported here (the roadmap
-# phases are named in this provenance comment only -- decision 6.14
-# keeps them out of every public docstring and error message):
-# - the pseudo-symmetry loop of ``indexImage()`` (lines 243-261),
-#   which needs the pseudo-symmetric operator lists ``pSym`` this
-#   release always leaves empty -- **Phase 8**.  The insertion
-#   machinery it shares with the phase loop **is** ported
+# The following are deliberately **not** ported here:
 # - ``Geometry<Real>::northPoleQuat()``'s left multiplication (line
 #   267), the identity in EMSphInx as shipped, so the conversion of
 #   lines 265-269 collapses to ``_euler.rotation_from_zyz``
@@ -165,8 +170,9 @@ give bitwise equal spectra over the nine patterns).
 
 **The result contract** (frozen).  Every output row starts at the
 fill value ``zyz = (0, 0, 0)`` (the identity rotation), ``score =
-0``, ``phase_id = -1`` and ``iq = 0``.  A pattern is marked **failed**
--- all of its rows keep the fill -- when
+0``, ``phase_id = -1``, ``iq = 0`` and, on the indexing path, a
+pseudo-symmetry variant index of ``-1``.  A pattern is marked
+**failed** -- all of its rows keep the fill -- when
 
 (a) the raw pattern has ``ptp == 0`` (zero variance input),
 (b) the processed pattern has ``ptp == 0`` (the pipeline degenerated
@@ -196,17 +202,31 @@ survives the unsigned 8-bit conversion and indexes near normally,
 measured score 0.605 against 0.624 for the clean pattern); a NaN that
 reaches the scores is caught by (c).
 
-**One candidate per phase** (frozen).  Each phase contributes exactly
-one candidate, its global correlation peak, and candidates are
-inserted into the descending top-``n_best`` list with C++
-``upper_bound`` semantics, so an equal score ranks after the earlier
-phase.  Since the rows are seeded with ``score 0`` and ``phase -1``,
-a candidate with a **non-positive score is never recorded**: it sorts
-after every fill row and is dropped ("only keep something with a
-positive phase").  With ``P`` phases there are at most ``P``
-candidates, so rows ``>= P`` of an ``n_best > P`` request keep the
-fill.  Secondary peaks of one phase are not extracted; EMSphInx has
-no such path.
+**The candidate rule** (frozen): one candidate per phase, plus one
+per pseudo-symmetry operator for the single phase when
+``pseudo_symmetry_ops`` is given (up to ``1 + n_ops`` candidates);
+secondary peaks of one phase are still not extracted.  Each phase
+contributes its global correlation peak, honouring the run's
+``refine`` flag, and each operator contributes the variant seeded by
+composing the operator onto that phase's best (post-optional-refine)
+orientation, **always Newton refined** whatever ``refine`` says --
+EMSphInx' own asymmetry, preserved.  Every candidate is inserted
+into the descending top-``n_best`` list with C++ ``upper_bound``
+semantics, so an equal score ranks after the earlier candidate: an
+exact tie keeps the base orientation ahead of its variants.  Since
+the rows are seeded with ``score 0`` and ``phase -1``, a candidate
+with a **non-positive score is never recorded**: it sorts after
+every fill row and is dropped ("only keep something with a positive
+phase").  With ``P`` phases and ``N`` operators there are at most
+``P (1 + N)`` candidates, so rows ``>= P (1 + N)`` of an
+``n_best > P (1 + N)`` request keep the fill.  There is **no
+post-refinement dedup**: variants routinely Newton-converge into
+the same peak (an operator near a true symmetry, a strong signal),
+so an ``n_best > 1`` result can hold near-duplicate orientations
+distinguished only by the variant index, exactly as EMSphInx
+behaves.  With ``refine=False`` a run with operators mixes the
+interpolated coarse base score with analytic variant scores --
+EMSphInx' own metric inconsistency, preserved and documented.
 
 **Threads and determinism.**  Chunks of patterns are mapped over
 dask's threaded scheduler.  The indexer instance is immutable and
@@ -261,6 +281,17 @@ and 89,231,224 B with two normalized phases.  The beta independent
 factor triple, another ``8 bw^2 + 16 bw^3`` bytes (5.07 MB at ``bw``
 68), is read only and shared by every correlator of one process.
 
+A **pseudo-symmetry** run adds no per-worker buffer of its own --
+the variant refinements reuse the refinement buffers above, which an
+ops run therefore always allocates, whatever ``refine`` says -- and
+costs one Newton refinement per operator per pattern: measured
+0.92-1.04 ms per operator at ``bw`` 68 on the m-3m Ni master,
+against 17.6 ms for the full per-pattern pipeline, i.e. 56.8 / 54.0
+/ 51.4 / 46.0 patterns per second at 0 / 1 / 2 / 4 operators on one
+worker (recorded 2026-09-07).  The chunk sizing model above knows
+nothing of the per-operator cost -- a recorded deviation; prefer a
+smaller explicit chunk size for runs with many operators.
+
 **Resizing against direct construction.**  Every phase is stored as
 ``harmonics.resize(bandwidth)``, exactly as ``IndexEBSD`` resizes the
 stored spectra of a ``.sht`` file.  Resizing is **not** the same as
@@ -291,8 +322,13 @@ import dask
 import dask.array as da
 from dask.diagnostics.progress import ProgressBar
 import numpy as np
+from orix.quaternion import Rotation
 
 from kikuchipy.indexing._spherical._back_projection import SphericalBackProjector
+from kikuchipy.indexing._spherical._euler import (
+    quaternion_to_zyz,
+    zyz_to_quaternion,
+)
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
 )
@@ -320,9 +356,15 @@ _INVERSE_GOLDEN_RATIO = 0.61803398874989484820458683436564
 # (``indexer.hpp`` line 195)
 _BATCH_TIME_SCALE = 1e-8
 
-# Number of packed columns of one result row: the three ZYZ Euler
-# angles, the score, the phase identifier and the image quality
-_ROW_WIDTH = 6
+# The split row widths of the packed-row contract amendment (D4 of
+# spec 2026-09-06-pseudo-symmetry): INDEXING rows pack seven columns
+# -- the three ZYZ Euler angles, the score, the phase identifier,
+# the image quality and a trailing pseudo-symmetry variant index
+# (0.0 = the base orientation won, i = ``ops[i - 1]``, -1.0 on fill
+# rows and failed patterns) -- while REFINE-ONLY rows stay at six,
+# without the variant column
+_ROW_WIDTH_INDEX = 7
+_ROW_WIDTH_REFINE = 6
 
 # Warn when the estimated memory of all workers together exceeds this
 _MEMORY_WARNING_BYTES = 2 * 1024**3
@@ -431,13 +473,14 @@ def _insert_candidate(
     score: float,
     phase_id: int,
     image_quality: float,
+    psym_index: float,
 ) -> None:
     """Insert one candidate into a descending list of result rows.
 
     Parameters
     ----------
     rows
-        ``(n_best, 6)`` packed rows, descending in the score column,
+        ``(n_best, 7)`` packed rows, descending in the score column,
         modified in place.
     zyz
         The candidate's three ZYZ Euler angles.
@@ -448,6 +491,10 @@ def _insert_candidate(
     image_quality
         Image quality of the pattern, which every candidate of one
         pattern carries.
+    psym_index
+        Pseudo-symmetry variant index of the candidate: ``0.0`` for
+        the base orientation, ``i`` for the variant of
+        ``ops[i - 1]`` (1-based).
 
     Notes
     -----
@@ -480,6 +527,42 @@ def _insert_candidate(
     rows[index, 3] = score
     rows[index, 4] = phase_id
     rows[index, 5] = image_quality
+    rows[index, 6] = psym_index
+
+
+def _variant_seed_zyz(zyz: np.ndarray, op: "Rotation") -> np.ndarray:
+    """Return the seed ZYZ Euler angles of one pseudo-symmetry
+    variant of a phase's best orientation.
+
+    Parameters
+    ----------
+    zyz
+        ``(3,)`` passive ZYZ Euler angles of the phase's best
+        (post-optional-refine) orientation, the raw grid quantity.
+    op
+        One pseudo-symmetry operator in the NCC convention: the
+        variant's map rotation is ``op * rotation_from_zyz(zyz)``.
+
+    Returns
+    -------
+    seed
+        ``(3,)`` 64-bit float ZYZ Euler angles of the variant, i.e.
+        ``rotation_to_zyz(op * rotation_from_zyz(zyz))``, from which
+        the variant is always Newton refined.
+
+    Notes
+    -----
+    Port of the seed chain of ``Indexer<Real>::indexImage()``
+    (``include/idx/indexer.hpp``, lines 242-249):
+    ``q0 = zyz2qu(zyz)``, ``qp = q0 * q_file``,
+    ``seed = qu2zyz(qp)``, where ``q_file = (~op).data`` is the
+    psymfile row of the operator.  The two chains are the same map:
+    ``~(op * ~Q0) = Q0 * (~op)`` in Hamilton algebra, measured equal
+    to 8.9e-16 radians over 2000 random pairs (recorded 2026-09-07).
+    """
+    q0 = Rotation(zyz_to_quaternion(np.asarray(zyz, dtype=np.float64)))
+    qp = (q0 * ~op).data.reshape(-1, 4)[0]
+    return quaternion_to_zyz(qp)
 
 
 def _index_chunk(
@@ -503,20 +586,20 @@ def _index_chunk(
     Returns
     -------
     results
-        ``(nc, n_best, 6)`` 64-bit float array packing ``alpha``,
-        ``beta``, ``gamma``, ``score``, ``phase_id`` and ``iq`` of
-        every candidate, descending in score.  Rows which no
-        candidate reached carry the fill values ``(0, 0, 0, 0, -1,
-        0)``, and the image quality is repeated over the candidates
-        of one pattern.
+        ``(nc, n_best, 7)`` 64-bit float array packing ``alpha``,
+        ``beta``, ``gamma``, ``score``, ``phase_id``, ``iq`` and the
+        pseudo-symmetry variant index of every candidate, descending
+        in score.  Rows which no candidate reached carry the fill
+        values ``(0, 0, 0, 0, -1, 0, -1)``, and the image quality is
+        repeated over the candidates of one pattern.
 
     Notes
     -----
     Port of ``Indexer<Real>::indexImage()``
-    (``include/idx/indexer.hpp``, lines 216-270) without its
-    pseudo-symmetry loop, of ``computeHarmonics()`` (lines 312-318)
-    and of ``correlate()`` (lines 326-331), with the per pattern
-    failure semantics of ``ebsdWorkItem<Real>``
+    (``include/idx/indexer.hpp``, lines 216-270) including its
+    pseudo-symmetry loop (lines 241-261), of ``computeHarmonics()``
+    (lines 312-318) and of ``correlate()`` (lines 326-331), with the
+    per pattern failure semantics of ``ebsdWorkItem<Real>``
     (``include/modality/ebsd/idx.hpp``, lines 382-456).
 
     ``indexer.refine`` is handed to **every** phase's ``correlate``,
@@ -525,6 +608,18 @@ def _index_chunk(
     ordering uses refined scores and a run with ``P`` phases pays
     ``P`` refinements per pattern.  Fill rows carry no candidate and
     are never refined.
+
+    The pseudo-symmetry loop runs per phase, after the phase's base
+    candidate was inserted: every operator's variant is seeded by
+    :func:`_variant_seed_zyz` from that phase's best
+    (post-optional-refine) orientation and **always** Newton refined
+    (``indexImage()`` line 252 against 230 -- the C++ asymmetry,
+    preserved), carries the pattern's image quality, and goes
+    through the same positive-score insertion.  A refinement which
+    does not converge reports the correlation at its seed, which the
+    insertion then drops when it is non-positive.  The variants are
+    all seeded from the base orientation, never chained, exactly as
+    ``q0`` is computed once per phase in the C++.
 
     The correlators are cloned and the north and south buffers
     allocated **once per invocation**, with :func:`numpy.zeros` and
@@ -537,8 +632,9 @@ def _index_chunk(
     n_patterns = int(patterns_block.shape[0])
     # Every row starts at the fill value, so a pattern which is
     # failed anywhere below simply keeps it
-    results = np.zeros((n_patterns, n_best, _ROW_WIDTH))
+    results = np.zeros((n_patterns, n_best, _ROW_WIDTH_INDEX))
     results[:, :, 4] = -1.0
+    results[:, :, 6] = -1.0
 
     projector = indexer.projector
     dim = projector.dim
@@ -562,6 +658,8 @@ def _index_chunk(
     n_regions = indexer.n_regions
     compatible = indexer.emsphinx_compatible
     refine = indexer.refine
+    ops = indexer.pseudo_symmetry_ops
+    n_ops = 0 if ops is None else int(ops.size)
 
     for i in range(n_patterns):
         # Every guard sits inside the catch, as ``ebsdWorkItem``
@@ -590,14 +688,25 @@ def _index_chunk(
             )
             gln = projector.sht.analyze(north, south)
 
-            rows = np.zeros((n_best, _ROW_WIDTH))
+            rows = np.zeros((n_best, _ROW_WIDTH_INDEX))
             rows[:, 4] = -1.0
+            rows[:, 6] = -1.0
             if correlators is not None:
                 for phase_id, correlator in enumerate(correlators):
                     zyz, score = correlator.correlate(
                         gln, refine=refine, emsphinx_compatible=compatible
                     )
-                    _insert_candidate(rows, zyz, score, phase_id, image_quality)
+                    _insert_candidate(rows, zyz, score, phase_id, image_quality, 0.0)
+                    # The pseudo-symmetry loop (``indexer.hpp`` lines
+                    # 241-261): every variant is seeded from THIS
+                    # phase's best orientation and always refined,
+                    # whatever ``refine`` says
+                    for j in range(n_ops):
+                        seed = _variant_seed_zyz(zyz, ops[j])
+                        zyz_v, score_v = correlator.refine_zyz(gln, seed)
+                        _insert_candidate(
+                            rows, zyz_v, score_v, phase_id, image_quality, float(j + 1)
+                        )
             else:
                 for phase_id, (alm, n_fold, mirror) in enumerate(spectra):
                     zyz, score = prototype.correlate(
@@ -608,7 +717,15 @@ def _index_chunk(
                         refine=refine,
                         emsphinx_compatible=compatible,
                     )
-                    _insert_candidate(rows, zyz, score, phase_id, image_quality)
+                    _insert_candidate(rows, zyz, score, phase_id, image_quality, 0.0)
+                    for j in range(n_ops):
+                        seed = _variant_seed_zyz(zyz, ops[j])
+                        zyz_v, score_v = prototype.refine_zyz(
+                            alm, gln, n_fold, mirror, seed
+                        )
+                        _insert_candidate(
+                            rows, zyz_v, score_v, phase_id, image_quality, float(j + 1)
+                        )
 
             # (c) a winning score or angle which is not finite
             if not np.isfinite(rows[0, :4]).all():
@@ -641,7 +758,7 @@ def _map_chunks(
     Returns
     -------
     results
-        ``(n, n_best, 6)`` lazy 64-bit float array with the chunks of
+        ``(n, n_best, 7)`` lazy 64-bit float array with the chunks of
         ``patterns_da`` along the first axis.
 
     Notes
@@ -659,7 +776,7 @@ def _map_chunks(
         dtype=np.float64,
         drop_axis=(1, 2),
         new_axis=(1, 2),
-        chunks=(patterns_da.chunks[0], (n_best,), (_ROW_WIDTH,)),
+        chunks=(patterns_da.chunks[0], (n_best,), (_ROW_WIDTH_INDEX,)),
     )
 
 
@@ -728,7 +845,7 @@ def _refine_chunk(
     n_patterns = int(patterns_block.shape[0])
     # Every row starts as its own input, so a pattern which is failed
     # or never refined below simply passes through
-    results = np.zeros((n_patterns, _ROW_WIDTH))
+    results = np.zeros((n_patterns, _ROW_WIDTH_REFINE))
     results[:, :3] = zyz_block
     results[:, 4] = phase_id_block
 
@@ -852,7 +969,7 @@ def _map_refine_chunks(
         phase_id_da,
         "i",
         indexer=indexer,
-        new_axes={"j": _ROW_WIDTH},
+        new_axes={"j": _ROW_WIDTH_REFINE},
         dtype=np.float64,
         concatenate=True,
     )
@@ -897,6 +1014,25 @@ class SphericalIndexer:
         for the coarse grid result alone.  A refined score is the
         analytic correlation at the refined rotation and is **not**
         comparable with a coarse one, see the ``Notes``.
+    pseudo_symmetry_ops
+        Pseudo-symmetry operators to test at every map point, as an
+        :class:`~orix.quaternion.Rotation` of any shape (flattened
+        internally), in the convention of
+        :meth:`kikuchipy.signals.EBSD.refine_orientation`: each
+        operator's candidate orientation is the operator composed
+        onto that phase's best orientation, and every such candidate
+        is always Newton refined, whatever ``refine`` says, exactly
+        as EMSphInx always refines its pseudo-symmetric candidates.
+        ``None`` by default.  Requires a single phase.  A size-0
+        rotation is equivalent to ``None``.  Two hazards, neither
+        warned on (parity with the NCC methods): an identity
+        operator is refined wastefully and can report a winner index
+        above zero on numerical noise, and an operator equivalent to
+        a true symmetry of the phase guarantees near-ties, so the
+        winner index flips between ``0`` and ``i`` on noise --
+        :func:`~kikuchipy.indexing.find_pseudo_symmetry_operators`'s
+        ``exclude_symmetry=True`` default removes such operators at
+        the source.
     signal_mask
         Boolean mask of the detector shape in kikuchipy polarity,
         ``True`` = ignore the pixel, as in
@@ -935,12 +1071,16 @@ class SphericalIndexer:
     normalize : bool
         Whether the normalized correlation is used.
     refine : bool
-        Whether every candidate is Newton refined before insertion.
+        Whether every phase's base candidate is Newton refined before
+        insertion.  Pseudo-symmetry variants are always refined.
+    pseudo_symmetry_ops : orix.quaternion.Rotation or None
+        The flattened pseudo-symmetry operators, and ``None`` when
+        none were given or a size-0 rotation was.
     wigner_d_factors : tuple or None
         The beta independent Wigner d factor triple every correlator
         of a refining indexer shares, and ``None`` when
-        :attr:`refine` is ``False`` and
-        :meth:`refine_patterns` has not been called.
+        :attr:`refine` is ``False``, no pseudo-symmetry operators
+        were given and :meth:`refine_patterns` has not been called.
     projector : kikuchipy.indexing.SphericalBackProjector
         The shared back-projector, whose ``detector`` attribute is
         the isolated deep copy of the detector.
@@ -1051,8 +1191,9 @@ class SphericalIndexer:
 
     **Failure semantics**, the result contract of the module
     documentation.  A failed pattern records the identity rotation, a
-    score of ``0``, a phase of ``-1`` and an image quality of ``0``
-    in every one of its candidate rows, and a pattern fails when
+    score of ``0``, a phase of ``-1``, an image quality of ``0`` and
+    a pseudo-symmetry variant index of ``-1`` in every one of its
+    candidate rows, and a pattern fails when
 
     - the raw pattern has ``ptp == 0``,
     - the processed pattern has ``ptp == 0``,
@@ -1136,6 +1277,7 @@ class SphericalIndexer:
         bandwidth: int = 68,
         normalize: bool = True,
         refine: bool = True,
+        pseudo_symmetry_ops: "Rotation | None" = None,
         signal_mask: np.ndarray | None = None,
         n_regions: int = 10,
         gaussian_background: bool = False,
@@ -1149,6 +1291,14 @@ class SphericalIndexer:
                 f"Bandwidth {bandwidth} is an unreasonable bandwidth "
                 f"(should be [{smallest}, {largest}])"
             )
+
+        # The operators are flattened once here, and a size-0
+        # rotation is ``None``-equivalent: no variants, no
+        # ``"pseudo_symmetry_index"`` in the results
+        if pseudo_symmetry_ops is not None:
+            pseudo_symmetry_ops = pseudo_symmetry_ops.flatten()
+            if pseudo_symmetry_ops.size == 0:
+                pseudo_symmetry_ops = None
 
         if isinstance(harmonics, MasterPatternHarmonics):
             phases = (harmonics,)
@@ -1165,6 +1315,12 @@ class SphericalIndexer:
                     f"`harmonics[{i}]` of type {type(phase)} must be a "
                     "MasterPatternHarmonics"
                 )
+
+        # EMSphInx' hard throw (``idx.hpp`` lines 190-192) with a
+        # kikuchipy-style message; per-phase operator lists are a
+        # possible later extension
+        if pseudo_symmetry_ops is not None and len(phases) > 1:
+            raise ValueError("pseudo_symmetry_ops currently requires a single phase")
 
         # All master patterns must have been computed for the same
         # geometry (``idx.hpp`` line 185); a value which is not set
@@ -1245,8 +1401,11 @@ class SphericalIndexer:
         # ``bw`` 68) is built **eagerly** and shared into every
         # correlator, since the chunk workers clone before their first
         # refinement and a lazily built triple would therefore be
-        # rebuilt once per clone.  A coarse-only indexer pays nothing
-        factors = wigner_d_table_factors(bandwidth) if refine else None
+        # rebuilt once per clone.  A coarse-only indexer pays nothing.
+        # Pseudo-symmetry variants are always Newton refined whatever
+        # ``refine`` says, so an ops run arms the sharing too
+        refines = refine or pseudo_symmetry_ops is not None
+        factors = wigner_d_table_factors(bandwidth) if refines else None
         if normalize:
             correlators = tuple(
                 NormalizedSphericalCrossCorrelator(
@@ -1294,6 +1453,7 @@ class SphericalIndexer:
         self.bandwidth = bandwidth
         self.normalize = bool(normalize)
         self.refine = bool(refine)
+        self.pseudo_symmetry_ops = pseudo_symmetry_ops
         self.projector = projector
         self.correlators = correlators
         self.correlator = correlator
@@ -1507,8 +1667,10 @@ class SphericalIndexer:
             data types are converted inside the preprocessing.
         n_best
             Number of candidates to keep per pattern, at least one.
-            Since each phase contributes exactly one candidate, rows
-            beyond the number of phases keep the fill values.
+            Since each phase contributes exactly one candidate, plus
+            one per pseudo-symmetry operator when
+            :attr:`pseudo_symmetry_ops` is set, rows beyond the
+            number of candidates keep the fill values.
         chunksize
             Number of patterns per chunk, at least one.  If not
             given, the ported chunk sizing model sizes the chunks
@@ -1533,7 +1695,13 @@ class SphericalIndexer:
               into :attr:`phases`, ``-1`` for a row no candidate
               reached,
             - ``"iq"``, ``(n,)`` 64-bit float image quality of the
-              processed patterns.
+              processed patterns,
+            - ``"pseudo_symmetry_index"``, ``(n, n_best)`` 32-bit
+              integer, present exactly when
+              :attr:`pseudo_symmetry_ops` is set: ``0`` where the
+              base orientation won, ``i`` where the variant of
+              ``ops[i - 1]`` did (1-based), ``-1`` for a fill row or
+              a failed pattern.
 
         Raises
         ------
@@ -1622,7 +1790,7 @@ class SphericalIndexer:
                 UserWarning,
             )
 
-        return {
+        results = {
             "zyz": np.ascontiguousarray(packed[:, :, :3]),
             "scores": np.ascontiguousarray(packed[:, :, 3]),
             "phase_id": packed[:, :, 4].astype(np.int32),
@@ -1630,6 +1798,11 @@ class SphericalIndexer:
             # candidate, so the best row's column is the pattern's
             "iq": np.ascontiguousarray(packed[:, 0, 5]),
         }
+        # Present exactly when operators were passed, the NCC mirror:
+        # a size-0 rotation was already made ``None``-equivalent
+        if self.pseudo_symmetry_ops is not None:
+            results["pseudo_symmetry_index"] = packed[:, :, 6].astype(np.int32)
+        return results
 
     def refine_patterns(
         self,

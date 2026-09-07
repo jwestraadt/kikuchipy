@@ -29,6 +29,12 @@ from ._spherical._indexer import SphericalIndexer
 from ._spherical._master_pattern_harmonics import MasterPatternHarmonics
 from ._spherical._namelist import EMSphInxNamelist
 from ._spherical._pattern_repack import write_emsphinx_patterns
+from ._spherical._pseudo_symmetry import (
+    PseudoSymmetryOperators,
+    find_pseudo_symmetry_operators,
+    read_emsphinx_psym_file,
+    write_emsphinx_psym_file,
+)
 from .similarity_metrics._normalized_cross_correlation import (
     NormalizedCrossCorrelationMetric,
 )
@@ -40,6 +46,7 @@ __all__ = [
     "MasterPatternHarmonics",
     "NormalizedCrossCorrelationMetric",
     "NormalizedDotProductMetric",
+    "PseudoSymmetryOperators",
     "SimilarityMetric",
     "SphericalBackProjector",
     "SphericalIndexer",
@@ -47,8 +54,11 @@ __all__ = [
     "compute_refine_orientation_results",
     "compute_refine_projection_center_results",
     "fast_bandwidths",
+    "find_pseudo_symmetry_operators",
     "merge_crystal_maps",
     "orientation_similarity_map",
+    "read_emsphinx_psym_file",
     "write_emsphinx_patterns",
+    "write_emsphinx_psym_file",
     "xmap_from_hough_indexing_data",
 ]

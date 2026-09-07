@@ -550,6 +550,8 @@ Reference paper: https://doi.org/10.1107/S1600576719011233 (cited in `ReadMe.md:
 
 The output of this program is what feeds `psymfile` in the indexing namelist (an EMsoft **quaternion** angle file; `MasterData::addPseudoSym(std::string)` in `master.hpp:222-233` requires `Rotation::Quaternion` and skips the identity).
 
+**Phase 8 addenda (2026-09-07)**: items 52-55 of `explore-emsphinx-core-algorithm.md` section 8 record, from the 2026-09-06 reports, the psym-loop inertness in every shipped CLI (52), the operator-conjugation derivation reconciling the `q0 * q` composition with MasterXcorr's printed quaternions (53), the MasterXcorr defects -- the `sl`-vs-`slP` flat scan, the `:267` self-comparison dead branch, the stale usage string, the stdout-only unfiltered output (54) -- and `nml.hpp:247` never `ipath`-prefixing `pSymFile` (55).
+
 ---
 
 ## 6. `sht2png`, `xtal::Diagram`, `util/svg.hpp` — visualisation
