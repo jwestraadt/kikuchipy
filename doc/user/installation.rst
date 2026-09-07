@@ -125,6 +125,12 @@ This is a list of core package dependencies:
 
 Some functionality requires optional dependencies:
 
+* `cupy <https://docs.cupy.dev/en/stable/>`__: GPU backend of spherical indexing
+  (``backend="gpu"`` in ``EBSD.spherical_indexing()``). Install the wheel matching
+  your installed CUDA version, e.g. ``pip install cupy-cuda12x`` (``cupy-cuda11x``,
+  ``cupy-cuda13x`` and ROCm wheels exist); on Windows, also
+  ``pip install nvidia-cufft-cu12 nvidia-cublas-cu12`` unless a full CUDA Toolkit is
+  on ``PATH`` (kikuchipy registers the nvidia wheel DLL directories for you).
 * `ebsdsim <https://github.com/ZacharyVarley/ebsdsim>`__: Dynamical EBSD simulations and
   reading of simulations produced by `ebsdsim`.
   Currently unavailable from conda-forge.
@@ -143,6 +149,8 @@ Some functionality requires optional dependencies:
 * :doc:`pyvista <pyvista:index>`: 3D plotting of master patterns.
 
 Note that installing with the optional dependencies, ``pip install "kikuchipy[all]"``,
-will not install ``pyopencl``, which is required for GPU support in ``pyebsdindex``.
+will not install ``pyopencl``, which is required for GPU support in ``pyebsdindex``,
+nor ``cupy``, whose wheel name depends on your CUDA version and which is required for
+the GPU backend of spherical indexing.
 If the install command failed for some reason, you can try to install each optional
 dependency separately.

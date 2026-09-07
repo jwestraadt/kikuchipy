@@ -282,6 +282,9 @@ class TestSphericalIndexerConstruction:
             "normalize": True,
             "refine": True,
             "pseudo_symmetry_ops": None,
+            # ``backend`` joined in spec 2026-09-07-spherical-gpu
+            # (D1): the CPU path stays the default and the reference
+            "backend": "cpu",
             "signal_mask": None,
             "n_regions": 10,
             "gaussian_background": False,
@@ -1490,6 +1493,8 @@ class TestExports:
                 "Phase 8",
                 "Phase 9",
                 "Phase 10",
+                "Phase 11",
+                "Phase 12",
             ):
                 assert phase not in doc, f"{name} names {phase}"
 

@@ -18,6 +18,15 @@ Unreleased
 
 Added
 -----
+- Optional CuPy GPU backend for spherical indexing: the new ``backend`` parameter of
+  ``kikuchipy.indexing.SphericalIndexer`` and ``EBSD.spherical_indexing()`` accepts
+  ``"cpu"`` (the default, unchanged and bitwise-identical to before) or ``"gpu"``,
+  which runs the coarse correlation stages (cross-correlation spectrum, inverse FFT,
+  peak search) as float32/complex64 device batches through CuPy, leaving every other
+  stage, the Newton refinement included, on the CPU. CuPy is an optional dependency,
+  never imported at module scope; results of the GPU backend agree with the CPU
+  reference to small measured tolerances rather than bitwise.
+  (`#15 <https://github.com/jwestraadt/kikuchipy/pull/15>`_)
 - Tutorial on pseudo-symmetry operator discovery and variant indexing,
   ``doc/tutorials/pseudo_symmetry.ipynb``.
   (`#14 <https://github.com/jwestraadt/kikuchipy/pull/14>`_)
