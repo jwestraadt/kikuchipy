@@ -329,6 +329,7 @@ from kikuchipy.indexing._spherical._euler import (
     quaternion_to_zyz,
     zyz_to_quaternion,
 )
+from kikuchipy.indexing._spherical._gpu import _verify_gpu_or_raise
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
 )
@@ -1033,6 +1034,15 @@ class SphericalIndexer:
         :func:`~kikuchipy.indexing.find_pseudo_symmetry_operators`'s
         ``exclude_symmetry=True`` default removes such operators at
         the source.
+    backend
+        Which backend runs the coarse correlation stage, ``"cpu"``
+        (default) or ``"gpu"``.  ``"cpu"`` is the reference
+        implementation; ``"gpu"`` runs the cross-correlation
+        spectrum, the inverse FFT and the peak search as
+        float32/complex64 device batches through CuPy, leaving every
+        other stage on the CPU.  ``"gpu"`` requires that
+        :mod:`cupy` is installed, which is an optional dependency of
+        kikuchipy. See :ref:`dependencies` for details.
     signal_mask
         Boolean mask of the detector shape in kikuchipy polarity,
         ``True`` = ignore the pixel, as in
@@ -1076,6 +1086,10 @@ class SphericalIndexer:
     pseudo_symmetry_ops : orix.quaternion.Rotation or None
         The flattened pseudo-symmetry operators, and ``None`` when
         none were given or a size-0 rotation was.
+    backend : str
+        Which backend runs the coarse correlation stage, ``"cpu"``
+        or ``"gpu"``.  Only the string is stored: no device state
+        ever lives on the indexer.
     wigner_d_factors : tuple or None
         The beta independent Wigner d factor triple every correlator
         of a refining indexer shares, and ``None`` when
@@ -1124,7 +1138,8 @@ class SphericalIndexer:
         ``detector`` is not an
         :class:`~kikuchipy.detectors.EBSDDetector`.
     ValueError
-        If ``bandwidth`` is outside ``[16, 512]``; if ``harmonics``
+        If ``bandwidth`` is outside ``[16, 512]``; if ``backend`` is
+        not ``"cpu"`` or ``"gpu"``; if ``harmonics``
         is empty; if two phases disagree on ``sample_tilt`` or
         ``beam_energy``; if the phases' ``sample_tilt`` differs from
         the detector's; if ``n_regions`` is negative or larger than
@@ -1278,6 +1293,7 @@ class SphericalIndexer:
         normalize: bool = True,
         refine: bool = True,
         pseudo_symmetry_ops: "Rotation | None" = None,
+        backend: str = "cpu",
         signal_mask: np.ndarray | None = None,
         n_regions: int = 10,
         gaussian_background: bool = False,
@@ -1291,6 +1307,20 @@ class SphericalIndexer:
                 f"Bandwidth {bandwidth} is an unreasonable bandwidth "
                 f"(should be [{smallest}, {largest}])"
             )
+
+        # The backend switch (spec 2026-09-07-spherical-gpu, D1): an
+        # explicit per-call keyword, never dispatch-on-availability.
+        # The three-stage CuPy gate fires here for "gpu" -- fail
+        # fast, before any expensive construction -- while "cpu"
+        # never touches cupy
+        backend = str(backend)
+        if backend not in ("cpu", "gpu"):
+            raise ValueError(
+                f"Backend {backend!r} not in the list of supported "
+                "backends ['cpu', 'gpu']"
+            )
+        if backend == "gpu":
+            _verify_gpu_or_raise()
 
         # The operators are flattened once here, and a size-0
         # rotation is ``None``-equivalent: no variants, no
@@ -1454,6 +1484,7 @@ class SphericalIndexer:
         self.normalize = bool(normalize)
         self.refine = bool(refine)
         self.pseudo_symmetry_ops = pseudo_symmetry_ops
+        self.backend = backend
         self.projector = projector
         self.correlators = correlators
         self.correlator = correlator
@@ -1557,6 +1588,41 @@ class SphericalIndexer:
         dask workers exceeds 2 GiB.
         """
         return self._memory_model(self.refine)
+
+    def gpu_memory_per_batch_bytes(self, batch_size: int) -> int:
+        """Return the estimated device memory one batch of the GPU
+        backend needs, in bytes.
+
+        Parameters
+        ----------
+        batch_size
+            Device batch size ``B``, i.e. the ``chunksize`` of a
+            ``backend="gpu"`` run, at least one.
+
+        Returns
+        -------
+        n_bytes
+            The per-batch working-set model ``batch_size * g(bw)``
+            plus the per-phase resident term (the device spectrum
+            tables and, when :attr:`normalize`, the reciprocal
+            denominator), pure model math.
+
+        Notes
+        -----
+        The counterpart in spirit of
+        :attr:`memory_per_worker_bytes`, but a **method taking the
+        batch size**, since the GPU batch is a per-call choice rather
+        than an indexer property.  It performs no device query: the
+        free-VRAM query and the default batch size live in
+        :meth:`index_patterns`, which prints this model in its
+        information message and warns when it exceeds the measured
+        free device memory.  Usable with ``backend="cpu"`` too, as a
+        what-if.
+        """
+        raise NotImplementedError(
+            "spherical-indexing-gpu skeleton: implemented at the "
+            "implementation gate of specs/2026-09-07-spherical-gpu"
+        )
 
     def get_info_message(
         self,

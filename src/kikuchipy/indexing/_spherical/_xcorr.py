@@ -2491,6 +2491,59 @@ class SphericalCrossCorrelator:
         )
         return zyz, float(peak), x
 
+    def _interp_peak_from_neighborhood(
+        self,
+        index: int,
+        neighborhood: np.ndarray,
+        emsphinx_compatible: bool = True,
+    ) -> tuple[np.ndarray, float, np.ndarray]:
+        """Return the sub-pixel maximum near a grid point from an
+        already extracted 3 x 3 x 3 neighborhood.
+
+        The shared, neighborhood-fed peak epilogue of both backends
+        (spec ``2026-09-07-spherical-gpu``, D2 stage 7): the flat
+        index to ``(k, n, m)`` decomposition, the tri-quadratic
+        :func:`_interpolate_maxima`, the ``emsphinx_compatible``
+        bounds check which reads ``|x[0]|`` twice and never
+        ``|x[2]|``, the step-rejection reset and the ZYZ grid
+        formula -- byte-for-byte the epilogue of
+        :meth:`interp_peak`, which extracts the neighborhood from
+        :attr:`xc` itself, while the GPU path feeds the 27 values
+        its device gather shipped back.
+
+        Parameters
+        ----------
+        index
+            Flat index into a ``(bwP, slP, slP)`` cube, at or near a
+            local maximum.  Unlike :meth:`interp_peak` it is not
+            validated against :attr:`xc`, which the GPU path never
+            materialises on the host.
+        neighborhood
+            ``(3, 3, 3)`` 64-bit float neighborhood around the
+            index, e.g. the ``nh`` of :func:`_extract_neighborhood`
+            or the reshaped device gather.
+        emsphinx_compatible
+            Whether to reproduce the two C++ defects, ``True`` by
+            default, see :meth:`interp_peak`.
+
+        Returns
+        -------
+        zyz
+            Passive ZYZ Euler angles as :meth:`interp_peak` returns
+            them.
+        peak
+            Value of the fitted tri-quadratic at the maximum, or the
+            value at the centre of the neighbourhood when the step
+            was rejected.
+        x
+            Sub-pixel offset of the maximum from the centre, exactly
+            zero when the step was rejected.
+        """
+        raise NotImplementedError(
+            "spherical-indexing-gpu skeleton: implemented at the "
+            "implementation gate of specs/2026-09-07-spherical-gpu"
+        )
+
     def correlate(
         self,
         flm: np.ndarray,

@@ -2009,6 +2009,7 @@ class EBSD(KikuchipySignal2D):
         circular_mask: bool = False,
         emsphinx_compatible: bool = True,
         pseudo_symmetry_ops: Rotation | None = None,
+        backend: str = "cpu",
         chunksize: int | None = None,
         verbose: int = 1,
     ) -> CrystalMap:
@@ -2100,10 +2101,24 @@ class EBSD(KikuchipySignal2D):
             ``"nbest_phase_id"``. Requires a single phase. ``None``
             by default; a size-0 rotation is equivalent to ``None``
             (no variants, no property).
+        backend
+            Which backend runs the coarse correlation stage,
+            ``"cpu"`` (default) or ``"gpu"``. The CPU path is the
+            reference implementation; ``"gpu"`` runs the
+            cross-correlation spectrum, the inverse FFT and the peak
+            search as float32/complex64 device batches through CuPy,
+            leaving every other stage (preprocessing,
+            back-projection, harmonic analysis, peak interpolation,
+            Newton refinement, pseudo-symmetry variants) on the CPU.
+            ``"gpu"`` requires that :mod:`cupy` is installed, which
+            is an optional dependency of kikuchipy. See
+            :ref:`dependencies` for details.
         chunksize
             Number of patterns to index per chunk. If not given, it is
             estimated from the bandwidth, the number of patterns and
-            the number of Dask workers.
+            the number of Dask workers. With ``backend="gpu"`` the
+            chunk size doubles as the device batch size and is
+            estimated from the device memory instead.
         verbose
             Which information to print. Options are 0 - no output,
             1 - information, progress bar and timing (default).
@@ -2350,6 +2365,7 @@ class EBSD(KikuchipySignal2D):
             normalize=normalize,
             refine=refine,
             pseudo_symmetry_ops=pseudo_symmetry_ops,
+            backend=backend,
             signal_mask=signal_mask,
             n_regions=n_regions,
             gaussian_background=gaussian_background,

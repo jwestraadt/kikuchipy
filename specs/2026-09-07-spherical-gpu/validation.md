@@ -478,3 +478,273 @@ nits applied. Ledger:
 (Sections for the failing-tests gate, the implementation-gate
 measurements + pins, and the review-gate re-measurements are
 appended here, dated, per the Phase 8/10 pattern.)
+
+### 2026-09-07 (failing-tests gate; skeletons + failing suite + the D12.1 CPU baseline)
+
+**Skeletons landed** (full signatures + docstrings, every body
+`NotImplementedError` until the implementation gate):
+`src/kikuchipy/indexing/_spherical/_gpu.py` (GPL + CMU/Lenthe
+headers with the dated modification notice; module doc mapping the
+D2 stage split to `_xcorr.py` and the `feature/GPU`
+`include/gpu/pipeline.hpp` design; the three-stage gate
+`_verify_gpu_or_raise` with seams `_import_cupy` / `_device_count` /
+`_probe_cufft`, the frozen D6.2 message constants
+(`_GATE_IMPORT_MESSAGE` / `_GATE_VERSION_MESSAGE` /
+`_GATE_DEVICE_MESSAGE` / `_GATE_CUFFT_MESSAGE`), the `_gate_result`
+cache and the Windows DLL shim `_add_nvidia_dll_directories`; the
+xp-agnostic core `_sanitized_table`, `_build_a_tables`,
+`_build_g_batch`, `_spectrum_batch`, `_inverse_fft_batch`,
+`_scale_argmax_batch`, `_neighborhood_offsets`,
+`_gather_neighborhoods`, `_pad_batch`, `_strip_padding`; the VRAM
+model trio `_gpu_memory_per_pattern_bytes` /
+`_gpu_resident_bytes_per_phase` / `_default_batch_size`; and
+`_GpuSession`).  The D1 plumbing is IMPLEMENTED (pure signature
+work, deliberately passing at this gate): `backend: str = "cpu"`
+keyword-only after `pseudo_symmetry_ops` on the `SphericalIndexer`
+ctor and positional-or-keyword after `pseudo_symmetry_ops` / before
+`chunksize` on `EBSD.spherical_indexing` (the recorded positional
+shift of `chunksize`/`verbose`; no positional caller exists in repo
+or tests), the ValueError guard in the nlopt message shape, the
+ctor-fired gate for `"gpu"` (bound in `_indexer`'s namespace for
+tests to patch), `SphericalIndexer.backend` (the string only), the
+`gpu_memory_per_batch_bytes(batch_size)` METHOD stub (D8.3), and
+the stage-7 epilogue entry point
+`SphericalCrossCorrelator._interp_peak_from_neighborhood` stubbed
+in `_xcorr.py` (D2 stage-7 / plan 2.3).  No `.pyi` change needed:
+`_gpu.py` adds no public export (checked
+`src/kikuchipy/indexing/__init__.pyi`).
+
+**Failing suite landed**:
+`tests/test_indexing/test_spherical_gpu.py`, 72 collected tests
+(56 test functions; default + gated in the one file, D10.4), plus
+spec-driven updates to the sibling suites: the frozen-defaults
+dicts of `test_spherical_indexer.py` and
+`test_ebsd_spherical_indexing.py` gain `backend: "cpu"`, the
+placement pin now reads `pseudo_symmetry_ops` -> `backend` ->
+`chunksize`, and `Phase 11`/`Phase 12` joined the
+no-phase-numbers-in-public-docstrings pin.  Every MTP placeholder
+carries a `FIXME-pin` marker: `XP_CUBE_ATOL_SCALE`,
+`REFINED_FLIP_COUNT_SMALL/20PT`, `REFINED_AGREEMENT_RATE_165PT`,
+`REFINED_MISO_MEDIAN/MAX_DEG`, `SCORE_PEARSON_MIN`,
+`REFINED/COARSE_SCORE_REL_DIFF`, `COARSE_CELL_AGREEMENT_MIN`,
+`PSYM_INDEX_FLIP_COUNT`, `VRAM_G68/G88_BOUNDS`,
+`VRAM_RESIDENT68_BOUNDS`.  One documented test-design guard: the
+numpy-xp oracle's argmax-cell equality carries a symmetric-copy
+escape (at even slP an flm z-fold/mirror symmetry duplicates cube
+values EXACTLY on the grid -- e.g. slP 32 with n_fold 4 -- so f64
+and f32 rounding may break the exact tie at different copies; the
+escape requires the two cells value-tied at the maximum, and the
+cube-band assert stays the strict mutant killer).
+
+**Run record** (this machine, fork venv, 2026-09-07):
+
+- `uv run pytest tests/test_indexing/test_spherical_gpu.py -n 0 -q`:
+  **30 failed, 16 passed, 26 skipped** -- every failure a
+  `NotImplementedError` from a skeleton body (two gate-message tests
+  surface it as an AssertionError on the placeholder text because
+  `NotImplementedError` subclasses `RuntimeError` and is caught by
+  their `pytest.raises(RuntimeError)` -- still the unimplemented
+  gate, right-reason).  The 16 passes are the implemented D1
+  plumbing pins (backend validation both surfaces, bitwise-default
+  guard, signature placements, attribute, ctor-gate wiring) and the
+  D10 fixture-decision tests (kill switch, structural xdist skip,
+  instruction-bearing reasons, wgpu marker unused) -- gating
+  infrastructure that must work for the gating to gate.  The 26
+  skips are the 25 `cupy_gpu`-gated tests (reason: gate not
+  implemented yet -- the fixture's NotImplementedError branch) + 1
+  weekly.
+- Structural xdist live check
+  (`uv run pytest tests/test_indexing/test_spherical_gpu.py -n 4
+  -q`): same 30/16/26, with every gated skip reason now "GPU tests
+  run only at -n 0 (PYTEST_XDIST_WORKER is set...)" -- the D10.4
+  rule observed live before any probe.
+- Existing spherical suite (`uv run pytest tests/test_indexing
+  tests/test_signals -k "spherical"
+  --ignore=tests/test_indexing/test_spherical_gpu.py -n 4 -q`):
+  **3122 passed, 741 skipped, 0 failed** in 89 s -- the CPU path is
+  unperturbed by the skeleton edits (the D5.1 protection, also
+  pinned by the new bitwise-default test which passes).
+- Whole-suite collection sanity (`uv run pytest --co -q`): **4908
+  tests collected, no errors**.
+- Overlay collection (`uv run --with cupy-cuda12x pytest
+  tests/test_indexing/test_spherical_gpu.py --co -q`): **72
+  collected, clean** -- the gated file collects under a
+  cupy-bearing environment.
+
+**D12.1 idle-machine 8-worker CPU baseline** (MEASURED -- the
+floor's LEFT side; the open-question-9.5 dedicated window used).
+Recipe: the `nickel_ebsd_large` route -- full 4125-pattern map
+(55 x 75, uint8 60 x 60), backgrounds removed on the full map
+(`remove_static_background` + `remove_dynamic_background`),
+detector `pc_average`, harmonics built DIRECTLY at bw 68 from the
+shipped Ni master (`from_master_pattern`, lambert, both
+hemispheres), `SphericalIndexer` all defaults (normalize=True,
+refine=True, emsphinx_compatible=True, n_regions=10),
+`chunksize=None` (the ported `_batch_estimate` gives 15/chunk),
+`dask.config.set(num_workers=8)`, threaded scheduler,
+`progressbar=False`; warm-up `index_patterns` on a 256-pattern
+slice, then three timed full-map runs, best of 3.  Command:
+`uv run python d12_cpu_baseline.py` (scratchpad script; recipe
+carried verbatim here since the scratchpad does not survive).
+Machine: the RTX 2000 Ada machine's 20-core laptop CPU, Windows 11
+(10.0.26200), fork venv python 3.13.12, idle/dedicated.  Measured:
+
+| run | wall s | pat/s |
+|---|---|---|
+| warm-up (256) | 2.39 | -- |
+| 1 | 22.45 | **183.8** |
+| 2 | 26.75 | 154.2 |
+| 3 | 26.53 | 155.5 |
+
+**Best of 3 = 183.8 pat/s**, pinned into
+`test_spherical_gpu.py::CPU_BASELINE_8_WORKERS_PAT_S` (the
+`test_throughput_floor` left side).  Sanity: scores 0.2289-0.6903,
+zero failed rows of 4125.  Two notes recorded: (a) runs 2-3 dip
+~16 % below run 1 -- laptop thermal behaviour after a sustained
+full-map run; best-of-3 is the D12 convention and run 1 followed
+the warm-up as intended; (b) the value sits below the historical
+non-idle 205-216 pat/s Anes-reproduction band, which was a
+different workload/session -- D12.1 requires exactly this
+same-machine idle re-measurement, which this is.  The GPU side of
+the floor and the ratio row remain implementation-gate
+measurements.
+
+**Deferred to the implementation gate** (need the implementation):
+every `FIXME-pin` band above; the D3.2 both-ways
+spectrum-precision measurement; the D5.3 batch-invariance verdict;
+the D8 VRAM calibration (pool high-water at bw 68/88, chooser
+cross-check) + the bw-113 probe; the D12 GPU throughput +
+projection cross-check + coarse-only/bw-88/psym rows + lock-wait
+share; the D9 host-refine crossover op count (needs the measured
+GPU rate); the coverage command run; the three gate failure
+messages verified by hand (Manual section).
+
+### 2026-09-07 (failing-tests gate: test-critic review -- fixes applied)
+
+An independent test-critic review of the Stage A deliverables (the
+failing suite, the skeletons and this file) returned 2 major,
+6 minor and 3 nit findings.  Every finding was applied or recorded;
+**no assertion was weakened**.  Ledger:
+
+**Applied (tests/pins strengthened):**
+
+1. **(major) D12.1 CPU baseline re-pinned 183.8 -> 236.0 pat/s.**
+   The recorded 183.8 / 154.2 / 155.5 pat/s window (warm-up 2.39 s)
+   FAILED idle-machine consistency re-runs of the identical recipe
+   on the now-dedicated machine: **236.0 / 231.6 / 228.3** pat/s
+   (warm-up 1.35 s; critic session) and **221.9 / 223.8 / 209.1**
+   (warm-up 1.48 s; this fix-application session, script
+   `d12_cpu_baseline_rerun.py` re-created in the session scratchpad
+   from the recipe carried verbatim above) -- each re-run with the
+   identical score band 0.2289-0.6903 and 0 failed rows of 4125, so
+   the route matches and the original window was not thermally/load
+   clean (~22 % soft: a 200 pat/s GPU run slower than the honest
+   idle CPU would have "passed" the floor).
+   `CPU_BASELINE_8_WORKERS_PAT_S = 236.0` now pins the HIGHEST
+   honest idle measurement (the hardest floor), re-confirmed in the
+   same session/thermal state as the GPU measurement at the
+   implementation gate (the D12 convention).  This note amends the
+   D12.1 entry above per the append-only rule.
+2. **(major) `_gather_neighborhoods` now has a direct unit test**:
+   `test_gather_neighborhoods_parity` (odd/even slP x both compat
+   settings) gathers DISTINCT random cubes at per-cube edge/wrap +
+   random centers through the function under test and asserts
+   per-cube `_extract_neighborhood` equality for every b -- the
+   wrong-base batched-gather mutant (per-cube flat offsets need
+   `+ b * cube_size`) now dies on CI, closing the
+   offsets -> gather -> epilogue chain the D11.1 coverage claim
+   needed (the offsets test gathers with raw fancy indexing and
+   never called the gather).
+3. **(minor) D4.2 flip count de-vacuoused**: `assert_refined_parity`
+   now counts winner-CELL flips (refined zyz rounded back via
+   `euler_to_index`, the `test_coarse_cell_agreement` vocabulary)
+   beside the phase_id count, which is constant-0-vs-constant-0 in
+   the four single-phase callers; both counts share the FIXME-pin,
+   split at the implementation gate if they measure apart.
+4. **(minor) D8.3 warning branch + info-line pins**: new gated
+   `test_verbose_warns_above_free_vram` (chunksize=100_000 models
+   ~5 PB at bw 68 -- the message must carry the warning);
+   `test_verbose_gpu_info_line` now also pins the device name
+   (queried live from the runtime), the batch size B and a
+   model-bytes figure with its unit.
+5. **(minor) D8.1/D8.2 wiring pinned**: new gated
+   `test_default_batch_size_wiring` spies `_default_batch_size`
+   (and `_GpuSession`) through a `chunksize=None` GPU run -- it
+   must be consulted, fed a real free-VRAM figure, and its return
+   must BE the session batch size; the
+   left-on-CPU-`_batch_estimate` mutant (15/chunk at bw 68, silent
+   throughput loss) now dies.
+6. **(minor) the D7 4-worker lock stress implemented**: new gated
+   `test_run_to_run_bitwise_4_workers` (`dask` `num_workers=4`,
+   `chunksize=2` -> 5 chunks over 9 patterns, bitwise run-to-run)
+   realises the "4-worker stress of `test_run_to_run_bitwise`"
+   named by the D7 mapping row and plan 7.2 -- the dask-worker
+   axis, not pytest `-n`, is the relevant concurrency axis under
+   the structural xdist skip.  The evidence row now has an
+   implementation under that node name.
+7. **(minor) D2 freshness mutant CI-killable**: `run_xp_pipeline`
+   now hands `_spectrum_batch` a NaN-seeded (dirty) `fxc` instead
+   of a pre-zeroed one -- the frozen contract re-zeroes (or fully
+   writes) per phase, so the rely-on-caller-zeroing mutant dies at
+   every default-suite parametrisation instead of only in the gated
+   mixed-symmetry run.
+8. **(minor) session-build OOM window strengthened**:
+   `test_oom_halving_at_session_build` now also asserts no fill
+   rows and a CPU-reference misorientation band on the halved run's
+   results (matching its mid-compute twin) -- a
+   completed-but-corrupted retry fails.
+9. **(nit) D8.4 MemoryError pins tightened**: standalone-68 regex
+   (no longer matchable inside a byte count), a
+   bytes-figure-with-unit regex, "VRAM", the smaller-bandwidth
+   remedy and a `backend="cpu"` regex.
+10. **(nit) gate failure-caching + shim registration failure
+    covered**: new `test_gate_failure_is_cached` (the cached
+    exception re-raises with NO re-probe -- a success-only cache
+    now fails) and `test_dll_shim_registration_failure_is_silent`
+    (Windows + nvidia package present + `os.add_dll_directory`
+    raising -> silent `None`, no output; D6.5's third silent
+    contract).
+
+**Recorded as append-only notes (no spec-text edit above):**
+
+11. **(nit) traceability name drift**: the mapping table's
+    `test_gate_stages_actionable` is implemented as the split
+    `test_import_stage_message` / `test_device_stage_message` /
+    `test_cufft_stage_message` (+ `test_gate_version_floor`,
+    `test_gate_stage_order_and_caching`,
+    `test_gate_failure_is_cached`); `test_oom_halving` as
+    `test_oom_halving_at_session_build` /
+    `test_oom_halving_mid_compute` /
+    `test_oom_below_batch_one_raises_memory_error`; the D7 row's
+    4-worker stress is `test_run_to_run_bitwise_4_workers` (item
+    6).  Supersets of the named evidence; the table text stands
+    unedited per the append-only discipline and this note is the
+    DoD-walk key.
+12. **(nit) bitwise-default guard scope clarified**:
+    `test_backend_cpu_is_bitwise_default` pins that the keyword is
+    a no-op and that the default is "cpu" (with the two signature
+    pins); it CANNOT catch a shared-code edit that perturbs both
+    arms equally.  The actual perturbation guard is the pinned
+    existing spherical suite (3122 passed, 0 failed at this gate),
+    listed separately in the DoD -- never trust the one test alone.
+
+**Rejected: none.**
+
+**Re-run record after the fixes** (this machine, fork venv,
+2026-09-07):
+
+- `uv run pytest tests/test_indexing/test_spherical_gpu.py -n 0
+  -q`: **36 failed, 16 passed, 29 skipped** (81 collected, was 72:
+  +6 default-suite failures -- the four gather-parity
+  parametrisations, the cached-failure gate test and the shim
+  registration-failure test -- and +3 gated skips -- the warning
+  branch, the default-B wiring and the 4-worker stress).  Every
+  failure right-reason: 34 direct skeleton `NotImplementedError`s
+  plus the two known gate-message tests asserting on the
+  placeholder text (`NotImplementedError` subclasses
+  `RuntimeError`).
+- Whole-suite collection (`uv run pytest --co -q`): **4917
+  collected, no errors** (was 4908; +9 = the new tests).
+- Overlay collection (`uv run --with cupy-cuda12x pytest
+  tests/test_indexing/test_spherical_gpu.py --co -q`): **81
+  collected, clean**.
