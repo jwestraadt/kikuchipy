@@ -194,7 +194,13 @@ NotImplementedError pin replaced); Stage B props per D15.6.
    (download-gated): strain/rotation floors per component recorded
    in validation.md; the D4 preprocessing defaults
    (band-pass/AHE/window) measured against it and re-pinned only
-   with a dated record.
+   with a dated record. **Delivered 2026-09-07 at the Stage B
+   failing-tests gate as `tests/test_indexing/test_hrebsd_si.py`
+   (it was missing from the drafted commit) and executed at the
+   IMPLEMENTATION gate: it downloads nothing and skips with a
+   message naming `kp.data.si_wafer(allow_download=True)`, so the
+   implementation gate fetches the dataset once and fills the four
+   placeholders (validation Recorded results entry 32).**
 4. Adversarial review: theory reviewer refutes closure algebra,
    Voigt/engineering-shear bookkeeping, frame chain, Biot vs
    Green-Lagrange bookkeeping, KAM definition vs the D12 freeze;
@@ -211,6 +217,37 @@ NotImplementedError pin replaced); Stage B props per D15.6.
    mrad; segmentation threshold compared with >=; principal
    stresses ascending; per-grain reference off-by-one in flat
    index.
+   **Killer corrections, dated 2026-09-07 (Stage B failing-tests
+   adversarial review; every claim re-measured, validation
+   Recorded results entries 28 to 37).** (a) "Bond rotation
+   transposed" dies by the D9.5 22.5-deg C16' pin, by the
+   ANALYTIC `TestChain::test_strain_recovery_at_a_generic
+   _orientation` (2.9630e-04 against 1.1655e-06) and by V3's
+   pattern case, now delivered as `test_hrebsd_deformed_master.py`
+   (3.0068e-04 against 9.4045e-06). It does NOT die by the
+   `sigma33` self-check (3.0914e-04 GPa transposed against
+   3.0639e-04 correct), which must never be quoted as its killer.
+   (b) "`R` vs `R^T` in the frame rotation" does not die by V4:
+   V4's Stage B split is delivered as a pure-algebra harness, so
+   the killers are `TestFrameChain::test_the_rotation_uses_the
+   _transpose` and the chain's own strain recovery (8.3352e-04
+   against 1.1655e-06). (c) "b7/b8 misassigned" does NOT die by
+   `test_b7_and_b8_are_not_interchangeable`'s first arm, which is
+   blind to it (1.4711e-05 with and without the mutant); it dies
+   by `test_traction_free_recovers_the_built_in_tensor` and by
+   that test's new per-component arm. (d) Three mutants are ADDED
+   to this list, each with its killer: "DETECTOR_Y_FLIP dropped
+   from the frame matrix", the Stage B analogue of Stage A's D1.1
+   correction (dies by `TestFrameChain::test_the_detector_frame_is
+   _the_y_down_one`, an independent library measurement, and
+   `::test_sample_to_detector_matrix_carries_the_flip`); "shear
+   terms of the traction-free right-hand side dropped" (dies by
+   the closure recovery test, 2.7692e-05, and by
+   `test_the_shear_terms_of_the_right_hand_side_are_used`); and
+   "the small-strain fast path taken for a public result" (dies by
+   `TestSmallStrainFastPath::test_the_public_path_is_the_polar
+   _one`, which separates the two candidates by 6.09e-04 on the
+   chain's own reported `beta`).
 5. Gate order as Stage A; roadmap Stage B boxes ticked; push.
 
 ## 4. Stage C -- GND + tutorial
@@ -418,3 +455,41 @@ are folded into one row. 23 applied, 2 rejected with evidence.
 | 22 | one docstring line over 72 characters | applied: an AST/tokenize scan of all six modules now reports none |
 | 25 | import audit allows top-level `skimage` | applied: `test_scikit_image_is_never_imported_at_module_scope`, which also asserts the deferred import IS inside `initial_guess` |
 | -- | `correct=False` diagnostic path should use the exact conjugation (part of finding 1) | REJECTED with evidence: pinned by the frozen `test_conversion_uses_the_relative_target_pc`, feeds only V6's uncorrected arm and D13, and the two conversions are exact mutual inverses as they stand (entry 26b) |
+
+## 10. Stage B failing-tests review disposition table (2026-09-07, fixer)
+
+12 findings from the adversarial reviewer of the Stage B
+failing-tests commit, plus 6 mutant-coverage items. Every finding
+was re-verified by measurement on Machine A before disposition --
+the numbers, the recipes and the gate runs are in validation.md
+"Recorded results" entries 28 to 38. 12 applied (two of them with
+a better remedy than the one suggested, recorded in the row), 0
+rejected. Every mutant-coverage item is closed by a named test or
+by a recorded correction to the killer this plan's section 3.4
+names.
+
+| # | Finding (short) | Disposition |
+|---|---|---|
+| 1 | KAM module's two tolerance families mutually unsatisfiable; the oracle's `arccos` pair angle loses 8 digits at 1e-4 rad (critical) | applied: measured (oracle 2.6221e-09 relative from its own closed form; `arctan2` form 3.7e-16), `pair_angle` rewritten, requirements D12 amended with the date, `_kam.py` docstring warned, and a new library test guards the conditioning (entry 28) |
+| 2 | `test_the_public_path_is_the_polar_one` unsatisfiable: the chain's pure-rotation strain floor is the reduction plus the closure, not the split (critical) | applied with a STRONGER remedy than the suggested MTP band: the test now decides which split was taken on the chain's own reported `beta`, where the polar answer is reproduced exactly and the small-strain one is 6.09e-04 away, so no tolerance is guessed at all. Requirements D8 and validation V4 amended with the dated floor table; the V4 `ROTATION_STRAIN_LEAK` seed is refuted by 25x (entry 29) |
+| 3 | V3's tensor half and the whole V5 Si benchmark absent from the commit (major) | applied: `test_hrebsd_deformed_master.py` delivers V3's pattern-level strain oracle (2 MTP placeholders; measured worst strain error 9.4045e-06, and it kills the transposed-Bond mutant by 32x), and `test_hrebsd_si.py` delivers V5's four tests plus the four sweep harnesses, download-gated and skipping cleanly. Both file-layout deviations recorded in validation V3/V5 (entries 31, 32) |
+| 4 | `test_the_chain_and_the_public_function_agree` compares at `atol=0` across two constructions of one orientation, which differ by an ulp (major) | applied: the chain is fed `xmap.rotations.to_matrix()`, `rtol=0, atol=0` kept, and the substitution's independence is argued from the separate `rotate_vector` pin (entry 37) |
+| 5 | Two Stage A `reference="auto"` pins pass vacuously; the caught error now comes from the `_segmentation.py` skeleton (major) | applied via the finding's own documented alternative rather than deletion, because the failing-tests commit must not move the Stage A regression count: both carry an explicit superseded-by note naming their positive replacements, and the Stage B IMPLEMENTATION gate deletes them (recorded in validation's Stage B unit-suite block and entry 33) |
+| 6 | `_tensors.py` uses `M = diag(1,-1,1) @ R` while frozen D7 writes `R^T beta R`; the amendment was only promised (major) | applied: requirements D7 carries the dated correction naming the composed matrix and its two measuring tests, D1.5 records that the flip is a reflection (det -1) and cannot be absorbed into the detector rotation, and validation records both |
+| 7 | `test_b7_and_b8_are_not_interchangeable` is blind to the mutant it claims (minor) | applied: measured (1.4711e-05 with AND without the mutant), comment corrected to say what the test does, and a discriminating per-component arm added; the real killer is named in the module's mutation map and in section 3.4 above (entry 36a) |
+| 8 | `segment_grains`' multi-phase ValueError narrows the frozen default `reference="auto"` against D9.6 (minor) | applied via the finding's FIRST option (segment per phase) rather than its second (amend D11.1 to record the narrowing): narrowing a frozen decision with no measurement refuting it is the worse of the two, and the implementation does not exist yet so the cost is a docstring and a test. Requirements D11.1 records the decision with the date; two positive tests replace the guard, the second a library measurement of m-3m vs 6/mmm (entry 34) |
+| 9 | The `(ny, nx)` shape contract is implicit for a one-row map and undecided for a one-column map (minor) | applied: measured on orix 0.14.2 that BOTH flatten to `(n,)`, the rule pinned to the row/col grids in both docstrings, requirements D11.1 amended, and three tests added across the two modules (entry 35) |
+| 10 | Stage B file-layout deviations and the new MTP placeholders absent from validation.md (minor) | applied: a Stage B file-layout table in the V3 block, per-block notes in V5 and V7, a Stage B MTP inventory beside the Stage A one, and entries 28 to 38 in the ledger |
+| 11 | `SMALL_STRAIN_ENABLE_ANGLE_DEG` is quantized to the sweep grid; D8 names a measuring test that is not what is delivered (minor) | applied: the test now brackets and BISECTS the 1e-6 crossing to 1e-6 deg (grid would record 0.05, crossing is 0.0779), and requirements D8 carries a dated measuring-test correction saying the equality is measured analytically and why (entry 30) |
+| 12 | 8-connectivity row wraparound uncovered: the only `connectivity=2` case is a 2x2 map (minor) | applied: `test_eight_neighbours_do_not_wrap_around_a_row` on a (2, 3) map whose only same-orientation pair is two columns apart in one row (entry 36b) |
+
+Mutant-coverage items, all closed: the transposed-Bond co-killer is
+delivered (V3 patterns) and the `sigma33` self-check is recorded as
+NOT a killer of it; the `R` vs `R^T` row of section 3.4 is corrected
+to name its real killers; the b7/b8 row likewise; three mutants are
+added to section 3.4 with their killers (`DETECTOR_Y_FLIP` dropped,
+traction-free shear terms dropped, the small-strain path taken
+publicly); and the two items the reviewer verified as already dying
+hard -- the D6.2 re-application and the plan's remaining Stage B
+mutants -- are left as they are, with their measured margins
+recorded above.

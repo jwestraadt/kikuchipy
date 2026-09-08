@@ -16,6 +16,11 @@
 # along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 
 from ._hough_indexing import xmap_from_hough_indexing_data
+from ._hrebsd._kam import hrebsd_kam
+from ._hrebsd._pc_shift import hrebsd_pc_shift
+from ._hrebsd._segmentation import segment_grains
+from ._hrebsd._stiffness import voigt_stiffness
+from ._hrebsd._tensors import hrebsd_strain_stress
 from ._merge_crystal_maps import merge_crystal_maps
 from ._orientation_similarity_map import orientation_similarity_map
 from ._refinement._refinement import (
@@ -55,9 +60,14 @@ __all__ = [
     "compute_refine_projection_center_results",
     "fast_bandwidths",
     "find_pseudo_symmetry_operators",
+    "hrebsd_kam",
+    "hrebsd_pc_shift",
+    "hrebsd_strain_stress",
     "merge_crystal_maps",
     "orientation_similarity_map",
     "read_emsphinx_psym_file",
+    "segment_grains",
+    "voigt_stiffness",
     "write_emsphinx_patterns",
     "write_emsphinx_psym_file",
     "xmap_from_hough_indexing_data",

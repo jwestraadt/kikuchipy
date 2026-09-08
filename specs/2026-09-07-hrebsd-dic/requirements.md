@@ -226,6 +226,19 @@ everywhere inside the engine.**
    asserted from reading: a pure sample-frame rotation about a
    known axis must come back with the right axis and sign through
    the whole chain.
+   **MEASURED AND PINNED 2026-09-07 (Stage B failing-tests gate;
+   see the D7 correction below).** The y-down detector frame of
+   this clause is `sample_to_detector` composed with
+   `diag(1, -1, 1)`, kikuchipy's own gnomonic detector frame
+   having y UP. That flip is a REFLECTION (determinant -1), so it
+   cannot be absorbed into the detector's own rotation and cannot
+   be reached by any choice of `sample_tilt`/`tilt`/`azimuthal`/
+   `twist`: the composed matrix, not the orix rotation, is what
+   the frame chain of D7 uses. Nothing is hardcoded by this --
+   the rotation still comes from the `EBSDDetector` -- and the
+   determinant is asserted in
+   `test_hrebsd_tensors.py::TestFrameChain::test_the_detector
+   _frame_is_the_y_down_one`.
 
 ### D2 -- IC-GN engine (frozen)
 
@@ -728,10 +741,34 @@ Per-point PC/DD and the beam-scan correction, frozen:
 
 `Fe_hat` is measured in the DETECTOR frame. The chain to reported
 quantities: `beta_det = Fe_hat - I` -> rotate to the sample frame
-`beta_s = R^T beta_det R` with
-`R = detector.sample_to_detector.to_matrix()` (direction and
-transpose PINNED by the pure-rotation oracle V4, exactly as the
-Phase 5 forward-projection lock pinned `rotation_from_zyz`) ->
+`beta_s = M^T beta_det M` with
+
+**`M = diag(1, -1, 1) @ detector.sample_to_detector.to_matrix()`
+-- DATED CORRECTION, 2026-09-07 (Stage B failing-tests gate).**
+The drafted form of this clause wrote `beta_s = R^T beta_det R`
+with the unflipped `R = detector.sample_to_detector.to_matrix()`,
+which is wrong and is struck. `R` maps the sample frame into
+kikuchipy's GNOMONIC detector frame, whose y points UP, while the
+`Fe` the engine measures lives in the numpy array frame of D1.1,
+whose y points DOWN; the two differ by the same reflection the
+Stage A half-pixel measurement already recorded for the
+coordinates (validation Recorded results entry 1, D1.1/D1.3, and
+`test_hrebsd_engine.py::TestPcCentredFrame`, 1.8e-14 px over a
+whole detector). Dropping the flip mirrors `beta13`, `beta23`,
+`beta31` and `beta32` and flips two components of every reported
+rotation vector, so it is not cosmetic. MEASURING TESTS:
+`test_hrebsd_tensors.py::TestFrameChain::test_the_detector_frame
+_is_the_y_down_one` (an independent library measurement from
+`_get_direction_cosines_from_detector`, passing before any Stage
+B code exists) and `::test_sample_to_detector_matrix_carries_the
+_flip`; Stage A already used the composed matrix in
+`test_hrebsd_engine.py`'s `impose_detector_frame_fe`, so every V3
+and V4 deformation was imposed through it. Recorded in
+validation.md with this date. The flip is a reflection and cannot
+be absorbed into the detector's rotation (D1.5). Direction and
+transpose PINNED by the pure-rotation oracle V4 and by
+`TestFrameChain::test_the_rotation_uses_the_transpose`, exactly as
+the Phase 5 forward-projection lock pinned `rotation_from_zyz` ->
 closure in the sample frame (D9) -> strain/rotation/stress in the
 sample frame (D8, D10); the crystal frame enters only through the
 stiffness rotation (D9) using the per-point orientation of the
@@ -760,6 +797,44 @@ feature; the HR rotation lives in props, D15.6).
   every public result goes through the polar path. Error scale for
   the record: small-strain error is O(omega^2) ~ 3e-4 at 1 deg
   (theory report section 3.3).
+  **MEASURING-TEST CORRECTION, 2026-09-07 (Stage B failing-tests
+  gate).** The equality is measured ANALYTICALLY, by
+  `test_hrebsd_tensors.py::TestSmallStrainFastPath::test_equality
+  _with_the_polar_path_is_measured`, and not "over the V4 rotation
+  sweep" through patterns: the difference between the two splits is
+  a property of the split alone, given the same `F`, and is
+  independent of how `F` was obtained, so patterns would add DIC
+  noise to a pure-algebra quantity without adding coverage. The
+  recorded enabling angle is the BISECTED crossing of the 1e-6
+  criterion, not the largest angle of the sweep grid inside it: on
+  the drafted grid the errors are 9.140e-08, 5.656e-07, 1.604e-06,
+  3.733e-05, 1.479e-04 and 5.889e-04, so a grid readout would have
+  recorded exactly 0.05 deg for a crossing near 0.0779 deg.
+- **Pure-rotation strain floor of the CHAIN, MEASURED AND RECORDED
+  2026-09-07 (Stage B failing-tests gate).** A pure lattice
+  rotation leaks NO strain through the polar SPLIT (measured
+  `|U - I|max` = 6.7e-16 at 5 deg), but it does not come back at
+  zero through the whole chain, and the reason is structural, not
+  numerical: the stored `Fe` is REDUCED by `Fe33`, which for a
+  rotation through theta is an isotropic dilatation of
+  `1 - cos(theta)` order (measured 7.13e-05 at 2 deg on the
+  480 px oracle geometry), and the ninth-degree-of-freedom closure
+  (D9) then supplies an isotropic part of its own. MEASURED
+  reported `|strain|max` for a pure sample-frame rotation about
+  the detector normal: 1.0154e-04 (deviatoric) / 7.2762e-05
+  (traction free) at 1 deg, 4.0614e-04 / 2.9104e-04 at 2 deg, and
+  2.5380e-03 / 1.8187e-03 at 5 deg. Under the deviatoric closure
+  the ratio is EXACTLY `2/3` of `sym(R - I)` (algebra:
+  `diag(c-1, c-1, 0)` closes to `diag(-(1-c)/3, -(1-c)/3,
+  2(1-c)/3)`) and under traction free it is 0.478 of it. The
+  validation V4 drafting seed `ROTATION_STRAIN_LEAK <= 1e-4 up to
+  5 deg` is REFUTED by these numbers and is struck; the band is
+  MTP and its recipe is the same sweep. This floor is a property
+  of the reduction plus the closure, so it can never discriminate
+  between the polar and the small-strain path: which split a
+  public result took is pinned instead against the chain's own
+  reported `beta` (`test_the_public_path_is_the_polar_one`), where
+  the two candidates separate by 6.09e-04 at 2 deg.
 
 ### D9 -- 9th-dof closure and stiffness (frozen)
 
@@ -854,6 +929,31 @@ in scope by user decision 4.
    Returns `(ny, nx)` int32 labels, 0-based, row-major first-seen
    order, unindexed points -1. Uses `CrystalMap.row/col` grids
    (`crystal_map.py:381, 407`).
+   **Multi-phase maps and the returned shape, RECORDED 2026-09-07
+   (Stage B failing-tests gate; two clauses the drafted text left
+   implicit).** (a) A map of several indexed phases is segmented
+   PER PHASE: an edge whose two points carry different phase
+   identifiers never links, and each phase's angles use its own
+   point group. A phase boundary is a grain boundary, which is the
+   natural extension of the connected-components rule and needs no
+   new decision. A Stage B draft instead raised a ValueError on a
+   multi-phase map, which no requirement asks for and which would
+   have narrowed the FROZEN DEFAULT `reference="auto"` (D11.3) to
+   single-phase maps only, contradicting D9.6 ("the engine itself
+   is phase-agnostic per grain"): a multi-phase map that Stage A
+   indexes happily with an explicit reference would then have
+   raised on the default path. That guard is struck. The
+   single-phase restriction of D9.6 stays where it belongs, on the
+   STRESS path. (b) The returned shape is ALWAYS two dimensional
+   and comes from the row and column grids, never from
+   `CrystalMap.shape`: MEASURED on the installed orix 0.14.2, BOTH
+   a `(1, n)` and an `(n, 1)` navigation shape give `xmap.shape ==
+   (n,)` with `ndim == 1`, so "a one dimensional map is a single
+   row" would return `(1, ny)` for a COLUMN map and the exact
+   shape comparison of the `"auto"` wiring would reject it. The
+   grids settle which it is: a `(3, 1)` map has `row = [0, 1, 2]`
+   and `col = [0, 0, 0]` and segments to `(3, 1)`. `hrebsd_kam`
+   (D12) returns the same shape by the same rule.
 2. **Reference auto-selection** (per grain): the point maximizing
    pattern image quality computed internally with the existing
    `get_image_quality` kernel (`pattern/_pattern.py:698`) on the
@@ -911,6 +1011,20 @@ field (theory report section 3.8):
   rotations (Stage B `rotation_vector` prop composed per point);
   within a grain relative to a common reference, so symmetry
   operators are unnecessary and never applied (documented).
+  **CONDITIONING, MEASURED AND RECORDED 2026-09-07 (Stage B
+  failing-tests gate).** That angle must NOT be evaluated as
+  `arccos((tr - 1)/2)`: `arccos` has a square-root singularity at
+  the identity and loses about eight significant digits at the
+  1e-4 rad scale this field lives at. MEASURED on the V7
+  constant-curvature oracle, the arccos form returns
+  0.07499999980334485 mrad where the closed form is 0.075, a
+  relative error of 2.6221e-09 -- three orders above the band the
+  identity is asserted in, and enough to make the oracle and its
+  own closed form mutually unsatisfiable. Use
+  `arctan2(||skew(M)||/2, (tr(M) - 1)/2)`, which reproduces the
+  closed form to 3.7e-16 relative. Both the module and the V7
+  oracle carry the note, and the oracle pins its own conditioning
+  before the implementation exists.
 - Masking: pairs must share `grain_id` (FROZEN, always on -- the
   HR field is only defined within a grain); `psi_max` (mrad,
   optional, `None` FROZEN default) additionally drops pairs above

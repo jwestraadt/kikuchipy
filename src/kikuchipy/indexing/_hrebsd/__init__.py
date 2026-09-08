@@ -59,12 +59,32 @@ Submodules
 ``_interpolation``
     Cubic B-spline coefficients and the hand written numba
     evaluation and analytic gradient kernels.
+``_kam``
+    The frozen high angular resolution kernel average
+    misorientation behind :func:`kikuchipy.indexing.hrebsd_kam`.
+``_pc_shift``
+    Measured against modelled beam-scan projection centre shifts,
+    the diagnostic behind
+    :func:`kikuchipy.indexing.hrebsd_pc_shift`.
 ``_preprocessing``
     In-engine band-pass filtering, the optional Hann window, the
     subregion (border plus dead band) and zero-mean normalization.
 ``_reference``
     Resolution of the ``reference`` argument into a per-point grain
     identifier and reference pattern index.
+``_segmentation``
+    Grain segmentation by neighbour misorientation and the per-grain
+    image-quality reference selection behind
+    :func:`kikuchipy.indexing.segment_grains` and
+    ``reference="auto"``.
+``_stiffness``
+    The Voigt stiffness convention, its builder
+    :func:`kikuchipy.indexing.voigt_stiffness`, the crystal to sample
+    rotation and the Hooke product.
+``_tensors``
+    The one tensor chain -- frame, ninth degree of freedom closure,
+    polar split, stress and derived maps -- behind
+    :func:`kikuchipy.indexing.hrebsd_strain_stress`.
 
 Nothing is imported here on purpose: each submodule is imported
 directly by the code that needs it, keeping the import cost of

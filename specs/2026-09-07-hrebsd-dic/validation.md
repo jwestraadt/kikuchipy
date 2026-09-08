@@ -57,6 +57,31 @@ requirements Context with the same date: the 0.1 px warp-recovery
 seed (8x looser than achievable) and the "up to 5 deg"
 pure-rotation seed (the measured capture range is 2.0 deg).
 
+**Stage B MTP pins, ALL UNFILLED at the failing-tests gate**
+(2026-09-07; filled at the Stage B implementation gate, with the
+recipes and the machine recorded below). The inventory, with the
+module each lives in: `REDUCED_CLOSURE_TOL`, `SIGMA33_TOL`,
+`SMALL_STRAIN_EQUALITY_TOL`, `SMALL_STRAIN_ENABLE_ANGLE_DEG`
+(`test_hrebsd_tensors.py`); `DEFORMED_MASTER_STRAIN_TOL`,
+`DEFORMED_MASTER_SIGMA33_TOL` (`test_hrebsd_deformed_master.py`);
+`SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`, `SI_KAM_FLOOR`,
+`SI_PC_RESIDUAL_MEAN_TOL` (`test_hrebsd_si.py`, [download] gated).
+No Stage B tolerance is frozen: `ALGEBRA_TOL` (1e-12) and
+`SOLVER_TOL` (1e-10) are the algebraic identity bands of analytic
+constructions, and `FAST_PATH_CRITERION` (1e-6) is the
+requirements D8 criterion itself, not a measurement.
+For calibration when the implementation gate fills them, the four
+tensor-module placeholders were measured on a reference chain
+built at the Stage B failing-tests review (Recorded results, Stage
+B failing-tests gate): `REDUCED_CLOSURE_TOL` 1.1655e-06 (strain),
+9.4132e-07 (e33), 9.5697e-07 (beta); `SIGMA33_TOL` 3.0639e-04 GPa;
+`SMALL_STRAIN_EQUALITY_TOL` 5.889e-04 over the drafted sweep;
+`SMALL_STRAIN_ENABLE_ANGLE_DEG` 0.0779; and the pattern-level pair
+`DEFORMED_MASTER_STRAIN_TOL` 9.4045e-06,
+`DEFORMED_MASTER_SIGMA33_TOL` 1.8338e-04 GPa. Those numbers are
+NOT pins: they are the scales a correct implementation should
+reproduce, and the gate measures its own.
+
 ### V0 -- Interpolation kernel (`tests/test_indexing/test_hrebsd_interpolation.py`) -- Stage A
 
 - `test_kernel_matches_map_coordinates`: numba bicubic evaluation
@@ -217,6 +242,20 @@ or add a shared conftest for three test classes. The analytic half
 of V6 stays in `test_hrebsd_geometry.py`. Stage B's tensor halves
 may still take their own files.)
 
+**Stage B file-layout deviations, recorded 2026-09-07 at the Stage
+B failing-tests gate (adversarial review fixes).** Stage B's tensor
+halves did take their own files, and six names moved with them:
+
+| named here | delivered as |
+|---|---|
+| V3 `test_deformed_master_strain_recovery` (this block) | `test_hrebsd_deformed_master.py::TestDeformedMaster::test_deformed_master_strain_recovery` -- a NEW module, not `test_hrebsd_engine.py`, so that the Stage A regression file carries no Stage B failure; the projection helper, the frame matrices and the detector are duplicated there because pytest imports test modules by path |
+| V3 `test_traction_free_vs_deviatoric_differ` | `test_hrebsd_tensors.py::TestClosure::test_the_two_closures_differ_on_a_non_deviatoric_tensor` (analytic) and `test_hrebsd_deformed_master.py::TestDeformedMaster::test_the_two_closures_differ_through_the_patterns` (patterns) |
+| V4 `test_small_strain_fast_path_equality` | `test_hrebsd_tensors.py::TestSmallStrainFastPath::test_equality_with_the_polar_path_is_measured`, an ANALYTIC sweep -- see the requirements D8 measuring-test correction of the same date |
+| V5 the whole suite | `test_hrebsd_si.py` ([download] gated, skips with a message naming `kp.data.si_wafer(allow_download=True)`) |
+| V6 `test_phantom_corrected_through_stage_b` | `test_hrebsd_pc_shift.py::TestPhantomThroughTheChain::test_the_corrected_phantom_carries_no_strain` |
+| V7 the KAM half (named for `test_hrebsd_gnd.py`) | `test_hrebsd_kam.py` -- the GND half keeps `test_hrebsd_gnd.py` for Stage C |
+
+
 The primary end-to-end oracle. Test-local projection helper
 reimplements `EBSDMasterPattern.get_patterns`' geometry with an
 imposed deformation: obtain detector direction cosines (kikuchipy
@@ -268,8 +307,23 @@ PC, DD)` with the D7 frame chain minded (theory report section
   normal at 0.1-5 deg (deformed-master patterns): recovered
   homography matches the closed in-plane form; polar R matches
   axis/angle to `ROTATION_TOL` (MTP; seed <= 1e-5 rad); strain
-  leakage <= `ROTATION_STRAIN_LEAK` (MTP; seed <= 1e-4 up to
-  5 deg). [D1/D2/D7/D8]
+  leakage <= `ROTATION_STRAIN_LEAK` (MTP; ~~seed <= 1e-4 up to
+  5 deg~~ **SEED REFUTED 2026-09-07 at the Stage B failing-tests
+  gate; requirements D8 amended with the same date**). A pure
+  rotation leaks nothing through the polar SPLIT (measured
+  `|U - I|max` = 6.7e-16 at 5 deg) but does NOT come back at zero
+  through the CHAIN: the reduction by `Fe33` is an isotropic
+  dilatation and the D9 closure supplies an isotropic part of its
+  own. MEASURED reported `|strain|max` for a pure rotation about
+  the detector normal on the 480 px oracle geometry: 1.0154e-04
+  deviatoric / 7.2762e-05 traction free at 1 deg, 4.0614e-04 /
+  2.9104e-04 at 2 deg, 2.5380e-03 / 1.8187e-03 at 5 deg -- the
+  deviatoric value is EXACTLY `2/3` of `sym(R - I)` by algebra and
+  the traction-free one 0.478 of it. The seed was 25x too tight at
+  5 deg. The band stays MTP; its recipe is this sweep. The same
+  measurement refuted the drafted Stage B arm which asserted the
+  reported strain of a two degree rotation to be under a tenth of
+  that leak (6.7x over) -- see the D8 amendment. [D1/D2/D7/D8]
 - `test_out_of_plane_tilt`: small rotation about detector x:
   leading terms land in h23/h32 as the exact `fe_to_homography`
   predicts (translation ~ -omega*DD, perspective ~ omega/DD);
@@ -301,11 +355,27 @@ PC, DD)` with the D7 frame chain minded (theory report section
   harness): polar vs small-strain paths over the sweep; the D8 MTP
   equality threshold and enable-angle recorded. [D8]
 
-### V5 -- Si-wafer noise-floor benchmark -- Stage B [download], parts weekly
+### V5 -- Si-wafer noise-floor benchmark (`tests/test_indexing/test_hrebsd_si.py`) -- Stage B [download], parts weekly
 
 `kp.data.si_wafer()` (50x50 map, 480x480 px, single-crystal
 nominally strain-free Si; `_data.py:321-440`); pooch-gated, skips
 cleanly without the `tests` extra (tech-stack.md:16).
+
+**Delivered 2026-09-07 at the Stage B failing-tests gate** (added
+there: the drafted Stage B commit shipped none of V5) as
+`tests/test_indexing/test_hrebsd_si.py`. It downloads NOTHING: a
+missing cache is a skip naming
+`kp.data.si_wafer(allow_download=True, lazy=True)`, so the 311 MB
+transfer is always a deliberate act. It is therefore UNEXECUTED at
+the failing-tests gate (verified `9 skipped`, Recorded results
+entry 32) and its four placeholders are filled at the
+implementation gate, which fetches the dataset once. Its default
+route takes the DEVIATORIC closure and a nominal single
+orientation, so the recorded strain/rotation/KAM floors do not
+depend on indexing the wafer first; the traction-free stress arm,
+which does depend on the orientation, is weekly and recorded, not
+gated. MTP placeholders: `SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`,
+`SI_KAM_FLOOR`, `SI_PC_RESIDUAL_MEAN_TOL`.
 
 - `test_si_noise_floor_default_route`: default knobs, auto
   reference (Stage B): per-component strain std and rotation std
@@ -378,7 +448,7 @@ cleanly without the `tests` extra (tech-stack.md:16).
   miscalibrated-PC case shows the documented nonzero-mean
   signature. [D13]
 
-### V7 -- Constant-curvature GND + KAM oracle (`test_hrebsd_gnd.py`) -- Stage B KAM, Stage C GND
+### V7 -- Constant-curvature GND + KAM oracle (`test_hrebsd_gnd.py` for the Stage C GND half; `test_hrebsd_kam.py` for the Stage B KAM half, file-layout deviation recorded 2026-09-07 at the Stage B failing-tests gate) -- Stage B KAM, Stage C GND
 
 - `test_alpha_from_analytic_beta`: build a synthetic beta field
   with constant lattice curvature (e.g. omega_3(x1) = kappa*x1):
@@ -410,24 +480,38 @@ cleanly without the `tests` extra (tech-stack.md:16).
   the kernel offsets -- asserting `kappa * step` would fail a
   correct implementation by the fixed 25 % kernel-geometry
   factor); grain-mask and psi_max guards; mrad units pinned
-  literally (a radians-vs-mrad mutant dies here). [D12]
+  literally (a radians-vs-mrad mutant dies here).
+  **CONDITIONING PIN ADDED 2026-09-07 (Stage B failing-tests
+  gate, Recorded results entry 28; requirements D12 amended with
+  the same date):** the oracle's pair angle must be
+  `arctan2(||skew||/2, (tr - 1)/2)` and NOT `arccos((tr - 1)/2)`,
+  which at this 1e-4 rad scale sits 2.6221e-09 relative from the
+  closed form and made the module's own two tolerance families
+  mutually unsatisfiable. A library test guards it. [D12]
 - `test_gnd_end_to_end_curvature` (Stage C): the curvature field
   imposed through deformed-master patterns; recovered rho within
   `GND_E2E_TOL` (MTP) of the analytic density. [D14]
 - `test_nan_safety`: grain boundaries, map edges, non-converged
   points produce NaN, never fabricated gradients. [D14.5]
 
-### Stage B unit suites (`test_hrebsd_tensors.py`, `test_hrebsd_segmentation.py`, `test_hrebsd_kam.py`)
+### Stage B unit suites (`test_hrebsd_tensors.py`, `test_hrebsd_stiffness.py`, `test_hrebsd_segmentation.py`, `test_hrebsd_kam.py`, `test_hrebsd_pc_shift.py`, `test_hrebsd_deformed_master.py`, `test_hrebsd_si.py`)
 
 - Polar/strain/closure/Bond-rotation/voigt_stiffness/derived-map
   pins per plan 3.1 (analytic, no MTP except where marked).
 - `segment_grains`: synthetic two-grain map, one-point grain,
-  unindexed -1, connectivity 1 vs 2, threshold boundary case
+  unindexed -1, connectivity 1 vs 2 INCLUDING a three-column
+  8-neighbour wraparound case, a single-row and a single-COLUMN
+  shape pin, a phase boundary, threshold boundary case
   (>= vs > mutant), label determinism (row-major first-seen).
   [D11]
 - Auto-reference: argmax IQ, tie -> lowest flat index; explicit
   `(row, col)` and per-grain index modes; `reference="auto"`
-  NotImplementedError pin in Stage A, replaced in Stage B. [D11]
+  NotImplementedError pin in Stage A, replaced in Stage B. **The
+  two Stage A pins in `test_hrebsd_engine.py` pass VACUOUSLY from
+  the Stage B failing-tests commit onward (Recorded results entry
+  33) and are DELETED at the Stage B implementation gate; the
+  pin in `test_ebsd_hrebsd_dic.py` was replaced in that commit.**
+  [D11]
 
 ### Signal-method suite (`tests/test_signals/test_ebsd_hrebsd_dic.py`)
 
@@ -1320,3 +1404,255 @@ requirements.md with the same date.
     `git diff HEAD -- src/kikuchipy/simulations tests/test_simulations`
     is empty on this branch, and nothing in the HREBSD path is
     reachable from it. Deselecting it, the suite is green.
+
+### 2026-09-07 (Stage B failing-tests gate, adversarial review fixes)
+
+Machine: the 20-core Windows 11 laptop of the spherical phases,
+Python 3.12 in `.venv`. The Stage B tests were written failing
+before the implementation, then adversarially reviewed; twelve
+findings and six mutant-coverage items were dispositioned by the
+fixer. Every number below comes either from a LIBRARY measurement
+that needs no `_hrebsd` implementation, or from a REFERENCE CHAIN
+written in the scratchpad to check that the tests as delivered are
+satisfiable and discriminating. None of them is a pin: the pins
+are filled at the implementation gate, from the implementation.
+
+28. **HR-KAM pair-angle conditioning (requirements D12, amended
+    with this date).** The drafted oracle of
+    `test_hrebsd_kam.py` computed the pair angle as
+    `arccos((tr - 1)/2)`. MEASURED on its own constant-curvature
+    field at `kappa = 1e-4` rad/step: the interior point (2, 3)
+    comes out at 0.07499999980334485 mrad against the closed form
+    0.075 (relative 2.6221e-09) and the corner (0, 0) at
+    0.06666666649186208 against 0.06666666666666667. The module
+    asserts the implementation against that oracle at
+    `atol = 1e-12` AND against the closed forms at `rel = 1e-9`,
+    so the two families were mutually unsatisfiable: no
+    implementation could pass both. The well-conditioned form
+    `arctan2(||skew(M)||/2, (tr(M) - 1)/2)` gives
+    0.07499999999999998 and 0.06666666666666667, relative 3.7e-16
+    and 0.0, and both families then hold. APPLIED to the oracle,
+    to the `_kam.py` docstring and to requirements D12; a new
+    library test, `TestConstantCurvature::test_the_oracle_itself
+    _reproduces_the_closed_forms`, guards the conditioning and
+    passes today.
+
+29. **Pure-rotation strain floor of the chain (requirements D8
+    and validation V4 amended with this date).** Reference chain,
+    deviatoric and traction-free closures, on the Stage B tensor
+    module's own detector geometry, for a pure sample-frame
+    rotation about the detector normal:
+
+    | angle | `sym(R - I)` max | deviatoric | traction free | `F_det[2,2]` dilatation |
+    |---|---|---|---|---|
+    | 1 deg | 1.5230e-04 | 1.0154e-04 | 7.2762e-05 | 1.7816e-05 |
+    | 2 deg | 6.0917e-04 | 4.0614e-04 | 2.9104e-04 | 7.1260e-05 |
+    | 5 deg | 3.8053e-03 | 2.5380e-03 | 1.8187e-03 | 4.4514e-04 |
+
+    The deviatoric ratio is 0.6667 at every angle and the
+    traction-free one 0.4778, which is algebra and not a
+    coincidence: the closure turns `diag(c-1, c-1, 0)` into
+    `diag(-(1-c)/3, -(1-c)/3, 2(1-c)/3)`. Consequences, both
+    applied: the drafted `TestSmallStrainFastPath::test_the_public
+    _path_is_the_polar_one` demanded the reported strain of a two
+    degree rotation be under `0.1 * 6.0917e-04 = 6.0917e-05`,
+    which the reduction alone (7.13e-05) already exceeds and the
+    chain misses by 6.7x, so it was unsatisfiable by any
+    conformant implementation; and the V4 seed
+    `ROTATION_STRAIN_LEAK <= 1e-4 up to 5 deg` is refuted by 25x.
+    The test now decides WHICH SPLIT was taken on the chain's own
+    reported `beta`: MEASURED there, the polar and small-strain
+    answers differ by 6.0901e-04 at 2 deg while the reported
+    strain reproduces the polar one exactly (0.0 difference), so
+    the arm is tolerance-free on one side and separated by four
+    orders on the other.
+
+30. **Reference-chain scales for the four tensor-module MTP
+    placeholders**, so that the implementation gate has something
+    to compare its own measurement against (they are NOT pins).
+    `REDUCED_CLOSURE_TOL` 1.1655e-06 (strain), 9.4132e-07 (e33),
+    9.5697e-07 (beta); `SIGMA33_TOL` 3.0639e-04 GPa;
+    `SMALL_STRAIN_EQUALITY_TOL` 5.889e-04 (the worst of the
+    drafted sweep); `SMALL_STRAIN_ENABLE_ANGLE_DEG` 0.0779441. On
+    the sweep grid `(0.01, 0.05, 0.1, 0.5, 1.0, 2.0)` the errors
+    are 9.140e-08, 5.656e-07, 1.604e-06, 3.733e-05, 1.479e-04 and
+    5.889e-04, so reading the enabling angle off the grid would
+    have recorded exactly 0.05 -- an artefact of the grid. The
+    test now BISECTS between the last passing and first failing
+    grid point to 1e-6 deg and records the crossing.
+
+31. **V3's tensor half delivered, and the "Bond rotation
+    transposed" mutant killed through PATTERNS.** validation V3
+    names `test_deformed_master_strain_recovery` as a Stage B
+    deliverable and plan 3.4 names it as a co-killer of that
+    mutant; the drafted Stage B commit shipped no pattern-level
+    tensor oracle at all. Delivered as
+    `tests/test_indexing/test_hrebsd_deformed_master.py` (file
+    layout recorded in the V3 block above). Reference-chain
+    measurement of the delivered oracle -- two imposed
+    sigma33 = 0 tensors of the 1e-3 scale at the generic
+    orientation, projected onto the shipped Ni Lambert master at
+    480 px, carried through `run_hrebsd_dic` and then through the
+    chain: engine `|Fe - imposed|max` 1.1997e-05 and 1.1029e-05;
+    worst per-component strain error **9.4045e-06**; worst e33
+    error 8.3928e-06; `sigma33` worst **1.8338e-04 GPa** against a
+    stress scale of 0.2420 GPa; rotation-vector error 4.2064e-06
+    against an imposed 8.2551e-04; the reference point's own
+    strain 5.35e-12; the two closures separated by 7.1904e-05 in
+    e33. With the Bond rotation TRANSPOSED the worst strain error
+    is **3.0068e-04**, 32x the correct value, so the mutant dies
+    here at pattern level as plan 3.4 intends. NOTE, recorded for
+    the mutation list: the `sigma33` self-check does NOT see that
+    mutant (3.0914e-04 GPa transposed against 3.0639e-04 correct
+    on the analytic route) and must never be quoted as its killer.
+
+32. **V5 delivered as a [download] gated module.** plan 3.3 makes
+    the Si-wafer benchmark a Stage B deliverable and it owns plan
+    open question 10; the drafted commit shipped none of it.
+    Delivered as `tests/test_indexing/test_hrebsd_si.py` with the
+    four tests validation V5 names plus the sweep harnesses of
+    plan open questions 2, 3, 4 and 10. It downloads nothing:
+    without the cached dataset every test SKIPS with a message
+    naming `kp.data.si_wafer(allow_download=True, lazy=True)`.
+    VERIFIED at this gate: `9 skipped in 0.06 s` (3 cache skips,
+    6 `--weekly` skips) on a machine with pooch installed and the
+    dataset absent. The module is therefore UNEXECUTED at the
+    failing-tests gate and its four placeholders
+    (`SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`, `SI_KAM_FLOOR`,
+    `SI_PC_RESIDUAL_MEAN_TOL`) are filled at the implementation
+    gate, which must fetch the dataset once. Its default route
+    takes the DEVIATORIC closure and a nominal single orientation,
+    so the recorded floors do not depend on indexing the wafer;
+    the traction-free arm, which does, is weekly and recorded, not
+    gated.
+
+33. **Two Stage A `reference="auto"` pins now pass VACUOUSLY.**
+    INSTRUMENTED: `resolve_reference(AUTO_REFERENCE, None, (3, 3))`
+    raises `NotImplementedError: segment_grains arrives with
+    Stage B of specs/2026-09-07-hrebsd-dic/`, raised at
+    `_segmentation.py` line 142 -- not by the Stage A guard, which
+    the Stage B wiring of `_reference.py` deleted. The message
+    happens to contain the "Stage B" the two tests match on, so
+    both still pass and a green run is NOT evidence that the
+    Stage A contract holds. The two are
+    `test_hrebsd_engine.py::TestReferenceResolution::test_auto
+    _raises_naming_stage_b` and
+    `::TestOrchestration::test_auto_reference_raises_through_the
+    _engine`. DISPOSITION: both carry an explicit superseded-by
+    note naming their positive Stage B replacements
+    (`test_hrebsd_segmentation.py::TestAutoReference` and
+    `test_ebsd_hrebsd_dic.py::TestAutoReference`), and **the Stage
+    B IMPLEMENTATION gate DELETES them** -- once `segment_grains`
+    lands nothing raises and they fail loudly. They are kept until
+    then only so that this failing-tests commit leaves the Stage A
+    regression count untouched (verified: 242 passed, 1 skipped
+    before and after).
+
+34. **`segment_grains` multi-phase guard struck (requirements
+    D11.1 amended with this date).** A drafted ValueError on
+    multi-phase maps was pinned by
+    `test_hrebsd_segmentation.py::TestSegmentGrains::test_guards`.
+    No frozen requirement asks for it, and because
+    `reference="auto"` is the FROZEN DEFAULT of `EBSD.hrebsd_dic`
+    it would have narrowed the engine to single-phase maps on the
+    default path, contradicting D9.6 ("the engine itself is
+    phase-agnostic per grain"); `grep -n phase _engine.py` confirms
+    Stage A has no phase guard. Struck in favour of per-phase
+    segmentation: an edge across a phase boundary simply never
+    exists. Two positive tests replace the guard, and the second
+    is a LIBRARY measurement of why one point group cannot serve
+    the whole map -- 90 deg about z is a symmetry operation of
+    m-3m (measured symmetry-reduced angle 0.0 deg) and not of
+    6/mmm (measured 30.0 deg), so the same pair is one grain in
+    the cubic phase and two in the hexagonal one.
+
+35. **Shape contract of the two `(ny, nx)` diagnostics
+    (requirements D11.1 amended with this date).** MEASURED on the
+    installed orix 0.14.2: `create_coordinate_arrays((1, 2), ...)`
+    gives `xmap.shape == (2,)`, `ndim == 1`, `row = [0, 0]`,
+    `col = [0, 1]`; `create_coordinate_arrays((3, 1), ...)` gives
+    `xmap.shape == (3,)`, `row = [0, 1, 2]`, `col = [0, 0, 0]`.
+    So `xmap.shape` is NOT the navigation shape for a map one
+    point wide or tall, and "a one dimensional map is a single
+    row" would return `(1, 3)` for a column map, which
+    `_reference._flatten_labels` rejects against a `(3, 1)`
+    navigation shape. The rule is now the row and column grids,
+    stated in both docstrings and pinned by
+    `test_hrebsd_segmentation.py::TestSegmentGrains::test_a_single
+    _column_map_is_a_single_column` and `test_hrebsd_kam.py::
+    TestShapeContract` (three tests, one of them the library
+    measurement above, which passes today).
+
+36. **Two blind spots closed in the delivered tests.**
+    (a) `TestClosure::test_b7_and_b8_are_not_interchangeable`
+    claimed the plan 3.4 "b7/b8 misassigned" mutant. MEASURED by
+    injection into the reference closure: correct and swapped
+    implementations BOTH give `|first[2,2] - second[2,2]| =
+    1.4711e-05`, since the two answers are merely exchanged, so
+    the assertion passed either way. The comment is corrected and
+    a discriminating arm added -- the closed `e11` and `e22`
+    individually reproduce what they were built from (measured
+    error 0.0 and 5.4e-20 correct, 1.4711e-05 under the swap).
+    The mutant's real killers are
+    `test_traction_free_recovers_the_built_in_tensor` (1.4711e-05
+    against `SOLVER_TOL` = 1e-10) and that new arm.
+    (b) Row wraparound was covered for 4-connectivity but not for
+    8: the only `connectivity=2` case sat on a 2x2 map, where
+    every point neighbours every other and a `numpy.roll` style
+    walk survives. `test_eight_neighbours_do_not_wrap_around_a_row`
+    adds a (2, 3) map whose only same-orientation pair, (0, 0) and
+    (0, 2), is two columns apart in one row: a flat-index walk
+    with the `+nx - 1` offset merges them.
+
+37. **One ulp of orientation reached a bitwise assertion.**
+    `TestChain::test_the_chain_and_the_public_function_agree`
+    compares `tensor_chain` with `hrebsd_strain_stress` at
+    `rtol = 0, atol = 0` while handing the two routes orientation
+    matrices from different sources. MEASURED:
+    `Rotation.from_axes_angles((1,2,3), deg2rad(37)).to_matrix()`
+    and the module's own Rodrigues helper differ by
+    2.7755575615628914e-17, and through the reference chain that
+    reaches the output -- `stress` by up to 5.55e-17 and `beta` by
+    1.08e-19, both of which `atol = 0` rejects. The test now feeds
+    the chain `xmap.rotations.to_matrix()`, the same matrices the
+    public function reads, and asserts separately that those ARE
+    this module's generic orientation. Independence is unaffected:
+    that a crystal map's rotations are the `v_crystal = g @
+    v_sample` matrix is pinned against `rotate_vector`, not
+    against itself, in `test_hrebsd_stiffness.py::
+    TestRotationDirection::test_the_matrix_is_the_kikuchipy
+    _orientation`.
+
+38. **Gate runs at the close of the fixes.**
+
+    ```
+    .venv/Scripts/python.exe -m pytest --collect-only -q
+    ->  5388 tests collected, 1 skipped module (psygnal absent),
+        no collection error
+
+    .venv/Scripts/python.exe -m pytest \
+        tests/test_indexing/test_hrebsd_kam.py \
+        tests/test_indexing/test_hrebsd_segmentation.py \
+        tests/test_indexing/test_hrebsd_stiffness.py \
+        tests/test_indexing/test_hrebsd_tensors.py \
+        tests/test_indexing/test_hrebsd_pc_shift.py \
+        tests/test_indexing/test_hrebsd_deformed_master.py \
+        tests/test_indexing/test_hrebsd_si.py -q
+    ->  159 failed, 31 passed, 9 skipped
+
+    .venv/Scripts/python.exe -m pytest \
+        tests/test_indexing/test_hrebsd_engine.py \
+        tests/test_indexing/test_hrebsd_geometry.py \
+        tests/test_indexing/test_hrebsd_homography.py \
+        tests/test_indexing/test_hrebsd_interpolation.py \
+        tests/test_signals/test_ebsd_hrebsd_dic.py -q
+    ->  7 failed, 242 passed, 1 skipped
+    ```
+
+    Every one of the 159 Stage B failures is a
+    `NotImplementedError` from a Stage B skeleton (verified by
+    tallying the exception type of every failure). The 31 passes
+    are the freeze pins and the library measurements, which need
+    no implementation. The 7 failures of the second run are the
+    Stage B `TestAutoReference` class in the signal-method file,
+    and 242 passed / 1 skipped is the unchanged Stage A count.

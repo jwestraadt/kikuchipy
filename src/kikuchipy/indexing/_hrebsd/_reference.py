@@ -26,15 +26,22 @@ identifier and the flat index of that reference are stored per point
 scope for version one and is deferred together with simulated
 references.
 
-Stage A implements the EXPLICIT modes only: one global reference
-given as ``(row, col)``, or an array of flat indices paired with a
-user supplied grain map.  ``reference="auto"`` raises
-:class:`NotImplementedError` naming Stage B until the grain
-segmentation and the image-quality based per-grain selection of
-requirements D11.1 and D11.2 land.
+Three modes (requirements D11.3).  ``(row, col)`` is one global
+reference and one implicit grain; an array of flat indices is the
+per-grain mode and needs a user supplied grain map; and ``"auto"``,
+the default, segments the map with
+:func:`~kikuchipy.indexing.segment_grains` unless a grain map is
+given, then picks each grain's highest image quality pattern
+(requirements D11.1 and D11.2).  The ``"auto"`` path is wired HERE
+and does nothing else itself: it is exactly the two Stage B
+functions of :mod:`~kikuchipy.indexing._hrebsd._segmentation`
+followed by the same per-grain pairing the explicit index array
+takes, so the two modes cannot drift apart.
 """
 
 import numpy as np
+
+from kikuchipy.indexing._hrebsd._segmentation import segment_grains, select_references
 
 # The ``reference`` string modes accepted by the engine, frozen
 AUTO_REFERENCE: str = "auto"
@@ -67,14 +74,16 @@ def resolve_reference(
         Map shape ``(ny, nx)``.
     misorientation_threshold
         Grain boundary misorientation angle in degrees, used only by
-        the ``"auto"`` mode of Stage B. Default is 5.0.
+        the ``"auto"`` mode, and there only when *grain_labels* is
+        not given. Default is 5.0.
     xmap
         :class:`~orix.crystal_map.CrystalMap` of the map, used only
-        by the ``"auto"`` mode of Stage B.
+        by the ``"auto"`` mode, and there only when *grain_labels*
+        is not given.
     patterns
         Patterns of shape ``(n, nrows, ncols)``, used only by the
-        ``"auto"`` mode of Stage B, whose per-grain selection
-        maximizes the image quality of the raw patterns.
+        ``"auto"`` mode, whose per-grain selection maximizes the
+        image quality of the raw patterns.
 
     Returns
     -------
@@ -89,19 +98,17 @@ def resolve_reference(
 
     Raises
     ------
-    NotImplementedError
-        If *reference* is ``"auto"``. The message names
-        ``reference="auto"`` and states that automatic grain
-        segmentation and per-grain reference selection arrive in
-        Stage B of ``specs/2026-09-07-hrebsd-dic/``, so the caller
-        knows to pass an explicit reference meanwhile.
     ValueError
         If *reference* is an unknown string; if a ``(row, col)``
         tuple is outside the map; if an index array is given without
         *grain_labels*, does not hold one index per grain label, or
         holds an index which is outside the map or outside the grain
-        it is paired with; or if *grain_labels* does not match
-        *navigation_shape* or does not hold integers.
+        it is paired with; if *grain_labels* does not match
+        *navigation_shape* or does not hold integers; or, in the
+        ``"auto"`` mode, whatever
+        :func:`~kikuchipy.indexing.segment_grains` and the
+        per-grain selection raise for a missing or unusable *xmap*
+        or *patterns*.
 
     Notes
     -----
@@ -110,6 +117,17 @@ def resolve_reference(
     ``grain_id`` comes from the labels, which is what requirements
     D11.3 freezes.  An index array is the per-grain mode, and there
     each index must lie inside its own grain.
+
+    ``"auto"`` is the per-grain mode with the two choices made for
+    the caller: the labels come from
+    :func:`~kikuchipy.indexing.segment_grains` at
+    *misorientation_threshold* and the frozen default connectivity of
+    requirements D11.1 (the public signature carries no connectivity
+    knob), unless *grain_labels* is given, in which case the supplied
+    map is used unchanged; and the index of each grain is the point
+    of highest image quality in it.  The resulting pairs go through
+    the SAME positional pairing and same-grain guard the explicit
+    index array does.
     """
     navigation_shape = tuple(int(i) for i in navigation_shape)
     if len(navigation_shape) != 2:
@@ -136,14 +154,15 @@ def resolve_reference(
 
     if isinstance(reference, str):
         if reference == AUTO_REFERENCE:
-            raise NotImplementedError(
-                'reference="auto" is not implemented: automatic grain '
-                "segmentation and the per-grain image-quality reference "
-                "selection arrive in Stage B of "
-                "specs/2026-09-07-hrebsd-dic/. Pass an explicit reference "
-                "meanwhile, either a (row, col) tuple or an array of flat "
-                "indices together with grain_labels"
-            )
+            if labels is None:
+                # The frozen connectivity default of D11.1: the public
+                # signature carries no connectivity knob
+                segmented = segment_grains(
+                    xmap, misorientation_threshold=misorientation_threshold
+                )
+                labels = _flatten_labels(segmented, navigation_shape)
+            indices = np.asarray(select_references(patterns, labels))
+            return _resolve_index_array(indices, labels, navigation_shape)
         raise ValueError(
             f"reference {reference!r} must be {AUTO_REFERENCE!r}, a (row, col) "
             "tuple, or an integer array of flat indices with one entry per "
@@ -174,6 +193,47 @@ def resolve_reference(
         f"reference {reference!r} must be {AUTO_REFERENCE!r}, a (row, col) tuple, "
         "or an integer array of flat indices with one entry per grain label"
     )
+
+
+def _flatten_labels(
+    labels: np.ndarray, navigation_shape: tuple[int, int]
+) -> np.ndarray:
+    """Return the grain labels of the ``"auto"`` segmentation as one
+    flat 32-bit integer array.
+
+    Parameters
+    ----------
+    labels
+        Labels as :func:`~kikuchipy.indexing.segment_grains` returns
+        them, of shape *navigation_shape*.
+    navigation_shape
+        Map shape ``(ny, nx)``.
+
+    Returns
+    -------
+    flat
+        Array of shape ``(ny * nx,)`` and 32-bit integer data type.
+
+    Raises
+    ------
+    ValueError
+        If the segmentation did not return an integer array of the
+        navigation shape, which names the offending shape or data
+        type: the ``"auto"`` mode is the only caller and a silent
+        reshape here would pair references with the wrong points.
+    """
+    labels = np.asarray(labels)
+    if labels.shape != tuple(navigation_shape):
+        raise ValueError(
+            f"segment_grains returned labels of shape {labels.shape}, which must "
+            f"be the navigation shape {tuple(navigation_shape)}"
+        )
+    if not np.issubdtype(labels.dtype, np.integer):
+        raise ValueError(
+            f"segment_grains returned labels of data type {labels.dtype}, which "
+            "must be an integer type"
+        )
+    return labels.ravel().astype(np.int32)
 
 
 def _resolve_index_array(
