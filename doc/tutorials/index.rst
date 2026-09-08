@@ -49,6 +49,14 @@ Indexing
     pc_extrapolate_plane
     pc_calibration_moving_screen_technique
 
+Strain and lattice rotation
+===========================
+
+.. nbgallery::
+    :caption: Strain and lattice rotation
+
+    hrebsd_dic
+
 Simulations
 ===========
 

@@ -248,7 +248,23 @@ NICKEL_CUBIC = {"c11": 246.5, "c12": 147.3, "c44": 124.7}
 # MEASURING RECIPE: ``TestEndToEndCurvature::test_gnd_end_to_end
 # _curvature`` below; record the worst relative error over every
 # finite map point and over the three estimators
-GND_E2E_TOL = None
+#
+# PINNED 2026-09-08 (Stage C implementation gate, machine A;
+# validation entry 66).  MEASURED 8.3502e-04 -- the worst relative
+# error over all nine map points and all three estimators, every point
+# finite -- pinned at 2x.  The three estimators separately: "a3"
+# 8.3502e-04 (the worst, and the one this pin is), "a5" 5.3347e-04,
+# "a9" 4.1620e-04; the medians are 2.4584e-04, 8.5849e-05 and
+# 2.2818e-04.  Bitwise identical over two runs and over two test
+# orders.
+#
+# It lands where the note above says it should: 0.084 per cent against
+# the sub-per-cent expectation that 3.1e-5 over the 5e-3 per-step
+# change puts at 0.62 per cent, a factor of 7.4 under the bound the
+# Stage A engine alone imposes.  So the D6 conversion, the D7 frame,
+# the D9 closure, the D14.1 curl, the D14.5 metre steps and the D14.4
+# estimators together add less than the DIC they read.
+GND_E2E_TOL = 1.7e-03
 
 
 # ------------- The plan 4.3 mutation list, mapped ------------------- #
@@ -356,6 +372,14 @@ GND_E2E_TOL = None
 #                                           nye_tensor level and
 #                                           through hrebsd_gnd
 #                                           (requirements D2.6)
+#  the NaN block rule read per trailing
+#    component rather than per map point .. TestNaNSafety
+#                                           ::test_one_non_finite
+#                                           _entry_makes_the_whole
+#                                           _point_nan, added
+#                                           2026-09-08 at the Stage C
+#                                           fix gate for the mutant
+#                                           that survived the review
 #  a step read off a ragged or descending
 #    coordinate array ..................... TestScanUnit
 #                                           ::test_an_irregular_grid
@@ -1746,6 +1770,36 @@ class TestNaNSafety:
         # reads it and every d/dx2 entry survives
         assert np.all(np.isnan(alpha[1, 0][:, 1:]))
         assert np.all(np.isfinite(alpha[1, 0][:, 0]))
+        expected = alpha_from_the_definition(P_DETECTOR, Q_DETECTOR)
+        for point in ((3, 3), (4, 5)):
+            np.testing.assert_allclose(
+                alpha[point], expected, rtol=1e-10, atol=ALGEBRA_TOL * ALPHA_SCALE
+            )
+
+    def test_one_non_finite_entry_makes_the_whole_point_nan(self):
+        # The SELF rule is read PER MAP POINT and not per trailing
+        # component, which the arm above cannot see: it holes the WHOLE
+        # 3 by 3 block, and a per-COMPONENT reading refuses such a
+        # block too.  Here a single entry is holed, which is the
+        # difference between the two readings (added 2026-09-08, Stage
+        # C fix gate: the review's surviving mutant replaced the
+        # trailing ``all`` reduction of ``in_plane_gradients`` by
+        # ``any``, survived all 609 tests of the HREBSD suite, and
+        # reported the full constant-curvature density of the
+        # neighbourhood at a point whose measurement is partly
+        # missing -- requirements D2.6 read the conservative way, a
+        # point which did not converge carries NaN in every derived
+        # quantity).
+        #
+        # It is invisible through ``hrebsd_gnd``, where the congruence
+        # of the tensor chain spreads one NaN over the whole beta block
+        # before a gradient sees it, so it is pinned HERE
+        field = self.default_field()
+        field[1, 1, 0, 2] = np.nan
+        alpha = nye_tensor(field, STEP_X1_M, STEP_X2_M)
+        assert np.all(np.isnan(alpha[1, 1]))
+        # and it is still ONE point: two steps away the stencil is
+        # untouched and the constant survives
         expected = alpha_from_the_definition(P_DETECTOR, Q_DETECTOR)
         for point in ((3, 3), (4, 5)):
             np.testing.assert_allclose(

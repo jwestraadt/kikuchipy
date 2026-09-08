@@ -2636,6 +2636,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         See Also
         --------
         kikuchipy.indexing.hrebsd_strain_stress
+        kikuchipy.indexing.hrebsd_kam
+        kikuchipy.indexing.hrebsd_gnd
+        kikuchipy.indexing.hrebsd_pc_shift
         kikuchipy.indexing.segment_grains
         kikuchipy.detectors.EBSDDetector.extrapolate_pc
         kikuchipy.detectors.EBSDDetector.fit_pc
@@ -2643,10 +2646,15 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         Notes
         -----
         The algorithm is the homography IC-GN DIC of Ernould et al.,
-        Acta Materialia 191 (2020) 131-148 and Advances in Imaging
-        and Electron Physics 223 (2022) chapter 2, whose conventions
-        are re-derived here from the published equations rather than
-        taken from any implementation.
+        Acta Materialia 191 (2020) 131-148
+        :cite:`ernould2020global` and Advances in Imaging and
+        Electron Physics 223 (2022) chapter 2
+        :cite:`ernould2022advances`, itself building on the inverse
+        compositional Gauss-Newton HR-EBSD of Ruggles et al.
+        :cite:`ruggles2018new` and the cross-correlation original of
+        Wilkinson, Meaden and Dingley :cite:`wilkinson2006high`,
+        whose conventions are re-derived here from the published
+        equations rather than taken from any implementation.
 
         **One unit system.** Every internal coordinate is a binned
         detector pixel: the column runs right, the row runs down, and

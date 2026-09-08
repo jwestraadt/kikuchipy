@@ -18,6 +18,35 @@ Unreleased
 
 Added
 -----
+- Tutorial on high angular resolution EBSD by digital image correlation,
+  ``doc/tutorials/hrebsd_dic.ipynb``: a known elastic deformation imposed on
+  simulated patterns and recovered, the full map gallery, the stiffness input
+  recipe, the noise floor on the silicon wafer data set with an account of what
+  that data set can and cannot support, and the limitations of the release.
+  Fork-only, specified in ``specs/2026-09-07-hrebsd-dic/``.
+- High angular resolution EBSD (HR-EBSD) by inverse compositional Gauss-Newton
+  digital image correlation of whole patterns: ``EBSD.hrebsd_dic()`` correlates
+  every pattern with the reference pattern of its own grain through an eight
+  parameter homography and returns a crystal map carrying the fitted homography
+  and the reduced elastic deformation gradient tensor of the detector frame per
+  point, with per-point projection centres, in-engine band-pass filtering, an
+  upsampled phase cross-correlation initial guess and analytical removal of the
+  beam scan shift. The tensors are consumed by the new free functions
+  ``kikuchipy.indexing.hrebsd_strain_stress()`` (polar decomposition, the
+  traction free and deviatoric closures, elastic strain, lattice rotation,
+  stress and the derived stress maps), ``kikuchipy.indexing.hrebsd_kam()``
+  (kernel average misorientation of the high resolution rotation field, in
+  milliradians), ``kikuchipy.indexing.hrebsd_gnd()`` (scalar geometrically
+  necessary dislocation density from the Nye tensor, three estimators),
+  ``kikuchipy.indexing.hrebsd_pc_shift()`` (measured against modelled beam scan
+  projection centre shift), ``kikuchipy.indexing.segment_grains()`` (grain
+  labels by neighbour misorientation) and
+  ``kikuchipy.indexing.voigt_stiffness()`` (cubic and hexagonal stiffness
+  matrices in the Voigt convention). Written from the published equations of
+  Ernould et al. (2020), Ruggles et al. (2018, 2020) and Pantleon (2008), with
+  every convention pinned by synthetic oracles; no new dependency. Fork-only,
+  developed on the ``hrebsd-dic`` branch and specified in
+  ``specs/2026-09-07-hrebsd-dic/``, with no pull request into ``develop``.
 - Optional CuPy GPU backend for spherical indexing: the new ``backend`` parameter of
   ``kikuchipy.indexing.SphericalIndexer`` and ``EBSD.spherical_indexing()`` accepts
   ``"cpu"`` (the default, unchanged and bitwise-identical to before) or ``"gpu"``,

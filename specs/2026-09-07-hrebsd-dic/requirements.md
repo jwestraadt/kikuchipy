@@ -1401,6 +1401,30 @@ because the antisymmetry fix is defined in the detector frame:
    projection (polar-R only) is explicitly NOT offered (Ruggles
    2020: discarding strain derivatives corrupts GND
    identification; recorded).
+   **AMENDED 2026-09-08 (Stage C fix gate), no behaviour change:
+   the default STANDS, and two measurements are recorded beside its
+   argument because the argument alone misdescribes the operation.**
+   (a) The replacement is not a filter. It makes the lower left of
+   the detector-frame tensor exactly minus its upper right, so the
+   detector-frame out-of-plane elastic shear strains
+   `eps13 = (beta13 + beta31)/2` and `eps23` become IDENTICALLY
+   ZERO: a measured elastic shear is traded for a quieter noise
+   operator. Measured on the tutorial's analytically imposed field,
+   both fall from 3.5e-04 and 5.5e-04 to exactly 0.0, the
+   sample-frame field moves by up to 9.7e-04 against its own
+   1.4e-03 amplitude, and the `"a5"` density rises to 2.3972e12
+   m^-2, 8.0 % above the 2.2192e12 m^-2 of that field's own Nye
+   content (validation entry 74). (b) On the
+   ONE real data set measured, `kp.data.si_wafer()`, the fix RAISES
+   the floor -- 1.1237e11 with it against 7.7823e10 without, x1.44,
+   the OPPOSITE of the direction the 9.6x argument describes
+   (validation entry 67). That data set's floor is set by a
+   band-pass-surviving fixed-pattern component rather than by
+   beta31/32 noise, so the argument does not apply to it and the
+   measurement does not refute the argument; neither does it
+   support it. The default therefore rests on the frozen geometry
+   alone, which the `hrebsd_gnd` docstring and the tutorial now
+   both say.
 4. **Estimators, frozen with prefactors and consumption sets**
    (OpenXY `DislocationDensityCalculate.m:355-375`; rewritten
    2026-09-07, spec review):
@@ -1451,7 +1475,20 @@ because the antisymmetry fix is defined in the detector frame:
    ~ 4-8e12 m^-2 at sigma_beta 1e-4, b 0.25 nm, step 100 nm
    (Jiang/Britton/Wilkinson 2013; Ernould thesis; theory report
    section 3.6) and the Si-wafer measured floor once recorded
-   (V5/V7).
+   (V5/V7). **DISCHARGED 2026-09-08 (Stage C fix gate; the Stage C
+   adversarial review found the second half undischarged -- the
+   floor had been recorded at validation entry 67 and the public
+   docstring still quoted only the literature class, which is the
+   one number a reader must not be handed alone).** Both the
+   `_gnd.py` module docstring and the `hrebsd_gnd` Notes now carry
+   the measured 1.1237e11 m^-2, why it is BELOW the literature
+   class rather than better than it (a step 2000x longer), the
+   1.5633e11 m^-2 the same identity predicts from that data set's
+   own rotation floor, and the statement that it is that data set's
+   floor and never the method's. The log10 guard the docstring
+   asserted the tutorial used, the tutorial now uses, at
+   `np.log10(np.where(gnd > 0, gnd, np.nan))` (validation entry
+   75).
 
 ### D15 -- Public API surface, naming, props (frozen)
 
@@ -1719,7 +1756,24 @@ discharge of it, and is not proposed.
   Wilkinson 2006, Jiang 2013, Hardin 2015 (added to
   `doc/user/bibliography.bib` as `:cite:` keys, Stage C), and name
   EMsoftOO `mod_DIC.f90` (BSD-3) and OpenXY (GPL) as
-  cross-checked references. IF any code is later ported verbatim
+  cross-checked references. **COMPLETED 2026-09-08 (Stage C fix
+  gate; the review found two of the nine keys missing and no
+  `:cite:` role anywhere in `src/`).** `ernould2022advances` (AIEP
+  223 (2022) Ch. 2 -- the source seven module docstrings name as
+  the primary convention reference) and `hardin2015analysis`
+  (J. Microsc. 260 (2015) 73-85, the traction-free assumption)
+  were added, so all nine keys are present. The keys are consumed
+  by `:cite:` roles in the docstrings the API reference RENDERS --
+  `EBSD.hrebsd_dic` Notes (Ernould 2020/2022, Ruggles 2018,
+  Wilkinson 2006), `hrebsd_strain_stress`'s `closure` parameter
+  (Hardin 2015) and `hrebsd_gnd`'s `estimator` and
+  `enforce_antisymmetry` parameters and Notes (Pantleon 2008,
+  Ruggles 2020, Jiang 2013) -- and by the tutorial's
+  `<cite data-cite=...>` markers. The `_hrebsd/` module docstrings
+  keep their prose citations: those modules are PRIVATE and their
+  docstrings are never rendered, so a `:cite:` role in them would
+  link nothing (recorded decision, not an omission).
+  IF any code is later ported verbatim
   from either, the `_master_pattern.py:20-57` third-party-block
   convention applies with the source's own license (BSD-3 for
   EMsoftOO -- compatible; OpenXY is GPL-2.0 -- compatible with

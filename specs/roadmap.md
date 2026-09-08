@@ -161,8 +161,8 @@ A -> B -> C, one spec folder.
 - [x] signed commits pushed to origin/hrebsd-dic (no PR)
 
 ## Stage C -- GND + tutorial
-- [ ] `hrebsd_gnd`: exact alpha_i3 + the d/dx3-neglect extra components (Pantleon-tier assumption, D14.2), detector-frame antisymmetry fix, OpenXY 3/5/9-component estimators with literal prefactor pins, m^-2 log-scale maps (D14)
-- [ ] failing tests first: V7 constant-curvature oracle (validated against the math, never another code), end-to-end curvature tolerance (MTP), NaN safety, Si GND floor recorded
-- [ ] `doc/tutorials/hrebsd_dic.ipynb` (synthetic walk-through + Si noise floor + map gallery + documented limitations), index.rst + nbval wiring, CHANGELOG (fork-only wording), bibliography keys
-- [ ] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
-- [ ] signed commits pushed to origin/hrebsd-dic (no PR)
+- [x] `hrebsd_gnd`: exact alpha_i3 + the d/dx3-neglect extra components (Pantleon-tier assumption, D14.2), detector-frame antisymmetry fix, OpenXY 3/5/9-component estimators with literal prefactor pins, m^-2 log-scale maps (D14)
+- [x] failing tests first: V7 constant-curvature oracle (validated against the math, never another code), end-to-end curvature tolerance (MTP), NaN safety, Si GND floor recorded
+- [x] `doc/tutorials/hrebsd_dic.ipynb` (synthetic walk-through + Si noise floor + map gallery + documented limitations), index.rst + nbval wiring, CHANGELOG (fork-only wording), bibliography keys
+- [x] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
+- [x] signed commits pushed to origin/hrebsd-dic (no PR)

@@ -37,6 +37,15 @@ that users of kikuchipy might find useful:
   SEM, with example Jupyter Notebooks.
 - `OpenXY <https://github.com/BYU-MicrostructureOfMaterials/OpenXY>`_: MATLAB tool for
   cross-correlation analysis of EBSD patterns.
+  Its deformation gradient closure, stiffness rotation and geometrically necessary
+  dislocation estimators were used as equation level cross references while writing
+  kikuchipy's :meth:`~kikuchipy.signals.EBSD.hrebsd_dic`; no code is ported.
+- `ATEX <http://www.atex-software.eu>`__: Standalone software for analysis and
+  modelling of EBSD, TKD and X-ray diffraction data, including the
+  `HR-EBSD/HR-TKD module <http://www.atex-software.eu/hrebsd.html>`__, the reference
+  implementation of the same published global homography approach by its authors. It
+  was used as an equation level cross reference while writing kikuchipy's
+  :meth:`~kikuchipy.signals.EBSD.hrebsd_dic`; no code is ported.
 - :doc:`DefDAP <defdap:index>`: Python package for correlating EBSD and high-resolution
   digital image correlation data.
 - `pycotem <https://mompiou.github.io/pycotem/>`__: Python package for working with

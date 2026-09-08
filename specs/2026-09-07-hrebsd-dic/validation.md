@@ -617,7 +617,7 @@ gated. MTP placeholders: `SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`,
 | f32 vs f64 storage accuracy/speed (D17) | V2 dtype A/B, entry 9 below | degradation 4.5e-08 of the f64 error, 0.92 MB saved -- **f32 confirmed** |
 | Stage B tensor chain + KAM + segmentation on the 50x50 Si map (2500 points) | `v5_perf_ahe.py`, median of 5 after the map's own DIC run (2026-09-08, machine A), entry 46 | **`hrebsd_strain_stress` 6.13 ms, `segment_grains` 5.59 ms, `hrebsd_kam` 2.36 ms** -- 14.1 ms together, against 372.5 s for the DIC that feeds them |
 | Stage B route end to end, 50x50 Si map, 480x480, default knobs | same run | **6.71 pat/s** (372.5 s, 2187/2500 converged, mean 34.1 iterations) |
-| Stage C GND cost | timed run | measure at Stage C gate |
+| Stage C GND cost, `hrebsd_gnd` on the 50x50 Si map (2500 points) | `si_gnd_detail.py`, median of 5 after the map's own DIC run (2026-09-08, machine A), entry 68 | **10.78 ms** (1.594 ms on the 100-point smoke grid), against 509.5 s for the DIC that feeds it -- the most expensive of the four derived maps and 2.1e-05 of the route |
 
 ## Manual
 
@@ -646,7 +646,24 @@ gated. MTP placeholders: `SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`,
     deferral (Scope).
   - misorientation maps, IPF, IQ -- existing kikuchipy/orix
     functionality, demonstrated in the tutorial, nothing new
-    built.
+    built. **DISPOSITIONED 2026-09-08 (Stage C fix gate; the
+    review found the line claimed a demonstration the notebook did
+    not contain).** IQ is now demonstrated, and it is the one of
+    the three that is load-bearing here: `get_image_quality()` is
+    the score `reference="auto"` ranks each grain's candidates by,
+    so the tutorial plots it for the Si map and shows that its
+    maximum is the point `"reference_index"` names. IPF and the
+    Hough-level misorientation map are NOT demonstrated and are
+    dispositioned rather than added: both data sets in this
+    tutorial are single-orientation by construction -- a synthetic
+    map at one imposed orientation and a single-crystal wafer at a
+    nominal identity -- so an IPF map is one flat colour and a
+    Hough misorientation map is identically zero. Neither would
+    show a reader anything, and the high-resolution misorientation
+    map that IS meaningful on this data, HR-KAM, has its own
+    checklist line above and is plotted twice. `pattern_matching`
+    and `hough_indexing` are the tutorials that show IPF on a map
+    with orientation contrast.
   - ROI shifts -- the DIC analogue is D13's
     translation/model/residual maps.
   - SSE/fit-metric maps -- the D10 quality maps
@@ -2644,3 +2661,701 @@ execution, the dataset fetched once here), plan open questions 2, 3,
     other two are `black-jupyter` (`.ipynb` only, none touched) and
     `licenseheaders` (every edited file keeps its GPL header
     unchanged).
+
+### 2026-09-08 (Stage C implementation gate, measurement agent)
+
+**Machine A** again, the same 20-core Windows 11 laptop every number
+above carries: Intel64 Family 6 Model 186 (Raptor Lake), 20 logical
+cores, Windows 11 build 26200, `.venv` Python 3.13.12, numpy 2.4.6,
+scipy 1.17.1, numba 0.65.1, scikit-image 0.26.0, orix 0.14.2, dask
+2026.3.0. Warm numba caches. The Si wafer was already in the pooch
+cache from entry 40, so nothing was downloaded at this gate.
+
+66. **The two Stage C MTP pins.** Recipe: the Stage A and Stage B
+    convention, the modules' own measuring tests under the same
+    throwaway plugin (`hrebsd_measure_c/measure_plugin.py`, which
+    turns every `None` placeholder into `+inf` and makes
+    `assert_within` record instead of assert, so one run reports every
+    placeholder including those hidden behind an earlier failure):
+
+    ```
+    PYTHONPATH=<scratchpad>/hrebsd_measure_c .venv/Scripts/python.exe \
+      -m pytest tests/test_indexing/test_hrebsd_gnd.py \
+                tests/test_indexing/test_hrebsd_si.py -q -p measure_plugin
+    -> 135 passed, 8 skipped (--weekly), 89.2 s   (-p no:randomly)
+    -> 135 passed, 8 skipped (--weekly), 90.8 s   (default random order)
+    ```
+
+    | constant | measured | pinned | margin |
+    |---|---|---|---|
+    | `GND_E2E_TOL` | **8.3502e-04** (worst relative error, 9 points x 3 estimators, every point finite) | 1.7e-03 | 2.04x |
+    | `SI_GND_FLOOR` | **1.1237e11** m^-2 (smoke sub-grid median, 66 of 100 points finite) | 2.3e11 | 2.05x |
+
+    Both values are BITWISE identical between the two runs and between
+    the two test orders. The same two runs re-measure the four Stage B
+    pins this pair of modules also carries, and every one reproduces
+    its recorded value exactly: `SI_STRAIN_FLOOR` 1.216823308728681e-02
+    and `SI_ROTATION_FLOOR` 1.200629820334714e-02 and `SI_KAM_FLOOR`
+    5.240242922561412 against entry 43, `SI_PC_RESIDUAL_MEAN_TOL`
+    10.99558247515951 against entry 51. Nothing Stage C added to
+    `_gnd.py` or moved in `_tensors.py` has disturbed the Stage B
+    route.
+
+    **`GND_E2E_TOL` in detail** (`hrebsd_measure_c/gnd_e2e_detail.py`,
+    the same helpers the test uses, one estimator at a time). The
+    analytic curvature field is imposed through deformed-master
+    PATTERNS on a 3 by 3 map at a 1 um step, 5e-3 of distortion change
+    per step, and recovered through projection, IC-GN, the D6
+    conversion, the D7 frame, the D9 closure and the D14 gradients:
+
+    | estimator | analytic rho | recovered range | worst relative | median relative |
+    |---|---|---|---|---|
+    | `a3` | 4.02625e13 m^-2 | 4.02289e13 to 4.02877e13 | **8.3502e-04** | 2.4584e-04 |
+    | `a5` | 6.17677e13 m^-2 | 6.17674e13 to 6.18007e13 | 5.3347e-04 | 8.5849e-05 |
+    | `a9` | 6.66447e13 m^-2 | 6.66264e13 to 6.66724e13 | 4.1620e-04 | 2.2818e-04 |
+
+    All nine points of all three maps are finite, and the whole
+    nine-pattern DIC run takes 3.68 s. The pin is `a3`, the estimator
+    consuming the fewest alpha entries and therefore the one with the
+    least averaging over the gradient noise.
+
+    **0.084 per cent is where the placeholder's own note predicted.**
+    That note bounds the number from below by the Stage A homography
+    accuracy: a gradient reads a DIFFERENCE of two neighbouring `Fe`
+    tensors, so the pinned `DEFORMED_MASTER_FE_TOL` of 3.1e-5 over the
+    5e-3 per-step change is 6.2e-03, and the measurement comes in a
+    factor of 7.4 UNDER that. The whole tensor and gradient chain
+    therefore adds less error than the DIC it reads, which is the
+    Stage C half of validation V7 discharged. It is a synthetic
+    oracle and says nothing about real data; entry 67 is the real-data
+    half and says something quite different.
+
+67. **The Si-wafer GND floor, MEASURED AND PINNED -- and it is
+    1.1237e11 m^-2, which is a factor of 36 to 71 BELOW the 4e12 to
+    8e12 m^-2 literature class, and that is NOT a better floor.**
+    Recipe: `TestGndFloor::test_si_gnd_floor` under the plugin of
+    entry 66, with the supporting numbers from
+    `hrebsd_measure_c/si_gnd_detail.py` on the same route -- entry
+    43's route exactly: `reference="auto"`, per-point projection
+    centres from `extrapolate_pc` at the corrected `px_size` of entry
+    41, the deviatoric closure, RAW patterns, the `[::5, ::5]` smoke
+    sub-grid of 100 patterns, `b = 3.84e-10` m and the default `"a5"`.
+
+    | | smoke sub-grid, 200 um step | full 50x50 map, 40 um step |
+    |---|---|---|
+    | points | 100 | 2500 |
+    | converged | 87 | 2187 |
+    | **finite GND points** | **66 (66 %)** | **1969 (78.8 %)** |
+    | median rho | **1.1237e11 m^-2** | **1.3717e11 m^-2** |
+    | range of the finite points | 8.2333e10 to 1.5852e11 | 6.0706e10 to 3.8729e11 |
+
+    The SURVIVING FINITE FRACTION is recorded first because the V7
+    line and the placeholder's own note both demand it: the D14.5 rule
+    refuses a stencil touching a non-converged point, so each failure
+    takes its in-plane neighbours with it. Measured cost per failure,
+    which is the thing that could not be predicted: 34 points lost to
+    13 failures on the smoke grid (2.6 each) and 531 lost to 313 on
+    the full map (1.70 each), against the 5 a lone failure would cost.
+    The failures are heavily clustered, more so on the denser map.
+    Map EDGES cost nothing: `_axis_derivative` takes a one-sided
+    difference there rather than a NaN, which is why 66 survive on a
+    grid with 36 edge points.
+
+    **The literature relation, stated plainly.** Requirements D14.6
+    quotes `rho_noise ~ sigma_beta / (b * step)` and about 4e12 to
+    8e12 m^-2 at `sigma_beta = 1e-4`, `b = 0.25` nm and a 100 nm step.
+    The measured 1.1237e11 m^-2 is 36 to 71 times SMALLER than that
+    class, and reading that as this route reaching a lower floor would
+    be exactly backwards. The literature number is quoted at a 100 nm
+    step; this sub-grid's step is 200 um, TWO THOUSAND times longer,
+    and a curvature is a distortion divided by a distance. Put this
+    dataset's own numbers into the same identity -- its MEASURED
+    rotation floor of 1.2006e-02 rad (entry 43) and its own step --
+    and it predicts 1.2006e-02 / (3.84e-10 * 2e-4) = 1.5633e11 m^-2.
+    The measurement is 0.72x of that. **So the floor is consistent
+    with being noise and nothing else, and the honest reading is that
+    it is small only because the divisor is large.** Nothing here
+    contradicts the literature class and nothing here reaches it; the
+    two are measurements of different quantities.
+
+    **And a measurement of this gate's own says the noise is not even
+    white.** The same identity predicts a FIVE-fold rise between the
+    two columns above, the step falling from 200 um to 40 um. It
+    rises 1.22x. The per-point noise scale is the same on both maps --
+    entry 43 measured the smoke and full strain floors at 1.2168e-02
+    and 1.2208e-02, agreeing to 0.3 per cent -- so the divisor is the
+    only thing that changed, and a white field would have obeyed. It
+    does not, so neighbouring points of the recovered distortion field
+    are strongly correlated. That is precisely what entry 44's
+    diagnosis predicts: the fits sit in a zero-shift minimum pinned by
+    a band-pass-surviving component that does not move with the beam,
+    so the recovered field varies far more slowly across the map than
+    an independent-noise model assumes.
+
+    **Consequence, and it is the same one entries 43 to 45 reached.**
+    This is THIS DATASET's GND floor, not the method's, and it must
+    never be quoted as "kikuchipy's HR-EBSD GND noise floor". The
+    si_wafer scan was acquired for projection-centre calibration; the
+    module docstring carries the full paragraph, requirements D14.6
+    carries the identity, and plan open question 13's Si-indent
+    dataset, deferred past Stage C, is where a method-level GND floor
+    can be measured. **CORRECTED 2026-09-08 (Stage C fix gate): at
+    the time this entry was written the sentence above was FALSE.
+    The module carrying the paragraph was
+    `tests/test_indexing/test_hrebsd_si.py`, which no user reads, and
+    neither the `_gnd.py` module docstring nor the public
+    `hrebsd_gnd` Notes carried the measured floor at all -- they
+    quoted only the 4e12-8e12 literature class, which is the one
+    number this entry says a reader must never be handed alone. Both
+    now carry it, and requirements D14.6 records the discharge (entry
+    75).** The pin at 2.3e11 is a regression guard on this
+    dataset's behaviour and is nothing else. It also clears the
+    full-map median by 1.68x, so it would survive a full-map arm
+    being added beside the strain one.
+
+    Two supporting results from the same run. The three D14.4
+    estimators on the smoke map give `a3` 1.3840e11, `a5` 1.1237e11
+    and `a9` 4.6404e11 m^-2 -- all three different, which is all the
+    weekly `test_gnd_estimator_sweep` asserts, and `a9` sits 4.1x
+    above `a5` because it consumes the six d/dx3-neglect entries the
+    smaller sets drop. And the D14.3 antisymmetry fix RAISES this
+    floor, 1.1237e11 with it against 7.7823e10 without: the direction
+    the V7 line already recorded at the failing-tests gate, confirmed
+    here at the implementation gate on the delivered code, and the
+    opposite of the direction requirements D14.3's 9.6x argument
+    describes. On a dataset whose floor is set by the band-pass
+    artefact rather than by beta31/32 noise, that argument does not
+    apply; the fix stays the default on the frozen theory, not on this
+    measurement, and this is recorded rather than used to re-decide.
+
+68. **The Stage C performance row (recorded, never a gate, D16).**
+    Recipe: `hrebsd_measure_c/si_gnd_detail.py`, the full 50 by 50 Si
+    map, `hrebsd_gnd` timed as a median of 5 on the already-computed
+    map, with the DIC that feeds it timed alongside.
+
+    | leg | 100-point smoke grid | full 2500-point map |
+    |---|---|---|
+    | `hrebsd_gnd`, median of 5 | **1.594 ms** (min 1.588) | **10.78 ms** (min 10.69) |
+    | the DIC that feeds it | -- | 509.5 s, 4.91 pat/s |
+
+    `hrebsd_gnd` is the most expensive of the four derived maps at
+    this scale -- entry 46 measured `hrebsd_strain_stress` at 6.13 ms,
+    `segment_grains` at 5.59 ms and `hrebsd_kam` at 2.36 ms on the
+    same 2500 points -- and it is still 2.1e-05 of the DIC run it
+    reads. Twenty-five times the points cost 6.8x the time, so fixed
+    overheads still dominate at 100 points.
+
+    **The timing environment differed from entry 46's and it is
+    recorded rather than smoothed.** The DIC leg here took 509.5 s
+    against entry 46's 372.5 s, 37 per cent slower, for a
+    bitwise-identical outcome on the identical route (2187 of 2500
+    converged both times). The machine was less idle at this gate, so
+    the `hrebsd_gnd` figures above are if anything an over-estimate;
+    they are quoted as a median of five for that reason and neither
+    they nor entry 46's row gates anything.
+
+69. **Gate outcome.** With the two pins of entries 66 and 67 in place,
+    the eleven-module HREBSD list plus the signal-method suite is
+    GREEN:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_gnd.py \
+      tests/test_indexing/test_hrebsd_si.py \
+      tests/test_indexing/test_hrebsd_tensors.py \
+      tests/test_indexing/test_hrebsd_stiffness.py \
+      tests/test_indexing/test_hrebsd_segmentation.py \
+      tests/test_indexing/test_hrebsd_kam.py \
+      tests/test_indexing/test_hrebsd_pc_shift.py \
+      tests/test_indexing/test_hrebsd_deformed_master.py \
+      tests/test_indexing/test_hrebsd_engine.py \
+      tests/test_indexing/test_hrebsd_geometry.py \
+      tests/test_indexing/test_hrebsd_homography.py \
+      tests/test_indexing/test_hrebsd_interpolation.py \
+      tests/test_signals/test_ebsd_hrebsd_dic.py -q -n 4
+    -> 609 passed, 9 skipped, 107.3 s
+    ```
+
+    The 9 skips are all `--weekly` gated; the `[download]` gate of
+    validation V5 does NOT skip here, the wafer having been cached at
+    entry 40, so the four Si arms including `test_si_gnd_floor` really
+    ran. 618 collected against entry 65's 474: the Stage C
+    failing-tests commit (`c11ebe6b`) added 88 net new test functions
+    across the only three test files it touched --
+    `test_hrebsd_gnd.py` (new, 131 collected), `test_hrebsd_si.py` and
+    `test_hrebsd_tensors.py` -- which parametrize out to the 144
+    collected items gained.
+
+    NO unfilled `MTP` placeholder remains in the HREBSD suite: a
+    module-level scan of all thirteen files for an UPPERCASE name
+    bound to `None` returns nothing, so the Definition-of-done item
+    "every `MTP` placeholder replaced by a dated measured value" is
+    discharged for Stages A, B and C together.
+
+    Ruff, the only two `pre-commit` hooks that touch code here, on the
+    two edited test files and on every `_hrebsd/` module:
+    `ruff check` -> "All checks passed!", `ruff format --check` ->
+    "15 files already formatted". (`pre-commit` itself is still not
+    installed in this environment; its other two hooks are
+    `black-jupyter`, no notebook touched, and `licenseheaders`, every
+    edited file keeping its GPL header unchanged.)
+
+70. **Full existing suite, and the upstream flaky test passed this
+    time.**
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q -x --ignore=tests/test_data
+    -> 4683 passed, 805 skipped, 5 rerun in 487.71 s
+    ```
+
+    NO failures, so `-x` did not stop the run and this tally is a
+    complete one -- unlike entries 49 and 65, whose totals are
+    truncated at the failure that stopped them. The 5 reruns are
+    `tests/test_simulations/test_kikuchi_pattern_simulator.py
+    ::TestCalculateMasterPattern::test_shape` taking its own
+    `@pytest.mark.flaky(reruns=5)` reruns and then PASSING: the same
+    upstream flake entries 4, 27, 49 and 65 logged on this machine,
+    passing here rather than exhausting its reruns. Nothing on this
+    branch touches it (`git diff HEAD -- src/kikuchipy/simulations
+    tests/test_simulations` is still empty).
+
+    Nothing outside HREBSD is broken by this gate, and nothing outside
+    HREBSD was touched: the only source changed at this gate is
+    `_gnd.py` and `_tensors.py` (the Stage C implementation), and the
+    only tests changed are the two `MTP` constants of entries 66 and
+    67 with their dated comments.
+
+### Stage C adversarial review, fix gate (2026-09-08)
+
+**Machine A**, the same 20-core Windows 11 laptop and the same `.venv`
+as entry 66. Seventeen findings from the two reviewers plus one
+surviving mutant. Every finding was verified before it was acted on
+and every one of the seventeen is APPLIED; two of their SUGGESTED
+FIXES were declined in favour of another remedy, with the reason
+recorded in entry 75. The mutant is killed and the kill verified by
+re-injection (entry 73). No frozen assertion was touched and no
+measured pin moved.
+
+71. **Coverage, 100 per cent of the Stage C `_hrebsd/` modules, with
+    the command output recorded.** The Definition-of-done item the
+    Stage C gate had left undischarged (the review found it: entries
+    66 to 70 record the two MTP pins, the GND floor, the performance
+    row, ruff and the full suite, and no coverage command). Run the
+    entry-23/57 way, with `pytest-cov` installed into a scratchpad
+    directory put on `PYTHONPATH` rather than into the project
+    environment:
+
+    ```
+    PYTHONPATH=<scratchpad>/covpkgs .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_gnd.py \
+      tests/test_indexing/test_hrebsd_si.py \
+      tests/test_indexing/test_hrebsd_tensors.py \
+      tests/test_indexing/test_hrebsd_stiffness.py \
+      tests/test_indexing/test_hrebsd_segmentation.py \
+      tests/test_indexing/test_hrebsd_kam.py \
+      tests/test_indexing/test_hrebsd_pc_shift.py \
+      tests/test_indexing/test_hrebsd_deformed_master.py \
+      tests/test_indexing/test_hrebsd_engine.py \
+      tests/test_indexing/test_hrebsd_geometry.py \
+      tests/test_indexing/test_hrebsd_homography.py \
+      tests/test_indexing/test_hrebsd_interpolation.py \
+      tests/test_signals/test_ebsd_hrebsd_dic.py \
+      --cov=src/kikuchipy/indexing/_hrebsd --cov-report=term-missing -q
+    ->
+      __init__.py            0 stmts, 0 miss, 100.00%
+      _engine.py           270 stmts, 0 miss, 100.00%
+      _geometry.py          55 stmts, 0 miss, 100.00%
+      _gnd.py              119 stmts, 0 miss, 100.00%
+      _homography.py        62 stmts, 0 miss, 100.00%
+      _interpolation.py    186 stmts, 0 miss, 100.00%
+      _kam.py               77 stmts, 0 miss, 100.00%
+      _pc_shift.py          57 stmts, 0 miss, 100.00%
+      _preprocessing.py     70 stmts, 0 miss, 100.00%
+      _reference.py         74 stmts, 0 miss, 100.00%
+      _segmentation.py     154 stmts, 0 miss, 100.00%
+      _stiffness.py         82 stmts, 0 miss, 100.00%
+      _tensors.py          189 stmts, 0 miss, 100.00%
+      TOTAL               1395 stmts, 0 miss, 100.00%
+    -> 610 passed, 9 skipped, 101.73 s
+    ```
+
+    All thirteen modules at 100.00 per cent with no line missed, so
+    unlike the Stage B measurement of entry 57 this one closed no
+    gaps: there were none. 610 rather than entry 69's 609 because of
+    the one test added at this gate (entry 73).
+
+72. **The local oldest-matrix run, recorded -- and two corrections to
+    the recipe.** The other undischarged Definition-of-done item.
+    Plan section 1's recipe, run against a wheel built FRESH into the
+    scratchpad rather than letting `uv` resolve the project:
+
+    ```
+    uv build --wheel --out-dir <scratchpad>
+    uv run --isolated --python 3.10 \
+      --with <scratchpad>/kikuchipy-0.14.dev0-py3-none-any.whl \
+      --with "numpy==1.23.0" --with "numba==0.57" \
+      --with "orix==0.12.1" --with "scikit-image==0.21.0" \
+      --with pytest --with pytest-benchmark --with pytest-rerunfailures \
+      --with pytest-xdist \
+      pytest tests/test_indexing tests/test_signals -k hrebsd -q
+    -> 610 passed, 9 skipped, 4335 deselected, 85.26 s
+    ```
+
+    Resolved: Python **3.10.19**, numpy **1.23.0**, numba **0.57.0**,
+    orix **0.12.1**, scikit-image **0.21.0**, scipy 1.13.1, dask
+    2024.8.1, kikuchipy 0.14.dev0 (the wheel above). The 9 skips are
+    the `--weekly` gates; the Si arms skip on `[download]` here
+    because the isolated environment has no pooch cache, which is why
+    this run is the API-floor gate and entry 71 is the coverage one.
+
+    **Correction 1, to the recipe as plan section 1 writes it: it
+    does not run.** `pyproject.toml:165-171` puts `--benchmark-skip`
+    in `addopts`, so pytest in the isolated environment aborts at
+    collection with "unrecognized arguments: --benchmark-skip" unless
+    `--with pytest-benchmark` is added. Recorded here rather than
+    rewritten into the plan, which is frozen.
+
+    **Correction 2, the one the review measured: `uv` can serve a
+    STALE cached wheel** to the literal recipe, so a run can silently
+    test yesterday's code. Building the wheel first and passing it by
+    path, as above, is the remedy; `--no-cache` is the other. Every
+    future stage gate should use one of the two.
+
+    **The orix 0.12.1 floor holds for the Stage C API too.**
+    `CrystalMap.dx`/`dy`, which `_gnd.py:217-218` uses and nothing
+    else in the package does, exist in orix 0.12.1
+    (`crystal_map.py:351-358`), so no version gate is needed and
+    tech-stack.md:17's rule is satisfied without one.
+
+73. **The surviving mutant, killed and the kill verified.** The review
+    left one mutant alive: in `in_plane_gradients` the trailing
+    reduction `finite = finite.all(axis=-1)` becomes
+    `finite.any(axis=-1)`, so a map point counts as usable when ANY
+    entry of its 3 by 3 block is finite rather than every one. That
+    attacks the docstring rule "Both rules are read PER MAP POINT and
+    not per trailing component", which is requirements D2.6 read the
+    conservative way.
+
+    Reproduced first. With the mutant injected,
+    `tests/test_indexing/test_hrebsd_gnd.py` gave **131 passed**, and
+    the module's own NaN arm could not see it: `TestNaNSafety
+    ::test_a_non_finite_point_is_nan_in_alpha_itself` holes the WHOLE
+    3 by 3 block (`field[1, 1] = np.nan`), which `any` refuses too.
+    Measured on the same field with ONE entry holed,
+    `field[1, 1, 0, 2] = np.nan`: `nye_tensor` returns **9 of 9 NaN**
+    at that point on the delivered code and **0 of 9** under the
+    mutant, the finite block being the full constant-curvature answer
+    of the neighbourhood. So a point whose measurement is partly
+    missing would be handed its neighbourhood's dislocation density.
+
+    It is invisible through `hrebsd_gnd`, which is why the arm goes at
+    the `nye_tensor` level: `tensor_chain`'s congruence `M^T A M`
+    spreads one NaN over the whole beta block before a gradient sees
+    it, so the public density is NaN either way (verified both ways).
+
+    Fixed by ADDING one test, `TestNaNSafety
+    ::test_one_non_finite_entry_makes_the_whole_point_nan`, and by
+    naming the mutant in the module's mutation map. No frozen
+    assertion was touched and no source line changed.
+    RE-INJECTED: **1 failed, 131 passed**, the failure being exactly
+    the new arm. RESTORED: **132 passed**.
+
+74. **What the D14.3 antisymmetry fix actually does, measured.** The
+    review found the fix described as a noise reduction and nothing
+    else, in the tutorial and in the public docstring, while it also
+    forces two measured quantities to zero. Recipe:
+    `<scratchpad>/antisym_check.py`, the tutorial's own analytically
+    imposed field fed through the PUBLIC `hrebsd_gnd` with no DIC at
+    all, so every number here is the field's own.
+
+    | quantity | without the fix | with the fix |
+    |---|---|---|
+    | detector-frame max abs `eps13` | 3.504843e-04 | **0.0 exactly** |
+    | detector-frame max abs `eps23` | 5.511282e-04 | **0.0 exactly** |
+    | rms `eps13` over 2000 random tensors | 7.024588e-04 | **0.0 exactly** |
+    | `"a3"` median rho | 2.0766e12 | 2.2064e12 (+6.3 %) |
+    | `"a5"` median rho | 2.2203e12 | 2.3972e12 (**+8.0 %**) |
+    | `"a9"` median rho | 2.5109e12 | 2.6448e12 (+5.3 %) |
+
+    The no-fix column reproduces the imposed field's OWN Nye content
+    to 0.05 per cent (`nye_tensor` on the imposed sample-frame beta
+    gives 2.2192e12 for `"a5"`), which is the check that the analytic
+    route is right. `max abs(beta_sample after the fix - imposed
+    beta)` is **9.7345e-04** against the field's own 1.4000e-03
+    amplitude, so the fix perturbs 70 per cent of the field.
+
+    The algebra behind the zeros is one line: `beta31 <- -beta13`
+    makes `eps13 = (beta13 + beta31)/2` identically zero, and
+    likewise `eps23`. The fix is therefore a TRADE of a measured
+    out-of-plane elastic shear for a quieter noise operator, not a
+    filter.
+
+    The tutorial's DIC-recovered `"a5"` median is 2.41e12, which is
+    the FIXED value and not the imposed one: the chain recovers the
+    field it was given to well under one per cent, and the 8 per cent
+    is the fix. That comparison is now printed by the tutorial
+    itself, so the notebook's opening promise that every recovered
+    number can be checked against an answer known by construction
+    holds for the GND too.
+
+    Recorded in requirements D14.3 as a dated amendment, in the
+    `_gnd.py` module docstring, in `enforce_beta_antisymmetry`'s
+    Notes, in the `enforce_antisymmetry` parameter description
+    (together with entry 67's opposite-direction Si result) and in
+    the tutorial. **The default does not change**: it rests on the
+    frozen geometric-noise argument, which neither measurement tests.
+
+75. **The documentation findings, applied.** The twelve remaining
+    findings of the two reviewers, each verified against the source or
+    the ledger before it was applied:
+
+    - **`sigma33` is stored.** `tensor_chain` writes
+      `properties["stress"]` at `STRESS_PROP_SIZE = VOIGT_SIZE = 6`
+      in Voigt order, so index 2 IS `sigma33`, and the tutorial cell
+      that says it is not stored reads it out of the stored property
+      two lines above. Reworded: it is zero by construction of the
+      closure rather than by measurement, so it is stored and carries
+      no information.
+    - **"four orders" was 2.88.** The cell's own printed outputs give
+      1.97e-01 / 2.62e-04 = **751.91**, log10 = 2.8762. Now "nearly
+      three orders ... a factor of 752", with the factor printed
+      beside it so the sentence cannot drift from the number again.
+    - **The orientations enter in TWO places.** The tutorial claimed
+      they enter "in one place only, the rotation of the elastic
+      stiffness". `segment_grains` labels grains from the neighbour
+      misorientation of `xmap.rotations`
+      (`_segmentation.py:228-245`), and `reference="auto"` picks one
+      reference per label, so on the DEFAULT path they control every
+      number in the map. The synthetic section only escapes it by
+      passing `reference=(0, 0)`. Both that cell and the Si section's
+      cell now give the correct reason, the Si one being that a
+      single crystal is one grain under ANY constant orientation
+      field.
+    - **The log10 guard.** The `hrebsd_gnd` docstring said the guarded
+      form "is what this feature's tutorial does" and the tutorial
+      called a bare `np.log10(gnd)`. The tutorial now uses
+      `np.log10(np.where(gnd > 0, gnd, np.nan))`, so the sentence is
+      true. `log10_density` stays: it is the D14.6 recipe as
+      executable, TESTED code and the killer of the plan 4.3 "log10
+      of signed values unguarded" mutant, and a private module cannot
+      be imported by a tutorial. Its own docstring claim, that it
+      exists so the tutorial need not repeat the recipe, was the
+      false half and is corrected.
+    - **The Si GND floor reaches the API reference.** Requirements
+      D14.6 asks the docstring to quote the measured floor once
+      recorded; entry 67 recorded it and asserted the documentation
+      existed, and it did not. The `_gnd.py` module docstring and the
+      `hrebsd_gnd` Notes now carry 1.1237e11 m^-2, the 200 um step
+      that makes it 36 to 71 times below the literature class rather
+      than better than it, the 1.5633e11 m^-2 the same identity
+      predicts from this data set's own rotation floor, and the
+      statement that it is that data set's floor and never the
+      method's. Entry 67's own sentence is corrected in place.
+    - **"every pair tested" was seven of eight.** Entry 44 records
+      `phase_cross_correlation` returning exactly 0.0 px for seven
+      listed pairs and -0.0625 px for `(49, 0)`. The tutorial dropped
+      the eighth; it now says "0.0 pixel for seven of the eight pairs
+      tested and -0.06 pixel for the eighth".
+    - **The Si section carries entry 67's antisymmetry result.** The
+      fix RAISES that data set's floor by 44 per cent, 1.1237e11
+      against 7.7823e10, and the tutorial now says so beside the
+      other honesty bullets, with the reason (that map's floor is set
+      by the band-pass-surviving fixed-pattern component, not by
+      `beta31`/`beta32` noise) and the consequence (the default rests
+      on the geometry, not on this measurement).
+    - **Bibliography.** Two of D18's nine keys were missing:
+      `ernould2022advances` (AIEP 223 (2022) Ch. 2, "Development of a
+      homography-based global DIC approach for high-angular
+      resolution in the SEM" -- the source SEVEN `_hrebsd/` module
+      docstrings name as the primary convention reference) and
+      `hardin2015analysis` (J. Microsc. 260 (2015) 73-85, the
+      traction-free assumption). Both added, in sorted position.
+      `:cite:` roles were absent from every HREBSD object, so none
+      linked to the bibliography from the rendered API reference;
+      they are now in `EBSD.hrebsd_dic`'s Notes, in
+      `hrebsd_strain_stress`'s `closure` parameter and in
+      `hrebsd_gnd`'s `estimator` and `enforce_antisymmetry`
+      parameters and Notes. The `_hrebsd/` module docstrings keep
+      prose citations: those modules are private and their docstrings
+      are never rendered, so a role there would link nothing
+      (recorded in D18).
+    - **`EBSD.hrebsd_dic`'s See Also** named two of the five
+      consumers of its result. `hrebsd_gnd`, `hrebsd_kam` and
+      `hrebsd_pc_shift` added, so the reference walks both ways.
+    - **The ATEX entry in `related_projects.rst`** said
+      `hrebsd_dic` is "derived from" ATEX's published equations,
+      which reads as a derivation from a third-party product. The
+      spec is emphatic that the derivation is from the PAPERS
+      (Scope, D18, tech-stack.md:131-137), and the OpenXY bullet two
+      lines above already had the right wording. Reworded to match
+      it: the reference implementation of the same published
+      approach, used as an equation level cross reference, no code
+      ported.
+    - **The two missing pieces of tutorial content.** D4's preamble
+      commits to demonstrating the upstream
+      `remove_static_background`/`remove_dynamic_background` and the
+      notebook called neither (grep count 0); a cell now shows both
+      on the wafer, states that the engine's own band-pass is a
+      separate internal step, and says the run below deliberately
+      uses the RAW patterns, which the honesty section then explains.
+      The Manual checklist's "misorientation maps, IPF, IQ" line is
+      dispositioned above: IQ is demonstrated and is the one that is
+      load-bearing here (it is the score `reference="auto"` ranks
+      candidates by, and the tutorial shows its maximum IS the point
+      `"reference_index"` names -- both printed 0), while IPF and a
+      Hough misorientation map are not added, because both data sets
+      are single-orientation by construction and neither map would
+      carry information.
+
+    Two suggestions were REJECTED in part, with reasons. (a) The
+    review suggested narrowing `nbval-ignore-output` on the Si results
+    cell so that "converged: 87 of 100" and "over 66 finite points"
+    stay checked. They are kept ignored: those two numbers are the
+    output of a 100-pattern DIC on real data through
+    `phase_cross_correlation`, and the weekly job installs the latest
+    scikit-image and scipy on every run, so they are the LEAST
+    drift-safe numbers in the notebook rather than the most. What
+    nbval does and does not check after this gate is recorded in
+    entry 76 instead. (b) The review suggested exporting
+    `log10_density` or deleting it; neither was done, for the reason
+    given above.
+
+76. **The sanitize rule, narrowed -- and what nbval now actually
+    regression-checks.** The review found `regex10` anchored on
+    `": "` alone, so it blanked EVERY scientific-notation number
+    printed after a colon in every notebook nbval runs. Measured
+    before the change: it matched **15 outputs, all in
+    `hrebsd_dic.ipynb`** and none elsewhere in the nine notebooks of
+    `run_nbval.sh`, so there was no collateral -- but the 15 included
+    every headline number, the two ANALYTIC ones among them, so the
+    notebook's quantitative content was essentially unchecked.
+
+    `regex10` is now an explicit alternation of the labels of the
+    fit-derived quantities (`median residual`, `worst strain
+    component error`, `worst rotation component error`, `largest
+    |sigma_33|`, `stress amplitude`, the two closure differences,
+    `recovered from the patterns`, `a3`/`a5`/`a9`), and three narrow
+    rules were added for the fixed-point and discrete quantities the
+    review measured as fragile: `regex11` for `largest iteration
+    count` (three of the 49 fits exit within 3 to 13 per cent of the
+    1e-3 px `min_step`, so a scikit-image seed change can take one to
+    a fourth iteration), `regex12` for `median HR-KAM` and `regex13`
+    for the `N.NNN to N.NNN px` ranges of the projection-centre shift
+    cell, whose three decimals ARE the `min_step` scale.
+
+    Verified by two controls rather than by inspection, each a full
+    nbval run of the notebook:
+
+    | control | expectation | result |
+    |---|---|---|
+    | perturb a SANITIZED value, `a5: 2.41e+12` -> `9.99e+12` | pass | **25 passed** |
+    | perturb a CHECKED value, `largest imposed distortion: 1.40e-03` -> `1.50e-03` | fail | **1 failed, 24 passed**, on that cell |
+
+    So the two analytic quantities are now genuinely regression
+    checked, which the old rule blanked. Collateral re-verified after
+    the change: the four rules together match **zero** outputs in the
+    other eight notebooks.
+
+    nbval on the tutorial itself: **25 passed in 29.30 s**
+    (`uv run --with nbval --with ipykernel pytest -q --nbval
+    doc/tutorials/hrebsd_dic.ipynb --nbval-sanitize-with
+    doc/tutorials/tutorials_sanitize.cfg`), 25 rather than the gate's
+    23 because of the two cells added at entry 75.
+
+    **What nbval checks after this gate, stated so it is not assumed:**
+    the two analytic distortion and strain amplitudes, the two
+    analytic `imposed field` GND medians added at entry 74, the
+    imposed-vs-recovered `Fe - I` block at one decimal of 1e-3, the
+    analytic projection-centre drifts of both maps, `converged: 49 of
+    49`, both property lists, the stiffness matrix, the reference
+    index versus the image-quality maximum, and every `print` of a
+    signal, detector or crystal map. It does NOT check the
+    fit-derived scalars listed above, nor anything in the two
+    `nbval-ignore-output` cells of the Si section.
+
+    **A pre-existing, unrelated failure was found by the full sweep
+    and is recorded rather than absorbed.** Running all nine
+    notebooks of `run_nbval.sh` on this machine, two cells of
+    `doc/tutorials/hybrid_indexing.ipynb` fail: its 15th code cell,
+    which prints the mean and standard deviation of a PyEBSDIndex
+    Hough projection-centre optimisation at eight decimals
+    (`[0.41798854 0.22099907 0.50496854]`), and its 20th, an NLopt
+    refinement progress line. Neither can be an effect of this gate:
+    nbval sanitizes the STORED and the PRODUCED output with the same
+    patterns, so removing a pattern can only turn a pass into a
+    failure where that pattern was masking a real difference, and the
+    removed `regex10` matched none of that notebook's stored outputs
+    (measured) -- a bare `[0.41798854 ...]` has no `": "` before it
+    at all. Nothing on this branch touches that notebook. It is
+    library drift on this machine, logged for whoever next runs the
+    weekly job.
+
+77. **Fix-gate outcome.** All thirteen HREBSD test modules plus the
+    signal-method suite, on the delivered code with the one test of
+    entry 73 added:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_gnd.py \
+      tests/test_indexing/test_hrebsd_si.py \
+      tests/test_indexing/test_hrebsd_tensors.py \
+      tests/test_indexing/test_hrebsd_stiffness.py \
+      tests/test_indexing/test_hrebsd_segmentation.py \
+      tests/test_indexing/test_hrebsd_kam.py \
+      tests/test_indexing/test_hrebsd_pc_shift.py \
+      tests/test_indexing/test_hrebsd_deformed_master.py \
+      tests/test_indexing/test_hrebsd_engine.py \
+      tests/test_indexing/test_hrebsd_geometry.py \
+      tests/test_indexing/test_hrebsd_homography.py \
+      tests/test_indexing/test_hrebsd_interpolation.py \
+      tests/test_signals/test_ebsd_hrebsd_dic.py -q -n 4
+    -> 610 passed, 9 skipped, 90.95 s
+    ```
+
+    The 9 skips are the `--weekly` gates; the `[download]` gate does
+    not skip, so the four Si arms including `test_si_gnd_floor` really
+    ran and `SI_GND_FLOOR` still holds after every change at this
+    gate. No pin moved: nothing here touched a measured constant.
+
+    Ruff, the only two `pre-commit` hooks that touch code here, on
+    every `_hrebsd/` module, on `signals/ebsd.py` and on the two
+    edited test files: `ruff check` -> "All checks passed!",
+    `ruff format --check` -> "16 files already formatted".
+    `black-jupyter --line-length=77` on the re-executed notebook ->
+    "1 file would be left unchanged". (`pre-commit` itself is still
+    not installed in this environment; `licenseheaders` is the fourth
+    hook and every edited file keeps its GPL header unchanged.)
+
+    Full existing suite, twice, and the SAME upstream flake as
+    entries 4, 27, 49 and 65:
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q -x --ignore=tests/test_data
+    -> 1 failed, 4661 passed, 803 skipped, 5 rerun in 291.22 s
+    ```
+
+    The one failure is
+    `tests/test_simulations/test_kikuchi_pattern_simulator.py
+    ::TestCalculateMasterPattern::test_shape` exhausting its own
+    `@pytest.mark.flaky(reruns=5)` reruns, which is the flake this
+    machine has logged at four earlier gates and which entry 70 saw
+    PASS on its reruns. Run alone immediately afterwards it passes,
+    on its third rerun: `1 passed, 3 rerun in 0.73 s`. Nothing on this
+    branch touches it -- `git diff HEAD -- src/kikuchipy/simulations
+    tests/test_simulations` is empty -- and because `-x` stopped the
+    run at 97 per cent, that tally is truncated. The complete run,
+    without `-x`:
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q --ignore=tests/test_data
+    -> 1 failed, 4683 passed, 805 skipped, 5 rerun in 281.16 s
+    ```
+
+    The same one failure and nothing else. **4683 passed and 805
+    skipped are entry 70's numbers exactly**, and the single extra
+    item is the test added at entry 73: entry 70 counted the flake
+    among its 4683 because it passed on its reruns that time, so
+    4683 + 1 failed here is 4684 non-skipped against entry 70's
+    4683, which is the one new test and nothing more. Nothing
+    outside HREBSD is broken by this gate.
+    

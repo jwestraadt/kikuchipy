@@ -910,6 +910,71 @@ def _fe_as_matrices(fe: np.ndarray) -> np.ndarray:
     )
 
 
+def single_phase_stiffness_guard(xmap, stiffness: np.ndarray | None) -> None:
+    """Refuse a stiffness given for a map holding several phases.
+
+    The requirements D9.6 limitation, in ONE place because both public
+    entry points which take a stiffness read it: this one and
+    :func:`~kikuchipy.indexing.hrebsd_gnd`, whose stiffness selects the
+    traction-free closure of the same chain (2026-09-08, Stage C
+    implementation gate).
+
+    Parameters
+    ----------
+    xmap
+        :class:`~orix.crystal_map.CrystalMap` whose
+        :attr:`~orix.crystal_map.CrystalMap.phase_id` is counted.
+    stiffness
+        The crystal-frame Voigt stiffness, or ``None``, in which case
+        nothing is checked: without one there is no per-phase quantity
+        to get wrong.
+
+    Raises
+    ------
+    ValueError
+        If *stiffness* is given and *xmap* holds more than one indexed
+        phase, which version one does not support and which the
+        message names.
+    """
+    if stiffness is None:
+        return
+    phase_ids = np.unique(np.asarray(xmap.phase_id))
+    phase_ids = phase_ids[phase_ids >= 0]
+    if phase_ids.size > 1:
+        raise ValueError(
+            f"a stiffness is ONE crystal-frame matrix and xmap holds "
+            f"{phase_ids.size} indexed phases; version one does not support a "
+            "per-phase stiffness, so index one phase at a time, or leave "
+            "`stiffness` out for the strain and the deviatoric closure alone"
+        )
+
+
+def best_orientation_matrices(xmap) -> np.ndarray:
+    """Return one orientation matrix per map point.
+
+    Parameters
+    ----------
+    xmap
+        :class:`~orix.crystal_map.CrystalMap` whose
+        :attr:`~orix.crystal_map.CrystalMap.rotations` may carry
+        several rotations per point, as a dictionary-indexing map with
+        ``n_best > 1`` does.
+
+    Returns
+    -------
+    matrices
+        Array of shape ``(n, 3, 3)`` and 64-bit float data type. A map
+        carrying several rotations per point is read at its BEST one,
+        which is the convention
+        :func:`~kikuchipy.indexing.segment_grains` already follows on
+        the same input (2026-09-08, Stage B adversarial review).
+    """
+    matrices = np.asarray(xmap.rotations.to_matrix(), dtype=np.float64)
+    if matrices.ndim > 3:
+        matrices = matrices.reshape(matrices.shape[0], -1, 3, 3)[:, 0]
+    return matrices
+
+
 def hrebsd_strain_stress(
     xmap,
     detector,
@@ -954,7 +1019,11 @@ def hrebsd_strain_stress(
         ``"traction_free"`` when *stiffness* is given and
         ``"deviatoric"`` otherwise. ``"traction_free"`` imposes
         ``sigma33 = 0`` in the sample frame and requires *stiffness*;
-        ``"deviatoric"`` imposes a traceless tensor.
+        ``"deviatoric"`` imposes a traceless tensor. The traction-free
+        assumption is the standard one for a free surface and is
+        robust except very close to a localized stress source, and
+        its error grows quadratically with the angular misalignment
+        of the surface :cite:`hardin2015analysis`.
     strain_measure : str, optional
         ``"biot"`` (default), the ``U - I`` of the right stretch,
         which is what OpenXY reports, or ``"green-lagrange"``,
@@ -1027,29 +1096,10 @@ def hrebsd_strain_stress(
             "xmap does not carry the 'Fe' property this function splits; pass the "
             "crystal map EBSD.hrebsd_dic returned"
         )
-    if stiffness is not None:
-        phase_ids = np.unique(np.asarray(xmap.phase_id))
-        phase_ids = phase_ids[phase_ids >= 0]
-        if phase_ids.size > 1:
-            raise ValueError(
-                f"the stress path takes ONE stiffness and xmap holds {phase_ids.size} "
-                "indexed phases; version one does not support a per-phase stiffness, "
-                "so index one phase at a time or leave `stiffness` out for the strain "
-                "and the deviatoric closure alone"
-            )
-    matrices = xmap.rotations.to_matrix()
-    if matrices.ndim > 3:
-        # Several rotations per point, as a dictionary-indexing map with
-        # ``n_best > 1`` carries them: the BEST one is the map's own,
-        # which is the convention
-        # :func:`~kikuchipy.indexing.segment_grains` already follows
-        # (2026-09-08, Stage B adversarial review: the two modules
-        # disagreed, and this one raised a message naming an argument
-        # the caller never passed)
-        matrices = matrices.reshape(matrices.shape[0], -1, 3, 3)[:, 0]
+    single_phase_stiffness_guard(xmap, stiffness)
     properties = tensor_chain(
         np.asarray(xmap.prop["Fe"]),
-        matrices,
+        best_orientation_matrices(xmap),
         detector,
         stiffness=stiffness,
         closure=closure,

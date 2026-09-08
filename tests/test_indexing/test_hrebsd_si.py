@@ -301,7 +301,40 @@ SI_PC_RESIDUAL_MEAN_TOL = 2.2e01
 # still owned by its own gate", which is this one.  It is filled with
 # a dated value at the Stage C IMPLEMENTATION gate, which fetches the
 # dataset once.
-SI_GND_FLOOR = None
+#
+# PINNED 2026-09-08 (Stage C implementation gate, machine A;
+# validation entry 67).  MEASURED 1.1237e11 m^-2 on the smoke
+# sub-grid, pinned at 2x.  SURVIVING FINITE FRACTION 66 of 100, the
+# number the note above asks for beside the value: 87 of 100 points
+# converged, and the D14.5 rule then takes the four neighbours of each
+# failure with it, so a third of the map is gone before the median is
+# read.  Spread of what survives: 8.2333e10 to 1.5852e11 m^-2.
+#
+# READ THE MODULE DOCSTRING AND ENTRIES 43 TO 45 BEFORE QUOTING THIS.
+# It is a factor of 36 to 71 BELOW the 4e12 to 8e12 m^-2 literature
+# class of requirements D14.6, and that is not a better floor: the
+# literature class is quoted at a 100 nm step and this sub-grid's step
+# is 200 um, two thousand times longer, so the same distortion noise
+# is divided by two thousand times more distance.  The identity D14.6
+# itself quotes, ``rho ~ sigma_beta / (b * step)``, at this dataset's
+# own MEASURED rotation floor of 1.2006e-02 rad predicts 1.5633e11
+# m^-2 here, and 1.1237e11 is 0.72x that.  The number is therefore
+# consistent with being entirely noise, exactly as the strain and
+# rotation floors above are, and it is THIS DATASET's floor and not
+# the method's.
+#
+# One measurement of this gate's own says so directly.  The full 50 by
+# 50 map, at its own 40 um step, measures 1.3717e11 m^-2 (1969 of 2500
+# finite; validation entry 67).  A five times shorter step should
+# raise a white-noise floor five-fold and it rises 1.22x, while the
+# smoke and full strain floors agree to 0.3 per cent (entry 43), so
+# the per-point noise scale is the same on both and only the divisor
+# changed.  The recovered distortion field is therefore strongly
+# correlated between neighbours rather than white, which is what entry
+# 44's zero-shift diagnosis predicts.  The pin below clears the
+# full-map number by 1.68x as well, so it would not need moving if a
+# full-map arm were ever added beside the strain one.
+SI_GND_FLOOR = 2.3e11
 
 
 # ----------------------------- Helpers ------------------------------ #
