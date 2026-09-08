@@ -16,6 +16,7 @@
 # along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 
 from ._hough_indexing import xmap_from_hough_indexing_data
+from ._hrebsd._gnd import hrebsd_gnd
 from ._hrebsd._kam import hrebsd_kam
 from ._hrebsd._pc_shift import hrebsd_pc_shift
 from ._hrebsd._segmentation import segment_grains
@@ -60,6 +61,7 @@ __all__ = [
     "compute_refine_projection_center_results",
     "fast_bandwidths",
     "find_pseudo_symmetry_operators",
+    "hrebsd_gnd",
     "hrebsd_kam",
     "hrebsd_pc_shift",
     "hrebsd_strain_stress",

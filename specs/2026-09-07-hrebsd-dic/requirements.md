@@ -1371,7 +1371,18 @@ because the antisymmetry fix is defined in the detector frame:
    measured (closed, sample-frame) `beta_i3` column with every
    `d/dx3` term set to zero give, in the D14.1 convention,
    `alpha_i1 = +d(beta_i3)/dx2` and `alpha_i2 = -d(beta_i3)/dx1`
-   (global sign pinned by V7) -- six more entries, all nine in
+   (global sign pinned by V7 -- **DISCHARGED 2026-09-08 at the Stage
+   C adversarial review, which found the claim undischarged: two
+   transcriptions of one formula cannot see a global sign and every
+   estimator sums moduli, so V7's own named rotation-field recipe
+   `omega_3(x1) = kappa*x1` is now built and its SIGNED answer
+   pinned. MEASURED AND RECORDED with it: this frozen convention is
+   exactly MINUS the classical Nye/Pantleon tensor
+   `alpha_ij = kappa_ji - delta_ij*kappa_kk`; on that field it gives
+   `alpha_13 = -kappa` where the classical relation gives `+kappa`.
+   Nothing shipped sees the sign, but a reader comparing the signed
+   `nye_tensor` output with a paper must know it**) -- six more
+   entries, all nine in
    total (`DislocationDensityCalculate.m:239, 324-336`: only the
    in-plane derivative slots of `Beta` are ever filled; the
    d/dx3 slots read as zeros -- verified by line reading, NOT a
@@ -1421,7 +1432,18 @@ because the antisymmetry fix is defined in the detector frame:
    `burgers_vector_length` rationale forbids); one-sided
    at map edges; pairs crossing a `grain_id` boundary or touching
    a non-converged/NaN point contribute NaN (frozen NaN-safety
-   rule). `burgers_vector_length` in METERS, required, no default
+   rule). **CLARIFIED 2026-09-08 (Stage C adversarial review; no
+   behaviour changes, and D2.6 already governs it): the pair rule
+   above is not the whole NaN contract, because a central-difference
+   pair never reads its own centre. A point whose OWN `beta` is
+   non-finite is NaN in both derivatives, in `alpha` and in the
+   density, whatever its neighbours hold -- that is D2.6's "NaN in
+   every derived prop downstream; they are NEVER zeroed" applied to
+   this path, and without it a pair-only implementation would report
+   the full neighbourhood density at a point that never converged.
+   Pinned at the `nye_tensor` level, not only at `hrebsd_gnd`
+   (`test_hrebsd_gnd.py::TestNaNSafety`).**
+   `burgers_vector_length` in METERS, required, no default
    (frozen: deriving b from the phase structure is a recorded v2
    nicety; silently guessing units is how prefactor bugs hide).
 6. Maps plotted log10 in the tutorial; the docstring quotes the

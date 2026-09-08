@@ -1558,11 +1558,20 @@ class TestExports:
     def test_all_is_sorted(self):
         assert list(kp.indexing.__all__) == sorted(kp.indexing.__all__)
 
-    def test_hrebsd_gnd_is_not_exported_yet(self):
-        # the sixth frozen name of D15.3 belongs to Stage C: a name
-        # which appears in the reference before its function exists
-        # documents a promise
-        assert "hrebsd_gnd" not in kp.indexing.__all__
+    def test_hrebsd_gnd_is_exported_by_stage_c(self):
+        # SUPERSEDES ``test_hrebsd_gnd_is_not_exported_yet``, deleted
+        # 2026-09-08 at the Stage C failing-tests gate.  That pin said
+        # the sixth frozen name of requirements D15.3 must NOT appear
+        # in the reference before its function exists, which was right
+        # while Stage C was unwritten and is refuted by Stage C itself:
+        # ``_gnd.py`` ships with the name registered, so the promise
+        # the old pin guarded against is now a delivery.  The positive
+        # replacement keeps the freeze -- all six names of D15.3 are
+        # exported and ``__all__`` stays sorted, which the two tests
+        # above assert -- and the sixth name's own contract lives in
+        # ``test_hrebsd_gnd.py``
+        assert "hrebsd_gnd" in kp.indexing.__all__
+        assert hasattr(kp.indexing, "hrebsd_gnd")
 
     def test_the_public_function_is_the_module_one(self):
         assert kp.indexing.hrebsd_strain_stress is hrebsd_strain_stress

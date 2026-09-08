@@ -106,6 +106,7 @@ from orix.quaternion import Rotation
 import pytest
 
 import kikuchipy as kp
+from kikuchipy.indexing._hrebsd._gnd import hrebsd_gnd
 from kikuchipy.indexing._hrebsd._kam import hrebsd_kam
 from kikuchipy.indexing._hrebsd._pc_shift import hrebsd_pc_shift
 from kikuchipy.indexing._hrebsd._tensors import hrebsd_strain_stress
@@ -150,6 +151,35 @@ UF420_PX_SIZE = 90.0
 # as an ORDER check, so that a floor which comes back at 1e-1 or at
 # 1e-12 is caught as a wiring error rather than recorded as a result
 LITERATURE_STRAIN_FLOOR = 2e-4
+
+# Silicon's Burgers vector length in METRES, a/2<110> at
+# a = 5.431 A (requirements D14.5 freezes the unit and gives the
+# argument no default).  TEST DATA only
+SILICON_BURGERS = 3.84e-10
+
+# The literature context of the GND noise floor, RECORDED and never
+# presumed: requirements D14.6 quotes
+# ``rho_noise ~ sigma_beta / (b * step)``, about 4e12 to 8e12 m^-2 at
+# ``sigma_beta = 1e-4``, ``b = 0.25 nm`` and a 100 nm step.  This
+# dataset is nowhere near those conditions -- its MEASURED rotation
+# floor is 1.2006e-02 rad (the number SI_ROTATION_FLOOR above pins at
+# 2x, not the pin itself) and the smoke sub-grid step is 200 um -- so
+# the same identity predicts 1.2006e-02 / (3.84e-10 * 2e-4) = 1.6e11
+# m^-2 here.  The assertion below is therefore a WIDE order check
+# whose only job is to catch the two wiring errors that would
+# otherwise be recorded as a result, restated for THIS dataset's own
+# step (both attributions corrected 2026-09-08, Stage C adversarial
+# review):
+#
+# - gradients in map INDICES rather than metres divides by the 2e-4 m
+#   step instead of by 1, so it is a factor of 5e3 DOWN here, not the
+#   1e6 up an earlier draft of this note claimed (that would be the
+#   direction at a step of 1 um and the wrong side of it even then);
+# - a Burgers vector in nanometres is a factor of 1e9 down.
+#
+# Against a floor of order 1e11 m^-2 the two land at 3e7 and 1e2, and
+# the band below opens at 1e-4 * 8e12 = 8e8, so it catches both
+LITERATURE_GND_FLOOR = 8e12
 
 
 # ------------------ MEASURED-THEN-PINNED (MTP) ---------------------- #
@@ -249,6 +279,29 @@ SI_KAM_FLOOR = 1.05e01
 # on THIS dataset's behaviour and is not evidence about how close to
 # zero a well-conditioned map gets.
 SI_PC_RESIDUAL_MEAN_TOL = 2.2e01
+
+# MTP [D14, V5/V7]: the median scalar GND density of the same map in
+# m^-2, default estimator "a5" and the default enforced antisymmetry.
+# The wafer is a nominally dislocation-free single crystal, so
+# whatever comes back IS the GND noise floor of this route, and the
+# literature context is the 4e12 to 8e12 m^-2 class of requirements
+# D14.6 -- recorded, not presumed, and see LITERATURE_GND_FLOOR above
+# for why this dataset is not expected to sit in it.
+# MEASURING RECIPE: ``TestGndFloor::test_si_gnd_floor`` below.
+# Record the SURVIVING FINITE FRACTION beside the value: the D14.5 NaN
+# rule refuses every pair touching a non-converged point, so this map
+# loses far more points to it than the 13 of 100 that failed to
+# converge, and a median over a third of a map is a different number
+# from a median over all of it (added 2026-09-08, Stage C adversarial
+# review).
+#
+# ADDED 2026-09-08 at the Stage C failing-tests gate.  validation V5
+# names ``test_si_gnd_floor`` as a Stage C deliverable of this module
+# and validation entry 48 records it as "NOT measured at this gate and
+# still owned by its own gate", which is this one.  It is filled with
+# a dated value at the Stage C IMPLEMENTATION gate, which fetches the
+# dataset once.
+SI_GND_FLOOR = None
 
 
 # ----------------------------- Helpers ------------------------------ #
@@ -513,6 +566,115 @@ class TestKamFloor:
         assert all(np.isfinite(value) for value in floors.values())
         # the orders really do differ, or the sweep records nothing
         assert len(set(floors.values())) == len(floors)
+
+
+class TestGndFloor:
+    """The scalar GND noise floor of requirements D14 on real data.
+    [D14/V5/V7]
+
+    ADDED 2026-09-08 at the Stage C failing-tests gate, the Stage C
+    half of this module.  A nominally dislocation-free single crystal
+    has no geometrically necessary dislocation content, so whatever
+    this reports is the floor the route puts under a real GND map,
+    exactly as the strain arm above reports the strain floor -- and
+    with exactly the same caveat, which the module docstring states in
+    full: it is THIS DATASET's floor and not the method's.
+    """
+
+    def test_si_gnd_floor(self):
+        subset = smoke_subset(si_wafer_signal())
+        _, xmap, _ = strain_stress_of(subset)
+        density = hrebsd_gnd(xmap, per_point_detector(subset), SILICON_BURGERS)
+        # HOW MUCH OF THE MAP SURVIVED, named before the floor is read
+        # (added 2026-09-08, Stage C adversarial review).  The D14.5
+        # NaN rule refuses every pair touching a non-converged point,
+        # so each of this dataset's failures poisons its four
+        # neighbours too and the surviving fraction is well below the
+        # convergence fraction.  Without this, an all-NaN map would
+        # reach ``np.nanmedian`` as a RuntimeWarning and a NaN, and
+        # surface as a confusing band-check failure instead of a named
+        # one.  The Stage B helpers already guard the same way
+        finite = int(np.isfinite(density).sum())
+        assert finite > 0.5 * density.size, (
+            f"only {finite} of {density.size} GND points are finite; the D14.5 NaN "
+            "rule has removed most of the map, so the floor below is not a "
+            "measurement of anything"
+        )
+        floor = float(np.nanmedian(density))
+        # a density is a sum of moduli, so it can be zero but never
+        # negative, and a floor of exactly zero would mean nothing was
+        # measured
+        assert np.all(density[np.isfinite(density)] >= 0.0)
+        # the ORDER check of the LITERATURE_GND_FLOOR note: wide on
+        # purpose, and its whole job is to catch the metre-versus-pixel
+        # and the metre-versus-nanometre wiring errors rather than to
+        # record them as a result
+        assert 1e-4 * LITERATURE_GND_FLOOR < floor < 1e4 * LITERATURE_GND_FLOOR
+        assert_within(floor, SI_GND_FLOOR, "SI_GND_FLOOR")
+
+    @pytest.mark.weekly
+    def test_gnd_estimator_sweep(self):
+        # the three estimators of requirements D14.4 on the same map.
+        # RECORDED, NOT GATED (the validation V4 capture-range
+        # precedent): "a5" stays the frozen default, and what this
+        # produces is the table any dated re-pin would rest on.  The
+        # three consumption sets differ, so the three floors must
+        # differ or the sweep has recorded nothing
+        subset = smoke_subset(si_wafer_signal())
+        _, xmap, _ = strain_stress_of(subset)
+        detector = per_point_detector(subset)
+        floors = {
+            estimator: float(
+                np.nanmedian(
+                    hrebsd_gnd(xmap, detector, SILICON_BURGERS, estimator=estimator)
+                )
+            )
+            for estimator in ("a3", "a5", "a9")
+        }
+        assert all(np.isfinite(value) and value > 0 for value in floors.values())
+        assert len(set(floors.values())) == len(floors)
+
+    @pytest.mark.weekly
+    def test_the_antisymmetry_fix_moves_the_gnd_noise_floor(self):
+        # requirements D14.3's own justification, put to real data
+        # rather than argued -- and REFUTED on this dataset, which is
+        # why neither the name nor the assertion states a direction
+        # (renamed and rewritten 2026-09-08, Stage C adversarial
+        # review; it was called ``..._lowers_the_gnd_noise_floor`` and
+        # its comment said "replacing them should LOWER the floor",
+        # which no measurement here supports).
+        #
+        # The argument is that beta31 and beta32 are about 9.6 times
+        # noisier than beta13 and beta23 for typical geometry, so
+        # replacing them should lower the floor of a dislocation-free
+        # crystal.  MEASURED on the smoke sub-grid at the Stage C
+        # adversarial review with a reference implementation of the
+        # frozen chain: fix ON gives a median of 1.1237e11 m^-2 and fix
+        # OFF 7.7823e10 m^-2, so on THIS dataset the fix RAISES the
+        # floor by 44 per cent.  That is not a refutation of D14.3:
+        # this wafer's 1.2e-2 rad rotation floor is dominated by the
+        # band-pass artefact the Stage B ledger records and not by the
+        # beta31/32 noise amplification the 9.6x argument describes, so
+        # the estimate is simply being asked about conditions it was
+        # not written for.
+        #
+        # RECORDED, NOT GATED (the validation V4 capture-range
+        # precedent): what is asserted is that the toggle DOES
+        # something, and the direction and factor are re-measured and
+        # recorded at the implementation gate rather than presumed
+        # here.  Do not restore a direction to this assertion without a
+        # dataset that supports it
+        subset = smoke_subset(si_wafer_signal())
+        _, xmap, _ = strain_stress_of(subset)
+        detector = per_point_detector(subset)
+        with_fix = float(np.nanmedian(hrebsd_gnd(xmap, detector, SILICON_BURGERS)))
+        without_fix = float(
+            np.nanmedian(
+                hrebsd_gnd(xmap, detector, SILICON_BURGERS, enforce_antisymmetry=False)
+            )
+        )
+        assert np.isfinite(with_fix) and np.isfinite(without_fix)
+        assert with_fix != without_fix
 
 
 class TestPcShiftPlane:

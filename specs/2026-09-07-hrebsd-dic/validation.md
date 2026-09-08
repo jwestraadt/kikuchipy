@@ -480,6 +480,19 @@ gated. MTP placeholders: `SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`,
   consumes exactly its D14.4 documented set -- NOT that entries
   are "absent from every estimator" (a9 legitimately consumes
   all nine of its documented construction). [D14]
+  **SIGN ARM BUILT 2026-09-08 (Stage C adversarial review;
+  requirements D14.2 amended with the same date).** The
+  `omega_3(x1) = kappa*x1` recipe this bullet names was not in the
+  drafted suite, and without it the "global sign pinned by V7"
+  claim was undischarged: both test oracles transcribe the same
+  `eps_jkl` contraction and every estimator sums moduli, so a
+  coordinated sign convention change was invisible.
+  `test_a_constant_lattice_curvature_gives_the_frozen_signed_alpha`
+  now builds it and pins the SIGNED `alpha_13 = -kappa`, and
+  `test_the_frozen_convention_is_minus_the_classical_nye_tensor`
+  meets the contraction with the INDEPENDENT classical relation
+  `alpha_ij = kappa_ji - delta_ij*kappa_kk`. MEASURED: the frozen
+  convention is exactly minus the classical one. [D14.1/D14.2]
 - `test_estimator_prefactors`: 30/10, 30/14, 30/20 literal pins;
   scalar rho = estimator formula on hand-built alpha. [D14]
 - `test_antisymmetry_fix_detector_frame`: on a synthetic beta with
@@ -508,6 +521,22 @@ gated. MTP placeholders: `SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`,
   `GND_E2E_TOL` (MTP) of the analytic density. [D14]
 - `test_nan_safety`: grain boundaries, map edges, non-converged
   points produce NaN, never fabricated gradients. [D14.5]
+  **SELF-RULE ARM ADDED 2026-09-08 (Stage C adversarial review;
+  requirements D14.5 clarified with the same date):** the
+  non-converged case is pinned at the `nye_tensor` level as well as
+  through `hrebsd_gnd`, because a central-difference pair never
+  reads its own centre and a pair-only implementation would report
+  the full neighbourhood density at a point that never converged
+  (D2.6). [D2.6/D14.5]
+- Si-wafer GND floor (`test_hrebsd_si.py::TestGndFloor`): record
+  the SURVIVING FINITE FRACTION beside `SI_GND_FLOOR`, since the
+  D14.5 NaN rule removes far more points than failed to converge,
+  and the fix-toggle arm records the measured DIRECTION rather than
+  asserting one (added 2026-09-08, Stage C adversarial review: on
+  the smoke sub-grid the D14.3 fix RAISES the floor, 1.1237e11
+  against 7.7823e10 m^-2, because this wafer's floor is dominated
+  by the band-pass artefact of the Stage B ledger and not by the
+  beta31/32 noise the 9.6x argument describes). [D14.3/D14.5/V5]
 
 ### Stage B unit suites (`test_hrebsd_tensors.py`, `test_hrebsd_stiffness.py`, `test_hrebsd_segmentation.py`, `test_hrebsd_kam.py`, `test_hrebsd_pc_shift.py`, `test_hrebsd_deformed_master.py`, `test_hrebsd_si.py`)
 

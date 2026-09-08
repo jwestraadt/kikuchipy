@@ -52,6 +52,10 @@ Submodules
     Projection centres in binned pixels, per-point PC/DD, the
     beam-scan phantom homography and its removal before the
     homography to ``Fe`` conversion.
+``_gnd``
+    The Nye tensor of the measured distortion field and the scalar
+    geometrically necessary dislocation densities behind
+    :func:`kikuchipy.indexing.hrebsd_gnd`.
 ``_homography``
     The 8 degree-of-freedom homography shape function, its group
     algebra (compose, invert, project, corner norm) and the exact
