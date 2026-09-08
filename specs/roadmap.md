@@ -175,8 +175,8 @@ OQ13 note (full-res only, deviatoric only; super-resolution and stress
 deferred). Execution plan: `specs/2026-09-07-hrebsd-dic/si-indent-application-plan.md`.
 
 - [x] housekeeping: `.gitignore` guard for `*.h5oina`, spec bookkeeping (OQ13 note, this section, ledger heading)
-- [ ] rectangular end-to-end regression test (first non-square `EBSD.hrebsd_dic` run) green
-- [ ] oxford_h5ebsd binning-read fix ('Camera Mode' vs 'Camera Binning Mode' at format 7.0) + dedicated test
+- [x] rectangular end-to-end regression test (first non-square `EBSD.hrebsd_dic` run) green
+- [x] oxford_h5ebsd binning-read fix ('Camera Mode' vs 'Camera Binning Mode' at format 7.0) + dedicated test
 - [ ] pre-flight measurements recorded (CCC reference resolution, filter_cutoffs A/B on row 10, measured patterns/s)
 - [ ] `doc/tutorials/hrebsd_si_indent.ipynb` authored, adversarially reviewed BEFORE the one-shot execute, then executed with stored outputs
 - [ ] post-execute review (markdown claims vs printed numbers) + nbval/ruff/full-suite gates recorded; signed commits pushed (no PR)

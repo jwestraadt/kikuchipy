@@ -224,17 +224,30 @@ def get_binning(header_group: dict[str, Any], version: str) -> int | None:
     We may just divide 1 024 by the pattern height from the acquired
     patterns, it seems. But, it may be best to document this here for
     when things get more complicated in the future.
+
+    The H5OINA specification renamed the dataset from "Camera Binning
+    Mode" to "Camera Mode" in format version 7.0, but the version
+    boundary is not a reliable guide to which name a file actually
+    carries: AZtec 3.2.0.0 writes format 7.0 files whose header holds
+    "Camera Binning Mode" (measured 2026-09-08 on the Si-indent data
+    set of Winkelmann et al. 2025, Zenodo 14059950, whose
+    "Speed 1 (622x512 px)" gives a binning of 2). Both names are
+    therefore accepted, the version-appropriate one first, and the
+    binning is silently unread only when neither is present.
     """
     if Version(version) >= Version("7.0"):
-        camera_mode_dataset_name = "Camera Mode"
+        camera_mode_dataset_names = ["Camera Mode", "Camera Binning Mode"]
     else:
-        camera_mode_dataset_name = "Camera Binning Mode"
+        camera_mode_dataset_names = ["Camera Binning Mode", "Camera Mode"]
 
     msg = "Could not read detector binning"
-    if camera_mode_dataset_name not in header_group:
+    camera_mode_dataset_name = next(
+        (name for name in camera_mode_dataset_names if name in header_group), None
+    )
+    if camera_mode_dataset_name is None:
         _logger.debug(
-            msg + " as header group did not contain the expected camera mode dataset"
-            f" name {camera_mode_dataset_name}"
+            msg + " as header group did not contain any of the expected camera mode"
+            f" dataset names {camera_mode_dataset_names}"
         )
         return
     binning_str = header_group[camera_mode_dataset_name]

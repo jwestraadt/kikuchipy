@@ -15,6 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 
+import shutil
+
+import h5py
 import numpy as np
 import pytest
 
@@ -62,3 +65,84 @@ class TestOxfordH5EBSD:
     )
     def test_get_binning(self, version, header_group, binning):
         assert get_binning(header_group, version) == binning
+
+
+class TestCameraModeDatasetName:
+    """The H5OINA format version is not a reliable guide to which of
+    the two camera mode dataset names a file carries.
+
+    ADDED 2026-09-08.  ``get_binning`` used to pick ONE name from the
+    format version, "Camera Mode" at 7.0 and above and "Camera
+    Binning Mode" below, and silently return ``None`` when the file
+    carried the other one.  AZtec 3.2.0.0 writes format 7.0 files
+    whose header holds "Camera Binning Mode", which is how the bug was
+    found: the Si-indent data set of Winkelmann et al. 2025 (Zenodo
+    14059950) is such a file, and its detector arrived with the
+    default ``binning=1`` instead of the 2 its "Speed 1 (622x512 px)"
+    camera mode states.  Both names are now accepted, the
+    version-appropriate one first.
+    """
+
+    @pytest.mark.parametrize(
+        ["version", "header_group", "binning"],
+        [
+            # the crossed cases, neither of which parsed before.  The
+            # first is the Si-indent file's own header, transcribed
+            # from it on 2026-09-08
+            ("7.0", {"Camera Binning Mode": "Speed 1 (622x512 px)"}, 2),
+            ("7.0", {"Camera Binning Mode": "Speed 3 (156x88 px)"}, 8),
+            ("5.0", {"Camera Mode": "Resolution (1244x1024 px)"}, 1),
+            # and a file carrying BOTH takes the version-appropriate
+            # one, so the fallback never silently overrides a correct
+            # reading
+            (
+                "7.0",
+                {
+                    "Camera Mode": "4x4 (311x256 px)",
+                    "Camera Binning Mode": "8x8 (168x128 px)",
+                },
+                4,
+            ),
+            (
+                "6.0",
+                {
+                    "Camera Mode": "4x4 (311x256 px)",
+                    "Camera Binning Mode": "8x8 (168x128 px)",
+                },
+                8,
+            ),
+        ],
+    )
+    def test_either_dataset_name_parses(self, version, header_group, binning):
+        assert get_binning(header_group, version) == binning
+
+    @pytest.mark.parametrize("version", ["5.0", "7.0"])
+    def test_neither_name_still_returns_none(self, version):
+        # the unchanged half of the contract: an unreadable binning is
+        # left unset rather than guessed
+        assert get_binning({"Beam Voltage": 20}, version) is None
+
+    def test_a_format_7_file_with_the_old_dataset_name(
+        self, oxford_h5ebsd_file, tmp_path
+    ):
+        """The bug end to end, on a copy of the shipped test asset.
+
+        The asset is a format 7.0 file carrying "Camera Mode"; here it
+        is copied and the dataset RENAMED to "Camera Binning Mode",
+        which is exactly what AZtec 3.2.0.0 writes.  Before the fix
+        the detector came back with ``binning=1``.
+        """
+        path = tmp_path / "camera_binning_mode.h5oina"
+        shutil.copy(oxford_h5ebsd_file, path)
+        with h5py.File(path, mode="r+") as f:
+            assert f["Format Version"][()] == b"7.0"
+            header = f["1/EBSD/Header"]
+            assert "Camera Mode" in header
+            header.move("Camera Mode", "Camera Binning Mode")
+            assert "Camera Mode" not in header
+
+        s = kp.load(path)
+        # the same 17 the unrenamed asset gives, so the rename is the
+        # only difference and the reader is insensitive to it
+        assert s.detector.binning == 17.0
+        assert s.detector.binning == kp.load(oxford_h5ebsd_file).detector.binning

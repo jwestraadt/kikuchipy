@@ -3370,3 +3370,222 @@ deviatoric closure only. Data file local and gitignored, never committed:
 AGH__Si_indent_1_512x672.h5oina, 18,882,865,658 bytes, patterns
 (58500, 512, 622) uint8. Entries below are append-only, dated, with
 recipes, per the ledger discipline above.
+
+78. **The rectangular end-to-end regression test (2026-09-08, plan
+    OQ13 step 2(a)).** The Si-indent patterns are 512 rows by 622
+    columns, and until this entry NOTHING non-square had been through
+    `EBSD.hrebsd_dic` or the four analysis functions after it: every
+    end-to-end call of the signal suite runs on the 60 by 60 shipped
+    nickel patterns, where every `nrows` versus `ncols` mutant of
+    requirements D1.2, D4.1 and D4.4 is the IDENTITY. The rectangular
+    pins that did exist were unit level only, the `(37, 61)` arms of
+    `test_hrebsd_engine.py`, `test_hrebsd_interpolation.py` and
+    `test_hrebsd_geometry.py`. `TestRectangularEndToEnd` in
+    `tests/test_signals/test_ebsd_hrebsd_dic.py` closes that gap
+    BEFORE the 4 to 6 hour full-map run, which is the point of doing
+    it first.
+
+    **The fixture** (all of it deterministic, no random draw): a
+    2 by 3 navigation map of 61 by 101 patterns, each one a copy of
+    an off-centre crop of the shipped 401 by 401 stereographic nickel
+    master (rows 150, columns 120) warped by its own known homography
+    with `skimage.transform.ProjectiveTransform` plus `warp`, the
+    test-oracle-only warper of requirements D18. 61 by 101 rather
+    than the `(37, 61)` of the unit arms because the frozen
+    `border=0.05` then leaves 3 rows and 5 columns of margin, enough
+    that no subregion sample of the imposed warps reaches the pattern
+    edge and the fit measures the engine and not the boundary policy.
+    The crop is off centre because the master is four-fold symmetric
+    about its centre, and a centred crop would carry a texture nearly
+    invariant under the very row/column swap this class must be able
+    to see. The detector carries ONE PROJECTION CENTRE PER MAP POINT,
+    `pc.shape == (2, 3, 3)`, offsets of the 1e-3-fraction class the
+    Si-indent file's own affine PC calibration has, so the D6.2
+    beam-scan phantom is non-trivial; the reference is the explicit
+    `(0, 1)`, deliberately not `(0, 0)`, since the beam-scan anchor of
+    `_geometry.per_point_pc_pixels` IS the first grain reference and
+    an anchor at the map origin would be indistinguishable from an
+    ignored one.
+
+    **What it pins**, the eight tests:
+
+    - the fixture really is non-square, and a detector whose shape is
+      the pattern's TRANSPOSE is refused (`ValueError`, "shape");
+    - the full D15.6 Stage A prop set with the right shapes and data
+      types on a rectangular map, `homography` `(6, 8)`, `Fe`
+      `(6, 9)`, the D15.7 reshape route, and the input orientations
+      untouched;
+    - every point converges, every property is finite, the reference
+      correlates with itself (corner norm 4.2e-09 px), each point's
+      fit is closer to ITS OWN imposed warp than to any other point's
+      (worst own 0.0440 px against best other 0.9593 px, a factor of
+      22, which is what makes a permuted result visible with no
+      tolerance);
+    - the ASYMMETRIC-warp pin, below;
+    - `Fe` against a D6/D6.2 conversion assembled in the test file;
+    - lazy input equals eager BITWISE on all eight Stage A
+      properties, the path the 18.9 GB run takes;
+    - the whole chain runs: `hrebsd_strain_stress` (deviatoric, no
+      stiffness, so `stress` is all NaN as designed), `hrebsd_kam`,
+      `hrebsd_gnd` (b = 3.84e-10 m) and `hrebsd_pc_shift`, each
+      returning the `(2, 3)` navigation shape with finite values, and
+      the pc-shift measured translations equal to the raw homography's
+      `h13`/`h23` read back through a non-square map grid.
+
+    **The asymmetric-warp pin and HOW a transpose is numerically
+    visible**, stated because a pin this tight is only worth what its
+    mechanism is. The fit lives in the reference-PC-centred frame of
+    D1.3, whose origin is `(pcx * ncols, pcy * nrows)`. On a square
+    detector those are the same number; here `ncols - nrows` is 40, so
+    the swapped origin sits `d = (+16.92, -23.12)` binned pixels from
+    the true one. A homography fitted about a different origin is the
+    conjugate `T(d) . W . T(-d)`, which leaves the linear block `A`
+    alone and moves the translation by `-(A - I) d`. A PURE
+    TRANSLATION is therefore origin invariant and could not see the
+    swap at all, which is why the warp used carries an ANISOTROPIC
+    linear block (`h11 = +1.5e-2` against `h22 = -1.0e-2`, off-diagonal
+    pair antisymmetric) so that `(A - I) d` is large along both axes.
+    MEASURED 2026-09-08: the swap moves `h13` by 0.5312 px and `h23`
+    by 0.4342 px, while the fit recovers them to 0.0025 px and
+    0.00055 px, a separation of 211x and 792x. The same comparison in
+    the D2.5 corner norm is 0.0203 px against 0.6900 px.
+
+    The `Fe` half is a SECOND, independent transpose site: `Fe`
+    divides the corrected translations by `DD_px = pcz * nrows` and
+    multiplies the perspective pair by it, and the phantom removed
+    first carries `gamma = PC_target - PC_reference` in the same mixed
+    units. A swap rescales `Fe13` and `Fe23` by `ncols / nrows`, 1.66
+    here and exactly one on a square detector. MEASURED: the recovered
+    `Fe` sits 2.1214e-04 from the right-axes expectation and
+    1.0272e-02 from the swapped one, a factor of 48.
+
+    **The two measured-then-pinned bands** (requirements D19; both
+    PINNED at about 2x the measurement, the convention of
+    `test_hrebsd_engine.py`):
+
+    - `RECT_WARP_TOL = 0.09`, MEASURED worst 0.043956 px over the six
+      points. That is the same regime as the engine module's 60 px
+      arm (0.06507 px measured, `WARP_REFIT_TOL_60 = 0.13`) and about
+      four times its 480 px arm, which is what a pattern this small
+      should give; no precision CLAIM is attached to it.
+    - `RECT_FE_TOL = 1.5e-3`, MEASURED worst 7.1949e-04.
+
+    **Mutation check, run and recorded rather than assumed** (source
+    restored afterwards; `git status` clean under `src/`):
+
+    - `_geometry.pc_to_pixels` with `PCx`/`PCy` swapped
+      (`pc[:, 0] * nrows`, `pc[:, 1] * ncols`) -> **3 of the 8 tests
+      fail**: the per-point recovery, the asymmetric pin and the `Fe`
+      pin.
+    - the same function with `DD_px = pcz * ncols` -> the `Fe` pin
+      fails (0.005844 against the 0.0015 band); the other seven pass,
+      which is right, since the raw homography does not read `DD`.
+    - `_preprocessing.band_pass_transfer_function` with
+      `width = shape[0]` instead of `shape[1]` -> **SURVIVES all
+      eight**, recorded as a limit of this class rather than hidden.
+      It is the expected outcome: the same transfer function is
+      applied to the reference and to every target, so a wrong cut-off
+      changes the filtered content both sides identically and barely
+      moves the fit. That mutant is killed at unit level by the
+      `(37, 61)` arms of `TestPreprocessing` in
+      `test_hrebsd_engine.py`, which compare against
+      `kp.filters.highpass_fft_filter(shape, cutoff=0.05 * shape[1])`
+      literally.
+
+    **Outcome: the test PASSES against the delivered implementation.**
+    It is a regression test and it found no engine bug; nothing in
+    `src/` was changed for it. Tally:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_signals/test_ebsd_hrebsd_dic.py -q -k Rectangular
+    -> 8 passed, 48 deselected in 0.76 s
+    ```
+
+79. **The Oxford H5OINA binning-read fix (2026-09-08, plan OQ13 step
+    2(b)).** `oxford_h5ebsd/_api.py::get_binning` chose exactly ONE
+    camera-mode dataset name from the H5OINA format version, "Camera
+    Mode" at 7.0 and above and "Camera Binning Mode" below, and
+    returned `None` when the file carried the other one, at which
+    point `get_detector` leaves `binning` at its default 1. The
+    version boundary is not a reliable guide: **AZtec 3.2.0.0 writes
+    format 7.0 files whose header holds "Camera Binning Mode"**, and
+    the Si-indent file is one. MEASURED on it (read-only `h5py`,
+    2026-09-08): `Format Version` is `b"7.0"`, the header's camera
+    datasets are `Camera Binning Mode`, `Camera Exposure Time` and
+    `Camera Gain`, with no `Camera Mode` at all, and the value is
+    `b"Speed 1 (622x512 px)"`, which the unchanged regular expression
+    and `1024 / 512` turn into a binning of **2**.
+
+    THE FIX is minimal and keeps the existing parse untouched: build
+    the list of both names with the version-appropriate one FIRST,
+    take the first name present, and log the debug message naming
+    both only when neither is. A file carrying both therefore still
+    reads the version-appropriate one, so the fallback can never
+    silently override a correct reading, which two of the new
+    parametrized cases pin.
+
+    **The real-file check, after the fix**:
+
+    ```
+    get_binning({"Camera Binning Mode": "Speed 1 (622x512 px)"}, "7.0")
+    -> 2
+    kp.load("AGH__Si_indent_1_512x672.h5oina", lazy=True).detector
+    -> binning 2 (was 1), shape (512, 622), pc (234, 250, 3)
+    ```
+
+    **HONESTY NOTE: this is metadata correctness, not numerics, on
+    the route the Si-indent tutorial takes.** `binning` is never
+    consumed anywhere in the HREBSD-DIC chain on a per-point-PC
+    detector. `_geometry.per_point_pc_pixels` (`_geometry.py:236-249`)
+    returns `pc_to_pixels(detector.pc_flattened, detector.shape)` the
+    moment `detector.navigation_size` equals the map size, and
+    `px_size`, `binning` and the scan steps are never read on that
+    branch; they enter only through
+    `EBSDDetector.extrapolate_pc`'s beam-scan model, which is the
+    SINGLE-PC branch. A grep of `src/kikuchipy/indexing/_hrebsd/` for
+    `binning` returns docstring prose only. The Si-indent file carries
+    one projection centre per map point, so **no number in the
+    tutorial's chain changes because of this fix**: what changes is
+    that the detector now describes itself truthfully (printed,
+    recorded in the notebook, and correct for any later use that does
+    read `binning`, such as a conversion to unbinned pixels or a
+    single-PC re-run). The notebook still carries a set-then-assert
+    binning cell, so the tutorial is correct with or without the fix
+    reaching a user's kikuchipy.
+
+    The fix is contained to the never-merged `hrebsd-dic` branch. It
+    is a genuine upstream bug and a candidate for a separate upstream
+    report; that is recorded here and not acted on at this gate.
+
+    Tally, the new `TestCameraModeDatasetName` plus the untouched
+    existing class:
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests/test_io/test_oxford_h5ebsd.py -q
+    -> 15 passed in 0.49 s
+    ```
+
+    Against the code BEFORE the fix, 4 of the 8 new tests fail (the
+    three crossed-name cases and the end-to-end one, which reports
+    `assert 1 == 17.0`), which is the discrimination check for this
+    entry.
+
+**Gate tally for entries 78 and 79 together (2026-09-08).**
+
+```
+.venv/Scripts/python.exe -m pytest \
+  tests/test_signals/test_ebsd_hrebsd_dic.py \
+  tests/test_io/test_oxford_h5ebsd.py -q
+-> 71 passed in 3.91 s
+
+.venv/Scripts/python.exe -m pytest \
+  tests/test_indexing tests/test_signals -k hrebsd -q -n 4
+-> 618 passed, 9 skipped in 101.21 s
+```
+
+618 is entry 77's 610 plus the eight tests of entry 78 exactly, and
+the 9 skips are the same `--weekly` gates. `ruff check` and
+`ruff format --check` on the three touched files (`_api.py`,
+`test_oxford_h5ebsd.py`, `test_ebsd_hrebsd_dic.py`): "All checks
+passed!" and "3 files already formatted".

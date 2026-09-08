@@ -34,12 +34,31 @@ every other test called the skeleton and so failed with
 ``NotImplementedError`` until the engine landed, and passed unchanged
 after it (narration corrected to the past tense 2026-09-08, Stage B
 adversarial review).
+
+ADDED 2026-09-08 for the Si-indent application (plan open question
+13): :class:`TestRectangularEndToEnd`, the first NON-SQUARE pattern
+shape through the public method and through the four analysis
+functions after it.  Every end-to-end call above uses the 60 by 60
+shipped nickel patterns, so before that class the whole signal layer
+was square-only and the rectangular pins lived at unit level alone
+(``(37, 61)`` in ``test_hrebsd_preprocessing``-style arms of
+``test_hrebsd_engine.py``, ``test_hrebsd_interpolation.py`` and
+``test_hrebsd_geometry.py``).  The Si-indent data set is 512 rows by
+622 columns, so the whole application runs on a shape this suite had
+never exercised end to end.
 """
 
+import functools
 import inspect
 
 import numpy as np
-from orix.crystal_map import CrystalMap, create_coordinate_arrays
+from orix.crystal_map import (
+    CrystalMap,
+    Phase,
+    PhaseList,
+    create_coordinate_arrays,
+)
+from orix.quaternion import Rotation
 import pytest
 
 import kikuchipy as kp
@@ -816,3 +835,600 @@ class TestAutoReference:
         assert np.array_equal(np.asarray(result.prop["grain_id"]), labels.ravel())
         # the reference now really is a fitted point
         assert np.all(np.isfinite(np.asarray(result.prop["Fe"])[reference_index[4]]))
+
+
+# ========= The rectangular end-to-end regression (Si-indent) ======== #
+#
+# ADDED 2026-09-08, plan open question 13 step 2(a).  See the module
+# docstring: this is the FIRST non-square pattern shape through
+# ``EBSD.hrebsd_dic`` and through the four analysis functions.
+
+# The pattern shape, deliberately NON-SQUARE and deliberately WIDER
+# than tall, as every Oxford detector is and as the Si-indent file's
+# 512 by 622 is.  61 rows by 101 columns is small enough to fit six
+# patterns in a few milliseconds and big enough that the frozen
+# ``border=0.05`` leaves 3 rows and 5 columns of margin, so no
+# subregion sample of the warps below reaches the pattern edge and
+# the fit measures the engine rather than the boundary policy
+RECT_SHAPE = (61, 101)
+RECT_NAVIGATION_SHAPE = (2, 3)
+RECT_SIZE = RECT_NAVIGATION_SHAPE[0] * RECT_NAVIGATION_SHAPE[1]
+
+# A projection centre away from the pattern centre in BOTH axes, so
+# that the PC-centred frame is distinguishable from a pattern-centred
+# one, and away from 0.5 so that ``pcx * ncols`` and ``pcx * nrows``
+# are far apart (the whole point of this class)
+RECT_PC = (0.4210, 0.5794, 0.5049)
+RECT_BINNING = 8
+RECT_STEP_UM = 0.2
+
+# The reference, named explicitly.  ``reference="auto"`` has its own
+# class above; here a fixed ``(row, col)`` keeps every number below
+# about the rectangular shape.  It is NOT ``(0, 0)``: the beam-scan
+# anchor of ``_geometry.per_point_pc_pixels`` is the first grain
+# reference, so an anchor at the map origin would be indistinguishable
+# from an ignored one
+RECT_REFERENCE = (0, 1)
+RECT_REFERENCE_INDEX = RECT_REFERENCE[0] * RECT_NAVIGATION_SHAPE[1] + RECT_REFERENCE[1]
+
+# Where the texture is cut out of the shipped 401 by 401 stereographic
+# nickel master pattern.  OFF CENTRE on purpose: the master is
+# four-fold symmetric about its centre, and a centred crop would carry
+# a texture which is itself nearly invariant under a row/column swap,
+# which is precisely the invariance this class must not have.  Both
+# corners sit 95 px or less from the centre of a disc of radius about
+# 200, so the crop holds no part of the black outside
+RECT_CROP = (150, 120)
+
+# The imposed homographies, one per map point, in the D1.3 PC-centred
+# binned-pixel frame of the reference.  Point
+# ``RECT_REFERENCE_INDEX`` is the identity because it IS the
+# reference.  Every other point carries a DIFFERENT warp, so a result
+# permuted by the D16 grain-by-grain ordering is visible without any
+# tolerance.  Sizes: linear parts at the 1e-2 scale, which is ten
+# times the HREBSD regime and is chosen so the origin-conjugation
+# below is far above the fit floor; translations at 1 px, which the
+# 3-row/5-column margin absorbs.  Index 3 also carries the two
+# perspective parameters, so all eight degrees of freedom are moved
+RECT_WARPS = np.array(
+    [
+        [8.0e-3, 5.0e-3, -0.62, -5.0e-3, 6.0e-3, 0.55, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [1.5e-2, -1.2e-2, 1.00, 1.2e-2, -1.0e-2, -0.80, 0.0, 0.0],
+        [-6.0e-3, 2.0e-3, 0.44, 3.0e-3, 9.0e-3, 0.70, 3.0e-5, -2.0e-5],
+        [4.0e-3, -7.0e-3, -0.91, 7.0e-3, -3.0e-3, 0.35, 0.0, 0.0],
+        [-1.0e-2, 8.0e-4, 0.77, -9.0e-4, 1.1e-2, -0.62, 0.0, 0.0],
+    ]
+)
+
+# THE asymmetric case of pin (v).  Its linear block is anisotropic
+# (``h11 = +1.5e-2`` against ``h22 = -1.0e-2``) and its off-diagonal
+# pair is antisymmetric, so ``(A - I) d`` has a large component along
+# BOTH axes and no coincidental cancellation is possible
+RECT_ASYMMETRIC = 2
+
+# Per-point projection centre offsets added to RECT_PC, of the same
+# 1e-3-fraction class as the Si-indent file's own affine PC
+# calibration (its PCx spans about 1.3 px).  They make the D6.2
+# beam-scan phantom NON-TRIVIAL, which is what puts the ``gamma =
+# PC_target - PC_reference`` conversion -- ``pcx * ncols`` against
+# ``pcy * nrows`` -- on the ``Fe`` path of a rectangular detector
+RECT_PC_OFFSETS = np.array(
+    [
+        [[0.0, 0.0, 0.0], [2.0e-3, -1.5e-3, 8.0e-4], [4.0e-3, -3.0e-3, 1.6e-3]],
+        [[1.0e-3, 2.5e-3, -6.0e-4], [3.0e-3, 1.0e-3, 0.0], [5.0e-3, -5.0e-4, 2.4e-3]],
+    ]
+)
+
+# MEASURED-THEN-PINNED [D2/D6, plan OQ13 step 2(a)], the corner
+# displacement of the error warp ``W(h_true)**-1 . W(h_fit)`` over the
+# subregion corners, in binned pixels, worst over the five warped
+# points.  MEASURED 2026-09-08 on this fixture: 0.043956 px, the same
+# regime as ``test_hrebsd_engine.py``'s 60 px arm (0.06507 px measured,
+# ``WARP_REFIT_TOL_60 = 0.13``) and about four times its 480 px arm, as
+# a pattern this small should be.  PINNED at about 2x the measurement,
+# the convention of the engine module's bands
+RECT_WARP_TOL = 0.09
+
+# MEASURED-THEN-PINNED [D6/D15.6], the worst absolute entry of
+# ``Fe_recovered - Fe_expected``, where the expectation is assembled in
+# this module from the imposed homography and the D6.2 phantom.
+# MEASURED 2026-09-08: 7.1949e-04, worst over the six points.  PINNED
+# at about 2x
+RECT_FE_TOL = 1.5e-3
+
+
+# ----------------- Independent rectangular helpers ------------------ #
+#
+# Assembled here in plain numpy rather than imported from
+# ``_hrebsd``: an oracle which shares an axis-order error with the
+# module it judges cannot see that error.  The twins of these live in
+# ``test_hrebsd_engine.py``; the two files are deliberately not
+# coupled, since ``tests/`` is not an importable package.
+
+
+def rect_matrix_of(h):
+    """Return the ``(3, 3)`` shape function of the eight parameters."""
+    h = np.asarray(h, dtype=np.float64)
+    return np.array(
+        [
+            [1.0 + h[0], h[1], h[2]],
+            [h[3], 1.0 + h[4], h[5]],
+            [h[6], h[7], 1.0],
+        ]
+    )
+
+
+def rect_parameters_of(matrix):
+    """Return the eight parameters of a shape function, renormalized
+    by ``W[2, 2]`` as requirements D2.3 demands."""
+    matrix = np.asarray(matrix, dtype=np.float64) / matrix[2, 2]
+    return np.array(
+        [
+            matrix[0, 0] - 1.0,
+            matrix[0, 1],
+            matrix[0, 2],
+            matrix[1, 0],
+            matrix[1, 1] - 1.0,
+            matrix[1, 2],
+            matrix[2, 0],
+            matrix[2, 1],
+        ]
+    )
+
+
+def rect_corner_norm(matrix, corners):
+    """Return the D2.5 norm of a warp: the largest displacement it
+    induces over the four subregion corners, in binned pixels."""
+    x, y = corners[:, 0], corners[:, 1]
+    s = matrix[2, 0] * x + matrix[2, 1] * y + matrix[2, 2]
+    warped_x = (matrix[0, 0] * x + matrix[0, 1] * y + matrix[0, 2]) / s
+    warped_y = (matrix[1, 0] * x + matrix[1, 1] * y + matrix[1, 2]) / s
+    return float(np.hypot(warped_x - x, warped_y - y).max())
+
+
+def rect_recovery_error(h_fit, h_true, corners):
+    """Return the corner norm of the error warp
+    ``W(h_true)**-1 . W(h_fit)``, the V2 recovery metric."""
+    matrix = np.linalg.inv(rect_matrix_of(h_true)) @ rect_matrix_of(h_fit)
+    return rect_corner_norm(matrix, corners)
+
+
+def rect_pc_pixels(pc, shape, transpose=False):
+    """Return ``(PCx_px, PCy_px, DD_px)`` of every projection centre.
+
+    Requirements D1.2, written out here: ``PCx`` is a fraction of the
+    number of COLUMNS while ``PCy`` and the detector distance are
+    fractions of the number of ROWS.  With *transpose* the two are
+    swapped, which is the single mutant this class exists to kill and
+    which on a square detector is the identity.
+    """
+    pc = np.asarray(pc, dtype=np.float64).reshape(-1, 3)
+    nrows, ncols = shape
+    if transpose:
+        nrows, ncols = ncols, nrows
+    return np.column_stack([pc[:, 0] * ncols, pc[:, 1] * nrows, pc[:, 2] * nrows])
+
+
+def rect_subregion_corners(shape, pc_px, border=0.05):
+    """Return the ``(4, 2)`` PC-centred corners of the D4.4
+    subregion, the support the recovery norm is measured over."""
+    nrows, ncols = shape
+    margin_row = int(round(border * nrows))
+    margin_col = int(round(border * ncols))
+    x0 = margin_col + 0.5 - pc_px[0]
+    x1 = ncols - 1 - margin_col + 0.5 - pc_px[0]
+    y0 = margin_row + 0.5 - pc_px[1]
+    y1 = nrows - 1 - margin_row + 0.5 - pc_px[1]
+    return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+
+
+def rect_warp_with_skimage(image, h, pc_px):
+    """Return *image* warped by ``W(h)`` with an INDEPENDENT warper.
+
+    ``skimage.transform`` is a test-oracle-only import for this
+    feature (requirements D18): no ``_hrebsd`` module may import it.
+    The homography acts on PC-centred coordinates, so it is conjugated
+    into the array frame first, with the same half-pixel origin
+    ``PC_px - 0.5`` the engine's own frame was MEASURED to use.
+    """
+    from skimage.transform import ProjectiveTransform, warp
+
+    image = np.array(image, dtype=np.float64)
+    translation = np.eye(3)
+    translation[0, 2] = pc_px[0] - 0.5
+    translation[1, 2] = pc_px[1] - 0.5
+    array_matrix = translation @ rect_matrix_of(h) @ np.linalg.inv(translation)
+    transform = ProjectiveTransform(matrix=np.linalg.inv(array_matrix))
+    return warp(image, transform, order=3, mode="reflect", preserve_range=True)
+
+
+def rect_expected_fe(h, pc_reference, pc_target):
+    """Return the reduced detector-frame ``Fe`` of a raw fitted *h*,
+    assembled here from requirements D6.2 and D6.
+
+    Removes the beam-scan phantom
+    ``W_phantom = [[a, 0, gx], [0, a, gy], [0, 0, 1]]`` with
+    ``a = DD_target / DD_reference`` and ``gamma = PC_target -
+    PC_reference``, composed as ``W_phantom**-1 . W``, then converts
+    the corrected homography at ``pc_rel = (0, 0)`` and
+    ``dd = DD_reference``, which is where the corrected one lives.
+    Both halves read ``DD_px = pcz * nrows``, so a row/column swap
+    anywhere in the conversion moves this expectation.
+    """
+    alpha = pc_target[2] / pc_reference[2]
+    phantom = np.array(
+        [
+            [alpha, 0.0, pc_target[0] - pc_reference[0]],
+            [0.0, alpha, pc_target[1] - pc_reference[1]],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    corrected = rect_parameters_of(np.linalg.inv(phantom) @ rect_matrix_of(h))
+    dd = pc_reference[2]
+    return np.array(
+        [
+            [1 + corrected[0], corrected[1], corrected[2] / dd],
+            [corrected[3], 1 + corrected[4], corrected[5] / dd],
+            [dd * corrected[6], dd * corrected[7], 1.0],
+        ]
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def rect_texture():
+    """Return the rectangular reference pattern: an off-centre crop of
+    the shipped stereographic nickel master, scaled to ``[0, 1]``.
+
+    A real Kikuchi texture rather than a procedural one, for the
+    reason the engine module projects its oracles from this same
+    master: the band-pass of D4.1 and the bicubic interpolator of D3
+    are both tuned on broadband band-contrast content, and a narrow
+    band synthetic texture measures the interpolator's own aliasing
+    instead of the fit.  Read-only and cached: the master is loaded
+    from disk.
+    """
+    master = kp.data.nickel_ebsd_master_pattern_small(projection="stereographic")
+    nrows, ncols = RECT_SHAPE
+    row0, col0 = RECT_CROP
+    crop = np.asarray(
+        master.data[row0 : row0 + nrows, col0 : col0 + ncols], dtype=np.float64
+    )
+    crop = crop - crop.min()
+    crop = crop / crop.max()
+    crop.flags.writeable = False
+    return crop
+
+
+@functools.lru_cache(maxsize=1)
+def rect_patterns():
+    """Return the ``(6, 61, 101)`` pattern stack, each point a copy of
+    the reference warped by its own entry of ``RECT_WARPS``."""
+    pc_px = rect_pc_pixels(
+        np.asarray(RECT_PC) + RECT_PC_OFFSETS.reshape(-1, 3), RECT_SHAPE
+    )[RECT_REFERENCE_INDEX]
+    texture = rect_texture()
+    stack = np.stack([rect_warp_with_skimage(texture, h, pc_px) for h in RECT_WARPS])
+    stack.flags.writeable = False
+    return stack
+
+
+def rect_inputs():
+    """Return ``(signal, xmap, detector)`` of the rectangular map, with
+    ONE PROJECTION CENTRE PER MAP POINT as the Si-indent file has."""
+    signal = kp.signals.EBSD(
+        np.array(rect_patterns()).reshape(*RECT_NAVIGATION_SHAPE, *RECT_SHAPE)
+    )
+    detector = kp.detectors.EBSDDetector(
+        shape=RECT_SHAPE,
+        binning=RECT_BINNING,
+        px_size=70.0,
+        pc=np.asarray(RECT_PC) + RECT_PC_OFFSETS,
+        sample_tilt=70.0,
+        tilt=0.0,
+    )
+    arrays, size = create_coordinate_arrays(
+        RECT_NAVIGATION_SHAPE, (RECT_STEP_UM, RECT_STEP_UM)
+    )
+    arrays["rotations"] = Rotation.identity((size,))
+    arrays["phase_id"] = np.zeros(size, dtype=int)
+    arrays["phase_list"] = PhaseList(Phase(name="si", space_group=227))
+    xmap = CrystalMap(**arrays)
+    xmap.scan_unit = "um"
+    return signal, xmap, detector
+
+
+def rect_run(signal, xmap, detector, **kwargs):
+    """Call the public method on the rectangular map."""
+    kwargs.setdefault("reference", RECT_REFERENCE)
+    kwargs.setdefault("verbose", 0)
+    return signal.hrebsd_dic(xmap, detector, **kwargs)
+
+
+class TestRectangularEndToEnd:
+    """A NON-SQUARE map through ``EBSD.hrebsd_dic`` and the four
+    analysis functions, the regression the Si-indent application rests
+    on.
+
+    Everything above this point runs on 60 by 60 patterns, where every
+    ``nrows`` versus ``ncols`` mutant of requirements D1.2, D4.1 and
+    D4.4 is the identity.  The Si-indent data set is 512 rows by 622
+    columns, so the entire application would run through code paths
+    this suite had exercised only at unit level.  [D15/D16, plan OQ13]
+    """
+
+    @staticmethod
+    def reference_pc_pixels(transpose=False):
+        """Return the reference point's ``(PCx_px, PCy_px, DD_px)``,
+        computed here."""
+        return rect_pc_pixels(
+            np.asarray(RECT_PC) + RECT_PC_OFFSETS.reshape(-1, 3),
+            RECT_SHAPE,
+            transpose=transpose,
+        )[RECT_REFERENCE_INDEX]
+
+    @staticmethod
+    def corners():
+        return rect_subregion_corners(
+            RECT_SHAPE, TestRectangularEndToEnd.reference_pc_pixels()
+        )
+
+    # ---------------- (i) the run and the prop set ---------------- #
+
+    def test_the_shape_really_is_rectangular(self):
+        # the premise of the whole class, asserted so that a future
+        # edit which squares the fixture fails HERE and says why
+        assert RECT_SHAPE[0] != RECT_SHAPE[1]
+        signal, _, detector = rect_inputs()
+        assert signal.axes_manager.signal_shape[::-1] == RECT_SHAPE
+        assert detector.shape == RECT_SHAPE
+        assert detector.pc.shape == (*RECT_NAVIGATION_SHAPE, 3)
+
+    def test_the_full_prop_set_with_the_right_shapes(self):
+        signal, xmap, detector = rect_inputs()
+        result = rect_run(signal, xmap, detector)
+        assert isinstance(result, CrystalMap)
+        assert result.shape == RECT_NAVIGATION_SHAPE
+        assert set(STAGE_A_PROP_NAMES) <= set(result.prop)
+        assert result.prop["homography"].shape == (RECT_SIZE, HOMOGRAPHY_PROP_SIZE)
+        assert result.prop["Fe"].shape == (RECT_SIZE, FE_PROP_SIZE)
+        for name, dtype in PROP_DTYPES.items():
+            array = np.asarray(result.prop[name])
+            assert array.dtype == dtype, name
+            assert array.shape[0] == RECT_SIZE, name
+        # the documented reshape route of D15.7 on a rectangular map
+        reshaped = result.prop["Fe"].reshape(*RECT_NAVIGATION_SHAPE, FE_PROP_SIZE)
+        assert np.array_equal(reshaped[1, 2], result.prop["Fe"][5])
+        # the input orientations are untouched (D7)
+        assert np.array_equal(result.rotations.data, xmap.rotations.data)
+
+    def test_a_transposed_detector_shape_is_refused(self):
+        # the cheapest rectangular pin there is, and one a square
+        # fixture cannot make: a detector whose shape is the pattern's
+        # transpose must not be silently accepted
+        signal, xmap, _ = rect_inputs()
+        detector = kp.detectors.EBSDDetector(
+            shape=RECT_SHAPE[::-1],
+            binning=RECT_BINNING,
+            px_size=70.0,
+            pc=np.asarray(RECT_PC) + RECT_PC_OFFSETS,
+            sample_tilt=70.0,
+        )
+        with pytest.raises(ValueError, match="shape"):
+            rect_run(signal, xmap, detector)
+
+    # -------------- (iii) and (v) the recovered warps ------------- #
+
+    def test_every_point_recovers_its_own_imposed_warp(self):
+        signal, xmap, detector = rect_inputs()
+        result = rect_run(signal, xmap, detector)
+        homography = np.asarray(result.prop["homography"])
+        converged = np.asarray(result.prop["converged"])
+        assert np.all(converged)
+        assert np.all(np.isfinite(homography))
+        assert np.all(np.isfinite(np.asarray(result.prop["Fe"])))
+        assert np.all(np.isfinite(np.asarray(result.prop["residual"])))
+        assert np.all(np.isfinite(np.asarray(result.prop["norm_dp"])))
+        corners = self.corners()
+        # the reference correlates with itself
+        assert (
+            rect_corner_norm(rect_matrix_of(homography[RECT_REFERENCE_INDEX]), corners)
+            < 1e-6
+        )
+        for index in range(RECT_SIZE):
+            own = rect_recovery_error(homography[index], RECT_WARPS[index], corners)
+            assert own < RECT_WARP_TOL, index
+            # and no point's fit is closer to another point's imposed
+            # warp than to its own, which is what makes a permuted
+            # result visible with no tolerance at all (D16)
+            others = [
+                rect_recovery_error(homography[index], RECT_WARPS[other], corners)
+                for other in range(RECT_SIZE)
+                if other != index
+            ]
+            assert own < min(others), index
+
+    def test_the_asymmetric_warp_dies_if_the_shape_is_transposed(self):
+        """Pin (v): the recovered homography of one deliberately
+        asymmetric warp, and the number a row/column swap would give.
+
+        HOW A TRANSPOSE IS NUMERICALLY VISIBLE HERE, stated so the
+        pin is reviewable rather than merely tight.  The fit lives in
+        the reference-PC-centred frame of requirements D1.3, whose
+        origin is ``(PCx_px, PCy_px) = (pcx * ncols, pcy * nrows)``.
+        On a square detector those two are the same number and a swap
+        changes nothing; here ``ncols - nrows`` is 40, so the swapped
+        origin sits ``d = (+16.92, -23.12)`` binned pixels away from
+        the true one (computed below, not quoted).  A homography
+        fitted about a DIFFERENT origin is the conjugate
+        ``T(d) . W . T(-d)``, which leaves the linear block ``A``
+        alone and moves the translation by ``-(A - I) d``.  So a pure
+        translation would be origin invariant and could not see the
+        swap at all, which is why the warp used here has an
+        ANISOTROPIC linear block: ``(A - I) d`` then has a large
+        component along both axes.
+
+        MEASURED 2026-09-08 on this fixture: the swap moves ``h13`` by
+        0.5312 px and ``h23`` by 0.4342 px, while the fit recovers
+        them to 0.0025 px and 0.0005 px, so the two hypotheses are
+        separated by more than two orders of magnitude.  The same
+        comparison in the corner norm is 0.0203 px against 0.6900 px.
+        """
+        signal, xmap, detector = rect_inputs()
+        result = rect_run(signal, xmap, detector)
+        fit = np.asarray(result.prop["homography"])[RECT_ASYMMETRIC]
+        imposed = RECT_WARPS[RECT_ASYMMETRIC]
+        corners = self.corners()
+
+        # the homography the SAME data would give about the swapped
+        # origin, assembled here by conjugation
+        true_origin = self.reference_pc_pixels()[:2]
+        swapped_origin = self.reference_pc_pixels(transpose=True)[:2]
+        offset = true_origin - swapped_origin
+        forward = np.eye(3)
+        forward[0, 2], forward[1, 2] = offset
+        backward = np.eye(3)
+        backward[0, 2], backward[1, 2] = -offset
+        transposed = rect_parameters_of(forward @ rect_matrix_of(imposed) @ backward)
+
+        # the swap really does move the translations, and by far more
+        # than the linear block it leaves alone
+        assert abs(offset[0]) > 10.0 and abs(offset[1]) > 10.0
+        assert np.allclose(transposed[[0, 1, 3, 4]], imposed[[0, 1, 3, 4]])
+        for slot in (2, 5):
+            measured = abs(fit[slot] - imposed[slot])
+            separation = abs(transposed[slot] - imposed[slot])
+            assert measured < 0.02, slot
+            assert separation > 0.3, slot
+            assert separation > 10.0 * measured, slot
+
+        own = rect_recovery_error(fit, imposed, corners)
+        swapped = rect_recovery_error(fit, transposed, corners)
+        assert own < RECT_WARP_TOL
+        assert swapped > 5.0 * RECT_WARP_TOL
+        assert swapped > 10.0 * own
+
+    def test_fe_matches_the_hand_built_d6_conversion(self):
+        """The ``Fe`` half of the same pin.
+
+        ``Fe`` divides the fitted translations by ``DD_px = pcz *
+        nrows`` and multiplies the perspective pair by it, and the
+        D6.2 phantom removed first carries ``gamma = PC_target -
+        PC_reference`` in the same mixed units.  A row/column swap
+        there rescales ``Fe13`` and ``Fe23`` by ``ncols / nrows``,
+        which is 1.66 here and exactly one on a square detector.
+
+        MEASURED 2026-09-08: the recovered ``Fe`` of the asymmetric
+        point sits 2.12e-04 from the expectation built with the right
+        axes and 1.03e-02 from the one built with them swapped, a
+        factor of 48.
+        """
+        signal, xmap, detector = rect_inputs()
+        result = rect_run(signal, xmap, detector)
+        fe = np.asarray(result.prop["Fe"])
+        pc_px = rect_pc_pixels(
+            np.asarray(RECT_PC) + RECT_PC_OFFSETS.reshape(-1, 3), RECT_SHAPE
+        )
+        reference_pc = pc_px[RECT_REFERENCE_INDEX]
+        for index in range(RECT_SIZE):
+            expected = rect_expected_fe(RECT_WARPS[index], reference_pc, pc_px[index])
+            error = np.abs(fe[index].reshape(3, 3) - expected).max()
+            assert error < RECT_FE_TOL, index
+        # the reference's own tensor is the identity
+        np.testing.assert_allclose(
+            fe[RECT_REFERENCE_INDEX].reshape(3, 3), np.eye(3), atol=1e-9
+        )
+
+        # and the swapped-axes expectation is far away
+        pc_px_swapped = rect_pc_pixels(
+            np.asarray(RECT_PC) + RECT_PC_OFFSETS.reshape(-1, 3),
+            RECT_SHAPE,
+            transpose=True,
+        )
+        swapped = rect_expected_fe(
+            RECT_WARPS[RECT_ASYMMETRIC],
+            pc_px_swapped[RECT_REFERENCE_INDEX],
+            pc_px_swapped[RECT_ASYMMETRIC],
+        )
+        distance = np.abs(fe[RECT_ASYMMETRIC].reshape(3, 3) - swapped).max()
+        assert distance > 5.0 * RECT_FE_TOL
+
+    # ------------------- (ii) lazy equals eager ------------------- #
+
+    def test_lazy_input_agrees_with_eager_bitwise(self):
+        # the Si-indent run is lazy from the first line, the data set
+        # being 18.9 GB, so the rectangular route has to be pinned on
+        # the lazy path too
+        signal, xmap, detector = rect_inputs()
+        eager = rect_run(signal, xmap, detector)
+        lazy = rect_run(signal.as_lazy(), xmap, detector)
+        assert isinstance(lazy, CrystalMap)
+        for name in STAGE_A_PROP_NAMES:
+            left = np.asarray(eager.prop[name])
+            right = np.asarray(lazy.prop[name])
+            assert isinstance(right, np.ndarray), name
+            if np.issubdtype(left.dtype, np.floating):
+                assert np.array_equal(left, right, equal_nan=True), name
+            else:
+                assert np.array_equal(left, right), name
+
+    # ------------- (iv) the four analysis functions --------------- #
+
+    def test_the_whole_analysis_chain_runs_on_a_rectangular_map(self):
+        # deviatoric closure, which is the Si-indent scope: no
+        # stiffness is passed anywhere
+        signal, xmap, detector = rect_inputs()
+        result = rect_run(signal, xmap, detector)
+
+        stage_b = kp.indexing.hrebsd_strain_stress(result, detector)
+        assert stage_b.shape == RECT_NAVIGATION_SHAPE
+        assert np.asarray(stage_b.prop["strain"]).shape == (RECT_SIZE, 6)
+        assert np.asarray(stage_b.prop["rotation_vector"]).shape == (RECT_SIZE, 3)
+        assert np.asarray(stage_b.prop["beta"]).shape == (RECT_SIZE, 9)
+        assert np.all(np.isfinite(np.asarray(stage_b.prop["strain"])))
+        assert np.all(np.isfinite(np.asarray(stage_b.prop["rotation_vector"])))
+        # the deviatoric closure was taken, so no stress exists
+        assert np.all(np.isnan(np.asarray(stage_b.prop["stress"])))
+        # the reference point measures nothing against itself
+        np.testing.assert_allclose(
+            np.asarray(stage_b.prop["strain"])[RECT_REFERENCE_INDEX], 0.0, atol=1e-9
+        )
+
+        kam = kp.indexing.hrebsd_kam(stage_b)
+        assert kam.shape == RECT_NAVIGATION_SHAPE
+        assert kam.dtype == np.float64
+        assert np.all(np.isfinite(kam))
+        assert np.all(kam >= 0)
+
+        gnd = kp.indexing.hrebsd_gnd(stage_b, detector, 3.84e-10)
+        assert gnd.shape == RECT_NAVIGATION_SHAPE
+        assert gnd.dtype == np.float64
+        assert np.all(np.isfinite(gnd))
+        assert np.all(gnd > 0)
+
+        maps = kp.indexing.hrebsd_pc_shift(result, detector)
+        assert set(maps) == {
+            "translation_x",
+            "translation_y",
+            "translation_x_model",
+            "translation_y_model",
+            "scaling_model",
+            "residual_x",
+            "residual_y",
+        }
+        for name, array in maps.items():
+            assert array.shape == RECT_NAVIGATION_SHAPE, name
+            assert array.dtype == np.float64, name
+            assert np.all(np.isfinite(array)), name
+        # the measured translations ARE the raw homography's, read
+        # back through the map grid of a rectangular NON-SQUARE
+        # navigation shape, and the model half reads the same
+        # per-point projection centres in the same mixed units
+        homography = np.asarray(result.prop["homography"]).reshape(
+            *RECT_NAVIGATION_SHAPE, HOMOGRAPHY_PROP_SIZE
+        )
+        np.testing.assert_array_equal(maps["translation_x"], homography[..., 2])
+        np.testing.assert_array_equal(maps["translation_y"], homography[..., 5])
+        np.testing.assert_allclose(
+            maps["residual_x"], maps["translation_x"] - maps["translation_x_model"]
+        )
