@@ -3359,3 +3359,14 @@ measured pin moved.
     4683, which is the one new test and nothing more. Nothing
     outside HREBSD is broken by this gate.
     
+
+### Si-indent application (2026-09-08 ->; plan open question 13, in execution)
+
+Entries from 78. Machine A unless stated (20-core Raptor Lake laptop,
+Windows 11 build 26200, RTX 2000 Ada; the venv of tech-stack section 1).
+Scope per the dated OQ13 note in plan.md: full-resolution replication of
+Winkelmann et al. 2025 (Ultramicroscopy 276, 114180) on Zenodo 14059950,
+deviatoric closure only. Data file local and gitignored, never committed:
+AGH__Si_indent_1_512x672.h5oina, 18,882,865,658 bytes, patterns
+(58500, 512, 622) uint8. Entries below are append-only, dated, with
+recipes, per the ledger discipline above.

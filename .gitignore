@@ -117,3 +117,6 @@ dask-worker-space
 
 # uv
 uv.lock
+
+# Local datasets, never committed
+*.h5oina

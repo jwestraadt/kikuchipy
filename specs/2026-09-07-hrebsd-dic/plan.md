@@ -399,6 +399,17 @@ keys; docs registration (`doc/tutorials/index.rst`, nbval
     Wilkinson-Britton figures. NOT part of Stages A-C; no
     auto-download (18.9 GB); starts on the user's go once Stage C
     is closed.
+    IN EXECUTION (2026-09-08, user go): scope narrowed by user
+    decision to the FULL-RESOLUTION replication of Winkelmann et
+    al. 2025 (Ultramicroscopy 276, 114180) only, deviatoric
+    closure only; their simulation-supersampling ("parameter
+    super-resolution") method and a stress section are DEFERRED
+    follow-ups. Shape correction: the file stores patterns as 512
+    rows x 622 columns, (58500, 512, 622) uint8 (the record
+    filename's 672 is not the stored pattern width). Execution
+    plan: `si-indent-application-plan.md` in this folder; gates in
+    roadmap.md section "Si-indent application"; recorded results
+    from entry 78.
 
 ## 7. Commits
 

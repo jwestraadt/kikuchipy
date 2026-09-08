@@ -166,3 +166,17 @@ A -> B -> C, one spec folder.
 - [x] `doc/tutorials/hrebsd_dic.ipynb` (synthetic walk-through + Si noise floor + map gallery + documented limitations), index.rst + nbval wiring, CHANGELOG (fork-only wording), bibliography keys
 - [x] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
 - [x] signed commits pushed to origin/hrebsd-dic (no PR)
+
+## Si-indent application (plan open question 13; in execution 2026-09-08)
+
+Full-resolution replication of Winkelmann et al. 2025 (Ultramicroscopy 276,
+114180) on Zenodo 14059950 with the completed chain; scope per the dated
+OQ13 note (full-res only, deviatoric only; super-resolution and stress
+deferred). Execution plan: `specs/2026-09-07-hrebsd-dic/si-indent-application-plan.md`.
+
+- [x] housekeeping: `.gitignore` guard for `*.h5oina`, spec bookkeeping (OQ13 note, this section, ledger heading)
+- [ ] rectangular end-to-end regression test (first non-square `EBSD.hrebsd_dic` run) green
+- [ ] oxford_h5ebsd binning-read fix ('Camera Mode' vs 'Camera Binning Mode' at format 7.0) + dedicated test
+- [ ] pre-flight measurements recorded (CCC reference resolution, filter_cutoffs A/B on row 10, measured patterns/s)
+- [ ] `doc/tutorials/hrebsd_si_indent.ipynb` authored, adversarially reviewed BEFORE the one-shot execute, then executed with stored outputs
+- [ ] post-execute review (markdown claims vs printed numbers) + nbval/ruff/full-suite gates recorded; signed commits pushed (no PR)
