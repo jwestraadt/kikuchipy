@@ -350,8 +350,32 @@ Loop, per target pattern (Ernould/Pan IC-GN; cross-checked against
    equates its normalized 2.5e-5 to this, template lines 89-92).
    Adequacy measured by the convergence sweep (plan open question
    2; validation V2).
+   **BOTH DEFAULTS CONFIRMED AND NOT RE-PINNED 2026-09-08; plan open
+   question 2 is CLOSED** (Stage B implementation gate, validation
+   entry 45). The error-versus-threshold curve the plan asked for,
+   MEASURED on the Si wafer, is FLAT: the strain floor is
+   1.2198e-02 at `min_step = 1e-2`, 1.2168e-02 at the frozen 1e-3
+   and 1.2416e-02 at 1e-4, a 2 per cent spread over a hundredfold
+   change, while convergence goes 97 / 87 / 26 of 100 and the mean
+   iteration count 11.3 / 33.3 / 48.2. So the threshold is not what
+   limits the result and the default leaves no systematic error
+   above the floor, which is the condition the plan set for keeping
+   it. A looser 1e-2 is tempting (97 of 100 in a third of the
+   iterations for the same floor) and is REFUSED: that argument
+   holds only on a dataset where the fits carry no signal anyway
+   (the D13 and D4.1 records of the same date), and on the Stage A
+   oracle the frozen 1e-3 already exits in 5.2 iterations at the
+   interpolation floor (Recorded results entry 10), so it costs
+   nothing where the measurement works.
 6. Cap `max_iterations = 50` FROZEN (EMsoftOO namelist default,
-   `mod_HREBSDDIC.f90:242-288`). **Non-converged points keep their
+   `mod_HREBSDDIC.f90:242-288`).
+   **CONFIRMED 2026-09-08 with the same sweep, and it is doing real
+   work on real data**: convergence is 1 of 100 at a cap of 10,
+   8 at 20, 87 at the frozen 50 and 96 at 100, with the strain
+   floor unchanged (1.3133e-02 at 20, 1.2168e-02 at 50, 1.2175e-02
+   at 100). A smaller cap would be badly wrong; raising it to 100
+   buys nine points of convergence for 15 per cent more time and no
+   change in the floor, which is not a re-pin. **Non-converged points keep their
    last iterate with `converged=False` and get NaN in every
    derived prop downstream; they are NEVER zeroed** (deviation
    from `mod_HREBSDDIC.f90:868-870`, risk row 11, recorded).
@@ -473,6 +497,27 @@ demonstrated in the tutorial, never implied):
    Si-wafer measurement of plan open question 10, at the Stage B
    gate. Recorded so that the V5 re-pin has a baseline, and quoted
    CONDITIONALLY in the `hrebsd_dic` docstring.
+   **THAT MEASUREMENT IS NOW IN, AND THE DEFAULT IS CONFIRMED, NOT
+   RE-PINNED: plan open question 10 is CLOSED 2026-09-08** (Stage B
+   implementation gate, validation Recorded results entry 45). On the
+   Si wafer, one knob changed per arm on 100 patterns, the high-pass
+   is not a luxury but the whole measurement:
+
+   | `filter_cutoffs` | converged | median residual | strain floor |
+   |---|---|---|---|
+   | `(0.05, None)`, frozen | **87/100** | 0.9496 | 1.2168e-02 |
+   | `(None, None)` | **1/100** | 0.0534 | not measurable |
+   | `(0.05, 0.4)` | 89/100 | 0.8806 | 1.2246e-02 |
+   | `(None, 0.4)` | **1/100** | 0.0482 | not measurable |
+
+   So the two records bracket the default honestly and neither is
+   withdrawn: on noise-free synthetic patterns the high-pass halves
+   the capture range and costs a factor of ten in accuracy (the
+   record above), and on real ones it takes convergence from 1 per
+   cent to 87 per cent. The low-pass arm is the only one that could
+   have argued for a re-pin and does not -- two extra converged
+   points and a 0.6 per cent WORSE strain floor -- so `(0.05, None)`
+   stands unchanged.
 2. **No adaptive histogram equalization** in the DIC chain --
    recorded deviation from EMsoftOO's shared DI preprocessing
    (`PreProcessPatterns` with AHE nregions=10,
@@ -480,6 +525,17 @@ demonstrated in the tutorial, never implied):
    varying intensity map that violates the affine intensity model
    ZNSSD assumes; the Si benchmark (V5) measures the with/without
    comparison once and records it before any reconsideration.
+   **THAT COMPARISON IS NOW MADE AND THE REFUSAL IS CONFIRMED
+   2026-09-08** (Stage B implementation gate, validation Recorded
+   results entry 47): on the Si wafer, kikuchipy's own
+   `EBSD.adaptive_histogram_equalization` at its default kernel takes
+   convergence from **87 of 100 patterns to 5**, raises the median
+   ZNSSD residual from 0.9496 to 1.6346 and drives the mean iteration
+   count to 49.3 of a cap of 50, so essentially every fit runs out of
+   iterations. The theoretical argument is measured, not merely
+   argued, and reconsideration is closed. (It is measured OUTSIDE the
+   sweep because AHE is an upstream kikuchipy call and not a knob of
+   `hrebsd_dic`; the recipe is in the ledger entry.)
 3. **Window**: optional Hann window over the SR
    (`window=False` FROZEN default -- neither Ernould's chain nor
    EMsoftOO's DIC path windows, emsoftoo_report section 1.7; the
@@ -508,12 +564,37 @@ demonstrated in the tutorial, never implied):
    plain, and the band `WINDOW_REFIT_TOL_480 = 0.092` (2x) is now
    exercised end to end; the pre-correction scheme measures
    0.14949 px on the same two cases and fails it.
+   **`window=False` CONFIRMED AS THE DEFAULT ON REAL DATA
+   2026-09-08** (Stage B implementation gate, validation entry 45,
+   the plan open question 10 sweep): with the Hann window on, 14 of
+   100 Si-wafer patterns converge against 87 with it off, and the
+   strain floor is 1.2474e-02 against 1.2168e-02. The window's low
+   median residual there (0.2691 against 0.9496) is not a win and
+   must not be read as one -- it is the taper's own weighting of the
+   criterion, carried by the 86 points that never converged. The
+   knob stays, correctly implemented per the note above, and stays
+   off by default.
 4. **Subregion**: full pattern minus a border of
    `border` (fraction of the pattern side per edge) --
    `border=0.05` MTP (measuring tests: V2 warp-refit with the
    design shift budget, V5 Si noise floor vs border sweep; the
    conservative 0.05 covers the expected few-px beam-scan
-   translations at 480 px). `dead_band=None |
+   translations at 480 px).
+   **CONFIRMED AND NOT RE-PINNED 2026-09-08; plan open question 3 is
+   CLOSED** (Stage B implementation gate, validation entry 45). The
+   plan asked the V5 sweep to "pin the knee" of the noise floor
+   against the border fraction. MEASURED on the Si wafer, there is no
+   knee to pin: the floor moves 11 per cent over a fourfold change in
+   the knob (1.2003e-02 at 0.0, 1.2168e-02 at 0.05, 1.2146e-02 at
+   0.1, 1.3364e-02 at 0.2) while convergence falls 93 / 87 / 83 / 52
+   of 100 and the median residual rises 0.62 / 0.95 / 1.44 / 1.77.
+   The flat floor must NOT be read as "use `border=0.0`": the border
+   exists for the few-pixel beam-scan translations of the sentence
+   above, and on that dataset the fits do not track translations at
+   all (the D13 record of the same date), so the one quantity the
+   knob is for is the one the data cannot exercise. The default
+   stands on its original reasoning; the sweep is worth re-running on
+   plan open question 13's Si-indent dataset. `dead_band=None |
    (x0, x1, y0, y1)` FROZEN semantics: excludes a vertical +
    horizontal cross of dead camera pixels from the SR, matching
    EMsoftOO `cross(4)` (`mod_DIC.f90:524-559`). One global SR per
@@ -640,6 +721,25 @@ Per-point PC/DD and the beam-scan correction, frozen:
    `per_point_pc_pixels`, and stays the caller's (recorded: a
    placeholder is indistinguishable from a genuine 1 um pixel, so a
    guard there would fire on the shipped demonstration data).
+   **THE FIRST CALLER TO TRIP ON IT WAS OUR OWN BENCHMARK, recorded
+   2026-09-08 (Stage B implementation gate, validation Recorded
+   results entry 41); the decision NOT to guard STANDS.**
+   `tests/test_indexing/test_hrebsd_si.py` built its per-point
+   detector straight from `kp.data.si_wafer()`, which ships the
+   placeholder `px_size = 1.0` beside a 40 um scan step, an 90x
+   mismatch. MEASURED consequence on a 480 px detector: 1800 px of
+   modelled PCx drift, 1691 px of PCy and 616 px of detector
+   distance, and a reported strain floor of **1.033**, which fails
+   that module's own order check by 52x. With the NORDIF UF-420
+   pixel size kikuchipy's own `doc/tutorials/pc_fit_plane.ipynb`
+   states for this very dataset (about 90 um, from which it derives
+   the expected 2000/90 = 22 px shift), the same run measures 20.0 px
+   of modelled drift and a floor of 1.2e-02. So the documented
+   responsibility is real and is discharged AT THE CALL SITE, with
+   the dated note the test file carries; a guard is still refused
+   for the reason above, and the lesson recorded here is that every
+   kikuchipy-shipped dataset needs its pixel size supplied before
+   any beam-scan model is trusted.
 2. **Correction before conversion.** For each target, the measured
    homography contains a rigid translation `gamma = (g1, g2)` and
    an isotropic scaling `alpha_s` induced purely by the
@@ -954,6 +1054,55 @@ in scope by user decision 4.
    grids settle which it is: a `(3, 1)` map has `row = [0, 1, 2]`
    and `col = [0, 0, 0]` and segments to `(3, 1)`. `hrebsd_kam`
    (D12) returns the same shape by the same rule.
+   **(c) AND SO DOES THE ENGINE WIRING, corrected 2026-09-08 (Stage B
+   adversarial review).** `EBSD.hrebsd_dic` was deriving the engine's
+   two dimensional shape from the SIGNAL alone, `(1, n)` for any one
+   dimensional scan, while the segmentation took its shape from the
+   map's grids: a COLUMN line scan therefore passed the public shape
+   guard and then raised `segment_grains returned labels of shape
+   (3, 1), which must be the navigation shape (1, 3)` out of an
+   internal function on the FROZEN DEFAULT `reference="auto"`
+   (REPRODUCED on a three-point signal with `y = arange(3.0)`). The
+   method now reads `xmap.row`/`xmap.col` for the one dimensional
+   case, exactly as (b) freezes for `segment_grains`, and gives the
+   single scan step to the ROW axis of a column scan. No separate
+   guard is needed for a map which is neither: orix reports a
+   diagonal three-point map as shape `(3, 3)` and the existing shape
+   equality check rejects it (MEASURED).
+   **(d) A PHASE WITH NO POINT GROUP IS WARNED ABOUT, added
+   2026-09-08 (same review).** `Orientation(rotations, symmetry=None)`
+   leaves the symmetry at C1, so `angle_with` returns the RAW angle
+   and the symmetry reduction this decision requires silently does
+   not happen. MEASURED: a 2 by 2 map of 0/90/0/90 degrees about z is
+   ONE grain with `point_group="m-3m"` and TWO without it, and the
+   difference reaches each point's reference pattern and every strain
+   measured against it. There is no symmetry to invent, so the choice
+   is between refusing such a phase and saying so: `segment_grains`
+   emits a `UserWarning` naming the phase and segments on the raw
+   angles. Refusing was rejected because a phase list without point
+   groups is legal input to every other part of kikuchipy and the
+   frozen default would then raise on it.
+   **(e) SEVERAL ROTATIONS PER POINT, made consistent 2026-09-08
+   (same review).** A map from dictionary indexing with `n_best > 1`
+   carries `(n, k)` rotations. `segment_grains` already read the BEST
+   of them; `hrebsd_strain_stress` raised instead, with a message
+   naming `orientation_matrices`, a parameter of the private chain
+   which the public caller never passed and which is not in its
+   documented `Raises`. Both now take the best rotation, which is the
+   map's own; the private `tensor_chain` keeps its strict `(n, 3, 3)`
+   contract.
+   **(f) A MAP WITH NO GRID IS NAMED, added 2026-09-08 (same
+   review).** orix reports the shape `()` both for a one-point map
+   and for a map whose points all sit at one scan position, and
+   reading `row` on either raises `not enough values to unpack
+   (expected 2, got 0)` from inside orix, which names nothing the
+   caller passed. The three grid-shaped functions -- `segment_grains`,
+   `hrebsd_kam` and `hrebsd_pc_shift` -- now read the grids through
+   one shared helper which raises a `ValueError` naming the map
+   instead. With that guard the one-by-one grid is unreachable, so
+   the empty-edge branch of the private `_candidate_edges` is DEAD
+   code and was pruned rather than tested, on the precedent of
+   validation entry 23.
 2. **Reference auto-selection** (per grain): the point maximizing
    pattern image quality computed internally with the existing
    `get_image_quality` kernel (`pattern/_pattern.py:698`) on the
@@ -961,6 +1110,34 @@ in scope by user decision 4.
    input xmap happens to carry; ties broken by lowest flat index
    (FROZEN). A `min_boundary_distance` refinement is a recorded
    possible v2 nicety, not built.
+   **THE CANDIDATE SET IS THE MASKED-IN, LABELLED POINTS, corrected
+   2026-09-08 (Stage B adversarial review).** The selection saw the
+   whole map: `navigation_mask` reached the fit list and nothing
+   else, so a pattern the caller had explicitly masked out could be
+   chosen as its grain's reference and become the origin of every
+   measurement in that grain -- while its own `homography` came back
+   NaN with `converged=False`. DEMONSTRATED on `nickel_ebsd_small`:
+   masking exactly the highest-quality point left
+   `reference_index = [0 8 8 0 8 8 0 8 8]` naming it anyway. The mask
+   is now threaded into the selection, which maximizes over the
+   masked-in points of each grain. Two clauses go with it, both
+   frozen here: `grain_id` is UNCHANGED by the mask (it reports the
+   true label of every point, masked or not, which is what lets a
+   caller see what was skipped), and a grain in which NOTHING is
+   selectable keeps the unrestricted choice, since no pattern of such
+   a grain is correlated and its index is never read -- the
+   one-index-per-label pairing of D11.3 still wants an entry.
+   **AND THE SCORING IS BLOCK-WISE, corrected the same date.** The
+   selection materialised the ENTIRE pattern stack
+   (`numpy.asarray(patterns)`) before the first fit, on the frozen
+   default path: 576 MB on the shipped Si wafer and about 57 GB on a
+   500 by 500 map of 480 by 480 patterns, which defeats the lazy
+   design of D16 and is not what the public Memory note described.
+   The kernel is per-pattern, so the fix costs nothing: candidates
+   are read in blocks of about 64 MB, and the patterns outside every
+   grain or masked out are not read at all. MEASURED with a
+   block-counting Dask array: two of nine patterns loaded when two
+   are asked for. The public Memory note gains the sentence.
 3. **`reference` parameter semantics, frozen**:
    - `"auto"` (default from Stage B; NotImplementedError in Stage
      A): segment via (1) unless `grain_labels` is given, then
@@ -1007,6 +1184,28 @@ field (theory report section 3.8):
   center (square grid; `order=1` FROZEN default = 8 neighbors;
   the "all within order" convention -- MTEX-style -- is stated in
   the docstring against the OIM perimeter-only alternative).
+  **`order=1` AND `psi_max=None` CONFIRMED 2026-09-08; plan open
+  question 4 is CLOSED** (Stage B implementation gate, validation
+  Recorded results entry 45). The plan asked the V5 sweep to record
+  "the noise/resolution trade" at orders 1 to 3 and to keep order 1
+  unless refuted. MEASURED on the Si wafer, THERE IS NO TRADE --
+  order 1 wins on both axes:
+
+  | kernel | median KAM | std | cost, 100 points |
+  |---|---|---|---|
+  | `order=1` (8 neighbours) | **5.2402 mrad** | 0.1694 | 0.34 ms |
+  | `order=2` (24) | 8.2715 | 0.5364 | 0.77 ms |
+  | `order=3` (48) | 11.1350 | 0.5253 | 1.42 ms |
+
+  The rotations are uncorrelated point to point on a strain-free
+  crystal, so a wider kernel does not average the noise down, it
+  reaches further into it: the reported KAM and its spread both grow
+  while the spatial resolution gets worse and the cost quadruples.
+  `psi_max` behaves exactly as documented: at 5.0 mrad it trims the
+  median to 4.3685 mrad and at 1.0 mrad it drops EVERY pair on a map
+  whose rotation floor is 12 mrad, leaving no finite point -- correct
+  for a guard aimed at sub-grain boundaries, and the reason its
+  default is `None`.
 - Disorientation per pair: `angle(R_p R_q^T)` from the HR
   rotations (Stage B `rotation_vector` prop composed per point);
   within a grain relative to a common reference, so symmetry
@@ -1030,6 +1229,19 @@ field (theory report section 3.8):
   optional, `None` FROZEN default) additionally drops pairs above
   the threshold (sub-grain-boundary guard). Points with no valid
   neighbor -> NaN.
+  **THE THRESHOLD SIDE, PINNED 2026-09-08 (Stage B adversarial
+  review).** "Above" is meant literally: the comparison is `<=`, so a
+  pair sitting EXACTLY at `psi_max` is KEPT. This is the KAM analogue
+  of the segmentation threshold side of D11.1, which is pinned, and
+  it was not: the `<=` -> `<` mutant survived the whole suite. It is
+  not a rounding-scale difference -- MEASURED on a one-pair map, the
+  correct form returns the pair angle and the mutant returns NaN
+  everywhere -- and the pin now feeds `psi_max` an angle the module
+  itself reported, which is the only way the boundary is exact rather
+  than a tolerance.
+  Non-converged points reach this function already NaN, through the
+  `rotation_vector` prop the tensor chain derives (D2.6), so no
+  convergence flag is read here.
 - Mean over surviving pairs (FROZEN; not median).
 - Neighborhood machinery reuses the `_map_helper` window pattern
   (`signals/util/_map_helper.py:35-93`) or plain shifted-array
@@ -1067,6 +1279,67 @@ CrystalMap):
   (`_ebsd_detector.py:1450`) refines the PC plane -- documented
   workflow, wired in the tutorial; no automatic feedback loop in
   v1 (recorded).
+- **WHICH MISCALIBRATIONS THE RESIDUAL CAN SEE, made explicit
+  2026-09-08 (Stage B implementation gate; validation Recorded
+  results entry 42).** The model above is a DIFFERENCE,
+  `PC_target - PC_reference` (the D6.2 closed form), so a GLOBAL
+  offset of the projection centre cancels identically and is
+  invisible here. MEASURED on the V5 wafer map: adding 0.02 to
+  every point's `pcx` moves the mean of `residual_x` from
+  9.97390698866289 px to 9.973906988662913 px, a relative
+  2.3e-15, i.e. floating point noise. What the residual DOES see
+  is anything that changes the differences: a wrong scan-step to
+  `px_size` ratio (MEASURED: `px_size / 20` takes the modelled
+  PCx drift from 20.0 px to 400.0 px and the residual mean to
+  199.97 px, a factor of 20.05), a wrong sample tilt, and a real
+  per-point departure from the beam-scan plane. This is a
+  property of the frozen model and not a defect; it is recorded
+  because the drafted V5 arm miscalibrated by a global offset and
+  was therefore unsatisfiable, and is corrected with this date.
+  The analytic pin of the signature, which offsets the MEASURED
+  translations rather than the geometry, is
+  `test_hrebsd_pc_shift.py::test_a_miscalibrated_projection
+  _centre_shows_as_a_nonzero_mean` and is unaffected.
+- **WHICH POINTS ARE MEASUREMENTS, corrected 2026-09-08 (Stage B
+  adversarial review).** The maps are NaN at a point which failed,
+  was masked out **or did not converge**, and the last of those three
+  needs the `converged` prop, which is why `hrebsd_pc_shift` requires
+  it beside `homography` and `reference_index`. Reading the
+  finiteness of the homography alone is not enough and is exactly the
+  trap D2.6 sets: a non-converged point KEEPS its finite last
+  iterate. MEASURED on the V5 wafer route, 13 of 100 points did not
+  converge, their translations were being averaged into the residual
+  means with the 87 real fits, and they pulled `residual_x` from
+  10.9956 px down to 9.9739 px -- a 10.2 per cent contamination of
+  the one number this decision is read on, and of the recorded
+  `SI_PC_RESIDUAL_MEAN_TOL`. Both are re-recorded with this date
+  (validation entry 51).
+- **REPRODUCING THE GEOMETRY THE RUN USED, documented 2026-09-08
+  (same review).** A single-PC detector is still refused here, since
+  this function cannot read a step-size unit (D6.1), but the
+  docstring's remedy now names what the engine actually does rather
+  than only naming `extrapolate_pc`: the anchor is the scan position
+  of the FIRST grain reference, `divmod(reference_index.min(), nx)`,
+  and not `[0, 0]`, and the steps must be in the micrometres
+  `px_size` is measured in. The translation half of the model is a
+  difference and does not feel the anchor; `scaling_model` does.
+- **THE DIAGNOSTIC FIRING ON REAL DATA, recorded 2026-09-08.** On
+  `kp.data.si_wafer()` with the UF-420 pixel size the residual
+  means are 9.97 px and 9.36 px against a modelled drift of
+  20.0 px, because the fits measure a median translation of
+  0.026 px: the diagnostic is CORRECT and is reporting exactly
+  what D13 built it to report, a geometry inconsistent with the
+  measurement. The cause there is on the measurement side (the
+  band-passed patterns retain a component which does not move
+  with the beam; see the D4.1 record of the same date), so the
+  recorded `SI_PC_RESIDUAL_MEAN_TOL` is a regression band on that
+  dataset's behaviour and NOT evidence about how close to zero a
+  well-conditioned map gets. (RE-MEASURED over the converged points
+  alone later the same day, per the correction two bullets above:
+  10.9956 px and 9.8403 px against the same 20.0 px modelled drift,
+  the 87 real fits measuring a median translation of 0.045 px. The
+  conclusion is unchanged and the band moves to 2x the larger,
+  `SI_PC_RESIDUAL_MEAN_TOL = 2.2e01`.)
 
 ### D14 -- Scalar GND (frozen)
 
@@ -1318,12 +1591,32 @@ because the antisymmetry fix is defined in the detector frame:
   gains the same plane and prints **22.0 MB** at 480x480, which
   still bounds the measurement from above; a test now asserts that
   bound rather than leaving it to prose.
+- **The `reference="auto"` selection is block-wise too, corrected
+  2026-09-08 (Stage B adversarial review; D11.2 carries the
+  measurement).** It reads each candidate pattern once before the
+  first fit, in blocks of about 64 MB, so the peak it adds is one
+  block and not the data set. The public Memory note says so, since
+  it is the default path.
 - Performance numbers are recorded baselines in validation.md,
   never merge gates (tech-stack.md:39); no hard floor is set for
   v1 (recorded; the spherical >= 2 pat/s/core floor is
   EMSphInx-scoped). Baseline recipe: patterns/s on the Si-wafer
   route at 480x480 and on `nickel_ebsd_large` at 60x60 (V5,
   validation Performance).
+  **THE STAGE B TENSOR BASELINE IS THE DEVIATORIC ROUTE ONLY,
+  recorded 2026-09-08 (same review).** Validation entry 46's
+  `hrebsd_strain_stress` number is measured on entry 43's recipe,
+  which passes `stiffness=None`, so `rotate_stiffness` is never
+  reached. The stress path costs about 27x that: MEASURED on machine
+  A at 2500 points, 7.21 ms deviatoric against 192.93 ms traction
+  free, of which 182.44 ms is `rotate_stiffness`. The per-point
+  `einsum` loop is KEPT deliberately -- it makes a stacked call the
+  loop over the single-matrix one to the last bit, which a vectorised
+  `optimize=True` call does not (MEASURED: 4.42 ms and agreeing to
+  1.99e-13, comfortably inside `REDUCED_CLOSURE_TOL = 2.4e-06`, but
+  not bitwise) -- and 190 ms on a map whose fits take hours is not a
+  cost worth that. Recorded rather than optimised, per this
+  decision's own rule that performance is never a gate.
 
 ### D17 -- Float discipline (frozen policy, MTP pin)
 

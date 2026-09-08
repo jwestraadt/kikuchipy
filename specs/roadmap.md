@@ -154,11 +154,11 @@ A -> B -> C, one spec folder.
 - [x] signed commits pushed to origin/hrebsd-dic (no PR)
 
 ## Stage B -- strain/stress/rotation + references + PC + HR-KAM
-- [ ] polar decomposition + Biot strain (D8), traction-free sigma33=0 closure with user 6x6 Voigt stiffness / deviatoric fallback (D9), stress + von Mises/hydrostatic/principal maps (D10), `segment_grains` + per-grain best-IQ auto-reference wired into `reference="auto"` (D11), `hrebsd_kam` in mrad (D12), `hrebsd_pc_shift` (D13), `hrebsd_strain_stress` + `voigt_stiffness` public (D15)
-- [ ] failing tests first: closure/Bond-rotation/derived-map pins, segmentation suite, V3 strain half, V7 KAM identity, V6 function tests
-- [ ] Si-wafer noise-floor benchmark recorded (strain/rotation/KAM floors; preprocessing/border/KAM sweeps resolve plan open questions 2-4, 10)
-- [ ] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
-- [ ] signed commits pushed to origin/hrebsd-dic (no PR)
+- [x] polar decomposition + Biot strain (D8), traction-free sigma33=0 closure with user 6x6 Voigt stiffness / deviatoric fallback (D9), stress + von Mises/hydrostatic/principal maps (D10), `segment_grains` + per-grain best-IQ auto-reference wired into `reference="auto"` (D11), `hrebsd_kam` in mrad (D12), `hrebsd_pc_shift` (D13), `hrebsd_strain_stress` + `voigt_stiffness` public (D15)
+- [x] failing tests first: closure/Bond-rotation/derived-map pins, segmentation suite, V3 strain half, V7 KAM identity, V6 function tests
+- [x] Si-wafer noise-floor benchmark recorded (strain/rotation/KAM floors; preprocessing/border/KAM sweeps resolve plan open questions 2-4, 10) -- dataset fetched once 2026-09-08, floors 1.22e-02 strain / 1.20e-02 rad / 5.24 mrad KAM RECORDED AS THIS DATASET'S and not the method's (validation entries 43 to 45 measure why), all four open questions closed with every frozen default confirmed
+- [x] adversarial review + fixes; coverage; full suite green; oldest-matrix run recorded
+- [x] signed commits pushed to origin/hrebsd-dic (no PR)
 
 ## Stage C -- GND + tutorial
 - [ ] `hrebsd_gnd`: exact alpha_i3 + the d/dx3-neglect extra components (Pantleon-tier assumption, D14.2), detector-frame antisymmetry fix, OpenXY 3/5/9-component estimators with literal prefactor pins, m^-2 log-scale maps (D14)

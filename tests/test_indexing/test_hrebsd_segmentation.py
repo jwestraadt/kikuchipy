@@ -57,10 +57,12 @@ which no frozen requirement asks for and which would have narrowed
 the FROZEN DEFAULT ``reference="auto"`` against requirements D9.6;
 a phase boundary is a grain boundary instead.
 
-Written before the implementation exists: every test which calls the
-module fails with ``NotImplementedError`` until the segmentation
-lands, then passes unchanged.  The signature freeze and the
-constant pins pass today.
+Written failing before the implementation, at the Stage B
+failing-tests gate: every test which calls the module failed with
+``NotImplementedError`` until the segmentation landed, and passed
+unchanged after it, while the signature freeze and the constant pins
+passed from the start (narration corrected to the past tense
+2026-09-08, Stage B adversarial review).
 """
 
 import inspect
@@ -440,9 +442,50 @@ class TestImageQuality:
         quality = image_quality(ni_patterns())
         assert quality.std() > 0
 
+    def test_only_the_asked_for_patterns_are_scored(self):
+        # ADDED 2026-09-08 (Stage B adversarial review): the selection
+        # scores the CANDIDATES, not the whole map, which is where the
+        # memory of the frozen default route was being spent
+        patterns = ni_patterns()
+        indices = np.array([7, 2, 2], dtype=np.int64)
+        got = image_quality(patterns, indices)
+        assert got.shape == (3,)
+        expected = expected_quality(patterns)
+        np.testing.assert_allclose(got, expected[indices], rtol=0, atol=1e-12)
+
+    def test_a_lazy_stack_is_read_in_blocks_and_never_whole(self):
+        # the memory claim of the public Memory note, MEASURED: the
+        # Dask graph is asked for a few patterns at a time, so the peak
+        # is a block and not the data set.  A 576 MB wafer, or a 57 GB
+        # map, used to be materialised here before the first fit
+        dask = pytest.importorskip("dask.array")
+        patterns = ni_patterns()
+        loaded = []
+
+        def counted(block, block_info=None):
+            loaded.append(int(block.shape[0]))
+            return block
+
+        lazy = dask.from_array(patterns, chunks=(1, 60, 60)).map_blocks(
+            counted, dtype=patterns.dtype
+        )
+        got = image_quality(lazy, np.array([0, 4], dtype=np.int64))
+        np.testing.assert_allclose(
+            got, expected_quality(patterns)[[0, 4]], rtol=0, atol=1e-12
+        )
+        # only the two asked-for patterns were ever read
+        assert sum(loaded) == 2
+
     def test_guards(self):
         with pytest.raises(ValueError):
             image_quality(np.zeros((60, 60)))
+        patterns = ni_patterns(3)
+        with pytest.raises(ValueError, match="one dimensional integer"):
+            image_quality(patterns, np.zeros((2, 2), dtype=np.int64))
+        with pytest.raises(ValueError, match="one dimensional integer"):
+            image_quality(patterns, np.array([0.0, 1.0]))
+        with pytest.raises(ValueError, match="flat index"):
+            image_quality(patterns, np.array([0, 3], dtype=np.int64))
 
 
 class TestSelectReferences:
@@ -508,6 +551,34 @@ class TestSelectReferences:
         assert got.shape == (1,)
         assert got[0] != best
 
+    def test_an_unselectable_point_is_never_selected(self):
+        # the same rule as the unindexed one, for a point the caller
+        # masked out rather than one orix left unlabelled (added
+        # 2026-09-08, Stage B adversarial review)
+        patterns = ni_patterns(4)
+        quality = expected_quality(patterns)
+        best = int(np.argmax(quality))
+        labels = np.zeros(4, dtype=np.int32)
+        selectable = np.ones(4, dtype=bool)
+        selectable[best] = False
+        got = select_references(patterns, labels, selectable)
+        assert got.shape == (1,)
+        assert got[0] != best
+        allowed = np.array([i for i in range(4) if i != best])
+        assert got[0] == allowed[int(np.argmax(quality[allowed]))]
+
+    def test_a_grain_with_nothing_selectable_falls_back_to_its_own_points(self):
+        # such a grain is correlated nowhere, so its index is never
+        # read; leaving it out instead would break the one-index-per-
+        # label pairing
+        patterns = ni_patterns(4)
+        labels = np.array([0, 0, 1, 1], dtype=np.int32)
+        selectable = np.array([True, True, False, False])
+        got = select_references(patterns, labels, selectable)
+        assert got.shape == (2,)
+        assert got[0] in (0, 1)
+        assert got[1] in (2, 3)
+
     def test_guards(self):
         patterns = ni_patterns(3)
         with pytest.raises(ValueError):
@@ -517,6 +588,10 @@ class TestSelectReferences:
         # a map with no labelled point has no grain to serve
         with pytest.raises(ValueError):
             select_references(patterns, np.full(3, UNINDEXED, dtype=np.int32))
+        with pytest.raises(ValueError, match="selectable"):
+            select_references(
+                patterns, np.zeros(3, dtype=np.int32), np.ones(2, dtype=bool)
+            )
 
 
 # ============ D11.3 -- the ``reference="auto"`` wiring ============== #
@@ -627,3 +702,156 @@ class TestAutoReference:
     def test_an_unknown_string_is_still_a_value_error(self):
         with pytest.raises(ValueError, match="auto"):
             resolve_reference("best", None, (1, 2))
+
+    def test_a_masked_out_point_is_never_a_reference(self):
+        # ADDED 2026-09-08 at the Stage B adversarial review, which
+        # found the navigation mask reaching the fit list and NOTHING
+        # else: the best-quality pattern of a grain was selected as its
+        # reference even when the caller had masked it out, so every
+        # strain in that grain was measured against a pattern the
+        # caller had said not to trust -- and the reference's own
+        # homography came back NaN
+        patterns = ni_patterns(6)
+        xmap = crystal_map([0.0] * 6, (2, 3))
+        unmasked, unmasked_reference = resolve_reference(
+            "auto", None, (2, 3), xmap=xmap, patterns=patterns
+        )
+        best = int(unmasked_reference[0])
+        mask = np.zeros((2, 3), dtype=bool)
+        mask.ravel()[best] = True
+        grain_id, reference_index = resolve_reference(
+            "auto",
+            None,
+            (2, 3),
+            xmap=xmap,
+            patterns=patterns,
+            navigation_mask=mask,
+        )
+        assert np.all(reference_index != best)
+        # the second best of the same grain, computed here
+        quality = expected_quality(patterns)
+        allowed = np.array([i for i in range(6) if i != best])
+        assert reference_index[0] == allowed[int(np.argmax(quality[allowed]))]
+        # and the grain identifiers are untouched: the mask says which
+        # patterns are correlated, not which points belong to a grain
+        np.testing.assert_array_equal(grain_id, unmasked)
+
+    def test_a_grain_masked_out_entirely_still_gets_an_index(self):
+        # the pairing wants one index per label whatever the mask
+        # does; the index is never read, because no point of such a
+        # grain is correlated
+        patterns = ni_patterns(6)
+        angles = [[0.0, 0.2, 0.1], [BIG_ANGLE, BIG_ANGLE, BIG_ANGLE + 0.2]]
+        xmap = crystal_map(angles, (2, 3))
+        mask = np.zeros((2, 3), dtype=bool)
+        mask[1] = True
+        grain_id, reference_index = resolve_reference(
+            "auto",
+            None,
+            (2, 3),
+            xmap=xmap,
+            patterns=patterns,
+            navigation_mask=mask,
+        )
+        np.testing.assert_array_equal(grain_id, [0, 0, 0, 1, 1, 1])
+        assert np.all(reference_index[:3] < 3)
+        assert np.all(reference_index[3:] >= 3)
+
+
+# ====== The grid, the symmetry and the lazy read of the selection === #
+
+
+class TestMapGrid:
+    """Every grid-shaped function reads the map's own row and column
+    grids, and names a map which has none.  [D11.1]"""
+
+    def test_a_map_without_a_grid_is_named(self):
+        # ADDED 2026-09-08 (Stage B adversarial review): orix gives a
+        # map whose points share one scan position the shape ``()``,
+        # and reading its row grid then raises "not enough values to
+        # unpack", which names nothing the caller passed
+        xmap = CrystalMap(
+            rotations=Rotation.identity((2,)),
+            phase_id=np.zeros(2, dtype=int),
+            phase_list=PhaseList(Phase(name="ni", space_group=225)),
+            x=np.zeros(2),
+            y=np.zeros(2),
+        )
+        assert xmap.shape == ()
+        with pytest.raises(ValueError, match="no map grid"):
+            segment_grains(xmap)
+
+    def test_a_column_map_segments_to_a_column(self):
+        # requirements D11.1(b), the half a row-shaped assumption
+        # breaks: orix flattens both a row and a column map to ``(n,)``
+        arrays, size = create_coordinate_arrays((3, 1), (1.0, 1.0))
+        arrays["rotations"] = Rotation.from_axes_angles(
+            np.tile([0.0, 0.0, 1.0], (size, 1)), np.deg2rad([0.0, 0.1, BIG_ANGLE])
+        )
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = PhaseList(Phase(name="ni", space_group=225))
+        xmap = CrystalMap(**arrays)
+        assert xmap.shape == (3,)
+        np.testing.assert_array_equal(xmap.col, [0, 0, 0])
+        np.testing.assert_array_equal(segment_grains(xmap), [[0], [0], [1]])
+
+
+class TestPointGroup:
+    """A phase with no point group has no symmetry to reduce by, and
+    says so.  [D11.1]"""
+
+    @staticmethod
+    def quarter_turn_map(point_group):
+        arrays, size = create_coordinate_arrays((2, 2), (1.0, 1.0))
+        arrays["rotations"] = Rotation.from_axes_angles(
+            np.tile([0.0, 0.0, 1.0], (size, 1)), np.deg2rad([0.0, 90.0, 0.0, 90.0])
+        )
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = PhaseList(Phase("a", point_group=point_group))
+        return CrystalMap(**arrays)
+
+    def test_a_cubic_phase_reduces_a_quarter_turn_away(self):
+        # the guard on the oracle: with the symmetry, the four points
+        # are ONE grain although two of them are 90 degrees from the
+        # other two
+        labels = segment_grains(self.quarter_turn_map("m-3m"))
+        np.testing.assert_array_equal(labels, [[0, 0], [0, 0]])
+
+    def test_a_phase_without_a_point_group_warns_and_does_not_reduce(self):
+        # ADDED 2026-09-08 at the Stage B adversarial review.  The
+        # docstring promises symmetry-reduced angles; orix leaves the
+        # symmetry at C1 when there is no point group, so the angles
+        # are the RAW ones and the segmentation is a different one --
+        # two grains here instead of one.  That is not a defect that
+        # can be fixed without inventing a symmetry, so it is WARNED
+        # about instead of being left silent
+        with pytest.warns(UserWarning, match="no point group"):
+            labels = segment_grains(self.quarter_turn_map(None))
+        np.testing.assert_array_equal(labels, [[0, 1], [0, 1]])
+
+
+class TestSeveralRotationsPerPoint:
+    """A map from dictionary indexing with ``n_best > 1`` is read at
+    its best rotation.  [D11.1]"""
+
+    def test_the_best_rotation_is_the_maps_own(self):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): the reshape had no test, so a map carrying several
+        # rotations per point could have been segmented on the WORST
+        # of them without anything noticing
+        arrays, size = create_coordinate_arrays((1, 3), (1.0, 1.0))
+        best = Rotation.from_axes_angles(
+            np.tile([0.0, 0.0, 1.0], (size, 1)), np.deg2rad([0.0, 0.1, BIG_ANGLE])
+        )
+        worst = Rotation.from_axes_angles(
+            np.tile([0.0, 0.0, 1.0], (size, 1)), np.deg2rad([0.0, BIG_ANGLE, 0.0])
+        )
+        arrays["rotations"] = Rotation(np.stack([best.data, worst.data], axis=1))
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = PhaseList(Phase(name="ni", space_group=225))
+        xmap = CrystalMap(**arrays)
+        assert xmap.rotations.data.ndim == 3
+        np.testing.assert_array_equal(segment_grains(xmap), [[0, 0, 1]])
+        # the second rotation would give [[0, 1, 1]], so the choice is
+        # visible rather than assumed
+        assert not np.array_equal(best.data, worst.data)

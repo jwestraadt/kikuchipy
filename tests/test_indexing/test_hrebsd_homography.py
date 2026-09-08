@@ -31,9 +31,11 @@ measured tolerance would hide a wrong formula rather than reveal one.
 The warp DIRECTION pin of V1 needs a pattern and lives in
 ``test_hrebsd_engine.py`` beside the warp-refit oracle.
 
-Written before the implementation exists: every test here calls the
-skeleton and therefore fails with ``NotImplementedError`` until the
-algebra lands, then passes unchanged.
+Written failing before the implementation, at the Stage A
+failing-tests gate: every test here called the skeleton and so failed
+with ``NotImplementedError`` until the algebra landed, and passed
+unchanged after it (narration corrected to the past tense 2026-09-08,
+Stage B adversarial review).
 """
 
 import numpy as np

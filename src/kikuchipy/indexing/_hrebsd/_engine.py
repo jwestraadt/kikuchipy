@@ -790,14 +790,16 @@ def run_hrebsd_dic(
         projection centre or one per map point.
     xmap
         :class:`~orix.crystal_map.CrystalMap` of the map, consumed by
-        the ``reference="auto"`` mode of Stage B only.
+        the ``reference="auto"`` mode only, and there only when no
+        *grain_labels* are given.
     reference
         See :func:`~kikuchipy.indexing._hrebsd._reference\
 .resolve_reference`.
     grain_labels
         Optional user supplied grain map of *navigation_shape*.
     misorientation_threshold
-        Grain boundary threshold in degrees, Stage B only.
+        Grain boundary threshold in degrees, read by the
+        ``reference="auto"`` segmentation only. Default is 5.0.
     filter_cutoffs
         ``(high_pass, low_pass)`` band-pass cut-offs as fractions of
         the pattern width. Default is ``(0.05, None)``.
@@ -855,8 +857,6 @@ def run_hrebsd_dic(
 
     Raises
     ------
-    NotImplementedError
-        If *reference* is ``"auto"``, until Stage B.
     ValueError
         For any invalid argument, each naming the offending one.
     """
@@ -898,6 +898,11 @@ def run_hrebsd_dic(
                 "pattern (at least one value equal to `False`)"
             )
 
+    # The mask reaches the reference resolution and not only the fit
+    # list: a masked-out point is one the caller does not trust, and
+    # ``reference="auto"`` must not pick it as the origin every
+    # measurement in its grain is made against (2026-09-08, Stage B
+    # adversarial review).  It stays out of the fit list too, below
     grain_id, reference_index = resolve_reference(
         reference,
         grain_labels,
@@ -905,6 +910,7 @@ def run_hrebsd_dic(
         misorientation_threshold=misorientation_threshold,
         xmap=xmap,
         patterns=patterns,
+        navigation_mask=navigation_mask,
     )
 
     keep = np.ones(map_size, dtype=bool)

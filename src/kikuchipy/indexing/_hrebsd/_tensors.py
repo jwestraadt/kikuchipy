@@ -79,7 +79,12 @@ cross-reference for the traction-free solve; no code is ported.
 
 import numpy as np
 
-from kikuchipy.indexing._hrebsd._stiffness import VOIGT_SIZE
+from kikuchipy.indexing._hrebsd._stiffness import (
+    VOIGT_INDICES,
+    VOIGT_SIZE,
+    hooke_product,
+    rotate_stiffness,
+)
 
 # The Stage B crystal map properties of requirements D15.6, in the
 # order :func:`hrebsd_strain_stress` adds them
@@ -137,9 +142,100 @@ def sample_to_detector_matrix(detector) -> np.ndarray:
         :data:`DETECTOR_Y_FLIP` composed with the kikuchipy rotation
         (requirements D7, corrected; see the module docstring).
     """
-    raise NotImplementedError(
-        "sample_to_detector_matrix arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    rotation = np.asarray(
+        detector.sample_to_detector.to_matrix(), dtype=np.float64
+    ).squeeze()
+    return DETECTOR_Y_FLIP @ rotation
+
+
+def _as_stack(tensor: np.ndarray, name: str, size: int = 3) -> tuple[np.ndarray, bool]:
+    """Return a ``(n, size, size)`` view of a tensor and whether it
+    arrived unstacked.
+
+    Parameters
+    ----------
+    tensor
+        Array of shape ``(size, size)`` or ``(n, size, size)``.
+    name
+        Argument name, so that the guard below names what the caller
+        passed rather than a local.
+    size
+        Length the two trailing axes must have. Default is 3.
+
+    Returns
+    -------
+    stacked
+        Array of shape ``(n, size, size)`` and 64-bit float data type.
+    single
+        Whether *tensor* had exactly two axes, in which case the
+        caller returns ``stacked[0]``.
+
+    Raises
+    ------
+    ValueError
+        If the two trailing axes do not both have length *size*.
+    """
+    array = np.asarray(tensor, dtype=np.float64)
+    if array.ndim not in (2, 3) or array.shape[-2:] != (size, size):
+        raise ValueError(
+            f"{name} must have two trailing axes of length {size}, that is shape "
+            f"({size}, {size}) or (n, {size}, {size}), but has shape {array.shape}"
+        )
+    return array.reshape(-1, size, size), array.ndim == 2
+
+
+def _as_voigt_stack(vector: np.ndarray, name: str) -> tuple[np.ndarray, bool]:
+    """Return a ``(n, 6)`` view of a Voigt vector and whether it
+    arrived unstacked.
+
+    Parameters
+    ----------
+    vector
+        Array of shape ``(6,)`` or ``(n, 6)``.
+    name
+        Argument name for the guard message.
+
+    Returns
+    -------
+    stacked
+        Array of shape ``(n, 6)`` and 64-bit float data type.
+    single
+        Whether *vector* had exactly one axis.
+
+    Raises
+    ------
+    ValueError
+        If the trailing axis of *vector* is not :data:`VOIGT_SIZE`.
+    """
+    array = np.asarray(vector, dtype=np.float64)
+    if array.ndim not in (1, 2) or array.shape[-1] != VOIGT_SIZE:
+        raise ValueError(
+            f"{name} must be a Voigt vector of shape ({VOIGT_SIZE},), or a stack of "
+            f"them of shape (n, {VOIGT_SIZE}), but has shape {array.shape}"
+        )
+    return np.atleast_2d(array), array.ndim == 1
+
+
+def _voigt_to_matrix(stress: np.ndarray) -> np.ndarray:
+    """Return the ``(n, 3, 3)`` symmetric tensors of ``(n, 6)`` Voigt
+    vectors.
+
+    Parameters
+    ----------
+    stress
+        Array of shape ``(n, 6)`` in the order of
+        :data:`~kikuchipy.indexing._hrebsd._stiffness.VOIGT_INDICES`.
+
+    Returns
+    -------
+    matrix
+        Array of shape ``(n, 3, 3)`` and 64-bit float data type.
+    """
+    matrix = np.zeros((stress.shape[0], 3, 3), dtype=np.float64)
+    for p, (i, j) in enumerate(VOIGT_INDICES):
+        matrix[:, i, j] = stress[:, p]
+        matrix[:, j, i] = stress[:, p]
+    return matrix
 
 
 def beta_to_sample_frame(beta_detector: np.ndarray, matrix: np.ndarray) -> np.ndarray:
@@ -168,9 +264,15 @@ def beta_to_sample_frame(beta_detector: np.ndarray, matrix: np.ndarray) -> np.nd
         If either argument does not have two trailing axes of length
         three.
     """
-    raise NotImplementedError(
-        "beta_to_sample_frame arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_stack(beta_detector, "beta_detector")
+    frame = np.asarray(matrix, dtype=np.float64)
+    if frame.shape != (3, 3):
+        raise ValueError(
+            "matrix must be the (3, 3) frame matrix of sample_to_detector_matrix, but "
+            f"has shape {frame.shape}"
+        )
+    sample = frame.T @ stacked @ frame
+    return sample[0] if single else sample
 
 
 def close_beta(
@@ -243,9 +345,109 @@ def close_beta(
     is what ``test_hrebsd_tensors.py::TestClosure`` pins against an
     independently built tensor.
     """
-    raise NotImplementedError(
-        "close_beta arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
+    resolved = _resolve_closure(closure, stiffness_sample)
+    stacked, single = _as_stack(beta_sample, "beta_sample")
+    if resolved == "deviatoric":
+        offset = -np.trace(stacked, axis1=1, axis2=2) / 3.0
+    else:
+        offset = _traction_free_offset(stacked, stiffness_sample)
+    closed = stacked + offset[:, None, None] * np.eye(3)
+    return closed[0] if single else closed
+
+
+def _resolve_closure(closure: str, stiffness_sample: np.ndarray | None) -> str:
+    """Return which closure of requirements D9.1 a request resolves
+    to.
+
+    Parameters
+    ----------
+    closure
+        One of :data:`SUPPORTED_CLOSURES`.
+    stiffness_sample
+        The sample-frame stiffness, or ``None``.
+
+    Returns
+    -------
+    resolved
+        Either ``"traction_free"`` or ``"deviatoric"``.
+
+    Raises
+    ------
+    ValueError
+        If *closure* is unknown, or if it is ``"traction_free"``
+        without a stiffness, which the message names rather than
+        falling back silently.
+    """
+    if closure not in SUPPORTED_CLOSURES:
+        raise ValueError(
+            f"closure {closure!r} is not one of {list(SUPPORTED_CLOSURES)}"
+        )
+    if closure == "auto":
+        return "deviatoric" if stiffness_sample is None else "traction_free"
+    if closure == "traction_free" and stiffness_sample is None:
+        raise ValueError(
+            "closure='traction_free' imposes sigma33 = 0 and so needs a stiffness; "
+            "pass one, or ask for closure='deviatoric' explicitly"
+        )
+    return closure
+
+
+def _traction_free_offset(
+    beta_sample: np.ndarray, stiffness_sample: np.ndarray
+) -> np.ndarray:
+    """Return the isotropic offset the traction-free closure adds.
+
+    The three by three solve of requirements D9.2, per point.
+
+    Parameters
+    ----------
+    beta_sample
+        Measured tensors of shape ``(n, 3, 3)`` in the sample frame.
+    stiffness_sample
+        Voigt stiffness of shape ``(6, 6)`` or ``(n, 6, 6)`` in GPa,
+        already rotated into the sample frame.
+
+    Returns
+    -------
+    offset
+        Array of shape ``(n,)``, the ``t`` of
+        ``beta_closed = beta_sample + t * I``.
+
+    Raises
+    ------
+    ValueError
+        If *stiffness_sample* is not a 6 by 6 matrix or a stack of
+        them of the length of *beta_sample*.
+    """
+    stiffness, _ = _as_stack(stiffness_sample, "stiffness_sample", size=VOIGT_SIZE)
+    size = beta_sample.shape[0]
+    # one stiffness for the whole map, or one per point, and nothing
+    # in between: numpy refuses any other pairing here
+    stiffness = np.broadcast_to(stiffness, (size, VOIGT_SIZE, VOIGT_SIZE))
+    # The third Voigt row of the sample-frame stiffness, that is
+    # C3311, C3322, C3333 and the three shear terms C3323, C3313,
+    # C3312 (requirements D9.2).  The shear terms are identically zero
+    # for an UNROTATED cubic matrix, which is why the pins of this
+    # closure are all built at a generic orientation
+    third = stiffness[:, 2, :]
+    system = np.zeros((size, 3, 3), dtype=np.float64)
+    system[:, 0, :] = third[:, :3]
+    system[:, 1, 0] = 1.0
+    system[:, 1, 2] = -1.0
+    system[:, 2, 1] = 1.0
+    system[:, 2, 2] = -1.0
+    right = np.zeros((size, 3), dtype=np.float64)
+    right[:, 0] = -(
+        third[:, 5] * (beta_sample[:, 0, 1] + beta_sample[:, 1, 0])
+        + third[:, 4] * (beta_sample[:, 0, 2] + beta_sample[:, 2, 0])
+        + third[:, 3] * (beta_sample[:, 1, 2] + beta_sample[:, 2, 1])
     )
+    right[:, 1] = beta_sample[:, 0, 0] - beta_sample[:, 2, 2]
+    right[:, 2] = beta_sample[:, 1, 1] - beta_sample[:, 2, 2]
+    # the right-hand side is passed as a stack of COLUMNS, which is
+    # the one reading numpy 1 and numpy 2 agree on
+    diagonal_strain = np.linalg.solve(system, right[:, :, None])[:, :, 0]
+    return diagonal_strain[:, 2] - beta_sample[:, 2, 2]
 
 
 def polar_decomposition(f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -278,9 +480,13 @@ def polar_decomposition(f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     Computed from the singular value decomposition per point, which
     is closed form for a 3 by 3 matrix and vectorizes over the map.
     """
-    raise NotImplementedError(
-        "polar_decomposition arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_stack(f, "f")
+    left, values, right = np.linalg.svd(stacked)
+    rotation = left @ right
+    stretch = np.swapaxes(right, 1, 2) @ (values[:, :, None] * right)
+    if single:
+        return rotation[0], stretch[0]
+    return rotation, stretch
 
 
 def strain_from_stretch(
@@ -309,9 +515,17 @@ def strain_from_stretch(
         If *strain_measure* is not one of
         :data:`SUPPORTED_STRAIN_MEASURES`.
     """
-    raise NotImplementedError(
-        "strain_from_stretch arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    if strain_measure not in SUPPORTED_STRAIN_MEASURES:
+        raise ValueError(
+            f"strain_measure {strain_measure!r} is not one of "
+            f"{list(SUPPORTED_STRAIN_MEASURES)}"
+        )
+    stacked, single = _as_stack(stretch, "stretch")
+    if strain_measure == "biot":
+        strain = stacked - np.eye(3)
+    else:
+        strain = 0.5 * (np.swapaxes(stacked, 1, 2) @ stacked - np.eye(3))
+    return strain[0] if single else strain
 
 
 def rotation_vector_from_matrix(rotation: np.ndarray) -> np.ndarray:
@@ -339,10 +553,21 @@ def rotation_vector_from_matrix(rotation: np.ndarray) -> np.ndarray:
         If *rotation* does not have two trailing axes of length
         three.
     """
-    raise NotImplementedError(
-        "rotation_vector_from_matrix arrives with Stage B of "
-        "specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_stack(rotation, "rotation")
+    skew = 0.5 * (stacked - np.swapaxes(stacked, 1, 2))
+    dual = np.stack([skew[:, 2, 1], skew[:, 0, 2], skew[:, 1, 0]], axis=-1)
+    sine = np.linalg.norm(dual, axis=-1)
+    cosine = 0.5 * (np.trace(stacked, axis1=1, axis2=2) - 1.0)
+    # ``arctan2`` and not ``arccos``: the square-root singularity of
+    # ``arccos`` at the identity costs about eight significant digits
+    # at the 1e-4 rad scale this field lives at, which requirements
+    # D12 records for the same reason
+    angle = np.arctan2(sine, cosine)
+    # the limit of ``angle / sin(angle)`` at the identity is one, and
+    # it is taken literally where the dual vector vanishes exactly
+    scale = np.divide(angle, sine, out=np.ones_like(angle), where=sine > 0.0)
+    vector = dual * scale[:, None]
+    return vector[0] if single else vector
 
 
 def small_strain_split(beta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -381,9 +606,13 @@ def small_strain_split(beta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     of order 3e-4 strain at one degree, which is why the switch is a
     measurement and not a preference.
     """
-    raise NotImplementedError(
-        "small_strain_split arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_stack(beta, "beta")
+    transposed = np.swapaxes(stacked, 1, 2)
+    strain = 0.5 * (stacked + transposed)
+    rotation = 0.5 * (stacked - transposed)
+    if single:
+        return strain[0], rotation[0]
+    return strain, rotation
 
 
 def tensor_to_voigt_vector(tensor: np.ndarray) -> np.ndarray:
@@ -411,9 +640,10 @@ def tensor_to_voigt_vector(tensor: np.ndarray) -> np.ndarray:
     ValueError
         If *tensor* does not have two trailing axes of length three.
     """
-    raise NotImplementedError(
-        "tensor_to_voigt_vector arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_stack(tensor, "tensor")
+    symmetric = 0.5 * (stacked + np.swapaxes(stacked, 1, 2))
+    voigt = np.stack([symmetric[:, i, j] for (i, j) in VOIGT_INDICES], axis=-1)
+    return voigt[0] if single else voigt
 
 
 def von_mises_stress(stress: np.ndarray) -> np.ndarray:
@@ -440,9 +670,16 @@ def von_mises_stress(stress: np.ndarray) -> np.ndarray:
         If the trailing axis of *stress* is not
         :data:`~kikuchipy.indexing._hrebsd._stiffness.VOIGT_SIZE`.
     """
-    raise NotImplementedError(
-        "von_mises_stress arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_voigt_stack(stress, "stress")
+    deviatoric = stacked.copy()
+    deviatoric[:, :3] -= stacked[:, :3].sum(axis=-1)[:, None] / 3.0
+    # the last three Voigt slots are off-diagonal tensor entries, each
+    # of which appears twice in the double contraction
+    contraction = (deviatoric[:, :3] ** 2).sum(axis=-1) + 2.0 * (
+        deviatoric[:, 3:] ** 2
+    ).sum(axis=-1)
+    von_mises = np.sqrt(1.5 * contraction)
+    return von_mises[0] if single else von_mises
 
 
 def hydrostatic_stress(stress: np.ndarray) -> np.ndarray:
@@ -469,9 +706,9 @@ def hydrostatic_stress(stress: np.ndarray) -> np.ndarray:
         If the trailing axis of *stress* is not
         :data:`~kikuchipy.indexing._hrebsd._stiffness.VOIGT_SIZE`.
     """
-    raise NotImplementedError(
-        "hydrostatic_stress arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_voigt_stack(stress, "stress")
+    hydrostatic = stacked[:, :3].sum(axis=-1) / 3.0
+    return hydrostatic[0] if single else hydrostatic
 
 
 def principal_stresses(stress: np.ndarray) -> np.ndarray:
@@ -497,9 +734,11 @@ def principal_stresses(stress: np.ndarray) -> np.ndarray:
         If the trailing axis of *stress* is not
         :data:`~kikuchipy.indexing._hrebsd._stiffness.VOIGT_SIZE`.
     """
-    raise NotImplementedError(
-        "principal_stresses arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    stacked, single = _as_voigt_stack(stress, "stress")
+    # ``eigvalsh`` returns ASCENDING eigenvalues, which is the plan
+    # section 3.4 mutant: requirements D10 reports them descending
+    principal = np.linalg.eigvalsh(_voigt_to_matrix(stacked))[:, ::-1]
+    return principal[0] if single else principal
 
 
 def tensor_chain(
@@ -573,8 +812,101 @@ def tensor_chain(
     mutant that ``test_hrebsd_pc_shift.py``'s phantom-through-the-
     chain test kills.
     """
-    raise NotImplementedError(
-        "tensor_chain arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
+    gradients = _fe_as_matrices(fe)
+    size = gradients.shape[0]
+    matrices = np.asarray(orientation_matrices, dtype=np.float64)
+    if matrices.ndim != 3 or matrices.shape != (size, 3, 3):
+        raise ValueError(
+            "orientation_matrices must have shape (n, 3, 3) with n the length of fe, "
+            f"that is ({size}, 3, 3), but has shape {matrices.shape}"
+        )
+    if stiffness is not None:
+        stiffness = np.asarray(stiffness, dtype=np.float64)
+        if stiffness.shape != (VOIGT_SIZE, VOIGT_SIZE):
+            raise ValueError(
+                "stiffness must be a 6 by 6 Voigt matrix in GPa in the crystal frame, "
+                f"but has shape {stiffness.shape}"
+            )
+    _resolve_closure(closure, stiffness)
+    if strain_measure not in SUPPORTED_STRAIN_MEASURES:
+        raise ValueError(
+            f"strain_measure {strain_measure!r} is not one of "
+            f"{list(SUPPORTED_STRAIN_MEASURES)}"
+        )
+
+    properties = {
+        "strain": np.full((size, STRAIN_PROP_SIZE), np.nan),
+        "rotation_vector": np.full((size, ROTATION_VECTOR_PROP_SIZE), np.nan),
+        "beta": np.full((size, BETA_PROP_SIZE), np.nan),
+        "stress": np.full((size, STRESS_PROP_SIZE), np.nan),
+        "stress_von_mises": np.full(size, np.nan),
+        "stress_hydrostatic": np.full(size, np.nan),
+        "stress_principal": np.full((size, PRINCIPAL_PROP_SIZE), np.nan),
+    }
+    # requirements D2.6: a point which did not converge, failed or was
+    # masked out keeps NaN in every derived property and is NEVER
+    # zeroed, so it is taken out before the linear algebra rather than
+    # allowed to poison it
+    good = np.isfinite(gradients).all(axis=(1, 2))
+    if not good.any():
+        return properties
+    gradients = gradients[good]
+    matrices = matrices[good]
+
+    # 1-2: the stored Fe is already D6.2 corrected, so the phantom is
+    # NOT removed again here; only the frame changes
+    beta_detector = gradients - np.eye(3)
+    beta_sample = beta_to_sample_frame(
+        beta_detector, sample_to_detector_matrix(detector)
+    )
+    # 3: the ninth degree of freedom, closed in the sample frame
+    stiffness_sample = None
+    if stiffness is not None:
+        stiffness_sample = rotate_stiffness(stiffness, matrices)
+    closed = close_beta(beta_sample, stiffness_sample=stiffness_sample, closure=closure)
+    # 4: the split, through the polar decomposition and never through
+    # the small-strain fast path, which requirements D8 leaves private
+    rotation, stretch = polar_decomposition(np.eye(3) + closed)
+    strain = tensor_to_voigt_vector(strain_from_stretch(stretch, strain_measure))
+    properties["strain"][good] = strain
+    properties["rotation_vector"][good] = rotation_vector_from_matrix(rotation)
+    properties["beta"][good] = closed.reshape(-1, BETA_PROP_SIZE)
+    # 5: the stress, in the GPa the stiffness is given in
+    if stiffness_sample is not None:
+        stress = hooke_product(stiffness_sample, strain)
+        properties["stress"][good] = stress
+        properties["stress_von_mises"][good] = von_mises_stress(stress)
+        properties["stress_hydrostatic"][good] = hydrostatic_stress(stress)
+        properties["stress_principal"][good] = principal_stresses(stress)
+    return properties
+
+
+def _fe_as_matrices(fe: np.ndarray) -> np.ndarray:
+    """Return the stored ``Fe`` property as ``(n, 3, 3)`` matrices.
+
+    Parameters
+    ----------
+    fe
+        Array of shape ``(n, 9)`` row-major or ``(n, 3, 3)``.
+
+    Returns
+    -------
+    matrices
+        Array of shape ``(n, 3, 3)`` and 64-bit float data type.
+
+    Raises
+    ------
+    ValueError
+        If *fe* has neither layout.
+    """
+    array = np.asarray(fe, dtype=np.float64)
+    if array.ndim == 2 and array.shape[-1] == BETA_PROP_SIZE:
+        return array.reshape(-1, 3, 3)
+    if array.ndim == 3 and array.shape[-2:] == (3, 3):
+        return array
+    raise ValueError(
+        "fe must be the stored deformation gradients of shape (n, 9), row-major, or "
+        f"(n, 3, 3), but has shape {array.shape}"
     )
 
 
@@ -630,7 +962,7 @@ def hrebsd_strain_stress(
 
     Returns
     -------
-    xmap_out : ~orix.crystal_map.CrystalMap
+    xmap_out
         A copy of *xmap* with the properties ``"strain"`` (n, 6),
         ``"rotation_vector"`` (n, 3), ``"beta"`` (n, 9), ``"stress"``
         (n, 6), ``"stress_von_mises"`` (n,),
@@ -677,6 +1009,12 @@ def hrebsd_strain_stress(
     Points which did not converge, failed or were masked out carry
     NaN in every property here, and are never zeroed.
 
+    A map carrying SEVERAL rotations per point, as dictionary indexing
+    with ``n_best > 1`` returns, is read at its best rotation, which is
+    the convention :func:`~kikuchipy.indexing.segment_grains` follows
+    on the same input. The orientations only rotate the stiffness
+    (requirements D7), so the choice matters on the stress path alone.
+
     See Also
     --------
     kikuchipy.signals.EBSD.hrebsd_dic
@@ -684,6 +1022,42 @@ def hrebsd_strain_stress(
     kikuchipy.indexing.hrebsd_kam
     kikuchipy.indexing.hrebsd_pc_shift
     """
-    raise NotImplementedError(
-        "hrebsd_strain_stress arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
+    if "Fe" not in xmap.prop:
+        raise ValueError(
+            "xmap does not carry the 'Fe' property this function splits; pass the "
+            "crystal map EBSD.hrebsd_dic returned"
+        )
+    if stiffness is not None:
+        phase_ids = np.unique(np.asarray(xmap.phase_id))
+        phase_ids = phase_ids[phase_ids >= 0]
+        if phase_ids.size > 1:
+            raise ValueError(
+                f"the stress path takes ONE stiffness and xmap holds {phase_ids.size} "
+                "indexed phases; version one does not support a per-phase stiffness, "
+                "so index one phase at a time or leave `stiffness` out for the strain "
+                "and the deviatoric closure alone"
+            )
+    matrices = xmap.rotations.to_matrix()
+    if matrices.ndim > 3:
+        # Several rotations per point, as a dictionary-indexing map with
+        # ``n_best > 1`` carries them: the BEST one is the map's own,
+        # which is the convention
+        # :func:`~kikuchipy.indexing.segment_grains` already follows
+        # (2026-09-08, Stage B adversarial review: the two modules
+        # disagreed, and this one raised a message naming an argument
+        # the caller never passed)
+        matrices = matrices.reshape(matrices.shape[0], -1, 3, 3)[:, 0]
+    properties = tensor_chain(
+        np.asarray(xmap.prop["Fe"]),
+        matrices,
+        detector,
+        stiffness=stiffness,
+        closure=closure,
+        strain_measure=strain_measure,
     )
+    # The input orientations, phases and scan unit are carried through
+    # untouched: this feature never modifies an orientation (D7)
+    xmap_out = xmap.deepcopy()
+    for name in STAGE_B_PROP_NAMES:
+        xmap_out.prop[name] = properties[name]
+    return xmap_out

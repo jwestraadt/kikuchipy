@@ -55,10 +55,12 @@ than asserted; dropping the flip mirrors ``beta13``, ``beta23``,
 ``beta31`` and ``beta32`` and flips two components of every reported
 rotation vector.
 
-Written before the implementation exists: every test which calls the
-module fails with ``NotImplementedError`` until the tensor chain
-lands, then passes unchanged.  The frame measurement and the frozen
-signature pins pass today.
+Written failing before the implementation, at the Stage B
+failing-tests gate: every test which calls the module failed with
+``NotImplementedError`` until the tensor chain landed, and passed
+unchanged after it, while the frame measurement and the frozen
+signature pins passed from the start (narration corrected to the past
+tense 2026-09-08, Stage B adversarial review).
 """
 
 import inspect
@@ -157,7 +159,18 @@ FAST_PATH_CRITERION = 1e-6
 # MEASURING RECIPE: ``TestChain::test_strain_recovery_at_a_generic_
 # orientation`` below; record the worst component over both closures
 # and both strain measures
-REDUCED_CLOSURE_TOL = None
+#
+# PINNED 2026-09-08 (Stage B implementation gate, machine A;
+# validation.md Recorded results, Stage B implementation gate entry 39).
+# MEASURED worst 1.1654500102918543e-06 over all four arms which
+# consume it -- strain 1.1655e-06, e33 9.4132e-07, beta 9.5697e-07,
+# rotation vector 8.4533e-08 -- pinned at 2x that worst.  It is the
+# reduction's own second order, as the note above predicts, and it
+# reproduces the failing-tests-gate reference chain (entry 30) to every
+# digit.  It still kills what it exists to kill by two orders: the Bond
+# rotation transposed measures 2.9630e-04 here and the frame rotation
+# untransposed 8.3352e-04
+REDUCED_CLOSURE_TOL = 2.4e-06
 
 # MTP [D9.2/D10, V3]: the residual ``sigma33`` in GPa of the
 # traction-free closure, run through the whole chain.  Zero by
@@ -166,7 +179,14 @@ REDUCED_CLOSURE_TOL = None
 # ``|C| * 1e-6`` = a few times 1e-4 GPa.
 # MEASURING RECIPE: ``TestChain::test_sigma33_is_the_closure_self_
 # check``
-SIGMA33_TOL = None
+#
+# PINNED 2026-09-08 (Stage B implementation gate, machine A;
+# validation.md entry 39).  MEASURED 3.0638726905057867e-04 GPa against
+# a stress scale of 0.2420 GPa on the same three points, pinned at 2x.
+# RECORDED, not a killer of anything: the Bond-transposed mutant
+# measures 3.0914e-04 GPa here, 0.9 per cent away, so this band must
+# never be quoted as its killer (plan 3.4 (a), validation entry 31)
+SIGMA33_TOL = 6.2e-04
 
 # MTP [D8]: the worst strain difference between the polar path and
 # the small-strain fast path over the rotation sweep, and the angle
@@ -177,8 +197,23 @@ SIGMA33_TOL = None
 # ``test_the_public_path_is_the_polar_one`` pins.
 # MEASURING RECIPE: ``TestSmallStrainFastPath`` below; record the
 # error at each swept angle and the largest angle still inside 1e-6
-SMALL_STRAIN_EQUALITY_TOL = None
-SMALL_STRAIN_ENABLE_ANGLE_DEG = None
+#
+# PINNED 2026-09-08 (Stage B implementation gate, machine A;
+# validation.md entry 39).  Sweep errors, all reproduced bitwise
+# between runs and under randomized test order: 9.1400e-08 (0.01 deg),
+# 5.6564e-07 (0.05), 1.6043e-06 (0.1), 3.7330e-05 (0.5), 1.4790e-04
+# (1.0), 5.8890e-04 (2.0).  ``SMALL_STRAIN_EQUALITY_TOL`` is 2x the
+# worst of those, 5.889002203349758e-04 at 2.0 deg.
+#
+# ``SMALL_STRAIN_ENABLE_ANGLE_DEG`` is a LOWER bound (``assert_at_
+# least``), so its 2x margin goes the other way: the BISECTED crossing
+# of the 1e-6 criterion measures 0.07794410136352782 deg and the pin is
+# half of it.  The fast path is STILL NOT ENABLED by this measurement
+# -- requirements D8 asks for the band and the angle to be recorded
+# first, and ``test_the_public_path_is_the_polar_one`` pins that every
+# public result goes through the polar path
+SMALL_STRAIN_EQUALITY_TOL = 1.2e-03
+SMALL_STRAIN_ENABLE_ANGLE_DEG = 0.039
 
 
 # ------------- The plan 3.4 mutation list, mapped ------------------- #
@@ -678,6 +713,25 @@ class TestSmallStrainFastPath:
     is not enabled by anything public until its band and its enabling
     angle are recorded.  [D8]"""
 
+    def test_a_stack_is_split_point_by_point(self):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): the stacked return of this private fast path was never
+        # reached, so a stacked call could have returned the single
+        # case's shape and nothing would have noticed
+        rng = np.random.default_rng(11)
+        stack = rng.uniform(-STRAIN_SCALE, STRAIN_SCALE, size=(4, 3, 3))
+        strain, rotation = small_strain_split(stack)
+        assert strain.shape == (4, 3, 3)
+        assert rotation.shape == (4, 3, 3)
+        for point in range(4):
+            one_strain, one_rotation = small_strain_split(stack[point])
+            np.testing.assert_allclose(
+                strain[point], one_strain, rtol=0, atol=ALGEBRA_TOL
+            )
+            np.testing.assert_allclose(
+                rotation[point], one_rotation, rtol=0, atol=ALGEBRA_TOL
+            )
+
     def test_the_split_is_literally_symmetric_and_antisymmetric(self):
         rng = np.random.default_rng(7)
         beta = rng.uniform(-STRAIN_SCALE, STRAIN_SCALE, size=(3, 3))
@@ -1028,6 +1082,38 @@ class TestDerivedMaps:
             atol=ALGEBRA_TOL,
         )
 
+    def test_the_voigt_vector_takes_the_symmetric_part(self):
+        # ADDED 2026-09-08 at the Stage B adversarial review, where
+        # dropping the symmetrization SURVIVED the whole suite: the
+        # only caller feeds this function ``strain_from_stretch``,
+        # whose worst asymmetry is 3.4e-17, so on the chain's own path
+        # the difference is identically zero.  The docstring
+        # nevertheless promises that the symmetric part is taken, and
+        # requirements D15.6 makes this vector a PUBLIC property with
+        # TENSOR shears, so a second consumer -- the Stage C
+        # antisymmetry fix, which works on a deliberately
+        # NON-symmetric displacement gradient -- would silently read
+        # every shear twice over
+        tensor = np.array(
+            [[1.0, 2.0, 3.0], [0.0, 4.0, 5.0], [0.0, 0.0, 6.0]], dtype=np.float64
+        )
+        assert not np.allclose(tensor, tensor.T)
+        np.testing.assert_allclose(
+            tensor_to_voigt_vector(tensor),
+            [1.0, 4.0, 6.0, 2.5, 1.5, 1.0],
+            rtol=0,
+            atol=ALGEBRA_TOL,
+        )
+        # the unsymmetrized reading, a factor of two out on every
+        # shear, is excluded
+        assert not np.allclose(
+            tensor_to_voigt_vector(tensor), [1.0, 4.0, 6.0, 5.0, 3.0, 2.0]
+        )
+        # and a stack takes it point by point
+        stacked = tensor_to_voigt_vector(np.stack([tensor, tensor.T]))
+        assert stacked.shape == (2, VOIGT_SIZE)
+        np.testing.assert_allclose(stacked[0], stacked[1], rtol=0, atol=ALGEBRA_TOL)
+
     def test_guards(self):
         with pytest.raises(ValueError):
             von_mises_stress(np.zeros(5))
@@ -1346,6 +1432,25 @@ class TestChain:
         for name in ("stiffness", "closure", "strain_measure"):
             assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY, name
 
+    def test_the_private_chain_names_its_own_shapes(self):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): both shape guards of ``tensor_chain`` were unreached.
+        # They belong to the PRIVATE chain, whose contract the public
+        # function no longer breaks -- which is exactly why they are
+        # tested here, directly, rather than through it
+        detector = make_detector()
+        fe = np.tile(np.eye(3).ravel(), (3, 1))
+        with pytest.raises(ValueError, match=r"orientation_matrices"):
+            tensor_chain(fe, np.tile(np.eye(3), (2, 1, 1)), detector)
+        with pytest.raises(ValueError, match=r"\(n, 9\)"):
+            tensor_chain(np.zeros((3, 4)), np.tile(np.eye(3), (3, 1, 1)), detector)
+        # and the two accepted layouts of the stored property agree
+        by_rows = tensor_chain(fe, np.tile(np.eye(3), (3, 1, 1)), detector)
+        by_matrices = tensor_chain(
+            fe.reshape(3, 3, 3), np.tile(np.eye(3), (3, 1, 1)), detector
+        )
+        np.testing.assert_array_equal(by_rows["strain"], by_matrices["strain"])
+
     def test_guards(self):
         detector, _, _, xmap = self.imposed_map()
         # a map which never went through the engine names the method
@@ -1364,6 +1469,53 @@ class TestChain:
             hrebsd_strain_stress(xmap, detector, closure="traction_free")
         with pytest.raises(ValueError):
             hrebsd_strain_stress(xmap, detector, stiffness=np.zeros((3, 3)))
+
+    def test_a_map_with_several_rotations_per_point_takes_the_best(self):
+        # ADDED 2026-09-08 (Stage B adversarial review).  A map from
+        # dictionary indexing with ``n_best > 1`` carries ``(n, k)``
+        # rotations, which ``segment_grains`` already reads at their
+        # best entry; this function used to raise instead, with a
+        # message naming ``orientation_matrices``, an argument of the
+        # private chain that the public caller never passed.  The two
+        # now agree, and the best rotation is the map's own
+        detector, _, _, single = self.imposed_map(navigation_shape=(1, 2))
+        best = single.rotations
+        arrays, size = create_coordinate_arrays((1, 2), (1.0, 1.0))
+        stacked = np.stack([best.data, Rotation.identity((2,)).data], axis=1)
+        arrays["rotations"] = Rotation(stacked)
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = PhaseList(Phase(name="ni", space_group=225))
+        several = CrystalMap(**arrays)
+        several.prop["Fe"] = np.asarray(single.prop["Fe"])
+        assert several.rotations.to_matrix().shape == (2, 2, 3, 3)
+        stiffness = kp.indexing.voigt_stiffness("cubic", **NICKEL_CUBIC)
+        got = hrebsd_strain_stress(several, detector, stiffness=stiffness)
+        expected = hrebsd_strain_stress(single, detector, stiffness=stiffness)
+        for name in ("strain", "stress", "beta", "rotation_vector"):
+            np.testing.assert_array_equal(
+                np.asarray(got.prop[name]),
+                np.asarray(expected.prop[name]),
+                err_msg=name,
+            )
+        # and the second rotation really is a different one, so the
+        # test would fail on a chain that took the last entry
+        assert not np.allclose(stacked[:, 0], stacked[:, 1])
+
+    def test_a_map_of_only_non_converged_points_gives_the_whole_nan_set(self):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): the early return of requirements D2.6, which no test
+        # reached.  Every key of the frozen property set must still be
+        # there, at the full length, so that a downstream reader never
+        # meets a missing key on a map that happened to fail entirely
+        detector = make_detector()
+        xmap = crystal_map_with(
+            np.full((6, BETA_PROP_SIZE), np.nan), navigation_shape=(2, 3)
+        )
+        result = hrebsd_strain_stress(xmap, detector)
+        for name in STAGE_B_PROP_NAMES:
+            value = np.asarray(result.prop[name])
+            assert value.shape[0] == 6, name
+            assert np.all(np.isnan(value)), name
 
     def test_the_single_phase_stress_guard(self):
         # requirements D9.6: version one takes ONE stiffness, so a

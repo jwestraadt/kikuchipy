@@ -43,11 +43,13 @@ written out here in plain numpy) rather than importing it, so a
 coordinated error in the module under test cannot make the pin
 agree with itself.
 
-Written before the implementation exists: every test which calls the
-module fails with ``NotImplementedError`` until the stiffness lands,
-then passes unchanged.  The two library measurements marked as such
-pass today, which is what makes them freezes rather than behaviour
-tests.
+Written failing before the implementation, at the Stage B
+failing-tests gate: every test which calls the module failed with
+``NotImplementedError`` until the stiffness landed, and passed
+unchanged after it.  The two library measurements marked as such passed
+from the start, which is what makes them freezes rather than behaviour
+tests (narration corrected to the past tense 2026-09-08, Stage B
+adversarial review).
 """
 
 import inspect
@@ -495,6 +497,36 @@ class TestHookeProduct:
         assert stress[0, 0] == pytest.approx(NICKEL_CUBIC["c11"] * 1e-3)
         c11, c12, c44 = (NICKEL_CUBIC[k] for k in ("c11", "c12", "c44"))
         assert stress[1, 0] == pytest.approx(0.5 * (c11 + c12 + 2 * c44) * 1e-3)
+
+    def test_one_strain_broadcasts_over_a_stack_of_stiffnesses(self):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): the broadcast arm had no test, so a stack of
+        # stiffnesses handed ONE strain -- the natural way to ask what
+        # a fixed strain costs at every orientation of a map -- was
+        # unexercised
+        c = voigt_stiffness("cubic", **NICKEL_CUBIC)
+        matrices = np.stack(
+            [
+                np.eye(3),
+                rotation_about((0.0, 0.0, 1.0), 45.0),
+                rotation_about((0.0, 1.0, 0.0), 30.0),
+            ]
+        )
+        stiffnesses = rotate_stiffness(c, matrices)
+        strain = np.zeros(VOIGT_SIZE)
+        strain[0] = 1e-3
+        stress = hooke_product(stiffnesses, strain)
+        assert stress.shape == (3, VOIGT_SIZE)
+        for point in range(3):
+            np.testing.assert_allclose(
+                stress[point],
+                hooke_product(stiffnesses[point], strain),
+                rtol=0,
+                atol=ALGEBRA_TOL,
+            )
+        # the three orientations really give three different stresses,
+        # so the broadcast is not tested on a degenerate stack
+        assert not np.allclose(stress[0], stress[1])
 
     def test_guards(self):
         c = voigt_stiffness("cubic", **NICKEL_CUBIC)

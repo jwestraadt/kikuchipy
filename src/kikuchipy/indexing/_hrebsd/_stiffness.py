@@ -146,9 +146,43 @@ def voigt_stiffness(
     ``C66 = (C11 - C12)/2``, which is DERIVED and never taken as an
     input.  Everything else is zero in both.
     """
-    raise NotImplementedError(
-        "voigt_stiffness arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    if symmetry not in SUPPORTED_SYMMETRIES:
+        raise ValueError(
+            f"symmetry {symmetry!r} is not one of {list(SUPPORTED_SYMMETRIES)}; no "
+            "elastic constant database ships with kikuchipy, so the stiffness of any "
+            "other symmetry is supplied as a 6 by 6 Voigt matrix directly"
+        )
+    stiffness = np.zeros((VOIGT_SIZE, VOIGT_SIZE), dtype=np.float64)
+    if symmetry == "cubic":
+        given = [
+            name for name, value in (("c13", c13), ("c33", c33)) if value is not None
+        ]
+        if given:
+            raise ValueError(
+                f"{given} is not an independent constant of a cubic crystal, where "
+                "C13 = C12 and C33 = C11; leave it out rather than have it silently "
+                "ignored"
+            )
+        stiffness[:3, :3] = c12
+        stiffness[np.diag_indices(3)] = c11
+        stiffness[3, 3] = stiffness[4, 4] = stiffness[5, 5] = c44
+    else:
+        missing = [
+            name for name, value in (("c13", c13), ("c33", c33)) if value is None
+        ]
+        if missing:
+            raise ValueError(
+                f"a hexagonal stiffness needs {missing} in addition to c11, c12 and "
+                "c44; C66 is DERIVED as (C11 - C12)/2 and is never an input"
+            )
+        stiffness[0, 0] = stiffness[1, 1] = c11
+        stiffness[2, 2] = c33
+        stiffness[0, 1] = stiffness[1, 0] = c12
+        stiffness[0, 2] = stiffness[2, 0] = c13
+        stiffness[1, 2] = stiffness[2, 1] = c13
+        stiffness[3, 3] = stiffness[4, 4] = c44
+        stiffness[5, 5] = 0.5 * (c11 - c12)
+    return stiffness
 
 
 def voigt_to_tensor(stiffness: np.ndarray) -> np.ndarray:
@@ -172,9 +206,22 @@ def voigt_to_tensor(stiffness: np.ndarray) -> np.ndarray:
     ValueError
         If *stiffness* is not a 6 by 6 matrix, or a stack of them.
     """
-    raise NotImplementedError(
-        "voigt_to_tensor arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    matrix = np.asarray(stiffness, dtype=np.float64)
+    if matrix.ndim not in (2, 3) or matrix.shape[-2:] != (VOIGT_SIZE, VOIGT_SIZE):
+        raise ValueError(
+            "stiffness must be a 6 by 6 Voigt matrix, or a stack of them of shape "
+            f"(n, 6, 6), but has shape {matrix.shape}"
+        )
+    single = matrix.ndim == 2
+    flat = matrix.reshape(-1, VOIGT_SIZE, VOIGT_SIZE)
+    tensor = np.zeros((flat.shape[0], 3, 3, 3, 3), dtype=np.float64)
+    for p, (i, j) in enumerate(VOIGT_INDICES):
+        for q, (k, m) in enumerate(VOIGT_INDICES):
+            value = flat[:, p, q]
+            for a, b in ((i, j), (j, i)):
+                for e, f in ((k, m), (m, k)):
+                    tensor[:, a, b, e, f] = value
+    return tensor[0] if single else tensor
 
 
 def tensor_to_voigt(tensor: np.ndarray) -> np.ndarray:
@@ -200,9 +247,19 @@ def tensor_to_voigt(tensor: np.ndarray) -> np.ndarray:
     ValueError
         If *tensor* does not have four trailing axes of length three.
     """
-    raise NotImplementedError(
-        "tensor_to_voigt arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    array = np.asarray(tensor, dtype=np.float64)
+    if array.ndim not in (4, 5) or array.shape[-4:] != (3, 3, 3, 3):
+        raise ValueError(
+            "tensor must have four trailing axes of length three, that is shape "
+            f"(3, 3, 3, 3) or (n, 3, 3, 3, 3), but has shape {array.shape}"
+        )
+    single = array.ndim == 4
+    flat = array.reshape(-1, 3, 3, 3, 3)
+    matrix = np.zeros((flat.shape[0], VOIGT_SIZE, VOIGT_SIZE), dtype=np.float64)
+    for p, (i, j) in enumerate(VOIGT_INDICES):
+        for q, (k, m) in enumerate(VOIGT_INDICES):
+            matrix[:, p, q] = flat[:, i, j, k, m]
+    return matrix[0] if single else matrix
 
 
 def rotate_stiffness(
@@ -254,9 +311,30 @@ def rotate_stiffness(
 
     for ``g`` a rotation of ``theta`` about the crystal ``z`` axis.
     """
-    raise NotImplementedError(
-        "rotate_stiffness arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
+    crystal = np.asarray(stiffness, dtype=np.float64)
+    if crystal.shape != (VOIGT_SIZE, VOIGT_SIZE):
+        raise ValueError(
+            "stiffness must be a 6 by 6 Voigt matrix in the crystal frame, but has "
+            f"shape {crystal.shape}"
+        )
+    matrices = np.asarray(orientation_matrix, dtype=np.float64)
+    if matrices.ndim not in (2, 3) or matrices.shape[-2:] != (3, 3):
+        raise ValueError(
+            "orientation_matrix must have two trailing axes of length three, that is "
+            f"shape (3, 3) or (n, 3, 3), but has shape {matrices.shape}"
+        )
+    single = matrices.ndim == 2
+    tensor = voigt_to_tensor(crystal)
+    # one point at a time, so that a stacked call is the loop over the
+    # single-matrix one to the LAST BIT and not merely to a tolerance
+    rotated = np.stack(
+        [
+            np.einsum("ai,bj,ck,dl,abcd->ijkl", g, g, g, g, tensor)
+            for g in matrices.reshape(-1, 3, 3)
+        ]
     )
+    sample = tensor_to_voigt(rotated)
+    return sample[0] if single else sample
 
 
 def hooke_product(stiffness: np.ndarray, strain: np.ndarray) -> np.ndarray:
@@ -281,8 +359,14 @@ def hooke_product(stiffness: np.ndarray, strain: np.ndarray) -> np.ndarray:
     Returns
     -------
     stress
-        Array of shape ``(6,)`` or ``(n, 6)`` and 64-bit float data
-        type in GPa, in the Voigt order, in the frame of the inputs.
+        Array of shape ``(6,)`` and 64-bit float data type in GPa, in
+        the Voigt order and in the frame of the inputs, when BOTH
+        arguments are single; ``(n, 6)`` when either is a stack. One
+        strain against a stack of stiffnesses is therefore the stress
+        that strain costs at every one of them, which is what asking
+        the question means (corrected 2026-09-08, Stage B adversarial
+        review: the broadcast was built and then all but its first
+        row silently discarded).
 
     Raises
     ------
@@ -291,6 +375,35 @@ def hooke_product(stiffness: np.ndarray, strain: np.ndarray) -> np.ndarray:
         :data:`VOIGT_SIZE`, if *stiffness* is not 6 by 6 in its two
         trailing axes, or if the two stacks have different lengths.
     """
-    raise NotImplementedError(
-        "hooke_product arrives with Stage B of specs/2026-09-07-hrebsd-dic/"
-    )
+    matrix = np.asarray(stiffness, dtype=np.float64)
+    if matrix.ndim not in (2, 3) or matrix.shape[-2:] != (VOIGT_SIZE, VOIGT_SIZE):
+        raise ValueError(
+            "stiffness must be a 6 by 6 Voigt matrix, or a stack of them of shape "
+            f"(n, 6, 6), but has shape {matrix.shape}"
+        )
+    vector = np.asarray(strain, dtype=np.float64)
+    if vector.ndim not in (1, 2) or vector.shape[-1] != VOIGT_SIZE:
+        raise ValueError(
+            "strain must be a Voigt vector of shape (6,), or a stack of them of shape "
+            f"(n, 6), but has shape {vector.shape}"
+        )
+    # A single result needs BOTH sides single: a stack of stiffnesses
+    # against one strain is n stresses, not the first of them
+    single = vector.ndim == 1 and matrix.ndim == 2
+    # THE engineering shear convention of requirements D9.4, applied
+    # here and in no other place in this feature
+    engineering = np.atleast_2d(vector).copy()
+    engineering[:, list(SHEAR_COMPONENTS)] *= 2.0
+    if matrix.ndim == 2:
+        stress = engineering @ matrix.T
+    else:
+        if engineering.shape[0] == 1 and matrix.shape[0] != 1:
+            engineering = np.tile(engineering, (matrix.shape[0], 1))
+        if matrix.shape[0] != engineering.shape[0]:
+            raise ValueError(
+                f"a stack of {matrix.shape[0]} stiffnesses cannot be paired with "
+                f"{engineering.shape[0]} strains: the two stacks are indexed point by "
+                "point and must have the same length"
+            )
+        stress = np.einsum("nij,nj->ni", matrix, engineering)
+    return stress[0] if single else stress

@@ -2531,25 +2531,29 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             the ``Notes`` on units.
         reference
             Which pattern each point is correlated with. ``"auto"``
-            (default) segments grains and picks the highest image
-            quality pattern of each, and is not implemented yet. A
-            ``(row, col)`` tuple makes one global reference for the
-            whole map. An integer array of flat map indices, one per
-            grain label, requires *grain_labels*.
+            (default) segments the map into grains with
+            :func:`~kikuchipy.indexing.segment_grains` and picks the
+            highest image quality pattern of each. A ``(row, col)``
+            tuple makes one global reference for the whole map. An
+            integer array of flat map indices, one per grain label,
+            requires *grain_labels*.
         grain_labels
             Grain map of the navigation shape with 0-based labels and
             ``-1`` outside any grain. With an array *reference* there
             is one index per grain label, paired positionally with
             the sorted unique labels, and each index must lie inside
             its own grain. With a ``(row, col)`` *reference* one
-            global reference serves every label. If not given, the
-            map is one implicit grain; internal segmentation arrives
-            with ``reference="auto"`` in a later release.
+            global reference serves every label. With
+            ``reference="auto"`` the supplied map is used unchanged
+            and only the per-grain selection is made here. If not
+            given, ``"auto"`` segments the map and every other mode
+            treats it as one implicit grain.
         misorientation_threshold
-            Grain boundary misorientation angle in degrees, used only
-            by the internal segmentation of ``reference="auto"``,
-            which arrives in a later release. It has NO effect in
-            this one. Default is 5.0.
+            Grain boundary misorientation angle in degrees, used by
+            the internal segmentation of ``reference="auto"`` when no
+            *grain_labels* are given. Neighbouring points whose
+            symmetry-reduced misorientation angle is below it belong
+            to the same grain. Default is 5.0.
         filter_cutoffs
             ``(high_pass, low_pass)`` cut-off frequencies of the
             in-engine band-pass filter, as fractions of the pattern
@@ -2585,7 +2589,12 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         navigation_mask
             A boolean mask equal to the signal's navigation (map)
             shape, where only patterns equal to ``False`` are
-            correlated. If not given, all patterns are correlated.
+            correlated. If not given, all patterns are correlated. A
+            masked out pattern is also barred from being chosen as a
+            grain's reference by ``reference="auto"``, since it is a
+            pattern the caller does not trust; it keeps its
+            ``"grain_id"`` and its grain's ``"reference_index"`` so
+            that what was skipped stays readable.
         chunksize
             Number of patterns to correlate per chunk. If not given,
             it is estimated from the pattern shape, the number of
@@ -2606,9 +2615,6 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
 
         Raises
         ------
-        NotImplementedError
-            If ``reference="auto"``, which arrives with the grain
-            segmentation of a later release.
         ValueError
             If the detector shape and the signal shape differ; if the
             crystal map's shape and the signal's navigation shape
@@ -2629,6 +2635,8 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
 
         See Also
         --------
+        kikuchipy.indexing.hrebsd_strain_stress
+        kikuchipy.indexing.segment_grains
         kikuchipy.detectors.EBSDDetector.extrapolate_pc
         kikuchipy.detectors.EBSDDetector.fit_pc
 
@@ -2725,7 +2733,10 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         columns, plus the 32-bit spline coefficients: 18.0 MB at
         480 by 480 pixels with the default border, and one such
         state is resident per Dask worker while that grain is
-        correlated.
+        correlated. ``reference="auto"`` reads every candidate
+        pattern once before the first fit, to score its image
+        quality; a lazy signal is read in blocks of about 64 MB and
+        is never held in memory whole.
         """
         am = self.axes_manager
         nav_shape = am.navigation_shape[::-1]
@@ -2770,10 +2781,22 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
                     "one pattern (at least one value equal to `False`)"
                 )
 
-        # The engine works on a two-dimensional map, so a
-        # one-dimensional scan is a single row of it
+        # The engine works on a two-dimensional map, and WHICH of the
+        # two a one-dimensional scan is comes from the crystal map's
+        # own row and column grids, never from an assumption here: orix
+        # flattens both a `(1, n)` and an `(n, 1)` map to the shape
+        # `(n,)`, and requirements D11.1(b) freezes that
+        # `segment_grains` reads the grids. Assuming a row made
+        # `reference="auto"`, the frozen default, unusable on a column
+        # line scan -- it raised out of an internal shape comparison
+        # (fixed 2026-09-08, Stage B adversarial review)
         if len(nav_shape) == 1:
-            engine_nav_shape = (1, int(nav_shape[0]))
+            # The shape check above already ties the map to the scan,
+            # so these grids span exactly one row or exactly one column
+            engine_nav_shape = (
+                int(np.asarray(xmap.row).max()) + 1,
+                int(np.asarray(xmap.col).max()) + 1,
+            )
         else:
             engine_nav_shape = (int(nav_shape[0]), int(nav_shape[1]))
         engine_mask = None
@@ -2794,7 +2817,12 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             units = tuple(str(a.units) for a in am.navigation_axes[::-1])
             step_sizes = step_sizes_in_micrometres(step_sizes, units)
         if len(step_sizes) == 1:
-            step_sizes = (1.0, step_sizes[0])
+            # The one scan axis is the COLUMN axis of a row scan and the
+            # ROW axis of a column scan, which the grids above settled
+            if engine_nav_shape[1] == 1:
+                step_sizes = (step_sizes[0], 1.0)
+            else:
+                step_sizes = (1.0, step_sizes[0])
 
         patterns = self.data.reshape((-1,) + sig_shape)
 

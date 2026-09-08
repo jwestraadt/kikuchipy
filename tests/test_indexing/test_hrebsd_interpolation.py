@@ -29,9 +29,11 @@ order harness of plan open question 1 (added 2026-09-07 at the
 adversarial review, which found that the Stage A gate's order A/B
 decision had no test at all).
 
-Written before the implementation exists: every test here calls the
-skeleton and therefore fails with ``NotImplementedError`` until the
-kernel lands, then passes unchanged.
+Written failing before the implementation, at the Stage A
+failing-tests gate: every test here called the skeleton and so failed
+with ``NotImplementedError`` until the kernel landed, and passed
+unchanged after it (narration corrected to the past tense 2026-09-08,
+Stage B adversarial review).
 """
 
 import time

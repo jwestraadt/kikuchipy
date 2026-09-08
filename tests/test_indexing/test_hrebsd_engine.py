@@ -69,10 +69,12 @@ projection centre. Requirements D1.1 and D1.3 now carry the dated
 correction and validation.md records the measurement, so the frozen
 spec and this contract agree.
 
-Written before the implementation exists: except where a test is
-marked as a pure library verification task, every test here calls the
-skeleton and therefore fails with ``NotImplementedError`` until the
-engine lands, then passes unchanged.
+Written failing before the implementation, at the Stage A
+failing-tests gate: except where a test is marked as a pure library
+verification task, every test here called the skeleton and so failed
+with ``NotImplementedError`` until the engine landed, and passed
+unchanged after it (narration corrected to the past tense 2026-09-08,
+Stage B adversarial review).
 """
 
 import ast
@@ -2158,31 +2160,25 @@ class TestReferenceResolution:
     """Explicit modes only in Stage A; ``"auto"`` names Stage B.
     [D11]"""
 
-    def test_auto_raises_naming_stage_b(self):
-        # the Stage A pin, replaced when the segmentation lands.  The
-        # message must be actionable: it names the argument and the
-        # stage, so a user knows to pass an explicit reference
-        #
-        # SUPERSEDED 2026-09-07 by the Stage B failing-tests commit,
-        # and PASSING VACUOUSLY since it: ``_reference.py`` no longer
-        # carries the Stage A guard this test was written for -- the
-        # ``"auto"`` branch now calls ``segment_grains`` -- and the
-        # ``NotImplementedError`` caught here comes from the Stage B
-        # SKELETON of ``_segmentation.py`` (INSTRUMENTED: raised at
-        # ``_segmentation.py`` line 142, message "segment_grains
-        # arrives with Stage B of specs/2026-09-07-hrebsd-dic/",
-        # which happens to contain the matched "Stage B").  So a green
-        # run of this test is NOT evidence that the Stage A contract
-        # still holds.  Its positive replacement is
-        # ``test_hrebsd_segmentation.py::TestAutoReference``, and the
-        # Stage B IMPLEMENTATION gate deletes this test: once
-        # ``segment_grains`` lands, nothing raises here and it fails
-        # loudly rather than silently.  It is kept until then only so
-        # that the Stage A regression count is unperturbed by the
-        # failing-tests commit (validation.md, Stage B failing-tests
-        # gate entry)
-        with pytest.raises(NotImplementedError, match="Stage B"):
-            resolve_reference(AUTO_REFERENCE, None, (3, 3))
+    # ``test_auto_raises_naming_stage_b`` stood here and was DELETED
+    # 2026-09-08 at the Stage B implementation gate, exactly as the
+    # note it carried and validation.md's Stage B unit-suite block
+    # said it would be: it pinned the Stage A ``NotImplementedError``
+    # of ``reference="auto"``, passed VACUOUSLY from the Stage B
+    # failing-tests commit onward (the error came from the
+    # ``_segmentation.py`` skeleton, not from the deleted Stage A
+    # guard), and once ``segment_grains`` lands nothing raises at all.
+    # Its positive replacement is
+    # ``test_hrebsd_segmentation.py::TestAutoReference``
+
+    def test_the_auto_mode_string_is_frozen(self):
+        # the constant the DELETED Stage A pin above used to carry.
+        # The mode's behaviour is pinned positively by
+        # ``test_hrebsd_segmentation.py::TestAutoReference`` and
+        # ``tests/test_signals/test_ebsd_hrebsd_dic.py::
+        # TestAutoReference``; what belongs here is the frozen spelling
+        # of requirements D11.3, which every error message quotes
+        assert AUTO_REFERENCE == "auto"
 
     def test_tuple_reference_is_one_implicit_grain(self):
         grain_id, reference_index = resolve_reference((1, 2), None, (3, 4))
@@ -2270,6 +2266,30 @@ class TestReferenceResolution:
             resolve_reference(np.array([0.0]), labels, (2, 2))
         with pytest.raises(ValueError, match="within the map size"):
             resolve_reference(np.array([9]), labels, (2, 2))
+
+    def test_the_segmentation_shape_and_dtype_guards(self):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): the two guards of ``_flatten_labels`` were the only
+        # unexecuted raises left in ``_reference``.  They exist
+        # because ``"auto"`` is the ONE caller and a silent reshape
+        # would pair references with the wrong points
+        from kikuchipy.indexing._hrebsd._reference import _flatten_labels
+
+        patterns = np.zeros((6, 4, 4), dtype=np.float64)
+        arrays, size = create_coordinate_arrays((2, 3), (1.0, 1.0))
+        arrays["rotations"] = Rotation.identity((size,))
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = PhaseList(Phase(name="ni", space_group=225))
+        xmap = CrystalMap(**arrays)
+        # a navigation shape which disagrees with the map's own grids
+        with pytest.raises(ValueError, match="segment_grains returned labels of shape"):
+            resolve_reference(
+                "auto", None, (3, 2), xmap=xmap, patterns=patterns.reshape(6, 4, 4)
+            )
+        # and the data type half, on the helper itself, since
+        # ``segment_grains`` cannot return a float map
+        with pytest.raises(ValueError, match="must be an integer type"):
+            _flatten_labels(np.zeros((2, 3), dtype=np.float64), (2, 3))
 
 
 # =========== D16 -- orchestration, determinism, messages ============ #
@@ -2575,19 +2595,11 @@ class TestOrchestration:
         assert "480" in message
         assert "64" in message
 
-    def test_auto_reference_raises_through_the_engine(self):
-        # SUPERSEDED 2026-09-07 by the Stage B failing-tests commit,
-        # and PASSING VACUOUSLY since it, for the same reason as
-        # ``TestReferenceResolution::test_auto_raises_naming_stage_b``
-        # above: the ``NotImplementedError`` now comes from the
-        # ``_segmentation.py`` skeleton and not from the deleted
-        # Stage A guard.  Its positive replacement is
-        # ``tests/test_signals/test_ebsd_hrebsd_dic.py::
-        # TestAutoReference``; the Stage B implementation gate deletes
-        # this test
-        patterns, detector = self.small_map()
-        with pytest.raises(NotImplementedError, match="Stage B"):
-            run_hrebsd_dic(patterns, (1, 3), detector, verbose=0)
+    # ``test_auto_reference_raises_through_the_engine`` stood here and
+    # was DELETED 2026-09-08 at the Stage B implementation gate, for
+    # the same recorded reason as the pin in
+    # ``TestReferenceResolution`` above.  Its positive replacement is
+    # ``tests/test_signals/test_ebsd_hrebsd_dic.py::TestAutoReference``
 
 
 # ============= D15.7 -- the get_map_data verification =============== #

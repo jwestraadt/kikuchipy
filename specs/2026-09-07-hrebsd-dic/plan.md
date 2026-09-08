@@ -319,14 +319,32 @@ keys; docs registration (`doc/tutorials/index.rst`, nbval
    Stage A convergence sweep on V2 + V5 (iterations-to-converge
    histogram, error vs threshold curve); re-pin with dated record
    if the defaults leave systematic error above the interpolation
-   floor.
+   floor. **RESOLVED 2026-09-08 (Stage B implementation gate,
+   validation entry 45; requirements D2.5/D2.6 amended): BOTH
+   CONFIRMED, neither re-pinned.** The error-versus-threshold curve
+   on the Si wafer is flat to 2 per cent over a hundredfold change
+   in `min_step` while convergence goes 97/87/26 of 100, so the
+   threshold is not the limiting factor; and the cap is doing real
+   work (1/100 converge at 10, 8 at 20, 87 at 50, 96 at 100).
 3. **Border/dead-band defaults** (D4.4). In force: `border=0.05`,
    `dead_band=None`. Resolves: V2 with the design shift budget +
    V5 border sweep (noise floor vs border fraction); pin the knee.
+   **RESOLVED 2026-09-08 (validation entry 45; requirements D4.4
+   amended): NO KNEE EXISTS on this dataset and the default STANDS
+   on its original reasoning.** The floor moves 11 per cent over a
+   fourfold change in the knob while convergence falls 93/87/83/52
+   of 100; the border exists for beam-scan translations, which is
+   precisely what these fits do not track, so the sweep cannot pin
+   it. Worth re-running on open question 13's dataset.
 4. **KAM kernel defaults** (D12). In force: `order=1`,
    `psi_max=None`, same-grain always. Resolves: V7 constant-
    curvature identity + V5 Si KAM noise floor at orders 1-3;
    record the noise/resolution trade, keep order=1 unless refuted.
+   **RESOLVED 2026-09-08 (validation entry 45; requirements D12
+   amended): `order=1` CONFIRMED, and there is NO trade to record.**
+   Median KAM 5.2402 / 8.2715 / 11.1350 mrad at orders 1 / 2 / 3
+   with the spread tripling and the cost quadrupling, so order 1
+   wins on noise, on resolution and on cost at once.
 5. **Fourier-Mellin initial guess** (D5). DEFERRED from v1. In
    force: translation-only phase-XC seed. Resolves (for the
    record, not for v1): the V4 rotation sweep measures the capture
@@ -349,6 +367,13 @@ keys; docs registration (`doc/tutorials/index.rst`, nbval
 10. **Preprocessing defaults: band-pass cutoffs, AHE, window**
     (D4). In force: (0.05, None), no AHE, no window. Resolves: V5
     Si noise floor with/without each; dated re-pin on refutation.
+    **RESOLVED 2026-09-08 (validation entry 45; requirements D4.1,
+    D4.2 and D4.3 amended): ALL THREE CONFIRMED, none re-pinned.**
+    The high-pass is the whole measurement on real data -- 1 of 100
+    patterns converges without it against 87 with it, the exact
+    opposite of the noise-free oracle result Stage A recorded -- the
+    low-pass buys two converged points for a 0.6 per cent worse
+    floor, and the Hann window takes convergence to 14 of 100.
 11. **f32 storage** (D17). In force provisionally: f32
     patterns/coefficients, f64 accumulators. Resolves: V2 dtype
     A/B at the Stage A gate; verdict recorded in requirements

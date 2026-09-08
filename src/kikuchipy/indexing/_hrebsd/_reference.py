@@ -58,6 +58,7 @@ def resolve_reference(
     misorientation_threshold: float = 5.0,
     xmap=None,
     patterns: np.ndarray | None = None,
+    navigation_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return the per-point grain identifier and reference index.
 
@@ -84,6 +85,16 @@ def resolve_reference(
         Patterns of shape ``(n, nrows, ncols)``, used only by the
         ``"auto"`` mode, whose per-grain selection maximizes the
         image quality of the raw patterns.
+    navigation_mask
+        Boolean mask of shape *navigation_shape* in the kikuchipy
+        polarity, ``True`` where a point is masked OUT, or ``None``.
+        Used only by the ``"auto"`` mode, and there only to keep a
+        masked-out point from being chosen as a grain's reference: a
+        point the caller does not trust must not become the origin
+        every measurement in its grain is made against (added
+        2026-09-08, Stage B adversarial review). It never changes the
+        reported ``grain_id``, which stays the true label of every
+        point, masked or not.
 
     Returns
     -------
@@ -117,6 +128,11 @@ def resolve_reference(
     ``grain_id`` comes from the labels, which is what requirements
     D11.3 freezes.  An index array is the per-grain mode, and there
     each index must lie inside its own grain.
+
+    A masked-out point keeps its grain label and its grain's
+    reference, and is only barred from BEING one: the mask says which
+    patterns are not correlated, and reporting ``grain_id`` for them
+    truthfully is what lets a caller see what was skipped.
 
     ``"auto"`` is the per-grain mode with the two choices made for
     the caller: the labels come from
@@ -161,7 +177,10 @@ def resolve_reference(
                     xmap, misorientation_threshold=misorientation_threshold
                 )
                 labels = _flatten_labels(segmented, navigation_shape)
-            indices = np.asarray(select_references(patterns, labels))
+            selectable = None
+            if navigation_mask is not None:
+                selectable = ~np.asarray(navigation_mask, dtype=bool).ravel()
+            indices = np.asarray(select_references(patterns, labels, selectable))
             return _resolve_index_array(indices, labels, navigation_shape)
         raise ValueError(
             f"reference {reference!r} must be {AUTO_REFERENCE!r}, a (row, col) "

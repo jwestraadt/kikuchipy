@@ -33,9 +33,11 @@ signs and the composition side of the phantom are DRAFTED from D6.2
 and are pinned by the pattern oracle, so a refutation amends
 requirements D6.3 and this module together, with a date.
 
-Written before the implementation exists: every test here calls the
-skeleton and therefore fails with ``NotImplementedError`` until the
-geometry lands, then passes unchanged.
+Written failing before the implementation, at the Stage A
+failing-tests gate: every test here called the skeleton and so failed
+with ``NotImplementedError`` until the geometry landed, and passed
+unchanged after it (narration corrected to the past tense 2026-09-08,
+Stage B adversarial review).
 """
 
 import numpy as np

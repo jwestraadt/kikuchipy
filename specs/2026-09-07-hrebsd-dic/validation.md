@@ -82,6 +82,21 @@ B failing-tests gate): `REDUCED_CLOSURE_TOL` 1.1655e-06 (strain),
 NOT pins: they are the scales a correct implementation should
 reproduce, and the gate measures its own.
 
+**Stage B MTP pins, ALL FILLED 2026-09-08** (implementation gate;
+measurements, recipes, margins and machine in Recorded results
+entries 39 to 46 below): `REDUCED_CLOSURE_TOL` 2.4e-06,
+`SIGMA33_TOL` 6.2e-04 GPa, `SMALL_STRAIN_EQUALITY_TOL` 1.2e-03,
+`SMALL_STRAIN_ENABLE_ANGLE_DEG` 0.039 deg (a LOWER bound),
+`DEFORMED_MASTER_STRAIN_TOL` 1.9e-05,
+`DEFORMED_MASTER_SIGMA33_TOL` 3.7e-04 GPa, `SI_STRAIN_FLOOR`
+2.5e-02, `SI_ROTATION_FLOOR` 2.5e-02 rad, `SI_KAM_FLOOR` 10.5 mrad,
+`SI_PC_RESIDUAL_MEAN_TOL` 20.0 px. The six analytic ones reproduce
+the reference-chain scales above to every digit. **The four Si ones
+do not mean what the drafting expected and must not be quoted as
+the method's precision**: the wafer dataset cannot support the
+benchmark, for reasons measured in entries 43 and 44 and carried in
+the module's own docstring.
+
 ### V0 -- Interpolation kernel (`tests/test_indexing/test_hrebsd_interpolation.py`) -- Stage A
 
 - `test_kernel_matches_map_coordinates`: numba bicubic evaluation
@@ -571,7 +586,8 @@ gated. MTP placeholders: `SI_STRAIN_FLOOR`, `SI_ROTATION_FLOOR`,
 | per-grain precompute cost + resident MB at 480x480 | `ReferenceState` construction, median of 3 (2026-09-07, machine A) | **0.0402 s, 16.54 MB** (186624 subregion px, f32 coefficients) |
 | bicubic vs quintic accuracy/speed (D3) | V2 A/B, entry 8 below | bicubic 0.0105 px vs quintic 0.0126 px at 3.31x cost -- **bicubic kept** |
 | f32 vs f64 storage accuracy/speed (D17) | V2 dtype A/B, entry 9 below | degradation 4.5e-08 of the f64 error, 0.92 MB saved -- **f32 confirmed** |
-| Stage B tensor chain + KAM cost on the 50x50 Si map | timed run | measure at Stage B gate |
+| Stage B tensor chain + KAM + segmentation on the 50x50 Si map (2500 points) | `v5_perf_ahe.py`, median of 5 after the map's own DIC run (2026-09-08, machine A), entry 46 | **`hrebsd_strain_stress` 6.13 ms, `segment_grains` 5.59 ms, `hrebsd_kam` 2.36 ms** -- 14.1 ms together, against 372.5 s for the DIC that feeds them |
+| Stage B route end to end, 50x50 Si map, 480x480, default knobs | same run | **6.71 pat/s** (372.5 s, 2187/2500 converged, mean 34.1 iterations) |
 | Stage C GND cost | timed run | measure at Stage C gate |
 
 ## Manual
@@ -1656,3 +1672,946 @@ are filled at the implementation gate, from the implementation.
     no implementation. The 7 failures of the second run are the
     Stage B `TestAutoReference` class in the signal-method file,
     and 242 passed / 1 skipped is the unchanged Stage A count.
+
+### 2026-09-08 (Stage B implementation gate, measurement agent)
+
+**Machine A**, the same machine every Stage A number carries: the
+20-core Windows 11 laptop (Intel64 Family 6 Model 186, Raptor Lake,
+20 logical cores, Windows 11 build 26200), `.venv` Python 3.13.12,
+numpy 2.4.6, scipy 1.17.1, numba 0.65.1, scikit-image 0.26.0, orix
+0.14.2, dask 2026.3.0, pooch 1.9.0. Idle machine, warm numba caches.
+
+This section discharges the Stage B measurement debt: the ten
+unfilled `MTP` placeholders, the V5 Si-wafer benchmark (first
+execution, the dataset fetched once here), plan open questions 2, 3,
+4 and 10, and the Stage B performance row.
+
+39. **The six analytic MTP pins.** Recipe: the Stage A convention of
+    entry 1, a throwaway scratchpad pytest plugin
+    (`hrebsd_measure_b/measure_plugin.py`, never in the repo) which
+    sets every unfilled `None` placeholder to `+inf` and records what
+    `assert_within` and `assert_at_least` were handed, so ONE run
+    reports the worst measured value of every placeholder including
+    the ones hidden behind an earlier failure in the same test.
+    Command:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_tensors.py \
+      tests/test_indexing/test_hrebsd_deformed_master.py \
+      tests/test_indexing/test_hrebsd_pc_shift.py \
+      tests/test_indexing/test_hrebsd_kam.py \
+      tests/test_indexing/test_hrebsd_segmentation.py \
+      tests/test_indexing/test_hrebsd_stiffness.py -q -p measure_plugin
+    -> 190 passed
+    ```
+
+    Every value below was reproduced BITWISE by a second run,
+    including under randomized test order. Margin convention: 2x the
+    measured worst case.
+
+    | constant | measured worst | pinned | margin | every arm that consumes it |
+    |---|---|---|---|---|
+    | `REDUCED_CLOSURE_TOL` | 1.1654500102918543e-06 | 2.4e-06 | 2.06x | strain 1.1655e-06; e33 9.4132e-07 and 6.7578e-07; beta 9.5697e-07 and 6.6399e-08; rotation vector 8.4533e-08 |
+    | `SIGMA33_TOL` | 3.0638726905057867e-04 GPa | 6.2e-04 | 2.02x | `test_sigma33_is_the_closure_self_check`, against a stress scale of 0.2420 GPa |
+    | `SMALL_STRAIN_EQUALITY_TOL` | 5.889002203349758e-04 | 1.2e-03 | 2.04x | `test_equality_with_the_polar_path_is_measured`, worst of the sweep (2.0 deg) |
+    | `SMALL_STRAIN_ENABLE_ANGLE_DEG` | 0.07794410136352782 deg | 0.039 | 2.00x, a LOWER bound | the same test, BISECTED to 1e-6 deg |
+    | `DEFORMED_MASTER_STRAIN_TOL` | 9.404545683540204e-06 | 1.9e-05 | 2.02x | strain 9.4045e-06; e33 8.3928e-06 and 1.7138e-06; rotation vector 4.2064e-06 and 1.6741e-06 |
+    | `DEFORMED_MASTER_SIGMA33_TOL` | 1.8337937617562972e-04 GPa | 3.7e-04 | 2.02x | `test_sigma33_is_zero_through_the_patterns` |
+
+    Two things are worth recording beyond the table. First, **every
+    one of these reproduces the failing-tests-gate reference chain of
+    entries 30 and 31 to every digit printed there**, which is itself
+    a finding: the implementation and the independent reference chain
+    written before it agree, so the pins are not a measurement of the
+    implementation against itself. Second, the small-strain sweep is
+    recorded in full because requirements D8 asks for it -- errors
+    9.1400e-08 (0.01 deg), 5.6564e-07 (0.05), 1.6043e-06 (0.1),
+    3.7330e-05 (0.5), 1.4790e-04 (1.0), 5.8890e-04 (2.0), crossing
+    the 1e-6 criterion at 0.0779 deg. **The fast path stays
+    DISABLED**: D8 asks for the band and the angle to be recorded
+    first, and `test_the_public_path_is_the_polar_one` pins that
+    every public result still takes the polar split.
+
+    The pins keep their mutants dead by orders. `REDUCED_CLOSURE_TOL`
+    2.4e-06 against the Bond rotation transposed (2.9630e-04, 123x)
+    and the frame rotation untransposed (8.3352e-04, 347x);
+    `DEFORMED_MASTER_STRAIN_TOL` 1.9e-05 against the same Bond mutant
+    through PATTERNS (3.0068e-04, 16x). `SIGMA33_TOL` kills nothing
+    and its comment now says so: the Bond mutant measures 3.0914e-04
+    GPa there against 3.0639e-04 correct, 0.9 per cent away (plan 3.4
+    (a), entry 31).
+
+40. **The V5 download, done once.** Command, run deliberately at this
+    gate and never by a test:
+    `kp.data.si_wafer(allow_download=True, lazy=True)`.
+    **311 MB transferred in 63.0 s**, unpacking to **554.41 MB** in
+    the kikuchipy cache (`Pattern.dat` 549.32 MB; the zip is deleted
+    after unpacking, as the docstring says). What arrives: `(50, 50)`
+    navigation by `(480, 480)` signal, `uint8`, navigation scale
+    40.0 um on both axes with `units` "um", and a detector of shape
+    `(480, 480)`, `pc = (0.5, 0.5, 0.5)`, `px_size = 1.0`,
+    `binning = 1`, `sample_tilt = 70`, `tilt = 0`. The projection
+    centre and the pixel size are both kikuchipy PLACEHOLDERS, which
+    entries 41 and 43 turn out to matter enormously and hardly at all
+    respectively.
+
+41. **`px_size` was the placeholder 1.0, and V5 was the first caller
+    to trip on requirements D6.1 (amended with this date).** The
+    module built its per-point detector straight from the shipped
+    one. MEASURED with `px_size = 1.0` and the wafer's 40 um step:
+    **1800 px of modelled PCx drift, 1691 px of PCy and 616 px of
+    detector distance on a 480 px detector**, and a reported strain
+    floor of **1.033**, which fails the module's own frozen order
+    check `strain_floor < 100 * LITERATURE_STRAIN_FLOOR` (2e-2) by
+    52x. So the delivered module could not pass its own assertions,
+    and the fix is at the call site: `per_point_detector` now sets
+    `px_size = UF420_PX_SIZE = 90.0`, the NORDIF UF-420 unbinned
+    pixel size kikuchipy's own `doc/tutorials/pc_fit_plane.ipynb`
+    states for THIS dataset ("about 90 um", from which it derives the
+    expected 2000 / 90 = 22 px shift across the scan). MEASURED with
+    it: 20.0 px of modelled PCx drift and a strain floor of
+    1.2168e-02. Recorded as a dated note in the test file and in
+    requirements D6.1; the decision NOT to guard a placeholder
+    `px_size` (entry 26 (a)) is unchanged and is now better evidenced.
+
+    For the record, the projection-centre placeholder barely matters:
+    substituting the Hough-refined mean of the same tutorial,
+    `pc = (0.5195, 0.1554, 0.4870)`, moves the strain floor from
+    1.2168e-02 to 1.2460e-02, 2.4 per cent, so the shipped
+    `(0.5, 0.5, 0.5)` is kept and the tutorial's fitted number is not
+    taken as a dependency.
+
+42. **The V5 miscalibration arm was a provable no-op (requirements
+    D13 amended with this date).** `test_si_pc_shift_plane`
+    miscalibrated by `wrong.pc[..., 0] += 0.02`, a UNIFORM offset,
+    and `beam_scan_model` is built from `PC_target - PC_reference`
+    (the D6.2 closed form), from which a constant cancels
+    identically. MEASURED: the mean of `residual_x` moves from
+    **9.97390698866289 px to 9.973906988662913 px**, a relative
+    2.3e-15, so the arm's `> 10 * worst` could never hold and no
+    conformant implementation could satisfy it. CORRECTED to
+    miscalibrate the scan-step to pixel-size RATIO, which is what a
+    wrong beam-scan geometry really gets wrong and what does change
+    the differences. MEASURED across `px_size` factors:
+
+    | `px_size` | modelled PCx drift | residual mean | ratio to the consistent geometry |
+    |---|---|---|---|
+    | 90 um (consistent) | 20.0 px | 9.9739 px | 1.00 |
+    | 45 um | 40.0 px | 19.974 px | 2.00 |
+    | 9 um | 200.0 px | 99.974 px | 10.02 |
+    | 4.5 um | 400.0 px | 199.97 px | 20.05 |
+    | 180 um | 10.0 px | 4.9739 px | 0.50 |
+    | 900 um | 2.0 px | 0.9739 px | 0.098 |
+
+    The test now uses `px_size / 20`, which clears the frozen
+    `> 10 *` by 2x rather than by the 0.2 per cent a factor of ten
+    would leave. The ANALYTIC pin of the same signature, which
+    offsets the MEASURED translations rather than the geometry, is
+    `test_hrebsd_pc_shift.py::test_a_miscalibrated_projection_centre
+    _shows_as_a_nonzero_mean` and is untouched and passing.
+
+43. **The V5 floors, MEASURED AND PINNED -- and they are the
+    DATASET's floors, not the method's.** Recipe: the module's own
+    tests under the same measuring plugin,
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_si.py -q -p measure_plugin
+    -> 3 passed, 6 skipped (--weekly), 49.7 s
+    ... --weekly -> 10 min 16 s
+    ```
+
+    Route: `reference="auto"`, per-point projection centres from
+    `extrapolate_pc` at the corrected `px_size` of entry 41, the
+    deviatoric closure, RAW patterns (no upstream background removal,
+    which requirements D4 leaves to the user and never implies), on
+    the `[::5, ::5]` smoke sub-grid of 100 patterns.
+
+    | constant | measured | pinned | margin |
+    |---|---|---|---|
+    | `SI_STRAIN_FLOOR` | **1.2168e-02** (smoke), **1.2208e-02** (full 50x50) | 2.5e-02 | 2.05x on the larger |
+    | `SI_ROTATION_FLOOR` | **1.2006e-02** rad | 2.5e-02 | 2.08x |
+    | `SI_KAM_FLOOR` | **5.2402** mrad | 10.5 | 2.00x |
+    | `SI_PC_RESIDUAL_MEAN_TOL` | **9.9739** px (`residual_x`; 9.3568 px in `residual_y`) | 20.0 | 2.01x |
+
+    Supporting numbers of the same run: 87 of 100 points converged,
+    median residual 0.9496 (a pair ZNCC of 0.525), mean 33.3
+    iterations of a cap of 50, median measured translation 0.026 px.
+    The smoke sub-grid and the full map agree to 0.3 per cent, so the
+    hundred-point estimate is not the noisy one the weekly full-map
+    arm was added to guard against, and that arm is now a cheap
+    regression check rather than the definitive number.
+
+    **The strain floor is 1.2e-02 against the 1e-4 to 2e-4 literature
+    class validation V5 recorded as context: two orders out.** That
+    context is not refuted -- it is literature, and the V5 line
+    "recorded, not presumed" was right to hedge -- but the benchmark
+    it was meant to calibrate does not deliver. Entry 44 is the
+    measurement that says why, and it is not the implementation. The
+    KAM is internally consistent with the rotation floor it comes
+    from: the D12 theory identity `sigma_omega * sqrt(2/N)` at
+    1.2006e-02 rad and the frozen 8-neighbour kernel predicts
+    6.0e-03 rad = 6.0 mrad, and 5.24 mrad is 13 per cent under that,
+    so nothing is wrong with the KAM beyond the rotations it averages.
+
+    Two smaller results recorded from the same runs. The weekly
+    traction-free stress arm with the silicon stiffness returns a
+    finite positive stress scale, as its (deliberately loose)
+    assertions ask, and is not quoted as an absolute stress. And the
+    strain floor is essentially independent of the closure and of
+    upstream background removal -- 1.2168e-02 raw, 1.0834e-02 with
+    the map average subtracted, 1.0442e-02 with a dynamic pass on top
+    -- which is itself evidence that the number is set by the DIC's
+    failure to track the geometry rather than by anything downstream
+    of it.
+
+44. **The control that separates the engine from the data, and the
+    diagnosis.** Before any of entry 43 is read as a statement about
+    the implementation, the engine was put on the SAME oracle Stage A
+    uses, with a real wafer pattern in place of the synthetic one:
+    warp a pattern by a known homography with the independent skimage
+    warper (`test_hrebsd_engine.py`'s own `warp_with_skimage` and
+    `random_small_homographies`, loaded by path) and refit. Recipe:
+    `hrebsd_measure_b/control_warp.py`, four seed-0 homographies of
+    the V2 design budget, `run_hrebsd_dic` with default knobs,
+    D2.5 corner-displacement error in binned pixels.
+
+    | reference pattern | worst error | all four | iterations | residual |
+    |---|---|---|---|---|
+    | Stage A synthetic 480 px oracle | **0.00725 px** | 0.00725 / 0.00158 / 0.00176 / 0.00457 | 4-7 | 0.00064-0.00071 |
+    | si_wafer pattern (24, 25), raw | **0.03257 px** | 0.03257 / 0.00504 / 0.00431 / 0.00205 | 7-17 | 0.0443-0.0487 |
+    | the same, map average subtracted | **0.05194 px** | 0.05194 / 0.01112 / 0.00958 / 0.00656 | 7-20 | 0.0823-0.0900 |
+
+    All twelve converge, and the worst wafer number is 2.1x the
+    pinned `WARP_REFIT_TOL_480` of 0.025 px, i.e. the same class. **So
+    the engine measures a real wafer pattern's deformation to a few
+    hundredths of a pixel; nothing in entry 43 is an engine defect.**
+
+    What breaks is the PAIR. Measured with no engine involved, ZNCC
+    of two DIFFERENT wafer patterns over the whole 480 px frame
+    (`hrebsd_measure_b/probe_zncc.py`, an 11 by 11 block at the map
+    centre):
+
+    | pair | unfiltered | band-passed `(0.05, None)` | band-passed, map average subtracted |
+    |---|---|---|---|
+    | adjacent, 40 um apart | 0.9991 | **0.8424** | **0.4862** |
+    | five steps, 200 um | 0.9958 | 0.7729 | 0.2531 |
+    | opposite corners of the block | 0.9966 | 0.7492 | 0.1908 |
+
+    against 0.978 for the synthetic-warp control on the same pattern
+    (residual 0.0443). Two further numbers name the culprit. (a) The
+    band-passed pattern correlates only **0.7514** with its own
+    5-point smoothed self once the map average is subtracted (0.9264
+    before), so most of what survives the band-pass there is
+    pixel-scale noise. (b) `phase_cross_correlation` on band-passed
+    pairs returns **exactly 0.0 px** for every pair tested --
+    (0, 1), (1, 0), (0, 10), (10, 0), (0, 49), (49, 49), (25, 25) --
+    and -0.0625 px for (49, 0). A component that survives a high-pass
+    and does NOT move with the beam is pinning the correlation at
+    zero shift, and the fits sit in that minimum: the median measured
+    translation over the smoke map is **0.026 px** (largest 1.88 px)
+    where the beam-scan model puts 20.0 px.
+
+    The drift the fits miss is real and independently measured:
+    kikuchipy's own Hough projection-centre fit of this map
+    (`doc/tutorials/pc_fit_plane.ipynb`) reports a PCx standard
+    deviation of 0.0241 over a grid spanning it, **11.6 detector
+    pixels**, with a deviation from its own fitted plane of only
+    0.0021. So the geometry moves and the correlation does not see
+    it.
+
+    **Subtracting the map average is not the remedy on a
+    single-crystal scan**, and this is the one place the measurement
+    contradicts ordinary EBSD practice: there the map average IS the
+    Kikuchi pattern, so `remove_static_background` removes the signal.
+    MEASURED on the smoke map: convergence falls from 87/100 to
+    **11/100** (12/100 with a dynamic pass on top), the median
+    residual rises from 0.9496 to 1.9477, and the mean iteration
+    count from 33.3 to 48.7 of a cap of 50. The recorded floors are
+    therefore taken on the RAW route, which is also what
+    requirements D4 means by default knobs (upstream background
+    removal is the user's choice and never implied).
+
+    Recorded consequence for Stage C's tutorial and for anyone
+    quoting these numbers: **the si_wafer dataset was acquired for
+    projection-centre calibration**, which reads band POSITIONS and
+    is untroubled by a fixed-pattern component; high angular
+    resolution DIC reads band SHAPES and is not. Plan open question
+    13's Si-indent dataset, deferred to after Stage C, is where a
+    method-level floor can be measured, and the V5 module docstring
+    now carries this whole paragraph so the number is never read
+    alone.
+
+45. **The four sweeps, and plan open questions 2, 3, 4 and 10
+    RESOLVED. Every frozen default is CONFIRMED; none is re-pinned.**
+    Recipe: `hrebsd_measure_b/v5_sweeps.py`, which reproduces the
+    module's own weekly sweeps and prints the table the tests only
+    assert on. Same route as entry 43, the smoke sub-grid of 100
+    patterns, one knob changed per arm.
+
+    **Open question 10 -- preprocessing defaults (requirements D4.1,
+    D4.2, D4.3; the default `(0.05, None)`, no AHE, no window,
+    CONFIRMED with this date).**
+
+    | `filter_cutoffs` | converged | median residual | mean iterations | strain floor |
+    |---|---|---|---|---|
+    | **`(0.05, None)`, frozen** | **87/100** | 0.9496 | 33.3 | 1.2168e-02 |
+    | `(None, None)` | **1/100** | 0.0534 | 49.5 | not measurable |
+    | `(0.05, 0.4)` | 89/100 | 0.8806 | 32.1 | 1.2246e-02 |
+    | `(None, 0.4)` | **1/100** | 0.0482 | 49.5 | not measurable |
+    | `window=False`, frozen | 87/100 | 0.9496 | 33.3 | 1.2168e-02 |
+    | `window=True` (Hann) | 14/100 | 0.2691 | 48.9 | 1.2474e-02 |
+
+    **This is the measurement plan open question 10 was created for,
+    and it comes out the OPPOSITE way to the noise-free oracle.**
+    Stage A entry 21 measured that the high-pass HALVES the capture
+    range and costs a factor of ten in accuracy on synthetic
+    patterns, and withdrew a requirements claim over it while
+    explicitly refusing to re-pin the default because "on noise-free
+    oracles a high-pass can only remove signal, and its purpose --
+    background gradients on real data -- is the V5 Si-wafer
+    measurement". On real data the high-pass is not a luxury:
+    **without it 1 of 100 patterns converges instead of 87.** The
+    default stands, and the two records now bracket it honestly --
+    it costs capture range on clean patterns and buys the whole
+    measurement on dirty ones.
+
+    The low-pass is the one arm that could have argued for a re-pin
+    and does not: `(0.05, 0.4)` converges 89 against 87 and drops the
+    median residual from 0.9496 to 0.8806, but leaves the strain
+    floor 0.6 per cent WORSE (1.2246e-02 against 1.2168e-02). Two
+    points of convergence is not a dated re-pin of a frozen default,
+    and `(0.05, None)` stays. The D4.3 Hann window is refuted as a
+    default here as clearly as anywhere: 14 of 100 converge with it.
+    (Its low median residual, 0.2691, is not a win -- it is the
+    taper's own weighting of the criterion, and the 86 points which
+    never converged carry it.)
+
+    **Open question 3 -- border and dead-band (requirements D4.4;
+    `border=0.05`, `dead_band=None` CONFIRMED with this date; the
+    plan's "pin the knee" answered NO KNEE EXISTS here).**
+
+    | `border` | converged | median residual | mean iterations | strain floor |
+    |---|---|---|---|---|
+    | 0.0 | 93/100 | 0.6211 | 32.2 | 1.2003e-02 |
+    | **0.05, frozen** | 87/100 | 0.9496 | 33.3 | **1.2168e-02** |
+    | 0.1 | 83/100 | 1.4393 | 37.0 | 1.2146e-02 |
+    | 0.2 | 52/100 | 1.7744 | 45.4 | 1.3364e-02 |
+
+    The floor moves 11 per cent over a fourfold change in the knob
+    while convergence falls from 93 to 52, so **the floor has no knee
+    in the border at all** on this dataset and the sweep cannot pin
+    one. It would be wrong to read the flat trend as "use
+    `border=0.0`": D4.4 chose 0.05 to cover the few-pixel beam-scan
+    translations expected at 480 px, and on THIS dataset the fits do
+    not track translations (entry 44), so it is exactly the quantity
+    the border exists for that the data cannot exercise. The default
+    stands unchanged, on the D4.4 reasoning rather than on this
+    table. `dead_band` is untouched: the wafer has no dead cross to
+    exclude, and the knob keeps its frozen `None`.
+
+    **Open question 2 -- convergence defaults (requirements D2.5 and
+    D2.6; `min_step = 1e-3` px and `max_iterations = 50` CONFIRMED
+    with this date).**
+
+    | knob | converged | mean iterations | strain floor | time |
+    |---|---|---|---|---|
+    | `min_step = 1e-2` | 97/100 | 11.3 | 1.2198e-02 | 7.9 s |
+    | **`min_step = 1e-3`, frozen** | 87/100 | 33.3 | **1.2168e-02** | 15.7 s |
+    | `min_step = 1e-4` | 26/100 | 48.2 | 1.2416e-02 | 21.0 s |
+    | `max_iterations = 10` | 1/100 | 9.9 | not measurable | 8.2 s |
+    | `max_iterations = 20` | 8/100 | 19.7 | 1.3133e-02 | 11.5 s |
+    | **`max_iterations = 50`, frozen** | 87/100 | 33.3 | 1.2168e-02 | 15.7 s |
+    | `max_iterations = 100` | 96/100 | 36.5 | 1.2175e-02 | 18.1 s |
+
+    Two findings. (a) **The floor is FLAT to 2 per cent across a
+    hundredfold change in `min_step`** (1.2168e-02 to 1.2416e-02),
+    which completes the error-versus-threshold curve plan open
+    question 2 asks for and answers it: on real data the convergence
+    threshold is NOT what limits the result, so the D2.5 default
+    leaves no systematic error above the floor and needs no re-pin.
+    A looser 1e-2 converges 97 of 100 in a third of the iterations
+    for the same floor, and it is tempting -- but the argument is
+    valid only where the fits are meaningless anyway, and Stage A
+    entry 10 measured that on the oracle the frozen 1e-3 already
+    exits in 5.2 iterations at the interpolation floor, so 1e-3 costs
+    nothing where the measurement works. Re-pinning a frozen default
+    on a dataset the method cannot measure would be exactly the
+    mistake D19 exists to prevent. **NOT re-pinned; recorded.**
+    (b) **`max_iterations = 50` is close to a real knee and is doing
+    work**: 10 gives 1 of 100, 20 gives 8, 50 gives 87, 100 gives 96.
+    The EMsoftOO namelist default turns out to be well chosen for
+    noisy data, and a smaller cap would be badly wrong. Raising it to
+    100 buys 9 points of convergence for 15 per cent more time and no
+    change in the floor (1.2175e-02), which is not a re-pin either.
+
+    **Open question 4 -- KAM kernel defaults (requirements D12;
+    `order = 1`, `psi_max = None`, same-grain always, CONFIRMED with
+    this date).** Same run, the KAM recomputed on the stored
+    rotations, so the arms differ only in the kernel.
+
+    | kernel | median KAM | mean | std | points | cost, 100 pts |
+    |---|---|---|---|---|---|
+    | **`order = 1`, frozen (8 neighbours)** | **5.2402 mrad** | 5.2105 | 0.1694 | 86 | 0.34 ms |
+    | `order = 2` (24 neighbours) | 8.2715 | 8.2588 | 0.5364 | 87 | 0.77 ms |
+    | `order = 3` (48 neighbours) | 11.1350 | 11.1790 | 0.5253 | 87 | 1.42 ms |
+    | `psi_max = None`, frozen | 5.2402 | -- | -- | 86 | -- |
+    | `psi_max = 5.0` mrad | 4.3685 | -- | -- | 86 | -- |
+    | `psi_max = 1.0` mrad | NaN | -- | -- | **0** | -- |
+
+    Plan open question 4 asks for "the noise/resolution trade" and
+    expects one; **there is none, because order 1 wins on BOTH axes**.
+    The rotations here are uncorrelated point to point, so widening
+    the kernel does not average the noise down, it reaches further
+    into it: the median KAM grows 5.24 -> 8.27 -> 11.14 mrad and its
+    spread triples, while the spatial resolution gets worse and the
+    cost quadruples. `order = 1` stays frozen, now with a measurement
+    behind it rather than a convention. `psi_max` behaves exactly as
+    D12 documents: at 1.0 mrad it drops every pair on a map whose
+    rotation floor is 12 mrad, leaving nothing -- correct behaviour
+    for a guard aimed at sub-grain boundaries, and the reason its
+    default is None.
+
+    **What none of these sweeps can do**, recorded so the next reader
+    does not over-read them: on a dataset where the DIC has no signal
+    (entry 44) every arm's floor is set by the same thing, which is
+    why three of the four tables are nearly flat in their floor
+    column. What the sweeps DO discriminate is CONVERGENCE, and there
+    the differences are large, unambiguous and consistent with every
+    frozen decision. When plan open question 13's Si-indent dataset
+    lands after Stage C, all four are worth re-running for their
+    floor columns.
+
+    **Test-module consequence, applied with this date.** The two
+    sweeps whose arms stop converging -- `(None, None)` at 1 of 100
+    and `min_step = 1e-4` at 26 of 100 -- ABORTED inside
+    `worst_component_std`, which refuses a map where over half the
+    points failed. That refusal is right for a floor which gets
+    pinned and wrong for a sweep arm, and it contradicted this
+    class's own "RECORDED, NOT GATED" docstring, validation V5's
+    "measurement harnesses ... results recorded" line and the V4
+    `test_rotation_sweep_capture_range` precedent, which records a
+    sweep most of whose arms fail. New helper `sweep_floor` returns
+    `(nan, 0)` instead of aborting, and each sweep now gates on its
+    FROZEN DEFAULT arm (`assert_default_arm_recorded`: finite,
+    positive, over half the map) plus a new
+    `assert_the_sweep_varied_something`, which is strictly more
+    killing power than the drafted `all(isfinite)` gave -- a sweep
+    that silently ignored its knob used to pass and now does not.
+
+46. **The Stage B performance row, at the real Si map scale
+    (recorded, never a gate -- D16).** Recipe:
+    `hrebsd_measure_b/v5_perf_ahe.py`, the FULL 50 by 50 map (2500
+    points, 480x480), default knobs, per-point projection centres,
+    each Stage B function timed as the median of five calls on the
+    map the DIC run produced, warm caches, idle machine.
+
+    | measurement | 2500 points | 100 points (smoke) |
+    |---|---|---|
+    | `hrebsd_strain_stress` | **6.13 ms** (min 6.00) | 1.10 ms |
+    | `segment_grains` | **5.59 ms** (min 5.27) | 0.62 ms |
+    | `hrebsd_kam`, `order=1` | **2.36 ms** (min 2.34) | 0.49 ms |
+    | all three together | **14.1 ms** | 2.2 ms |
+    | the `EBSD.hrebsd_dic` run that feeds them | **372.5 s** | 15.7 s |
+
+    So **the whole Stage B chain costs 3.8e-05 of the run it
+    post-processes**, and the D16 position that these are recorded
+    baselines and never gates needs no defending: on this map the
+    engine is 26000 times the cost of everything Stage B adds. All
+    three scale close to linearly from the smoke grid (5.6x, 9.0x and
+    4.8x for 25x the points; the sub-linear ones are per-call
+    overhead the 100-point numbers are dominated by).
+
+    Engine throughput on this route for the record: **6.71 pat/s**
+    (2187 of 2500 converged, mean 34.1 iterations), against the Stage
+    A oracle baseline of 22.72 pat/s at the same 480x480 size (entry
+    25). The factor of 3.4 is entirely iteration count -- 34.1 here
+    against 4.75 there -- which is the same real-data fact entries 44
+    and 45 measure from every other angle, not a performance
+    regression. The full-map strain floor from this independent run,
+    1.2208258467329113e-02, reproduces the weekly test's number to
+    every digit.
+
+47. **Requirements D4.2's adaptive-histogram-equalization arm, the
+    last piece of plan open question 10 (CONFIRMED with this date).**
+    D4.2 refuses AHE in the DIC chain on a theoretical argument -- it
+    is a nonlinear, locally varying intensity map, and ZNSSD's
+    invariance is only affine -- and asks that "the Si benchmark (V5)
+    measures the with/without comparison once and records it before
+    any reconsideration". The delivered sweep does not cover it,
+    because AHE is an UPSTREAM kikuchipy call
+    (`EBSD.adaptive_histogram_equalization`) and not a knob of
+    `hrebsd_dic`, so it is measured here instead. Recipe:
+    `hrebsd_measure_b/v5_perf_ahe.py`, the same smoke grid and route
+    as entry 43, kikuchipy's default AHE kernel.
+
+    | preprocessing | converged | median residual | mean iterations | strain floor | KAM |
+    |---|---|---|---|---|---|
+    | **none (frozen)** | **87/100** | 0.9496 | 33.3 | 1.2168e-02 | 5.240 mrad |
+    | AHE, default kernel | **5/100** | 1.6346 | 49.3 | 1.2560e-02 | 6.358 mrad |
+
+    **The theoretical argument is confirmed by measurement**:
+    convergence collapses from 87 per cent to 5 per cent, the median
+    residual rises 72 per cent and the mean iteration count goes to
+    49.3 of a cap of 50, i.e. essentially every fit runs out of
+    iterations. EMsoftOO's shared DI preprocessing applies AHE with
+    `nregions=10` (`mod_HREBSDDIC.f90:689-733`) and this fork's
+    deviation from it is now evidenced rather than argued.
+    Reconsideration is closed.
+
+48. **Gate outcome and everything still open.** With the ten pins of
+    entries 39 and 43, the three test corrections of entries 41, 42
+    and 45, and no change to any `_hrebsd/` module:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_tensors.py \
+      tests/test_indexing/test_hrebsd_stiffness.py \
+      tests/test_indexing/test_hrebsd_segmentation.py \
+      tests/test_indexing/test_hrebsd_kam.py \
+      tests/test_indexing/test_hrebsd_pc_shift.py \
+      tests/test_indexing/test_hrebsd_deformed_master.py \
+      tests/test_signals/test_ebsd_hrebsd_dic.py \
+      tests/test_indexing/test_hrebsd_engine.py \
+      tests/test_indexing/test_hrebsd_geometry.py \
+      tests/test_indexing/test_hrebsd_homography.py \
+      tests/test_indexing/test_hrebsd_interpolation.py -q
+    ```
+
+    ```
+    -> 437 passed, 1 skipped (the weekly capture-range sweep), 21.9 s
+    ```
+
+    and the V5 module, which is not in that list and which the cached
+    dataset now makes EXECUTABLE rather than skipped:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_si.py -q
+    ->  3 passed, 6 skipped (--weekly), 49.7 s
+
+    ... the same with --weekly
+    ->  9 passed, 681.1 s (11 min 21 s)
+    ```
+
+    So every V5 test passes, weekly arms included, where before this
+    gate the module skipped entirely. `ruff check` and
+    `ruff format --check` clean on every edited file, and no
+    `_hrebsd/` module changed: the only source edits at this gate are
+    the ten pins and the three test corrections.
+
+    NOT measured at this gate and still owned by their own gates: the
+    Stage C GND floor on the same wafer (`test_si_gnd_floor`), the
+    weekly 960x960 warp-refit, the D3 bicubic-versus-quintic re-run,
+    the Stage B coverage run, and the Stage B local oldest-matrix
+    run. Plan open questions 5, 6, 7, 8 and 12 are unchanged
+    deferrals; 1, 9 and 11 closed at Stage A; **2, 3, 4 and 10 close
+    here**; 13 is the post-Stage-C Si-indent application, which
+    entries 43 to 45 now make considerably more interesting -- it is
+    the dataset on which a method-level noise floor can be measured
+    at all.
+
+49. **Full existing suite, and the one failure it stops on.**
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q -x --ignore=tests/test_data
+    ->  1 failed, 4491 passed, 801 skipped, 5 rerun in 262.29 s
+    ```
+
+    The one failure is
+    `tests/test_simulations/test_kikuchi_pattern_simulator.py
+    ::TestCalculateMasterPattern::test_shape`, the SAME upstream flaky
+    test that entry 4 of the Stage A implementation gate and entry 27
+    of the Stage A review both logged on this machine, precisely so
+    that a future red run would not be misread as an HREBSD
+    regression. It is NOT a blocker and the evidence is direct rather
+    than historical:
+
+    - `git diff HEAD -- src/kikuchipy/simulations tests/test_simulations`
+      is EMPTY on this branch, so neither the code nor the test moved.
+    - It carries upstream's own `@pytest.mark.flaky(reruns=5)` and its
+      assertion is `np.allclose(mp.data[0], mp.data[1], atol=1e-4)` on
+      two 201x201 master-pattern hemispheres.
+    - RUN IN ISOLATION five times on identical inputs at this gate --
+      `pytest "...::test_shape" -q -p no:randomly`, nothing else
+      collected, no HREBSD module reachable -- it **passed 2 and
+      failed 3**, each failure exhausting all five of its own reruns.
+      So it does not need the HREBSD suite to have run first in order
+      to fail, which is the strongest form of the disposition entry 27
+      reached from history alone.
+
+    Deselecting it, the suite is GREEN:
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q --ignore=tests/test_data \
+      --deselect "tests/test_simulations/test_kikuchi_pattern_simulator.py
+                  ::TestCalculateMasterPattern::test_shape"
+    ->  4513 passed, 803 skipped, 1 deselected, 257.03 s
+    ```
+
+    So no non-HREBSD test breaks, and the 22 tests the count gains
+    over the `-x` run are the ones that run after the flaky one plus
+    the three V5 tests the cached dataset now makes executable.
+
+50. **One transient interpreter crash, observed ONCE and not
+    reproduced; recorded rather than suppressed.** The first
+    deselected full-suite run terminated with a Windows fatal-exception
+    stack dump whose frames were pytest's own shutdown path
+    (`pluggy/_hooks.py:512`, `_pytest/config/__init__.py:199` and
+    `:223`, `pytest/__main__.py:9`, `runpy`), with no test failure
+    reported before it. The IDENTICAL command re-run immediately
+    afterwards completed cleanly with the 4513 passed above, so the
+    crash is not reproducible on demand. Two things are worth
+    recording for whoever meets it next. It happened on the first run
+    in which `test_hrebsd_si.py` was BOTH executable (the dataset
+    having just been cached) and collected alongside the whole suite,
+    so the process peak memory is higher than any earlier Stage A or
+    Stage B run: the V5 tests hold 100 eager 480x480 patterns plus
+    their dask graphs. And `pytest-randomly` reseeds the collection
+    order per run, so the two runs did not execute in the same order.
+    It is NOT attributed to any HREBSD code here, because nothing
+    supports that attribution beyond coincidence of timing; it is
+    logged so that a second occurrence is recognised as a second
+    occurrence and investigated with `-p no:randomly` and a memory
+    watch rather than rediscovered.
+
+### Stage B adversarial review, fix gate (2026-09-08)
+
+51. **The PC-shift diagnostic was reading non-converged fits, and it
+    had reached a pin.** `hrebsd_pc_shift` promised in its docstring
+    and in an inline comment that "points which did not converge,
+    failed or were masked out are NaN", and built the exclusion out of
+    `numpy.isfinite(homography)` alone. Requirements D2.6 keeps a
+    non-converged point's finite LAST ITERATE, so that test cannot see
+    one, and `converged` was not in `REQUIRED_PROP_NAMES`. MEASURED,
+    by re-running entry 43's recipe (the 100-point Si smoke grid,
+    `reference="auto"`, per-point PCs at `px_size = 90 um`):
+
+    | | all 100 points | the 87 converged |
+    |---|---|---|
+    | `mean(residual_x)` | 9.973907 px | **10.995582 px** |
+    | `mean(residual_y)` | 9.356793 px | **9.840273 px** |
+    | `median(abs(translation_x))` | 0.026 px | 0.045 px |
+
+    The 13 abandoned fits pulled the reported mean DOWN by 10.2 per
+    cent, and `SI_PC_RESIDUAL_MEAN_TOL` was pinned at 2x that mixture.
+    FIXED in `_pc_shift.py`: `"converged"` joins the required
+    properties and `~converged` joins `dropped`. RE-PINNED:
+    `SI_PC_RESIDUAL_MEAN_TOL = 2.2e01` (2x 10.9956), with the recorded
+    numbers corrected in the module and in requirements D13.
+
+    The gap was invisible because the guarding class,
+    `test_hrebsd_pc_shift.py::TestFailedPoints`, only ever injected a
+    NaN homography -- a FAILED pattern, never a non-converged one.
+    Three tests now cover it: a synthetic non-converged point with a
+    finite homography, a discrimination arm showing the residual mean
+    move by 7/6 px when such a point is counted, and
+    `TestThroughTheEngine`, which runs `EBSD.hrebsd_dic` at
+    `max_iterations=1` on `nickel_ebsd_small` so that the engine
+    itself produces the finite-homography-with-`converged=False`
+    state, and asserts the NaN pattern of all seven maps equals
+    `~converged` exactly. The frozen assertions of that module are
+    untouched; its `phantom_map` FIXTURE gained `converged`, which is
+    a property the engine always stores.
+
+52. **`reference="auto"` ignored `navigation_mask` entirely.**
+    `resolve_reference` ran BEFORE the mask was applied and
+    `select_references` had no mask argument, so the highest-quality
+    pattern of a grain was chosen as its reference even when the
+    caller had masked it out. DEMONSTRATED on `nickel_ebsd_small`:
+    with the argmax-quality point masked, `reference_index` came back
+    naming it at every point of its grain, while that point's own
+    `homography` was NaN and `converged` False -- every strain in the
+    grain measured against a pattern the caller had excluded. FIXED:
+    the mask is threaded into `resolve_reference` and into a new
+    `selectable` argument of `select_references`; `grain_id` is
+    unchanged by the mask, and a grain with nothing selectable keeps
+    the unrestricted choice (no pattern of it is correlated, so the
+    index is never read). Requirements D11.2 records both clauses.
+    Pinned by `test_hrebsd_segmentation.py::TestAutoReference::
+    test_a_masked_out_point_is_never_a_reference` and
+    `test_ebsd_hrebsd_dic.py::TestAutoReference::
+    test_a_masked_out_pattern_is_never_the_reference`, which also
+    asserts the reference is now a fitted point.
+
+53. **The frozen default materialised the whole pattern stack.**
+    `select_references` did `numpy.asarray(patterns)` on the same
+    (possibly Dask) array the engine otherwise keeps lazy: 576 MB on
+    the shipped Si wafer before the first fit, about 57 GB on a
+    500 by 500 map of 480 by 480 patterns. MEASURED with a Dask array
+    of chunk size 1 whose every block load is counted on
+    `nickel_ebsd_small`: 11 block loads through `reference="auto"`
+    with 8 of 9 points masked out, against 2 for an explicit
+    reference. FIXED: `image_quality` takes optional `indices` and
+    reads them in blocks of about 64 MB
+    (`IMAGE_QUALITY_BLOCK_BYTES`), and `select_references` asks only
+    for the candidates. The kernel is per-pattern either way, so no
+    returned number changes; the block-counting test now measures 2
+    of 9 patterns read when 2 are asked for. The public Memory note of
+    `EBSD.hrebsd_dic` and requirements D11.2 and D16 say so.
+
+54. **A column-oriented one dimensional scan could not use the frozen
+    default.** `EBSD.hrebsd_dic` set `engine_nav_shape = (1, n)` for
+    any one dimensional navigation while `segment_grains` takes its
+    shape from the map's own grids (D11.1(b)). REPRODUCED: a
+    three-point signal with a crystal map built from `y = arange(3.0)`
+    has `xmap.shape == (3,)`, so the public guard passes, and
+    `reference="auto"` then raised `ValueError: segment_grains
+    returned labels of shape (3, 1), which must be the navigation
+    shape (1, 3)`. FIXED by reading `xmap.row`/`xmap.col`, with the
+    single scan step given to the ROW axis of a column scan. No extra
+    guard was added for a map which is neither a row nor a column:
+    orix reports a diagonal three-point map as shape `(3, 3)` and the
+    existing equality check rejects it (MEASURED, and pinned).
+
+55. **A phase with no point group silently changed the segmentation.**
+    orix leaves `Orientation(..., symmetry=None)` at C1, so
+    `angle_with` returns the raw angle. MEASURED: a 2 by 2 map of
+    0/90/0/90 degrees about z segments to one grain with
+    `point_group="m-3m"` and to two without it. There is no symmetry
+    to invent and refusing such a phase would make the frozen default
+    raise on input the rest of kikuchipy accepts, so `segment_grains`
+    now emits a `UserWarning` naming the phase and segments on the raw
+    angles (requirements D11.1(d)). No test in the suite triggers it:
+    every phase in the hrebsd tests carries a space group or a point
+    group.
+
+56. **Two survivors of the review's own mutation probe, killed.**
+
+    - `_kam.py`, `angles <= psi_max` -> `angles < psi_max`. It
+      contradicts requirements D12 ("drops pairs ABOVE the
+      threshold") and is not a rounding-scale difference: MEASURED on
+      a one-pair map, the correct form returns the pair angle and the
+      mutant returns NaN everywhere. `TestPsiMaxBoundary` feeds
+      `psi_max` the angle the module itself reported on a map with
+      exactly one pair, so the boundary is exact rather than a
+      tolerance, and cross-checks that angle against the module's own
+      independent oracle first. RE-INJECTED: 1 failed, 37 passed;
+      RESTORED: 38 passed.
+    - `_tensors.py`, `symmetric = 0.5 * (stacked + swapaxes(...))` ->
+      `symmetric = stacked`. It has no effect on any public number
+      today (the only caller feeds `strain_from_stretch`, whose worst
+      asymmetry is 3.4e-17), but the function's docstring promises the
+      symmetric part is taken and D15.6 makes the result a public
+      property with TENSOR shears, so the Stage C antisymmetry fix --
+      which works on a deliberately non-symmetric gradient -- would
+      read every shear twice over. Pinned with an asymmetric input,
+      `[1, 4, 6, 2.5, 1.5, 1.0]` against the mutant's
+      `[1, 4, 6, 5, 3, 2]`. RE-INJECTED: 1 failed, 69 passed;
+      RESTORED: 70 passed.
+
+57. **Coverage, 100 per cent of the Stage B modules, and the four
+    smaller findings the gaps carried.** The Definition-of-done
+    command, run with `pytest-cov` installed into a scratchpad
+    directory and put on `PYTHONPATH` (the entry-23 route), measured
+    **99.11 per cent, 11 lines missed** before this gate:
+    `_kam.py:107`, `_reference.py:227,232`, `_segmentation.py:210,
+    307-308`, `_stiffness.py:393`, `_tensors.py:615,819,852,907`.
+    Each was closed on its merits rather than by touching the line:
+
+    - `_segmentation.py:307-308` is DEAD, not untested: every edge
+      offset is skipped only on a one-by-one grid, which
+      `_map_grid` cannot reach. Pruned, and the one input that would
+      have reached it -- a map orix gives the shape `()` -- now raises
+      a `ValueError` naming the map from a shared `map_grids` helper
+      the three grid-shaped functions read their grids through,
+      instead of orix's `not enough values to unpack` (requirements
+      D11.1(f)).
+    - `_stiffness.py:393` was worse than untested. The broadcast of
+      ONE strain over a stack of stiffnesses was built and then all
+      but its first row silently discarded, because `single` was read
+      off the strain alone. It now returns `(n, 6)`, which is what
+      asking that question means, and is pinned against the per-point
+      loop.
+    - `_tensors.py:819,907` are the private chain's shape guards,
+      which the public function no longer breaks (entry 58): tested
+      directly. `:852` is the all-points-NaN early return of D2.6,
+      now pinned to return the full seven-key property set at full
+      length. `:615` is the stacked return of `small_strain_split`.
+    - `_kam.py:107` is the non-integer `order` guard, and
+      `_reference.py:227,232` the two `_flatten_labels` guards, the
+      first reachable through `resolve_reference` with a navigation
+      shape that disagrees with the map's grids.
+
+    ```
+    PYTHONPATH=<scratchpad>/covpkgs .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_tensors.py \
+      tests/test_indexing/test_hrebsd_stiffness.py \
+      tests/test_indexing/test_hrebsd_segmentation.py \
+      tests/test_indexing/test_hrebsd_kam.py \
+      tests/test_indexing/test_hrebsd_pc_shift.py \
+      tests/test_indexing/test_hrebsd_deformed_master.py \
+      tests/test_signals/test_ebsd_hrebsd_dic.py \
+      tests/test_indexing/test_hrebsd_engine.py \
+      tests/test_indexing/test_hrebsd_geometry.py \
+      tests/test_indexing/test_hrebsd_homography.py \
+      tests/test_indexing/test_hrebsd_interpolation.py \
+      --cov=src/kikuchipy/indexing/_hrebsd --cov-report=term-missing -q
+    ->
+      __init__.py          0 stmts, 0 miss, 100.00%
+      _engine.py         270 stmts, 0 miss, 100.00%
+      _geometry.py        55 stmts, 0 miss, 100.00%
+      _homography.py      62 stmts, 0 miss, 100.00%
+      _interpolation.py  186 stmts, 0 miss, 100.00%
+      _kam.py             77 stmts, 0 miss, 100.00%
+      _pc_shift.py        57 stmts, 0 miss, 100.00%
+      _preprocessing.py   70 stmts, 0 miss, 100.00%
+      _reference.py       74 stmts, 0 miss, 100.00%
+      _segmentation.py   154 stmts, 0 miss, 100.00%
+      _stiffness.py       82 stmts, 0 miss, 100.00%
+      _tensors.py        184 stmts, 0 miss, 100.00%
+      TOTAL             1271 stmts, 0 miss, 100.00%
+      474 passed, 1 skipped in 23.5 s
+    ```
+
+    `EBSD.hrebsd_dic` itself is fully covered too: the missing ranges
+    of `signals/ebsd.py` under the same run (2324-2480, 3030-3212)
+    lie outside the method.
+
+58. **The two modules disagreed about a multi-rotation map.**
+    `segment_grains` read the best of `(n, k)` rotations;
+    `hrebsd_strain_stress` raised `orientation_matrices must have
+    shape (n, 3, 3) ... but has shape (12, 3, 3, 3)`, naming a
+    parameter of the private chain that the public caller never
+    passed and that its documented `Raises` does not mention. Because
+    `EBSD.hrebsd_dic` deep-copies the input map, such a map survived
+    the whole Stage A run and failed only at the documented next step.
+    Both now take the best rotation (requirements D11.1(e)); the
+    private `tensor_chain` keeps its strict contract, tested directly.
+
+59. **numpydoc RT02, the one convention Stage B broke.** The repo
+    enables `"all"` minus a listed set that does not exempt RT02
+    (`doc/conf.py:317-333`), and the four new public functions gave a
+    NAMED single return with a type where the whole package gives the
+    type alone: `hrebsd_strain_stress`, `segment_grains`,
+    `hrebsd_kam`, `hrebsd_pc_shift`. Stage A's six modules and the
+    `kikuchipy.indexing` baseline have none. FIXED by dropping the
+    ` : <type>` and keeping the name, as `EBSD.hrebsd_dic` and
+    `voigt_stiffness` already do. Re-run of the repo's own exempt set
+    over Stage B, Stage A and the baseline: **0 non-exempt numpydoc
+    errors in all three**.
+
+60. **The Stage B local oldest-matrix run, the last unrecorded
+    Definition-of-done item.** Entry 24's recipe, after the fixes
+    above:
+
+    ```
+    uv run --isolated --python 3.10 \
+      --with "numpy==1.23.0" --with "numba==0.57" \
+      --with "orix==0.12.1" --with "scikit-image==0.21.0" \
+      --with pytest-benchmark --with pytest-rerunfailures \
+      --with pytest-xdist --with pytest-randomly \
+      pytest tests/test_indexing tests/test_signals -k hrebsd -q
+    ->  477 passed, 7 skipped, 4335 deselected in 65.18 s
+    ```
+
+    Environment as resolved: Python 3.10.19, numpy 1.23.0, scipy
+    1.13.1, numba 0.57.0, orix 0.12.1, scikit-image 0.21.0, dask
+    2024.8.1. The 477 include the three executable V5 tests, so the
+    orix floor is discharged on the real-data route as well as the
+    synthetic ones, and it now covers the orix calls this gate added:
+    `CrystalMap.shape` on a grid-less map and `rotations.to_matrix()`
+    on a multi-rotation map.
+
+61. **The stress path is 27x the recorded Stage B tensor baseline,
+    and the baseline said nothing about it.** Entry 46 records
+    `hrebsd_strain_stress` on entry 43's recipe, which passes
+    `stiffness=None`, so `rotate_stiffness` is never reached. MEASURED
+    on machine A, best of five:
+
+    | | 100 points | 2500 points |
+    |---|---|---|
+    | `rotate_stiffness` | 7.38 ms | 182.44 ms |
+    | `hrebsd_strain_stress`, deviatoric | -- | 7.21 ms |
+    | `hrebsd_strain_stress`, traction free | -- | 192.93 ms |
+    | vectorised `einsum`, `optimize=True` | -- | 4.42 ms |
+
+    The vectorised form agrees with the per-point loop to 1.99e-13,
+    far inside `REDUCED_CLOSURE_TOL = 2.4e-06`, but NOT bitwise, and
+    the loop exists precisely so that a stacked call is the loop to
+    the last bit. 190 ms on a map whose fits take hours does not buy
+    that back, so the loop stands and the number is RECORDED
+    (requirements D16), which is what D16 says performance is for.
+
+62. **A latent NaN cast in `hrebsd_kam`.** `grain_id` was cast to
+    int64 without a dtype check, so a FLOAT `grain_id` carrying NaN
+    emitted `RuntimeWarning: invalid value encountered in cast` and
+    relied on the platform's undefined NaN-to-int result being
+    negative to be treated as unlabelled. The documented property is
+    int32 and takes the same path unchanged, so this is latent rather
+    than live; it is fixed anyway (`numpy.where(isfinite, raw, -1)`)
+    because the module's NaN discipline is explicit everywhere else,
+    and pinned with a `RuntimeWarning`-as-error test.
+
+63. **Narration corrected: nothing raises `NotImplementedError` any
+    more.** Every hrebsd test module still told its reader that "every
+    test which calls the module fails with `NotImplementedError` until
+    X lands", and `test_ebsd_hrebsd_dic.py`'s `run()` helper still
+    called the frozen default a Stage B thing. `grep -rn
+    "raises(NotImplementedError" tests/ src/` returns no hrebsd hit.
+    All twelve docstrings are rewritten in the past tense, each saying
+    which failing-tests gate it was written at. No assertion moved.
+
+64. **Fix-gate outcome.**
+
+    ```
+    .venv/Scripts/python.exe -m pytest <the eleven modules above> -q
+    ->  474 passed, 1 skipped (the weekly capture-range sweep), 21.4 s
+
+    .venv/Scripts/python.exe -m pytest tests/test_indexing/test_hrebsd_si.py -q
+    ->  3 passed, 6 skipped (--weekly), 49.2 s
+    ```
+
+    `ruff check src tests` -> All checks passed.
+    `ruff format --check src tests` -> the one file it would reformat,
+    `tests/test_draw/test_ebsd_detector_plots_widgets.py`, is
+    untouched by this branch (`git diff --name-only` does not list
+    it); every file this gate edited is formatted.
+
+    Source changed at this gate, which entry 48 could still say was
+    empty: `_pc_shift.py` (the convergence contract, the anchor
+    documentation, the shared grid read), `_segmentation.py` (the
+    selectable set, block-wise scoring, the point-group warning, the
+    `map_grids` guard, the pruned dead branch), `_reference.py` (the
+    mask threading), `_engine.py` (passing the mask on),
+    `_kam.py` (the NaN-safe cast, the shared grid read, the `psi_max`
+    docstring), `_tensors.py` (the best rotation), `_stiffness.py`
+    (the broadcast return) and `signals/ebsd.py` (the one dimensional
+    grids, the Memory note, the mask documentation).
+
+65. **Full existing suite at the fix gate, and the same one failure.**
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q -x --ignore=tests/test_data
+    ->  1 failed, 4528 passed, 801 skipped, 5 rerun in 261.98 s
+    ```
+
+    The failure is
+    `tests/test_simulations/test_kikuchi_pattern_simulator.py
+    ::TestCalculateMasterPattern::test_shape` again -- the upstream
+    flaky test entries 4, 27 and 49 logged on this machine.
+    `git diff HEAD -- src/kikuchipy/simulations tests/test_simulations`
+    is still EMPTY on this branch, and RUN IN ISOLATION three times at
+    this gate it passed each time, two of the three only after its own
+    `@pytest.mark.flaky(reruns=5)` reruns (4 reruns, 0, 1). Deselecting
+    it, the suite is GREEN:
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q --ignore=tests/test_data \
+      --deselect "tests/test_simulations/test_kikuchi_pattern_simulator.py
+                  ::TestCalculateMasterPattern::test_shape"
+    ->  4550 passed, 803 skipped, 1 deselected in 252.84 s
+    ```
+
+    The 37 tests gained over entry 49's 4513 are exactly the 37 this
+    gate added (474 against 437 in the eleven-module list). `pytest`
+    was run WITH `pytest-randomly` in its default random order for
+    both, and the eleven-module list is green in random order as well
+    as under `-p no:randomly`.
+
+    `pre-commit` itself is not installed in this environment; its two
+    code hooks are `ruff` and `ruff-format`, both run above, and the
+    other two are `black-jupyter` (`.ipynb` only, none touched) and
+    `licenseheaders` (every edited file keeps its GPL header
+    unchanged).

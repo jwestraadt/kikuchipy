@@ -24,15 +24,16 @@ Covers the signal-method suite of
 and defaults of requirements D15.4, the crystal map contract of
 D15.6 (property names, shapes, data types, and the input
 orientations left untouched), both navigation-mask polarities, lazy
-input, the ``reference="auto"`` Stage A pin of D11.3, the argument
+input, the frozen default ``reference="auto"`` of D11.3, the argument
 guards, the information message of D16 and the documented retrieval
 route for the two dimensional tensor properties of D15.7.
 
-The signature and docstring pins are pure introspection and pass
-before the implementation lands, which is what makes them a freeze;
-every other test calls the skeleton and therefore fails with
-``NotImplementedError`` until the engine lands, then passes
-unchanged.
+The signature and docstring pins are pure introspection and passed
+before the implementation landed, which is what makes them a freeze;
+every other test called the skeleton and so failed with
+``NotImplementedError`` until the engine landed, and passed unchanged
+after it (narration corrected to the past tense 2026-09-08, Stage B
+adversarial review).
 """
 
 import inspect
@@ -115,7 +116,15 @@ def ni_inputs():
 
 def run(signal, xmap, detector, **kwargs):
     """Call the method with the one non-default this whole suite
-    needs, an explicit reference (``"auto"`` is Stage B)."""
+    needs, an explicit reference.
+
+    The frozen default ``"auto"`` has its own class,
+    :class:`TestAutoReference`; naming a reference here keeps every
+    other test measuring what it is about rather than the segmentation
+    (clause corrected 2026-09-08, Stage B adversarial review: it used
+    to call the default a Stage B thing, which stopped being true when
+    Stage B landed).
+    """
     kwargs.setdefault("reference", (1, 1))
     kwargs.setdefault("verbose", 0)
     return signal.hrebsd_dic(xmap, detector, **kwargs)
@@ -281,12 +290,12 @@ class TestNavigationMask:
 class TestGuards:
     """Every guard names the offending argument.  [D15]"""
 
-    def test_auto_reference_names_stage_b(self):
-        # the Stage A pin of D11.3, replaced when the grain
-        # segmentation lands.  The message must be actionable
-        signal, xmap, detector = ni_inputs()
-        with pytest.raises(NotImplementedError, match="Stage B"):
-            signal.hrebsd_dic(xmap, detector, verbose=0)
+    # ``test_auto_reference_names_stage_b`` stood here and was DELETED
+    # 2026-09-08 at the Stage B implementation gate, exactly as
+    # ``TestAutoReference`` below and validation.md's Stage B
+    # unit-suite block said it would be: it pinned the Stage A
+    # ``NotImplementedError`` of ``reference="auto"``, which the
+    # segmentation of requirements D11 replaces with real behaviour
 
     def test_detector_shape_mismatch(self):
         signal, xmap, _ = ni_inputs()
@@ -448,6 +457,61 @@ class TestNavigationDimensions:
         with pytest.raises(ValueError, match="one or two dimensions"):
             single.hrebsd_dic(xmap[0, 0].deepcopy(), detector, verbose=0)
 
+    @staticmethod
+    def column_map(xmap):
+        """Return a genuinely one dimensional crystal map whose three
+        points lie in a COLUMN, which orix reports with the same shape
+        ``(3,)`` as a row and tells apart only by its grids."""
+        line = CrystalMap(
+            rotations=xmap.rotations[:3],
+            phase_id=np.zeros(3, dtype=int),
+            phase_list=xmap.phases.deepcopy(),
+            x=np.zeros(3),
+            y=np.arange(3.0) * 1.5,
+        )
+        line.scan_unit = xmap.scan_unit
+        return line
+
+    def test_a_one_dimensional_column_scan(self):
+        # ADDED 2026-09-08 at the Stage B adversarial review.  The
+        # engine used to be told a one dimensional scan is a single
+        # map ROW whatever the crystal map said, so a column line scan
+        # passed the shape guard and then died inside
+        # ``resolve_reference`` on the FROZEN DEFAULT
+        # ``reference="auto"``, with a message naming a function the
+        # caller never called.  Requirements D11.1(b) settles it: the
+        # grids decide which of the two a flattened map is
+        signal, xmap, detector = ni_inputs()
+        line = signal.inav[0, :]
+        column_map = self.column_map(xmap)
+        assert column_map.shape == (3,)
+        np.testing.assert_array_equal(column_map.col, [0, 0, 0])
+        result = line.hrebsd_dic(column_map, detector, verbose=0)
+        assert result.shape == (3,)
+        for name in STAGE_A_PROP_NAMES:
+            assert np.asarray(result.prop[name]).shape[0] == 3
+        # every point is measured, and the reference is one of them
+        assert np.all(np.asarray(result.prop["grain_id"]) >= 0)
+        assert np.all(np.asarray(result.prop["reference_index"]) >= 0)
+
+    def test_a_one_dimensional_map_which_is_neither_is_already_refused(self):
+        # the reason no separate guard is needed for the grids: a map
+        # whose points walk diagonally spans a two dimensional grid,
+        # which orix reports as a two dimensional SHAPE, and the shape
+        # check above rejects it before any of this
+        signal, xmap, detector = ni_inputs()
+        line = signal.inav[0, :]
+        diagonal = CrystalMap(
+            rotations=xmap.rotations[:3],
+            phase_id=np.zeros(3, dtype=int),
+            phase_list=xmap.phases.deepcopy(),
+            x=np.arange(3.0) * 1.5,
+            y=np.arange(3.0) * 1.5,
+        )
+        assert diagonal.shape == (3, 3)
+        with pytest.raises(ValueError, match="must be identical"):
+            line.hrebsd_dic(diagonal, detector, verbose=0)
+
 
 class TestScanStepUnits:
     """The beam-scan projection centre model consumes the navigation
@@ -557,12 +621,11 @@ class TestAutoReference:
     image quality pattern (D11.2), which is then paired exactly as an
     explicit per-grain index array would be (D11.3).
 
-    ``TestGuards::test_auto_reference_names_stage_b`` above is the
-    Stage A pin of this mode and is REPLACED by this class: it passes
-    at this gate only because the Stage B skeletons raise
-    ``NotImplementedError`` naming Stage B, and the implementation
-    gate deletes it (validation.md: "``reference='auto'``
-    NotImplementedError pin in Stage A, replaced in Stage B").
+    ``TestGuards::test_auto_reference_names_stage_b`` was the Stage A
+    pin of this mode and is REPLACED by this class; the
+    implementation gate DELETED it on 2026-09-08 (validation.md:
+    "``reference='auto'`` NotImplementedError pin in Stage A,
+    replaced in Stage B").
 
     The expectations are built here from
     :func:`kikuchipy.pattern.get_image_quality` on the raw patterns,
@@ -576,31 +639,74 @@ class TestAutoReference:
         patterns = np.asarray(signal.data, dtype=np.float64).reshape(9, 60, 60)
         return np.array([kp.pattern.get_image_quality(pattern) for pattern in patterns])
 
-    def test_auto_is_the_default_and_gives_one_grain_here(self):
-        # the nine shipped nickel patterns are one grain by any
-        # sensible threshold, so the whole map shares one reference:
-        # the best pattern of the nine
+    @staticmethod
+    def per_grain_references(signal, labels):
+        """Return the argmax-quality flat index of every grain and the
+        per-point reference index those pair to, assembled here."""
+        quality = TestAutoReference.quality(signal)
+        flat = np.asarray(labels).ravel()
+        indices = np.array(
+            [
+                np.flatnonzero(flat == label)[np.argmax(quality[flat == label])]
+                for label in np.unique(flat[flat >= 0])
+            ]
+        )
+        per_point = np.full(flat.size, -1, dtype=np.int32)
+        for position, label in enumerate(np.unique(flat[flat >= 0])):
+            per_point[flat == label] = indices[position]
+        return indices, per_point
+
+    def test_auto_is_the_default_and_segments_the_map(self):
+        # CORRECTED 2026-09-08 at the Stage B implementation gate.
+        # The drafted arm was
+        # ``test_auto_is_the_default_and_gives_one_grain_here`` and
+        # asserted ONE grain, "by any sensible threshold".  MEASURED
+        # on the shipped map and REFUTED: the symmetry-reduced
+        # misorientation between column 0 and column 1 of
+        # ``nickel_ebsd_small``'s crystal map is 34.1111 degrees, and
+        # every within-column pair sits at 0.16 to 0.92 degrees.  The
+        # number is measured three independent ways which agree to
+        # 1e-4 degrees -- orix's ``Orientation.angle_with``, a
+        # hand-built minimisation of ``angle(g_i^T S g_j)`` over the
+        # 24 proper cubic rotations, and a quaternion dot
+        # maximisation over ``Oh`` -- so the shipped map holds TWO
+        # grains at the FROZEN 5.0 degree default of requirements
+        # D11.1, and one grain here could only come from ignoring
+        # that default.  What the arm is FOR is unchanged and is all
+        # asserted below: ``"auto"`` is the default, every point gets
+        # a grain, each grain's reference is its own highest image
+        # quality pattern, and a reference correlates with itself
         signal, xmap, detector = ni_inputs()
         result = signal.hrebsd_dic(xmap, detector, verbose=0)
         assert isinstance(result, CrystalMap)
+        labels = np.asarray(kp.indexing.segment_grains(xmap))
         grain_id = np.asarray(result.prop["grain_id"])
-        reference_index = np.asarray(result.prop["reference_index"])
-        assert np.all(grain_id == 0)
-        best = int(np.argmax(self.quality(signal)))
-        assert np.all(reference_index == best)
-        # and the reference correlates with itself, so its own
+        assert np.array_equal(grain_id, labels.ravel())
+        # the measured segmentation of this map, written out so that a
+        # change in the shipped data fails here and names itself
+        assert np.array_equal(labels, [[0, 1, 1], [0, 1, 1], [0, 1, 1]])
+        indices, expected = self.per_grain_references(signal, labels)
+        assert np.array_equal(np.asarray(result.prop["reference_index"]), expected)
+        # and every reference correlates with itself, so its own
         # deformation gradient is the identity
-        fe = np.asarray(result.prop["Fe"])[best].reshape(3, 3)
-        assert np.abs(fe - np.eye(3)).max() < 1e-6
+        for best in indices.tolist():
+            fe = np.asarray(result.prop["Fe"])[int(best)].reshape(3, 3)
+            assert np.abs(fe - np.eye(3)).max() < 1e-6
 
     def test_auto_agrees_with_the_equivalent_explicit_reference(self):
-        # "auto" chooses a reference and changes nothing else, so the
-        # run must be BITWISE the run with that reference named
+        # "auto" chooses the grains and their references and changes
+        # nothing else, so the run must be BITWISE the run which names
+        # them.  CORRECTED 2026-09-08 with the arm above: the
+        # equivalent explicit run is the per-grain index array of
+        # requirements D11.3 paired with the segmentation's own grain
+        # map, not one global ``(row, col)``, since the shipped map
+        # holds two grains
         signal, xmap, detector = ni_inputs()
-        best = int(np.argmax(self.quality(signal)))
+        labels = np.asarray(kp.indexing.segment_grains(xmap))
+        indices, _ = self.per_grain_references(signal, labels)
         automatic = signal.hrebsd_dic(xmap, detector, verbose=0)
         explicit = signal.hrebsd_dic(
-            xmap, detector, reference=divmod(best, 3), verbose=0
+            xmap, detector, reference=indices, grain_labels=labels, verbose=0
         )
         for name in STAGE_A_PROP_NAMES:
             left = np.asarray(automatic.prop[name])
@@ -664,12 +770,49 @@ class TestAutoReference:
             ), name
 
     def test_auto_survives_a_navigation_mask(self):
-        # a masked point takes no part in the run, and the reference
-        # is still chosen over the whole grain: masking is a
-        # correlation decision, not a segmentation one
+        # a masked point takes no part in the run, and its grain is
+        # still segmented and still measured: masking is a correlation
+        # decision, not a segmentation one.
+        #
+        # COMMENT CORRECTED 2026-09-08 (Stage B adversarial review).
+        # It used to add "and the reference is still chosen over the
+        # whole grain", which was true of the code and WRONG: a masked
+        # out pattern could become the reference every strain in its
+        # grain was measured against, with its own homography NaN. The
+        # assertions here are unchanged; the new behaviour is pinned by
+        # ``test_a_masked_out_pattern_is_never_the_reference`` below
         signal, xmap, detector = ni_inputs()
         mask = np.zeros((3, 3), dtype=bool)
         mask[0, 0] = True
         result = signal.hrebsd_dic(xmap, detector, navigation_mask=mask, verbose=0)
         assert np.all(np.isnan(np.asarray(result.prop["homography"])[0]))
         assert np.all(np.isfinite(np.asarray(result.prop["homography"])[4]))
+
+    def test_a_masked_out_pattern_is_never_the_reference(self):
+        # ADDED 2026-09-08 at the Stage B adversarial review, which
+        # MEASURED the defect on this very map: with the best pattern
+        # of a grain masked out, ``"auto"`` still chose it, so every
+        # point of that grain was measured against a pattern the caller
+        # had excluded -- and that pattern's own ``homography`` came
+        # back NaN with ``converged=False``
+        signal, xmap, detector = ni_inputs()
+        labels = np.asarray(kp.indexing.segment_grains(xmap))
+        _, unmasked = self.per_grain_references(signal, labels)
+        best = int(unmasked[4])
+        mask = np.zeros((3, 3), dtype=bool)
+        mask.ravel()[best] = True
+        result = signal.hrebsd_dic(xmap, detector, navigation_mask=mask, verbose=0)
+        reference_index = np.asarray(result.prop["reference_index"])
+        assert np.all(reference_index != best)
+        # it is the second best of the SAME grain, computed here
+        quality = self.quality(signal)
+        inside = np.flatnonzero(labels.ravel() == labels.ravel()[best])
+        allowed = inside[inside != best]
+        assert reference_index[4] == allowed[int(np.argmax(quality[allowed]))]
+        # the other grain, which the mask does not touch, keeps its own
+        assert reference_index[0] == unmasked[0]
+        # and the grain identifiers are the unmasked ones: only the
+        # choice of reference changed
+        assert np.array_equal(np.asarray(result.prop["grain_id"]), labels.ravel())
+        # the reference now really is a fitted point
+        assert np.all(np.isfinite(np.asarray(result.prop["Fe"])[reference_index[4]]))

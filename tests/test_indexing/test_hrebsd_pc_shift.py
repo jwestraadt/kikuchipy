@@ -41,9 +41,12 @@ expectation is then EXACT rather than at the interpolation floor, and
 the magnitude a second correction would inject is computed alongside
 it from ``_homography``, so the band is shown to discriminate.
 
-Written before the implementation exists: every test which calls the
-module fails with ``NotImplementedError`` until the analysis lands,
-then passes unchanged.  The signature and key freezes pass today.
+Written failing before the implementation, at the Stage B
+failing-tests gate: every test which calls the module failed with
+``NotImplementedError`` until the analysis landed, and passed unchanged
+after it, while the signature and key freezes passed from the start
+(narration corrected to the past tense 2026-09-08, Stage B adversarial
+review).
 """
 
 import inspect
@@ -150,9 +153,19 @@ def phantom_homographies(pc_px, reference_index=0):
     )
 
 
-def phantom_map(homography, reference_index=0, fe=None):
+def phantom_map(homography, reference_index=0, fe=None, converged=None):
     """Return a crystal map carrying the Stage A properties the
-    analysis reads."""
+    analysis reads.
+
+    ``converged`` ADDED 2026-09-08 (Stage B adversarial review), and it
+    is a FIXTURE correction rather than a contract one: the engine
+    stores the flag for every point (requirements D15.6) and the
+    analysis now reads it, because a NON-CONVERGED point keeps a finite
+    last iterate in ``homography`` (D2.6) and so cannot be recognized
+    from the homography alone.  Every assertion below is unchanged;
+    the default is all-converged, which is what these analytic phantoms
+    always described.
+    """
     arrays, size = create_coordinate_arrays(PHANTOM_NAVIGATION_SHAPE, (1.0, 1.0))
     arrays["rotations"] = Rotation.identity((size,))
     arrays["phase_id"] = np.zeros(size, dtype=int)
@@ -164,6 +177,9 @@ def phantom_map(homography, reference_index=0, fe=None):
     )
     xmap.prop["reference_index"] = np.full(size, int(reference_index), dtype=np.int32)
     xmap.prop["grain_id"] = np.zeros(size, dtype=np.int32)
+    if converged is None:
+        converged = np.ones(size, dtype=bool)
+    xmap.prop["converged"] = np.asarray(converged, dtype=bool).reshape(size)
     if fe is not None:
         xmap.prop["Fe"] = np.asarray(fe, dtype=np.float64).reshape(size, BETA_PROP_SIZE)
     return xmap
@@ -393,6 +409,53 @@ class TestFailedPoints:
     """NaN in, NaN out: nothing is fabricated for a point which never
     converged.  [D2.6/D13]"""
 
+    def test_a_non_converged_point_gives_nan_everywhere(self):
+        # ADDED 2026-09-08 at the Stage B adversarial review, which
+        # found this class pinning only the FAILED case: requirements
+        # D2.6 keeps a non-converged point's LAST ITERATE, so its
+        # homography is perfectly finite and the finiteness test the
+        # module used could not see it.  MEASURED on the Si wafer, 13
+        # of 100 such points moved the mean of ``residual_x`` from
+        # 10.9956 px to 9.9739 px, a 10 per cent contamination of the
+        # one number requirements D13 is read on
+        detector = phantom_detector()
+        pc_px = pc_pixels_of(detector)
+        homography = phantom_homographies(pc_px)
+        converged = np.ones(pc_px.shape[0], dtype=bool)
+        converged[3] = False
+        xmap = phantom_map(homography, converged=converged)
+        # the point's own homography is FINITE, which is the whole
+        # point of the test
+        assert np.all(np.isfinite(np.asarray(xmap.prop["homography"])[3]))
+        got = hrebsd_pc_shift(xmap, detector)
+        for key in PC_SHIFT_KEYS:
+            assert np.isnan(got[key].ravel()[3]), key
+            assert np.isfinite(got[key].ravel()[1]), key
+
+    def test_the_non_converged_points_really_move_the_mean(self):
+        # the discrimination of the test above, on this oracle: a
+        # non-converged point carrying a wrong translation shifts the
+        # residual mean the diagnostic is read on, and dropping it
+        # brings the mean back to the clean value
+        detector = phantom_detector()
+        pc_px = pc_pixels_of(detector)
+        homography = phantom_homographies(pc_px)
+        homography[3, 2] += 7.0
+        converged = np.ones(pc_px.shape[0], dtype=bool)
+        with_it = hrebsd_pc_shift(
+            phantom_map(homography, converged=converged), detector
+        )
+        converged[3] = False
+        without = hrebsd_pc_shift(
+            phantom_map(homography, converged=converged), detector
+        )
+        assert float(np.nanmean(with_it["residual_x"])) == pytest.approx(
+            7.0 / pc_px.shape[0], abs=ALGEBRA_TOL
+        )
+        assert float(np.nanmean(without["residual_x"])) == pytest.approx(
+            0.0, abs=ALGEBRA_TOL
+        )
+
     def test_a_nan_homography_gives_nan_everywhere(self):
         detector = phantom_detector()
         pc_px = pc_pixels_of(detector)
@@ -426,6 +489,35 @@ class TestGuards:
         arrays["phase_list"] = PhaseList(Phase(name="ni", space_group=225))
         with pytest.raises(ValueError, match="hrebsd_dic"):
             hrebsd_pc_shift(CrystalMap(**arrays), detector)
+
+    def test_a_map_without_the_convergence_flag(self):
+        # ADDED 2026-09-08: the flag joined the required set at the
+        # Stage B adversarial review, and a map without it cannot be
+        # read for this diagnostic at all -- the finite homography of a
+        # non-converged point is indistinguishable from a converged one
+        detector = phantom_detector()
+        xmap = phantom_map(phantom_homographies(pc_pixels_of(detector)))
+        del xmap.prop["converged"]
+        with pytest.raises(ValueError, match="converged"):
+            hrebsd_pc_shift(xmap, detector)
+
+    def test_a_map_without_a_grid_is_named(self):
+        # orix reports the shape ``()`` for a map whose points share
+        # one scan position, and its row grid then raises a message
+        # naming nothing the caller passed
+        detector = phantom_detector()
+        xmap = CrystalMap(
+            rotations=Rotation.identity((2,)),
+            phase_id=np.zeros(2, dtype=int),
+            phase_list=PhaseList(Phase(name="ni", space_group=225)),
+            x=np.zeros(2),
+            y=np.zeros(2),
+        )
+        xmap.prop["homography"] = np.zeros((2, N_HOMOGRAPHY_PARAMETERS))
+        xmap.prop["reference_index"] = np.zeros(2, dtype=np.int32)
+        xmap.prop["converged"] = np.ones(2, dtype=bool)
+        with pytest.raises(ValueError, match="no map grid"):
+            hrebsd_pc_shift(xmap, detector)
 
     def test_a_single_projection_centre_detector_is_refused(self):
         # requirements D6.1's rule, applied here: the beam-scan model
@@ -462,6 +554,64 @@ class TestGuards:
         second = hrebsd_pc_shift(xmap, detector)
         for key in PC_SHIFT_KEYS:
             assert np.array_equal(first[key], second[key], equal_nan=True), key
+
+
+class TestThroughTheEngine:
+    """The convergence contract as the ENGINE actually delivers it,
+    not as a hand-built property set describes it.  [D2.6/D13]
+
+    ADDED 2026-09-08 at the Stage B adversarial review.  Every other
+    test here builds its own properties, so none of them could show
+    what a real non-converged run stores: a FINITE homography with
+    ``converged=False``.  This one runs the engine at a cap of one
+    iteration, which is the cheapest way to produce exactly that.
+    """
+
+    @staticmethod
+    def nickel_run(max_iterations):
+        signal = kp.data.nickel_ebsd_small()
+        navigation_shape = signal.axes_manager.navigation_shape[::-1]
+        arrays, size = create_coordinate_arrays(navigation_shape, (1.0, 1.0))
+        arrays["rotations"] = Rotation.identity((size,))
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = PhaseList(Phase(name="ni", space_group=225))
+        xmap = CrystalMap(**arrays)
+        xmap.scan_unit = "um"
+        detector = kp.detectors.EBSDDetector(
+            shape=signal.axes_manager.signal_shape[::-1],
+            binning=1,
+            px_size=70.0,
+            pc=np.tile(signal.detector.pc_flattened[0], navigation_shape + (1,)),
+            sample_tilt=70.0,
+        )
+        return signal, xmap, detector
+
+    def test_a_run_capped_at_one_iteration_is_nan_where_it_did_not_converge(self):
+        signal, xmap, detector = self.nickel_run(1)
+        with pytest.warns(UserWarning, match="did not converge"):
+            result = signal.hrebsd_dic(
+                xmap, detector, reference=(0, 0), max_iterations=1, verbose=0
+            )
+        converged = np.asarray(result.prop["converged"])
+        homography = np.asarray(result.prop["homography"])
+        assert not converged.all()
+        # the D2.6 contract, measured rather than assumed: the last
+        # iterate is KEPT and is finite at the non-converged points
+        assert np.all(np.isfinite(homography[~converged]))
+        got = hrebsd_pc_shift(result, detector)
+        for key in PC_SHIFT_KEYS:
+            flat = got[key].ravel()
+            np.testing.assert_array_equal(np.isnan(flat), ~converged, err_msg=key)
+
+    def test_the_same_run_uncapped_measures_everything(self):
+        # the complement: the NaNs above are the cap and not the
+        # diagnostic refusing to work on engine output
+        signal, xmap, detector = self.nickel_run(50)
+        result = signal.hrebsd_dic(xmap, detector, reference=(0, 0), verbose=0)
+        assert np.all(np.asarray(result.prop["converged"]))
+        got = hrebsd_pc_shift(result, detector)
+        for key in PC_SHIFT_KEYS:
+            assert np.all(np.isfinite(got[key])), key
 
 
 # ====== V6 Stage B -- the double-correction killer, through ========= #

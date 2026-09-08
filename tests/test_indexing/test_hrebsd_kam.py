@@ -57,12 +57,16 @@ which :func:`pair_angle` uses below, reproduces both closed forms to
 implementation.  The commitment of requirements D12 is unchanged:
 the pair angle is the rotation angle of ``R_p R_q^T``.
 
-Written before the implementation exists: every test which calls the
-module fails with ``NotImplementedError`` until HR-KAM lands, then
-passes unchanged.  The signature and unit freezes pass today.
+Written failing before the implementation, at the Stage B
+failing-tests gate: every test which calls the module failed with
+``NotImplementedError`` until HR-KAM landed, and passed unchanged after
+it, while the signature and unit freezes passed from the start
+(narration corrected to the past tense 2026-09-08, Stage B adversarial
+review).
 """
 
 import inspect
+import warnings
 
 import numpy as np
 from orix.crystal_map import CrystalMap, Phase, PhaseList, create_coordinate_arrays
@@ -427,6 +431,60 @@ class TestUnits:
         assert not np.allclose(guarded, unguarded)
 
 
+class TestPsiMaxBoundary:
+    """A pair sitting EXACTLY at ``psi_max`` is KEPT.  [D12]
+
+    ADDED 2026-09-08 at the Stage B adversarial review, where the
+    ``<=`` -> ``<`` mutant of this comparison SURVIVED the whole
+    suite.  It is the KAM analogue of the segmentation threshold side,
+    which ``test_hrebsd_segmentation.py::TestThreshold`` does pin, and
+    requirements D12 fixes it: *psi_max* "additionally drops pairs
+    ABOVE the threshold", so a pair AT it survives.
+
+    The threshold is read back from a ONE PAIR map, where the reported
+    KAM is that single pair's angle and nothing is averaged, so the
+    boundary is exact rather than a tolerance; the value is
+    cross-checked against this module's own oracle before it is used.
+    The discrimination is total: the correct form returns the angle,
+    the mutant returns NaN.
+    """
+
+    @staticmethod
+    def one_pair_map(step=KAPPA_PER_STEP):
+        """Return a ``(1, 2)`` map whose single pair is the only
+        misorientation on it."""
+        field = np.zeros((1, 2, 3))
+        field[0, 1, 2] = step
+        return kam_map(field, navigation_shape=(1, 2)), field
+
+    def test_the_threshold_is_this_modules_own_angle(self):
+        xmap, field = self.one_pair_map()
+        reported = hrebsd_kam(xmap)
+        assert reported.shape == (1, 2)
+        angle = pair_angle(field[0, 0], field[0, 1])
+        assert angle > 0.0
+        np.testing.assert_allclose(reported, np.full((1, 2), angle), atol=ALGEBRA_TOL)
+
+    def test_a_pair_exactly_at_psi_max_is_kept(self):
+        xmap, _ = self.one_pair_map()
+        unguarded = hrebsd_kam(xmap)
+        threshold = float(unguarded[0, 0])
+        assert threshold > 0.0
+        guarded = hrebsd_kam(xmap, psi_max=threshold)
+        # KEPT, so the map is unchanged; the ``<`` mutant drops the
+        # only pair there is and returns NaN everywhere
+        assert np.array_equal(guarded, unguarded, equal_nan=True)
+        assert np.all(np.isfinite(guarded))
+
+    def test_a_pair_just_above_psi_max_is_dropped(self):
+        # the complement, without which the test above would pass on a
+        # ``psi_max`` that is read and then ignored
+        xmap, _ = self.one_pair_map()
+        threshold = float(hrebsd_kam(xmap)[0, 0])
+        guarded = hrebsd_kam(xmap, psi_max=np.nextafter(threshold, 0.0))
+        assert np.all(np.isnan(guarded))
+
+
 class TestGrainMask:
     """Pairs must share ``grain_id``, always.  [D12]"""
 
@@ -532,6 +590,54 @@ class TestContract:
             hrebsd_kam(xmap, order=0)
         with pytest.raises(ValueError, match="psi_max"):
             hrebsd_kam(xmap, psi_max=0.0)
+
+    @pytest.mark.parametrize("order", [1.0, 1.5, "1", True, None])
+    def test_a_non_integer_order_is_refused(self, order):
+        # ADDED 2026-09-08 (Stage B adversarial review, the coverage
+        # gate): the type half of the ``order`` guard had no test, and
+        # a float order would otherwise silently build a kernel from
+        # ``range`` and fail somewhere less legible.  ``True`` is an
+        # integer to Python and is excluded on purpose
+        with pytest.raises(ValueError, match="positive integer"):
+            hrebsd_kam(kam_map(linear_field()), order=order)
+
+    def test_a_map_without_a_grid_is_named(self):
+        # ADDED 2026-09-08 (Stage B adversarial review): orix gives a
+        # map whose points share one scan position the shape ``()``,
+        # and reading its row grid raises "not enough values to
+        # unpack", which names nothing the caller passed
+        xmap = CrystalMap(
+            rotations=Rotation.identity((2,)),
+            phase_id=np.zeros(2, dtype=int),
+            phase_list=PhaseList(Phase(name="ni", space_group=225)),
+            x=np.zeros(2),
+            y=np.zeros(2),
+        )
+        xmap.prop["rotation_vector"] = np.zeros((2, 3))
+        xmap.prop["grain_id"] = np.zeros(2, dtype=np.int32)
+        with pytest.raises(ValueError, match="no map grid"):
+            hrebsd_kam(xmap)
+
+    def test_a_float_grain_id_carrying_nan_is_unlabelled(self):
+        # ADDED 2026-09-08 (Stage B adversarial review).  The
+        # documented property is int32, but a float one carrying NaN
+        # used to be cast straight to int64, which is undefined and
+        # merely HAPPENED to come out negative on this platform.  The
+        # NaN point must be unlabelled, and quietly
+        field = linear_field()
+        grain_id = np.zeros(SHAPE, dtype=np.float64)
+        grain_id[2, 3] = np.nan
+        xmap = kam_map(field)
+        xmap.prop["grain_id"] = grain_id.ravel()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            got = hrebsd_kam(xmap)
+        assert np.isnan(got[2, 3])
+        expected = np.zeros(SHAPE, dtype=np.int32)
+        expected[2, 3] = -1
+        np.testing.assert_allclose(
+            got, expected_kam(field, expected), rtol=0, atol=ALGEBRA_TOL
+        )
 
     def test_the_public_name_is_the_module_one(self):
         assert kp.indexing.hrebsd_kam is hrebsd_kam

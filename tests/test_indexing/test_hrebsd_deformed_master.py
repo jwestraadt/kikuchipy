@@ -52,9 +52,11 @@ rest on :func:`~kikuchipy.indexing.voigt_stiffness`; that builder has
 its own pins in ``test_hrebsd_stiffness.py``.  One test compares the
 two, so the public route is still the one measured.
 
-Written before the implementation exists: every test which calls the
-Stage B modules fails with ``NotImplementedError`` until the tensor
-chain lands, then passes unchanged.
+Written failing before the implementation, at the Stage B
+failing-tests gate: every test which calls the Stage B modules failed
+with ``NotImplementedError`` until the tensor chain landed, and passed
+unchanged after it (narration corrected to the past tense 2026-09-08,
+Stage B adversarial review).
 """
 
 import functools
@@ -120,7 +122,18 @@ ALGEBRA_TOL = 1e-12
 # MEASURING RECIPE: ``TestDeformedMaster::test_deformed_master_strain
 # _recovery`` below; record the worst component over both imposed
 # cases
-DEFORMED_MASTER_STRAIN_TOL = None
+#
+# PINNED 2026-09-08 (Stage B implementation gate, machine A;
+# validation.md Recorded results, Stage B implementation gate entry 39).
+# MEASURED worst 9.404545683540204e-06 over the three arms which
+# consume it -- strain 9.4045e-06, e33 8.3928e-06, rotation vector
+# 4.2064e-06 -- pinned at 2x that worst.  It lands in the 1e-5 class
+# the note above predicts from the Stage A ``DEFORMED_MASTER_FE_TOL``
+# of 3.1e-5, and the drafting seed of validation V3 (2e-4 per
+# component) is 21x looser than achievable.  It kills the pattern-level
+# mutant plan 3.4 names: the Bond rotation transposed measures
+# 3.0068e-04 here, 16x the pin
+DEFORMED_MASTER_STRAIN_TOL = 1.9e-05
 
 # MTP [D9.2/D10, V3]: the residual ``sigma33`` in GPa of the
 # traction-free closure through the same route.  Zero by construction
@@ -129,7 +142,14 @@ DEFORMED_MASTER_STRAIN_TOL = None
 # times 1e-3 GPa at the seed above.
 # MEASURING RECIPE: ``TestDeformedMaster::test_sigma33_is_zero_through
 # _the_patterns``
-DEFORMED_MASTER_SIGMA33_TOL = None
+#
+# PINNED 2026-09-08 (Stage B implementation gate, machine A;
+# validation.md entry 39).  MEASURED 1.8337937617562972e-04 GPa against
+# a stress scale of 0.2420 GPa through the same patterns, pinned at 2x.
+# The drafted "a few times 1e-3 GPa" estimate above rested on the 2e-4
+# strain seed; the measured strain is 21x better, and this number
+# follows it
+DEFORMED_MASTER_SIGMA33_TOL = 3.7e-04
 
 
 # ------------- The plan 3.4 mutation list, mapped ------------------- #
