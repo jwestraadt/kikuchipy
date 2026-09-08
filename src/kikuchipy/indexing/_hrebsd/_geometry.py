@@ -58,6 +58,73 @@ model kikuchipy already implements as
 
 import numpy as np
 
+from kikuchipy.indexing._hrebsd._homography import (
+    N_HOMOGRAPHY_PARAMETERS,
+    compose,
+    homography_to_fe,
+    invert,
+)
+
+# Navigation-axis units the scan step sizes are converted FROM, into
+# the micrometres of :attr:`EBSDDetector.px_size`.  Requirements D14.5
+# sets the precedent this follows: convert the units that are known
+# and raise on the ones that are not, since silently guessing units is
+# how prefactor bugs hide
+STEP_SIZE_UNIT_FACTORS: dict[str, float] = {
+    "m": 1e6,
+    "mm": 1e3,
+    "um": 1.0,
+    "µm": 1.0,
+    "μm": 1.0,
+    "micron": 1.0,
+    "microns": 1.0,
+    "micrometer": 1.0,
+    "micrometre": 1.0,
+    "nm": 1e-3,
+}
+
+
+def step_sizes_in_micrometres(
+    scales: tuple[float, ...], units: tuple[str, ...]
+) -> tuple[float, ...]:
+    """Return scan step sizes converted to micrometres.
+
+    Parameters
+    ----------
+    scales
+        Navigation axis scales, in the units of *units*.
+    units
+        Navigation axis units, one per entry of *scales*.
+
+    Returns
+    -------
+    converted
+        The scales in micrometres, the unit of
+        :attr:`~kikuchipy.detectors.EBSDDetector.px_size`.
+
+    Raises
+    ------
+    ValueError
+        If any unit is missing or is not one of
+        :data:`STEP_SIZE_UNIT_FACTORS`, naming the axis and listing
+        what is accepted. The ``"px"`` fallback HyperSpy uses for an
+        unscaled axis raises here, exactly as requirements D14.5
+        makes it raise for ``CrystalMap.scan_unit``.
+    """
+    converted = []
+    for axis, (scale, unit) in enumerate(zip(scales, units)):
+        key = str(unit).strip().lower()
+        if key not in STEP_SIZE_UNIT_FACTORS:
+            raise ValueError(
+                f"navigation axis {axis} carries the scan step unit {unit!r}, which "
+                "cannot be converted to the micrometres of detector.px_size; set the "
+                "axis' `units` to one of "
+                f"{sorted(set(STEP_SIZE_UNIT_FACTORS))}, or pass a detector which "
+                "already carries one projection centre per map point"
+            )
+        converted.append(float(scale) * STEP_SIZE_UNIT_FACTORS[key])
+    return tuple(converted)
+
 
 def pc_to_pixels(pc: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     """Return projection centres in binned detector pixels.
@@ -82,7 +149,21 @@ def pc_to_pixels(pc: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     ValueError
         If *pc* does not have three entries along its last axis.
     """
-    raise NotImplementedError
+    pc = np.atleast_2d(np.asarray(pc, dtype=np.float64))
+    if pc.shape[-1] != 3:
+        raise ValueError(
+            f"pc must hold three entries (pcx, pcy, pcz) along its last axis, not "
+            f"{pc.shape[-1]}"
+        )
+    pc = pc.reshape(-1, 3)
+    nrows, ncols = shape
+    pc_px = np.empty(pc.shape, dtype=np.float64)
+    pc_px[:, 0] = pc[:, 0] * ncols
+    pc_px[:, 1] = pc[:, 1] * nrows
+    # Bruker's ``pcz`` is the detector distance in fractions of the
+    # number of detector ROWS (requirements D1.2)
+    pc_px[:, 2] = pc[:, 2] * nrows
+    return pc_px
 
 
 def per_point_pc_pixels(
@@ -112,8 +193,10 @@ def per_point_pc_pixels(
     navigation_shape
         Map shape ``(ny, nx)``.
     step_sizes
-        Vertical and horizontal step sizes ``(dy, dx)`` from the
-        signal's navigation axes, in the axes' own units.
+        Vertical and horizontal step sizes ``(dy, dx)`` **in the unit
+        of** :attr:`~kikuchipy.detectors.EBSDDetector.px_size`, which
+        is micrometres by the kikuchipy convention. Used only when
+        the detector carries a single projection centre.
     reference_index
         Flat map index of the pattern the extrapolation is anchored
         at. Default is 0. Ignored when the detector already carries
@@ -131,8 +214,43 @@ def per_point_pc_pixels(
     ValueError
         If the detector's navigation size is neither one nor the map
         size.
+
+    Notes
+    -----
+    The beam-scan model divides every step by
+    ``px_size * binning`` (``_ebsd_detector.py:1360-1379``), so
+    *step_sizes*, :attr:`px_size` and :attr:`binning` must agree in
+    their units or the derived projection centre map, and with it the
+    D6.2 correction removed from every homography, is wrong by their
+    ratio.  This function cannot check that: a detector carries no
+    unit for :attr:`px_size`, and its default 1.0 is a placeholder
+    (the shipped ``nickel_ebsd_small`` detector carries it beside a
+    1.5 micrometre scan step).  The navigation-axis UNITS are checked
+    and converted one level up, in
+    :meth:`kikuchipy.signals.EBSD.hrebsd_dic`, which is where they
+    live; passing a wrong :attr:`px_size` stays the caller's
+    responsibility and is documented there.
     """
-    raise NotImplementedError
+    ny, nx = navigation_shape
+    map_size = int(ny) * int(nx)
+    navigation_size = int(detector.navigation_size)
+    if navigation_size == map_size:
+        return pc_to_pixels(detector.pc_flattened, detector.shape)
+    if navigation_size != 1:
+        raise ValueError(
+            f"detector.navigation_size {navigation_size} must be either one or the "
+            f"map size {map_size} of navigation_shape {navigation_shape}"
+        )
+    # The beam-scan model IS ``EBSDDetector.extrapolate_pc`` (Singh and
+    # De Graef appendix A), anchored at the reference pattern's scan
+    # position so that point keeps the detector's own projection centre
+    row, col = divmod(int(reference_index), int(nx))
+    extrapolated = detector.extrapolate_pc(
+        pc_indices=[row, col],
+        navigation_shape=navigation_shape,
+        step_sizes=step_sizes,
+    )
+    return pc_to_pixels(extrapolated.pc_flattened, detector.shape)
 
 
 def phantom_homography(pc_reference: np.ndarray, pc_target: np.ndarray) -> np.ndarray:
@@ -169,7 +287,18 @@ def phantom_homography(pc_reference: np.ndarray, pc_target: np.ndarray) -> np.nd
         is pinned by validation V6 and recorded in requirements D6.3
         with its date.
     """
-    raise NotImplementedError
+    pc_reference = np.asarray(pc_reference, dtype=np.float64)
+    pc_target = np.asarray(pc_target, dtype=np.float64)
+    # DRAFTED orientation of the detector distance ratio (D6.2), pinned
+    # by the pattern oracle of validation V6
+    alpha_s = pc_target[2] / pc_reference[2]
+    gamma = pc_target[:2] - pc_reference[:2]
+    h = np.zeros(N_HOMOGRAPHY_PARAMETERS)
+    h[0] = alpha_s - 1.0
+    h[4] = alpha_s - 1.0
+    h[2] = gamma[0]
+    h[5] = gamma[1]
+    return h
 
 
 def correct_homography(
@@ -197,7 +326,9 @@ def correct_homography(
         Parameters of shape ``(8,)``. The composition side is pinned
         by validation V6 and recorded in requirements D6.3.
     """
-    raise NotImplementedError
+    phantom = phantom_homography(pc_reference, pc_target)
+    # DRAFTED side ``W_corr = W_phantom**-1 . W`` (D6.2)
+    return compose(invert(phantom), h)
 
 
 def fe_from_homography(
@@ -210,8 +341,7 @@ def fe_from_homography(
     """Return the reduced deformation gradient of a fitted *h*.
 
     The whole D6 path in one call: remove the beam-scan phantom, then
-    convert with the target's own projection centre expressed in the
-    reference-centred frame.
+    convert in the frame the corrected homography lives in.
 
     Parameters
     ----------
@@ -234,5 +364,40 @@ def fe_from_homography(
         reduced tensor in the DETECTOR frame (requirements D7). The
         rotation into the sample frame, the ninth degree of freedom
         closure and the strain and stress split are Stage B.
+
+    Notes
+    -----
+    **CORRECTED 2026-09-07 (Stage A adversarial review, requirements
+    D6.2 amended with that date).**  A raw fit in the D1.3 frame is
+    ``W = T(delta) . diag(1, 1, 1/DD_t) . Fe . diag(1, 1, DD_r)`` with
+    ``delta = PC_t - PC_ref``, whose ``Fe = I`` case is exactly the
+    closed-form phantom of :func:`phantom_homography`.  Removing that
+    phantom on the D6.2 side therefore leaves
+    ``W_corr = diag(1, 1, DD_r)**-1 . Fe . diag(1, 1, DD_r)``, a PURE
+    REFERENCE-FRAME homography in which both the projection centre
+    offset and the detector distance ratio have already cancelled.
+    The exact conversion of the corrected homography is consequently
+    ``pc_rel = (0, 0)`` and ``dd = DD_reference``, at which
+    :func:`~kikuchipy.indexing._hrebsd._homography.homography_to_fe`
+    IS that conjugation.  The earlier
+    ``pc_rel = PC_t - PC_ref``/``dd = DD_t`` route was recorded as
+    "first-order equivalent", which measurement refutes: on the
+    validation V6 phantom geometry it injects a spurious isotropic
+    strain of 3.9e-04 into ``Fe11``/``Fe22`` at a one degree
+    out-of-plane tilt, thirteen times the pinned
+    ``DEFORMED_MASTER_FE_TOL``, while the route above is exact to
+    1e-17.  The ``correct=False`` diagnostic path keeps the target
+    projection centre, which is what validation V6's uncorrected arm
+    reads.
     """
-    raise NotImplementedError
+    pc_reference = np.asarray(pc_reference, dtype=np.float64)
+    pc_target = np.asarray(pc_target, dtype=np.float64)
+    if correct:
+        # The corrected homography already lives in the reference-PC
+        # frame, so the frame origin IS its conversion centre
+        h = correct_homography(h, pc_reference, pc_target)
+        return homography_to_fe(h, np.zeros(2), pc_reference[2])
+    # The uncorrected diagnostic path still sees the TARGET's own
+    # projection centre expressed in the reference-centred frame
+    pc_rel = pc_target[:2] - pc_reference[:2]
+    return homography_to_fe(h, pc_rel, pc_target[2])

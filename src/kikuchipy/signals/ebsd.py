@@ -55,6 +55,8 @@ from kikuchipy.indexing._hough_indexing import (
     _optimize_pc,
     _phase_lists_are_compatible,
 )
+from kikuchipy.indexing._hrebsd._engine import STAGE_A_PROP_NAMES, run_hrebsd_dic
+from kikuchipy.indexing._hrebsd._geometry import step_sizes_in_micrometres
 from kikuchipy.indexing._refinement._refinement import (
     _refine_orientation,
     _refine_orientation_pc,
@@ -2522,7 +2524,11 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             one per map point. With a single PC, per-point PCs are
             derived internally with the beam-scan model of
             :meth:`~kikuchipy.detectors.EBSDDetector.extrapolate_pc`
-            anchored at the reference pattern's scan position.
+            anchored at the reference pattern's scan position, which
+            consumes
+            :attr:`~kikuchipy.detectors.EBSDDetector.px_size` and
+            :attr:`~kikuchipy.detectors.EBSDDetector.binning`; see
+            the ``Notes`` on units.
         reference
             Which pattern each point is correlated with. ``"auto"``
             (default) segments grains and picks the highest image
@@ -2532,19 +2538,27 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             grain label, requires *grain_labels*.
         grain_labels
             Grain map of the navigation shape with 0-based labels and
-            ``-1`` outside any grain. If not given, grains are
-            segmented internally.
+            ``-1`` outside any grain. With an array *reference* there
+            is one index per grain label, paired positionally with
+            the sorted unique labels, and each index must lie inside
+            its own grain. With a ``(row, col)`` *reference* one
+            global reference serves every label. If not given, the
+            map is one implicit grain; internal segmentation arrives
+            with ``reference="auto"`` in a later release.
         misorientation_threshold
-            Grain boundary misorientation angle in degrees used by
-            the internal segmentation. Default is 5.0.
+            Grain boundary misorientation angle in degrees, used only
+            by the internal segmentation of ``reference="auto"``,
+            which arrives in a later release. It has NO effect in
+            this one. Default is 5.0.
         filter_cutoffs
             ``(high_pass, low_pass)`` cut-off frequencies of the
             in-engine band-pass filter, as fractions of the pattern
             width, either of which may be ``None``. Default is
-            ``(0.05, None)``.
+            ``(0.05, None)``. It changes the rotation capture range,
+            see the ``Notes``.
         window
-            Whether to apply a Hann window over the subregion.
-            Default is ``False``.
+            Whether to weight the correlation residual by a Hann
+            window over the subregion. Default is ``False``.
         border
             Border excluded from every edge of the subregion, as a
             fraction of the pattern side. Default is 0.05.
@@ -2602,8 +2616,10 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             two; if ``navigation_mask`` is not a boolean NumPy array
             of the navigation shape with at least one ``False``
             entry; if the detector carries neither one projection
-            center nor one per map point; or for any invalid
-            correlation parameter.
+            center nor one per map point; if the detector carries a
+            single projection center and a navigation axis has no
+            readable length unit; or for any invalid correlation
+            parameter.
 
         Warns
         -----
@@ -2632,6 +2648,23 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         ``DD_px = pcz * nrows`` from the stored Bruker fractions,
         with no sign flip.
 
+        **Scan step units, when the detector carries a single
+        projection center.** The internal beam-scan model divides
+        every step by ``px_size * binning``, so the navigation axes'
+        ``scale`` and the detector's
+        :attr:`~kikuchipy.detectors.EBSDDetector.px_size` must share
+        a unit. The axes' ``units`` are read and converted to the
+        micrometers ``px_size`` is measured in, and an axis whose
+        unit cannot be read (including HyperSpy's unscaled ``"px"``)
+        raises rather than being guessed. ``px_size`` itself carries
+        no unit and cannot be checked: its default 1.0 is a
+        placeholder, and kikuchipy's own demonstration data ship it
+        beside micrometer scan steps, so a wrong ``px_size`` scales
+        the derived projection center map, and with it the beam-scan
+        correction removed from every ``Fe``, by exactly that ratio.
+        Set it, or pass a detector with one projection center per map
+        point.
+
         **The result is relative.** Every quantity is measured
         against the reference pattern of the point's own grain, whose
         flat map index is stored as ``"reference_index"``, so points
@@ -2646,9 +2679,11 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         reads. ``"Fe"`` holds the reduced deformation gradient in the
         detector frame, row-major, from which the beam-scan phantom
         has been removed analytically before the conversion.
-        ``"residual"`` is the final zero-mean normalized sum of
-        squared differences, and ``"norm_dp"`` the final corner
-        displacement in binned pixels. Two dimensional properties are
+        ``"residual"`` is the zero-mean normalized sum of squared
+        differences OF THE STORED homography, evaluated once more
+        after the loop exits so that the two describe the same
+        iterate, and ``"norm_dp"`` the final corner displacement in
+        binned pixels. Two dimensional properties are
         retrieved by reshaping,
         ``xmap.prop["Fe"].reshape(ny, nx, 9)``, rather than through
         :meth:`~orix.crystal_map.CrystalMap.get_map_data`, which is
@@ -2667,9 +2702,17 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         1e-4 to 2e-3 band on lens-coupled detectors and much less on
         fiber-coupled or direct detectors. The initial guess is a
         translation only phase cross-correlation, so the capture
-        range in rotation is finite. Cross-grain absolute comparison,
-        simulated references and a tetragonality map are out of
-        scope.
+        range in rotation is finite, and it depends on
+        ``filter_cutoffs``: measured on 480 by 480 pixel patterns, an
+        in-plane rotation of up to 2.0 degrees is recovered with the
+        default ``(0.05, None)`` band-pass and up to 4.0 degrees with
+        no band-pass at all, ``(None, None)``, which also fits the
+        2 degree case ten times more accurately on noise-free
+        patterns. The default is kept because a high-pass is what
+        suppresses the background gradients of real data, where it
+        has not yet been measured; it is not the capture range's
+        floor. Cross-grain absolute comparison, simulated references
+        and a tetragonality map are out of scope.
 
         **Precision scales with the pattern size.** Published IC-GN
         homography HREBSD reaches strains of about 8e-5 at 960 by 960
@@ -2677,12 +2720,114 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         sit one to two orders above that and are for demonstration
         and testing only.
 
-        **Memory.** Each grain reference holds about five subregion
-        sized planes, roughly 4.6 MB at 480 by 480 pixels, and one
-        such state is resident per Dask worker while that grain is
+        **Memory.** Each grain reference holds twelve subregion
+        sized 64-bit planes, eight of them the steepest-descent
+        columns, plus the 32-bit spline coefficients: 18.0 MB at
+        480 by 480 pixels with the default border, and one such
+        state is resident per Dask worker while that grain is
         correlated.
         """
-        raise NotImplementedError
+        am = self.axes_manager
+        nav_shape = am.navigation_shape[::-1]
+        sig_shape = am.signal_shape[::-1]
+
+        if sig_shape != detector.shape:
+            raise ValueError(
+                f"The detector shape {detector.shape} and the signal's pattern "
+                f"shape {sig_shape} must be identical"
+            )
+
+        # A crystal map is one- or two-dimensional, as in
+        # `spherical_indexing`
+        if len(nav_shape) not in (1, 2):
+            raise ValueError(
+                f"The signal's navigation shape {nav_shape} must have one or "
+                "two dimensions, since a crystal map is one- or "
+                "two-dimensional"
+            )
+
+        if tuple(xmap.shape) != tuple(nav_shape):
+            raise ValueError(
+                f"The crystal map shape {xmap.shape} and the signal's navigation "
+                f"shape {nav_shape} must be identical"
+            )
+
+        # Own checks first, in the frozen order of
+        # `spherical_indexing`: is-array, data type, shape, all-`True`
+        if navigation_mask is not None:
+            if not isinstance(navigation_mask, np.ndarray):
+                raise ValueError("The navigation mask must be a NumPy array")
+            elif navigation_mask.dtype != np.bool_:
+                raise ValueError("The navigation mask must be a boolean array")
+            elif navigation_mask.shape != nav_shape:
+                raise ValueError(
+                    f"The navigation mask shape {navigation_mask.shape} and the "
+                    f"signal's navigation shape {nav_shape} must be identical"
+                )
+            elif navigation_mask.all():
+                raise ValueError(
+                    "The navigation mask must allow for correlation of at least "
+                    "one pattern (at least one value equal to `False`)"
+                )
+
+        # The engine works on a two-dimensional map, so a
+        # one-dimensional scan is a single row of it
+        if len(nav_shape) == 1:
+            engine_nav_shape = (1, int(nav_shape[0]))
+        else:
+            engine_nav_shape = (int(nav_shape[0]), int(nav_shape[1]))
+        engine_mask = None
+        if navigation_mask is not None:
+            engine_mask = navigation_mask.reshape(engine_nav_shape)
+        engine_labels = grain_labels
+        if grain_labels is not None:
+            engine_labels = np.asarray(grain_labels).reshape(engine_nav_shape)
+
+        # The beam-scan projection centre model divides every step by
+        # ``px_size * binning``, so the steps must reach it in the unit
+        # of `px_size`, micrometres.  The axes' own units are READ and
+        # converted, never guessed (requirements D14.5's precedent),
+        # and only when they are actually used, which is when the
+        # detector carries a single projection centre
+        step_sizes = tuple(float(a.scale) for a in am.navigation_axes[::-1])
+        if int(detector.navigation_size) == 1:
+            units = tuple(str(a.units) for a in am.navigation_axes[::-1])
+            step_sizes = step_sizes_in_micrometres(step_sizes, units)
+        if len(step_sizes) == 1:
+            step_sizes = (1.0, step_sizes[0])
+
+        patterns = self.data.reshape((-1,) + sig_shape)
+
+        prop = run_hrebsd_dic(
+            patterns,
+            engine_nav_shape,
+            detector,
+            xmap=xmap,
+            reference=reference,
+            grain_labels=engine_labels,
+            misorientation_threshold=misorientation_threshold,
+            filter_cutoffs=filter_cutoffs,
+            window=window,
+            border=border,
+            dead_band=dead_band,
+            interpolation=interpolation,
+            upsample_factor=upsample_factor,
+            max_iterations=max_iterations,
+            min_step=min_step,
+            step_scale=step_scale,
+            navigation_mask=engine_mask,
+            chunksize=chunksize,
+            verbose=verbose,
+            step_sizes=step_sizes,
+        )
+
+        # The input orientations, phases and scan unit are carried
+        # through untouched: this feature never modifies an orientation
+        xmap_out = xmap.deepcopy()
+        for name in STAGE_A_PROP_NAMES:
+            xmap_out.prop[name] = prop[name]
+
+        return xmap_out
 
     def refine_orientation_spherical(
         self,

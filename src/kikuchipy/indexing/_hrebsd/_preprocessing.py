@@ -19,9 +19,11 @@
 
 """In-engine preprocessing of the HREBSD-DIC engine.
 
-The band-pass filter, the optional Hann window, the subregion and the
-zero-mean normalization are applied identically to the grain
-reference and to every target (requirements D4).  The user's own
+The band-pass filter, the subregion and the zero-mean normalization
+are applied identically to the grain reference and to every target
+(requirements D4), and the optional Hann window built here is applied
+by the engine as a residual weight in the one reference frame both
+share.  The user's own
 :meth:`~kikuchipy.signals.EBSD.remove_static_background` and
 :meth:`~kikuchipy.signals.EBSD.remove_dynamic_background` stay their
 choice and are never implied here.
@@ -42,6 +44,9 @@ kikuchipy already carries in :mod:`kikuchipy.filters`).
 """
 
 import numpy as np
+from scipy.fft import fft2, fftshift, ifft2, ifftshift
+
+from kikuchipy.filters.window import highpass_fft_filter, lowpass_fft_filter
 
 
 def band_pass_transfer_function(
@@ -77,11 +82,40 @@ def band_pass_transfer_function(
         If *cutoffs* does not hold exactly two entries, or if a
         cut-off is not a positive fraction below one.
     """
-    raise NotImplementedError
+    cutoffs = tuple(cutoffs)
+    if len(cutoffs) != 2:
+        raise ValueError(
+            f"cutoffs must hold exactly two entries (high_pass, low_pass), not "
+            f"{cutoffs!r}"
+        )
+    for cutoff in cutoffs:
+        if cutoff is None:
+            continue
+        if not 0 < float(cutoff) < 1:
+            raise ValueError(
+                f"every cut-off in cutoffs must be a fraction of the pattern "
+                f"width in (0, 1), not {cutoff!r}"
+            )
+    high_pass, low_pass = cutoffs
+    # The cut-offs are fractions of the pattern WIDTH, so the number of
+    # COLUMNS scales both of them (requirements D4.1)
+    width = shape[1]
+    transfer_function = None
+    if high_pass is not None:
+        transfer_function = highpass_fft_filter(shape, cutoff=high_pass * width)
+    if low_pass is not None:
+        low = lowpass_fft_filter(shape, cutoff=low_pass * width)
+        if transfer_function is None:
+            transfer_function = low
+        else:
+            transfer_function = transfer_function * low
+    return transfer_function
 
 
-def hann_window(shape: tuple[int, int]) -> np.ndarray:
-    """Return a separable Hann window over the pattern.
+def hann_window(
+    shape: tuple[int, int], *, bounds: tuple[int, int, int, int] | None = None
+) -> np.ndarray:
+    """Return a separable Hann window over the subregion.
 
     Optional (``window=False`` is the frozen default of D4.3): neither
     Ernould's chain nor EMsoftOO's DIC path windows the subregion, and
@@ -92,13 +126,37 @@ def hann_window(shape: tuple[int, int]) -> np.ndarray:
     ----------
     shape
         Pattern shape ``(nrows, ncols)``.
+    bounds
+        ``(row_start, row_stop, col_start, col_stop)`` of the
+        subregion the window is built OVER, from
+        :func:`subregion_bounds`. The window is zero outside it. If
+        not given, the window spans the whole pattern.
 
     Returns
     -------
     window
         Array of *shape* and 64-bit float data type.
+
+    Notes
+    -----
+    Requirements D4.3 asks for a window over the SUBREGION, which is
+    what *bounds* builds, and the engine applies the result as a
+    per-pixel WEIGHT on the ZNSSD residual in the REFERENCE frame,
+    never as a taper multiplied into a pattern before it is warped
+    (see :class:`~kikuchipy.indexing._hrebsd._engine.ReferenceState`).
+    A pre-warp taper travels with the target and breaks the affine
+    intensity model ZNSSD assumes; measured at the Stage A review, it
+    degraded a two pixel translation fit by a factor of nineteen.
     """
-    raise NotImplementedError
+    nrows, ncols = shape
+    if bounds is None:
+        return np.outer(np.hanning(nrows), np.hanning(ncols)).astype(np.float64)
+    row_start, row_stop, col_start, col_stop = (int(i) for i in bounds)
+    window = np.zeros(shape, dtype=np.float64)
+    window[row_start:row_stop, col_start:col_stop] = np.outer(
+        np.hanning(row_stop - row_start), np.hanning(col_stop - col_start)
+    )
+    return window
 
 
 def subregion_bounds(
@@ -125,7 +183,19 @@ def subregion_bounds(
     ValueError
         If *border* is negative or leaves no rows or columns.
     """
-    raise NotImplementedError
+    if border < 0:
+        raise ValueError(f"border must not be negative, got {border}")
+    nrows, ncols = shape
+    # A fraction of the pattern SIDE, so each axis loses its own count
+    # of pixels from BOTH of its edges
+    row_border = int(np.rint(border * nrows))
+    col_border = int(np.rint(border * ncols))
+    bounds = (row_border, nrows - row_border, col_border, ncols - col_border)
+    if bounds[1] <= bounds[0] or bounds[3] <= bounds[2]:
+        raise ValueError(
+            f"border {border} leaves no subregion of a pattern of shape {shape}"
+        )
+    return bounds
 
 
 def subregion_mask(
@@ -167,19 +237,38 @@ def subregion_mask(
         If *border* leaves no pixels, or if *dead_band* does not hold
         exactly four integers within the pattern.
     """
-    raise NotImplementedError
+    nrows, ncols = shape
+    row_start, row_stop, col_start, col_stop = subregion_bounds(shape, border=border)
+    mask = np.zeros(shape, dtype=bool)
+    mask[row_start:row_stop, col_start:col_stop] = True
+    if dead_band is not None:
+        dead_band = tuple(dead_band)
+        if len(dead_band) != 4:
+            raise ValueError(
+                f"dead_band must hold exactly four entries (x0, x1, y0, y1), not "
+                f"{dead_band!r}"
+            )
+        x0, x1, y0, y1 = (int(i) for i in dead_band)
+        if not (0 <= x0 <= x1 <= ncols and 0 <= y0 <= y1 <= nrows):
+            raise ValueError(
+                f"dead_band {dead_band} must hold two ordered column bounds within "
+                f"{ncols} and two ordered row bounds within {nrows}"
+            )
+        # A cross of dead camera columns and rows, EMsoftOO's
+        # ``cross(4)`` semantics (``mod_DIC.f90:524-559``)
+        mask[:, x0:x1] = False
+        mask[y0:y1, :] = False
+    return mask
 
 
 def preprocess(
     pattern: np.ndarray,
     *,
     transfer_function: np.ndarray | None = None,
-    window: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return one preprocessed pattern.
 
-    The band-pass filter is applied in the FFT domain and the window,
-    when given, in the image domain afterwards.  Every
+    The band-pass filter is applied in the FFT domain.  Every
     :mod:`scipy.fft` call passes ``workers=1`` so that dask threads
     never oversubscribe the machine (the constitution's numba and FFT
     rules).
@@ -192,15 +281,33 @@ def preprocess(
         Band-pass transfer function from
         :func:`band_pass_transfer_function`, or ``None`` for no
         filtering.
-    window
-        Window from :func:`hann_window`, or ``None`` for no window.
 
     Returns
     -------
     preprocessed
         Array of the shape of *pattern* and 64-bit float data type.
+
+    Notes
+    -----
+    The optional D4.3 window is NOT applied here (corrected
+    2026-09-07, Stage A adversarial review).  It is a weight on the
+    ZNSSD residual in the reference frame, applied by
+    :class:`~kikuchipy.indexing._hrebsd._engine.ReferenceState` after
+    the target is warped; multiplying it into a pattern here would
+    make it travel with the target.
     """
-    raise NotImplementedError
+    # A copy, always: the engine holds on to the result and must never
+    # alias, let alone mutate, the caller's pattern buffer
+    preprocessed = np.array(pattern, dtype=np.float64)
+    if transfer_function is not None:
+        # The kikuchipy transfer functions are built about the CENTRE
+        # of the spectrum (``distance_to_origin`` puts its origin at
+        # ``shape // 2``), so the spectrum is shifted before the
+        # product and shifted back after it
+        spectrum = fftshift(fft2(preprocessed, workers=1))
+        spectrum = spectrum * transfer_function
+        preprocessed = np.real(ifft2(ifftshift(spectrum), workers=1))
+    return np.ascontiguousarray(preprocessed, dtype=np.float64)
 
 
 def zero_mean_normalize(values: np.ndarray) -> tuple[np.ndarray, float]:
@@ -232,4 +339,12 @@ def zero_mean_normalize(values: np.ndarray) -> tuple[np.ndarray, float]:
         If the centred values have a zero norm, the constant pattern
         case which the engine marks as a failed pattern.
     """
-    raise NotImplementedError
+    values = np.asarray(values, dtype=np.float64)
+    centred = values - values.mean()
+    norm = float(np.linalg.norm(centred))
+    if not np.isfinite(norm) or norm == 0.0:
+        raise ValueError(
+            "the zero-mean values have a zero or non-finite 2-norm, so the "
+            "pattern carries no contrast to correlate"
+        )
+    return centred / norm, norm

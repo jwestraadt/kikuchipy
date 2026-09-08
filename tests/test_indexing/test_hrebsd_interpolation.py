@@ -82,7 +82,10 @@ SHAPES = [(48, 48), (37, 61)]
 # run alongside the ``test_dtype_ab_harness`` A/B of
 # ``test_hrebsd_engine.py`` at the implementation gate; record the
 # worst scale relative error over all SHAPES and both seeds
-KERNEL_F32_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 2.4378e-08, the
+# 32-bit ULP class of the coefficient scale exactly as expected.
+# PINNED at 2x the measured worst case; recorded in validation.md
+KERNEL_F32_TOL = 5e-8
 
 # MTP [D3/V0]: the band of the analytic gradient kernels against a
 # central difference of the reference ``map_coordinates`` evaluation.
@@ -90,7 +93,11 @@ KERNEL_F32_TOL = None
 # kernel, so it cannot be reasoned to a priori.
 # MEASURING RECIPE: ``test_gradient_kernels_match_spline_derivative``
 # below; record the worst scale relative error at the pinned step
-GRADIENT_FINITE_DIFFERENCE_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 1.3660e-08 at
+# the 1e-4 px step, which is the central difference truncation of a
+# cubic spline derivative and not the kernel's own error.  PINNED at
+# 2.2x the measured worst case; recorded in validation.md
+GRADIENT_FINITE_DIFFERENCE_TOL = 3e-8
 
 # The central difference step of the gradient oracle, in pixels
 GRADIENT_FINITE_DIFFERENCE_STEP = 1e-4
@@ -103,7 +110,16 @@ GRADIENT_FINITE_DIFFERENCE_STEP = 1e-4
 # blow-up it claims to catch would have gone unnoticed.
 # MEASURING RECIPE: ``test_no_extrapolation_blow_up`` below; record
 # the worst excursion over the swept line and both edges
-MIRROR_OVERSHOOT_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate).  The frozen case
+# of the test overshoots by EXACTLY 0.0 spans, which cannot carry a
+# multiplicative margin, so the pin comes from the same class swept
+# wider: 20 seeds by both SHAPES by both axes gives a worst overshoot
+# of 2.12e-3 spans, and 2.4x that is the band below.  It still kills
+# what it exists to kill by five orders: a cubic polynomial
+# extrapolated 12 px past the same edges (EMsoftOO's ``extrap``,
+# ``mod_DIC.f90:50-51``) overshoots by up to 3.2e+2 spans.  Recorded
+# in validation.md with both sweeps
+MIRROR_OVERSHOOT_TOL = 5e-3
 
 # The D3 order decision of plan open question 1, quoted literally:
 # bicubic stays the default unless quintic buys more than this much
@@ -334,6 +350,23 @@ class TestKernelEquality:
         assert returned is out
         assert np.any(out != 0.0)
 
+    def test_out_argument_that_cannot_be_written_through(self):
+        # the ``out=`` fallback: an array which is neither 64-bit nor
+        # C contiguous is filled by copying back, a branch no drafted
+        # test executed
+        shape = SHAPES[0]
+        image = random_image(shape, seed=43)
+        coefficients = spline_coefficients(image, dtype=np.float64)
+        x, y = random_points(shape, n=32, seed=44)
+        expected = evaluate(coefficients, x, y)
+        strided = np.zeros(2 * x.size, dtype=np.float64)[::2]
+        assert not strided.flags.c_contiguous
+        assert evaluate(coefficients, x, y, out=strided) is strided
+        np.testing.assert_allclose(strided, expected, rtol=0, atol=0)
+        as_f32 = np.zeros(x.shape, dtype=np.float32)
+        assert evaluate(coefficients, x, y, out=as_f32) is as_f32
+        np.testing.assert_allclose(as_f32, expected.astype(np.float32), rtol=0, atol=0)
+
     def test_order_ab_harness(self):
         # the D3 measurement harness of plan open question 1, run
         # where the accuracy difference between the two orders
@@ -436,6 +469,83 @@ class TestMirrorBoundary:
             float(got.max() - image.max()), float(image.min() - got.min()), 0.0
         )
         assert_within(overshoot / span, MIRROR_OVERSHOOT_TOL, "MIRROR_OVERSHOOT_TOL")
+
+    def test_mirror_boundary_through_py_func(self):
+        # ADDED 2026-09-07 at the Stage A adversarial review.  Every
+        # fold branch of BOTH kernels was uncovered: the drafted V0
+        # arm above runs only the compiled kernel, and coverage
+        # measures a numba kernel through ``.py_func`` alone
+        # (tech-stack.md:49), so eight statements of the value kernel
+        # and twelve of the gradient kernel had never been executed by
+        # any test.  The fold IS the frozen D3 boundary convention
+        shape = (17, 23)
+        image = random_image(shape, seed=111)
+        coefficients = spline_coefficients(image, dtype=np.float64)
+        rng = np.random.default_rng(112)
+        # deliberately far outside on both axes, so the coordinate
+        # fold, the support fold and the modulo all fire
+        x = rng.uniform(-8.0, shape[1] + 8.0, size=400)
+        y = rng.uniform(-8.0, shape[0] + 8.0, size=400)
+        out = np.zeros(x.size)
+        _bicubic_evaluate.py_func(coefficients, x, y, out)
+        expected = reference_evaluate(coefficients, x, y)
+        atol = KERNEL_TOL * float(np.abs(expected).max())
+        np.testing.assert_allclose(out, expected, rtol=0, atol=atol)
+        # and the compiled kernel agrees with its own source
+        compiled = evaluate(coefficients, x, y)
+        assert np.array_equal(out, compiled)
+
+    def test_gradient_mirror_boundary_keeps_the_fold_sign(self):
+        # THE killer of the surviving "mirror-boundary derivative sign
+        # dropped" mutant (``out_gx[i] = gradient_x`` instead of
+        # ``sign_x * gradient_x``).  ``gradient_planes``, the only
+        # production consumer today, samples the integer pixel centres
+        # of the frame, where the fold never fires, and every drafted
+        # gradient arm samples in-frame, so the sign flip was latent
+        # but unpinned.  Measured at the review: the mutant's gradient
+        # is wrong by up to 5.1e-01 outside the frame against a
+        # 1.3e-11 baseline
+        shape = (17, 23)
+        nrows, ncols = shape
+        image = random_image(shape, seed=113)
+        coefficients = spline_coefficients(image, dtype=np.float64)
+        rng = np.random.default_rng(114)
+        x = rng.uniform(-6.0, ncols + 6.0, size=200)
+        y = rng.uniform(-6.0, nrows + 6.0, size=200)
+        values = np.zeros(x.size)
+        gx = np.zeros(x.size)
+        gy = np.zeros(x.size)
+        _bicubic_evaluate_gradient.py_func(coefficients, x, y, values, gx, gy)
+        # the compiled kernel runs the same source
+        compiled = tuple(np.zeros(x.size) for _ in range(3))
+        _bicubic_evaluate_gradient(coefficients, x, y, *compiled)
+        assert np.array_equal(gx, compiled[1])
+        assert np.array_equal(gy, compiled[2])
+        # against a central difference of the VALUE kernel, which
+        # carries no sign logic of its own
+        step = GRADIENT_FINITE_DIFFERENCE_STEP
+        gx_ref = (
+            evaluate(coefficients, x + step, y) - evaluate(coefficients, x - step, y)
+        ) / (2 * step)
+        gy_ref = (
+            evaluate(coefficients, x, y + step) - evaluate(coefficients, x, y - step)
+        ) / (2 * step)
+        error = max(scale_relative_error(gx, gx_ref), scale_relative_error(gy, gy_ref))
+        assert_within(
+            error,
+            GRADIENT_FINITE_DIFFERENCE_TOL,
+            "GRADIENT_FINITE_DIFFERENCE_TOL (mirror fold)",
+        )
+        # and the structural statement, tolerance free in its
+        # direction: a fold REVERSES the axis, so the derivative with
+        # respect to the ORIGINAL coordinate changes sign
+        folded = np.array([-2.3, -1.5])
+        mirrored = -folded
+        inside = np.array([5.1, 5.1])
+        _, gx_folded, _ = evaluate_gradient(coefficients, folded, inside)
+        _, gx_mirrored, _ = evaluate_gradient(coefficients, mirrored, inside)
+        np.testing.assert_allclose(gx_folded, -gx_mirrored, rtol=0, atol=1e-12)
+        assert float(np.abs(gx_folded).min()) > 1e-3
 
 
 # ==================== V0 -- analytic gradients ====================== #

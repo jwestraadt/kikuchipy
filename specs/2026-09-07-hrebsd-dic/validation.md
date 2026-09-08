@@ -36,6 +36,27 @@ uv run pytest tests/test_indexing tests/test_signals -k "hrebsd" -n 4
 
 (one `-n 0` run first per stage that adds a numba kernel.)
 
+**Stage A MTP pins, ALL FILLED 2026-09-07** (implementation gate;
+the measurements, recipes, margins and machine are in Recorded
+results entries 1 to 3 below, and the drafting seeds quoted in the
+oracle descriptions that follow are superseded by these):
+`KERNEL_F32_TOL` 5e-8, `GRADIENT_FINITE_DIFFERENCE_TOL` 3e-8,
+`MIRROR_OVERSHOOT_TOL` 5e-3 (fraction of span),
+`WARP_REFIT_TOL_480` 0.025 px, `WARP_REFIT_TOL_60` 0.13 px,
+`INTENSITY_SCALE_GENERIC_TOL` 6e-9 px, `DEFORMED_MASTER_H_TOL`
+0.023 px, `DEFORMED_MASTER_FE_TOL` 3.1e-5, `ROTATION_TOL_RAD`
+1.7e-5 rad, `PC_PHANTOM_TOL` 0.014 px, `PC_PHANTOM_FE_TOL` 3.4e-5,
+`PC_PHANTOM_TRANSLATION_TOL` 0.0022 px,
+`PC_ROUTE_EQUIVALENCE_TOL` 1e-12, `UPDATE_RULE_TOL` 1e-13 px,
+`BORDER_LEAK_TOL` 0.18 px, `DEAD_BAND_LEAK_TOL` 0.18 px. One more
+was ADDED and filled at the adversarial review, Recorded results
+entry 19: `WINDOW_REFIT_TOL_480` 0.092 px, the D4.3 window knob's
+own warp-refit band, which no drafted test measured. Two
+drafting seeds were refuted by measurement and are amended in
+requirements Context with the same date: the 0.1 px warp-recovery
+seed (8x looser than achievable) and the "up to 5 deg"
+pure-rotation seed (the measured capture range is 2.0 deg).
+
 ### V0 -- Interpolation kernel (`tests/test_indexing/test_hrebsd_interpolation.py`) -- Stage A
 
 - `test_kernel_matches_map_coordinates`: numba bicubic evaluation
@@ -258,7 +279,24 @@ PC, DD)` with the D7 frame chain minded (theory report section
 - `test_rotation_sweep_capture_range` (recorded, not gated): sweep
   0.5-12 deg; record the largest angle the translation-only seed
   converges from (D5's recorded capture range; Ruggles 2018's
-  benchmark design). [D5]
+  benchmark design). **RECORDED 2026-09-07 (implementation gate):
+  2.0 deg** at 480x480 with the frozen band-pass; from the exact
+  seed the basin itself reaches 3.0 deg and fails at 4.0. The
+  in-plane cases of `test_in_plane_rotation` were re-pinned from
+  0.1-5 deg to 0.1/1.0/2.0 deg for the same reason, and the "up to
+  5 deg" acceptance seed is amended in requirements Context. Full
+  table with seeds and pair ZNCC in Recorded results entry 6.
+  **RECORDED AS A FUNCTION OF `filter_cutoffs` 2026-09-07 (Stage A
+  adversarial review, Recorded results entry 21): 2.0 deg at the
+  frozen `(0.05, None)` default and 4.0 deg at `(None, None)`, with
+  the 2.0 deg error ten times smaller unfiltered.** The capture
+  range is a property of the band-pass default, not of the frozen
+  D2/D4/D5 design, and the requirements Context clause claiming
+  otherwise is struck with that date. The default is not re-pinned
+  here: plan open question 10 owns it and the V5 Si-wafer benchmark
+  resolves it, since a high-pass can only remove signal on
+  noise-free oracles. Entry 6's seed COLUMN does not reproduce and
+  is corrected by entry 22; every other column of it does. [D5]
 - `test_small_strain_fast_path_equality` (Stage B, measurement
   harness): polar vs small-strain paths over the sweep; the D8 MTP
   equality threshold and enable-angle recorded. [D8]
@@ -313,6 +351,18 @@ cleanly without the `tests` extra (tech-stack.md:16).
 - `test_phantom_corrected`: correction ENABLED: `Fe = I`
   everywhere to the interpolation floor; strain phantom killed.
   [D6]
+- `test_corrected_fe_on_a_deformed_per_point_pc_map` (ADDED
+  2026-09-07 at the Stage A adversarial review, Recorded results
+  entry 14): the SAME per-point-PC map with a real deformation --
+  a 1 degree out-of-plane tilt -- imposed on every target, asserting
+  `Fe` to `DEFORMED_MASTER_FE_TOL`. This is the oracle neither
+  `test_phantom_corrected` (which imposes `Fe = I`, so `h_corr = 0`
+  and every conversion frame gives the identity) nor V3's
+  `test_deformed_master_fe_through_the_engine` (whose every point
+  "shares one projection centre", so `PC_rel = 0` and
+  `DD_t = DD_r`) can supply, and it is what refuted the drafted
+  D6.2 conversion frame: 3.9967e-04 with it, 2.2255e-05 without.
+  [D6.2]
 - `test_phantom_corrected_through_stage_b` (Stage B; added
   2026-09-07, spec review): the corrected per-point-PC phantom
   fed THROUGH `hrebsd_strain_stress`: strain ~ 0 everywhere at
@@ -399,6 +449,11 @@ cleanly without the `tests` extra (tech-stack.md:16).
   incl. the scikit-image 0.21.0 pin and the test_signals paths),
   result recorded below -- the recorded oldest-floor gate (the
   on-push CI oldest job is an extra signal only, plan section 1).
+  It is a PER-STAGE gate, not a Stage B or weekly item: Recorded
+  results entry 12 classified it as the latter, which plan.md
+  section 1 and the Definition of done both contradict, and Stage
+  A's run is discharged and recorded at entry 24 (2026-09-07,
+  adversarial review).
 
 ## Requirement-to-test mapping
 
@@ -427,11 +482,11 @@ cleanly without the `tests` extra (tech-stack.md:16).
 
 | measurement | recipe | recorded value |
 |---|---|---|
-| Stage A engine, pat/s, Si-wafer route 480x480, default knobs, 8 workers | fixed-seed timed run, warm numba caches, idle machine | measure at Stage A/B gate |
-| Stage A engine, pat/s, `nickel_ebsd_large` 60x60 | same recipe | measure at Stage A gate |
-| per-grain precompute cost + resident MB at 480x480 | instrumented run | measure at Stage A gate |
-| bicubic vs quintic accuracy/speed (D3) | V2 A/B | record at Stage A gate |
-| f32 vs f64 storage accuracy/speed (D17) | V2 dtype A/B | record at Stage A gate |
+| Stage A engine, pat/s, 480x480 oracle route, default knobs, 8 workers | `measure_perf.py`, 40 one-grain patterns, warm numba caches, best of 3 (2026-09-07, machine A) | **23.96 pat/s** (1.670 s, all 40 converged, mean 4.65 iterations) |
+| Stage A engine, pat/s, 60x60 (`nickel_ebsd_small` reference, warped batch) | same recipe, 100 patterns (2026-09-07, machine A) | **600.4 pat/s** (0.167 s, all 100 converged, mean 3.67 iterations) |
+| per-grain precompute cost + resident MB at 480x480 | `ReferenceState` construction, median of 3 (2026-09-07, machine A) | **0.0402 s, 16.54 MB** (186624 subregion px, f32 coefficients) |
+| bicubic vs quintic accuracy/speed (D3) | V2 A/B, entry 8 below | bicubic 0.0105 px vs quintic 0.0126 px at 3.31x cost -- **bicubic kept** |
+| f32 vs f64 storage accuracy/speed (D17) | V2 dtype A/B, entry 9 below | degradation 4.5e-08 of the f64 error, 0.92 MB saved -- **f32 confirmed** |
 | Stage B tensor chain + KAM cost on the 50x50 Si map | timed run | measure at Stage B gate |
 | Stage C GND cost | timed run | measure at Stage C gate |
 
@@ -605,3 +660,663 @@ before the engine lands.
    and were emptied at this review: a seed 2 to 10 times above the
    expected achievable error is an acceptance gate that passes a
    mediocre implementation silently.
+
+### 2026-09-07 (Stage A implementation gate, measurement agent)
+
+**Machine A** (the machine ID every number below carries): the
+20-core Windows 11 laptop of the spherical phases, Intel64 Family 6
+Model 186 (Raptor Lake) with 20 logical cores, Windows 11 build
+26200, `.venv` Python **3.13.12** (the failing-tests-gate entry
+above says 3.12; the interpreter actually in `.venv` reports
+3.13.12, recorded here rather than corrected there, this ledger
+being append only), numpy 2.4.6, scipy 1.17.1, numba 0.65.1,
+scikit-image 0.26.0, orix 0.14.2, dask 2026.3.0. Idle machine, warm
+numba caches.
+
+Everything below discharges the plan section 2.3 measurement debt
+and the plan section 6 open questions 1, 9 and 11 (and part of 2).
+All tolerance numbers come from ONE reproducible run of the suite's
+own measuring tests, and the run was repeated to confirm the values
+are BITWISE identical between runs (they are, including under
+randomized test order).
+
+1. **MTP pin recipe, common to entries 2 and 3.** Command:
+
+   ```
+   .venv/Scripts/python.exe -m pytest \
+     tests/test_indexing/test_hrebsd_interpolation.py \
+     tests/test_indexing/test_hrebsd_engine.py -q
+   ```
+
+   run with a throwaway scratchpad pytest plugin
+   (`hrebsd_measure/measure_plugin.py`, never in the repo) which
+   sets every unfilled `None` placeholder to `+inf` and records what
+   `assert_within` was handed, so ONE run reports the worst measured
+   value of every placeholder including the ones hidden behind an
+   earlier failure in the same test. Without it each failing test
+   reports only its FIRST placeholder: `test_in_plane_rotation`, for
+   instance, hides its `DEFORMED_MASTER_H_TOL` arm behind
+   `ROTATION_TOL_RAD`. Margin convention, applied to every pin
+   below: 2x the measured worst case unless stated otherwise.
+
+2. **Interpolation placeholders (V0,
+   `test_hrebsd_interpolation.py`).**
+
+   | constant | measured worst | pinned | margin |
+   |---|---|---|---|
+   | `KERNEL_F32_TOL` | 2.4377569405821475e-08 | 5e-8 | 2.05x |
+   | `GRADIENT_FINITE_DIFFERENCE_TOL` | 1.3660179594901036e-08 | 3e-8 | 2.20x |
+   | `MIRROR_OVERSHOOT_TOL` | 0.0 (see below) | 5e-3 | see below |
+
+   `KERNEL_F32_TOL` is the f32-ULP class the D17 A/B predicted, and
+   is measured on the same run as that A/B (entry 9).
+   `GRADIENT_FINITE_DIFFERENCE_TOL` is the central difference
+   truncation of the 1e-4 px step, not the kernel's own error.
+
+   `MIRROR_OVERSHOOT_TOL` needed different treatment and is the one
+   pin NOT at 2x its own measurement: the test's frozen
+   configuration (seed 71, 48x48, the horizontal line at mid height)
+   overshoots the pattern's own range by EXACTLY 0.0 spans, and zero
+   carries no multiplicative margin. Recipe for the pin: the same
+   class swept wider in the scratchpad (`measure_extras.py mirror`),
+   20 seeds by both `SHAPES` by both axes, 80 cases, worst overshoot
+   **2.1164e-03 spans**; pinned at 5e-3, i.e. 2.4x that class worst.
+   It still kills what it exists to kill by five orders: a cubic
+   polynomial fitted to the four edge samples and extrapolated 12 px
+   past the same edges (EMsoftOO's `extrap`, `mod_DIC.f90:50-51`)
+   overshoots by up to **3.175e+02 spans** over the same 40 cases. A
+   deliberate step image, the worst case a cubic B-spline has,
+   overshoots 1.08e-01 spans, so the band also sits 20x under the
+   interpolant's own overshoot class and cannot be passed by
+   accident.
+
+3. **Engine placeholders (V2, V3, V4, V6,
+   `test_hrebsd_engine.py`).** Every value in binned pixels except
+   where noted; the metric is the D2.5 corner displacement of the
+   error warp.
+
+   | constant | measured worst | pinned | measuring test(s), all arms |
+   |---|---|---|---|
+   | `WARP_REFIT_TOL_480` | 0.012439859159007909 | 0.025 | `test_warp_refit_small_h_480` (0.00820 seed 0, 0.01244 seed 1), `test_direction_pinned_once` (0.00502), `test_seed_required_for_large_translation` (0.01211) |
+   | `WARP_REFIT_TOL_60` | 0.06506790630704162 | 0.13 | `test_warp_refit_60px` |
+   | `INTENSITY_SCALE_GENERIC_TOL` | 3.0575906516707247e-09 | 6e-9 | `test_intensity_scale_invariance` |
+   | `DEFORMED_MASTER_H_TOL` | 0.011302529677402013 | 0.023 | `test_deformed_master_homography_recovery` (0.00404, 0.00348, 0.00424, 0.00308), `test_in_plane_rotation` (0.00624, 0.00397, 0.01130), `test_out_of_plane_tilt` (0.00399, 0.00903), `test_sample_frame_axis_is_pinned` (0.00595) |
+   | `DEFORMED_MASTER_FE_TOL` | 1.5474267014765897e-05 | 3.1e-5 | `test_deformed_master_fe_through_the_engine` |
+   | `ROTATION_TOL_RAD` | 8.306247905485228e-06 rad | 1.7e-5 | `test_in_plane_rotation` (8.31e-06 at 0.1 deg, 3.36e-06 at 1.0, 2.36e-06 at 2.0) |
+   | `PC_PHANTOM_TOL` | 0.007014950695559439 | 0.014 | `test_phantom_uncorrected` |
+   | `PC_PHANTOM_FE_TOL` | 1.6955787696912304e-05 | 3.4e-5 | `test_phantom_corrected` |
+   | `PC_PHANTOM_TRANSLATION_TOL` | 0.0010834565488911374 | 0.0022 | `test_raw_homography_is_stored_uncorrected` |
+   | `PC_ROUTE_EQUIVALENCE_TOL` | 0.0 (bitwise) | 1e-12 (`ALGEBRA_TOL`) | `test_single_pc_equals_per_point_pc` |
+   | `UPDATE_RULE_TOL` | 4.0194366942304644e-14 | 1e-13 | `test_iterations_match_the_hand_built_update` (0.0 at one iteration, 4.02e-14 at two) |
+   | `BORDER_LEAK_TOL` | 0.08794948499121773 | 0.18 | `test_border_keeps_a_planted_defect_out` |
+   | `DEAD_BAND_LEAK_TOL` | 0.08849768737444721 | 0.18 | `test_dead_band_keeps_a_planted_cross_out` |
+
+   Two of these are not a plain 2x of their own measurement, and the
+   test file says why at each constant:
+
+   - `PC_ROUTE_EQUIVALENCE_TOL` measures EXACTLY 0.0, a bitwise
+     agreement, because the internal route calls the same
+     `extrapolate_pc` with the same anchor and step sizes and hands
+     the engine an identical projection centre array. Literal zero
+     is not pinned: a change in the ORDER of that same arithmetic
+     would fail a correct implementation on a last-bit difference.
+     The band is the module's frozen machine-precision one, 1e-12,
+     and a real route divergence still dies by orders (a per-point
+     projection centre wrong by 1e-6 px moves `Fe` by about 1e-9).
+   - `UPDATE_RULE_TOL` is pinned at 2.5x its measurement, what
+     matters here being the distance to the MUTANTS rather than the
+     margin over the measurement: 1e-13 sits eight orders under the
+     tightest separation measured at the failing-tests gate
+     (8.2e-05 px, the wrong-side composition at two iterations) and
+     ten under the smallest one-iteration separation (2.5e-03 px).
+     The engine agreeing with the hand-built loop to 4e-14 px is
+     itself a finding: the D2.3 accumulated-W deviation is genuinely
+     implemented, the warp-of-warp scheme it replaces differing by
+     1.7e-03 px at two iterations.
+
+   Both emptied drafting seeds are now refuted with numbers and the
+   refutation is amended into requirements Context with this date:
+   `WARP_REFIT_TOL_480`'s 0.1 px seed was 8x looser than achievable,
+   and `ROTATION_TOL_RAD`'s 1e-5 rad seed sat only 1.2x above the
+   achievable error, i.e. no margin at all.
+
+4. **Gate outcome.** With the pins above:
+
+   ```
+   .venv/Scripts/python.exe -m pytest \
+     tests/test_indexing/test_hrebsd_interpolation.py \
+     tests/test_indexing/test_hrebsd_homography.py \
+     tests/test_indexing/test_hrebsd_geometry.py \
+     tests/test_indexing/test_hrebsd_engine.py \
+     tests/test_signals/test_ebsd_hrebsd_dic.py -q
+   -> 183 passed, 1 skipped (the weekly capture-range sweep), 14.6 s
+   ```
+
+   `ruff format --check` and `ruff check` clean on both edited test
+   files. The weekly sweep itself was run separately
+   (`-q --weekly -k rotation_sweep_capture_range`) and PASSES, its
+   numbers in entry 6.
+
+   Full existing suite, same machine and interpreter:
+
+   ```
+   .venv/Scripts/python.exe -m pytest tests -q --ignore=tests/test_data
+   -> 4257 passed, 797 skipped, 3 rerun, 206 s
+   ```
+
+   Zero failures, so HREBSD perturbs no spherical or upstream test.
+   One observation recorded because a `-x` run tripped over it
+   first: `tests/test_simulations/test_kikuchi_pattern_simulator.py
+   ::TestCalculateMasterPattern::test_shape` is FLAKY on this
+   machine, failing about one run in three at its
+   `np.allclose(mp.data[0], mp.data[1], atol=1e-4)` hemisphere
+   comparison and exhausting its own `@pytest.mark.flaky(reruns=5)`
+   sometimes. It is upstream code untouched by this branch
+   (`git diff HEAD -- src/kikuchipy/simulations tests/test_simulations`
+   is empty) and upstream already marks it flaky, so it is NOT an
+   HREBSD regression; it is logged here so a future red run on this
+   machine is not misread as one.
+
+5. **D6.3 sign pin (requirements D6.3, amended with this date).**
+   The DRAFTED sign set passes unchanged:
+   `alpha_s = DD_target / DD_reference`,
+   `gamma = PC_target - PC_reference` in binned pixels,
+   `W_phantom = [[alpha_s, 0, gamma_x], [0, alpha_s, gamma_y],
+   [0, 0, 1]]`, correction composed as `W_corr = W_phantom^-1 . W`.
+   Evidence: on the `(2, 3)` 400.0-step phantom map the fitted
+   uncorrected homographies match that closed form to 0.0070 px
+   worst, 6e-4 of the phantom's own 11.43 px size; with the
+   correction on, `Fe = I` to 1.6956e-05 in the worst entry against
+   8.06e-03 in the same entries uncorrected, a factor of about 475.
+
+6. **D5 capture range (recorded, never gated; requirements D5
+   amended with this date).** Recipe: the V4 sweep
+   (`test_rotation_sweep_capture_range`, run with `--weekly`, PASSES
+   at `largest >= 0.5`) plus a scratchpad detail run that adds the
+   intermediate angles, the seed values and the preprocessed ZNCC of
+   each pair. Phase cross-correlation seeded, counted as recovered
+   when converged AND within 1.0 px of the exact homography:
+
+   | angle | converged | error (px) | iterations | seed (dx, dy) px | ZNCC |
+   |---|---|---|---|---|---|
+   | 0.5 deg | yes | 0.002145 | 5 | (-0.125, 0.250) | +0.876 |
+   | 1.0 deg | yes | 0.003972 | 5 | (0.000, -0.062) | +0.622 |
+   | 2.0 deg | yes | 0.011303 | 8 | (0.062, -6.375) | +0.176 |
+   | 2.5 deg | no | 148.26 | 50 (cap) | (0.062, -9.812) | +0.049 |
+   | 3.0 deg | no | 172.88 | 50 (cap) | (-0.062, -9.312) | -0.024 |
+   | 4.0 deg | no | 221.43 | 50 (cap) | (0.000, -15.375) | -0.069 |
+   | 5.0 deg | no | 97.93 | 50 (cap) | (0.062, -15.062) | -0.056 |
+
+   **Recorded capture range: 2.0 degrees** of pure in-plane rotation
+   at 480x480 with the frozen `(0.05, None)` band-pass. Two limits,
+   separated by re-running from the exact (identity) seed: the basin
+   itself reaches 3.0 deg (11 iterations at 2.5, 16 at 3.0) and
+   fails at 4.0 deg, so 2.5 and 3.0 deg are SEED failures (spurious
+   translations of 9.8 and 9.3 px where the truth is zero) while
+   4.0 deg and beyond are basin failures. Beyond 2.5 deg the pair is
+   simply decorrelated (ZNCC at or below 0.05), which is why no
+   conformant implementation of the frozen D2/D4/D5 design can do
+   better without the deferred Fourier-Mellin pre-rotation (plan
+   open question 5). This number goes into the `hrebsd_dic`
+   docstring Notes.
+
+   Discrepancy recorded, not corrected: the `TestPureRotations`
+   comment in `test_hrebsd_engine.py`, written at the implementation
+   gate, reports the seed returning 128 px and 160 px at 2.5 and
+   3.0 deg and the exact-seed basin ending between 4.0 deg (189
+   iterations) and 4.5 deg. Neither reproduces here: the seed
+   returns 9.8 and 9.3 px, and 4.0 deg does not converge at the
+   frozen 50-iteration cap (189 iterations would need a raised cap,
+   a different experiment). The comment's CONCLUSION, re-pinning the
+   V4 in-plane angles from 5.0 deg to 2.0, is confirmed by both
+   measurements; only the intermediate figures differ, and the
+   numbers in THIS ledger are the ones with a stated recipe.
+
+7. **D1.4 Hessian conditioning (requirements D1.4, amended with
+   this date).** Recipe: `numpy.linalg.cond` and `eigvalsh` on
+   `ReferenceState.hessian` built with the default knobs. At
+   480x480 (186624 subregion pixels): condition number
+   **5.7529e+08**, eigenvalues 1.5120e-01 to 8.6985e+07, so **6.2
+   orders of headroom** under the ~1e15 an f64 Cholesky holds,
+   exactly the "safe by ~6 orders" the spec claimed. The drafted
+   `(half-width)^4 = 3.32e+09` estimate of the spread is 5.8x
+   conservative. Symmetrically scaled by its own diagonal the same
+   matrix conditions at **4.51**, so the spread is entirely the
+   pixel unit system and not a near-degeneracy. At 60x60 (2916
+   pixels): 3.0312e+05, scaled 9.55. `scipy.linalg.cho_factor`
+   succeeds on both. The recorded normalize-by-pattern-width
+   fallback is NOT taken.
+
+8. **D3 bicubic versus quintic (plan open question 1; requirements
+   D3 amended with this date). VERDICT: BICUBIC STAYS.** Two
+   independent arms, neither meeting the re-pin criterion (more than
+   2x accuracy at under 1.5x cost).
+
+   - On the V2 warp-refit oracle, which is where plan 6.1 asks for
+     it: a controlled A/B in the scratchpad (`measure_extras.py d3`)
+     reruns the whole IC-GN loop with the spline order as the ONLY
+     difference (same preprocessing, same phase-XC seed, same
+     matched H and g scales, same update rule, same exit criterion,
+     gradients by central difference of the SAME interpolant on both
+     arms so neither order is favoured by having an analytic
+     derivative the other lacks), six random small homographies at
+     480 px. Worst recovery error **0.010496 px bicubic versus
+     0.012649 px quintic**: quintic is 0.83x as accurate, that is
+     WORSE. Mean iterations 5.67 versus 6.17.
+   - Cost, on the 186624 subregion points the engine really
+     evaluates: the numba bicubic kernel **4.621 ms** versus
+     `map_coordinates(order=5, prefilter=False)` **15.310 ms**, a
+     ratio of **3.31x**.
+   - Against the ANALYTIC band-limited truth
+     (`test_order_ab_harness`, where an order difference originates
+     at all): bicubic 1.0549e-04, quintic 5.7480e-05 scale relative,
+     a gain of **1.84x**, below the 2x threshold and anyway swamped
+     at oracle level by the cross-interpolator systematic.
+
+   This reproduces Ruggles 2018 (no significant biquintic gain at
+   960 px). Ernould's and EMsoftOO's quintic (`mod_DIC.f90:50-51`)
+   stays a recorded deviation.
+
+9. **D17 f32 versus f64 coefficient storage (plan open question 11;
+   requirements D17 amended with this date). VERDICT: f32
+   CONFIRMED, no longer provisional.** Recipe:
+   `test_dtype_ab_harness` on the V2 480 px batch (four random small
+   homographies, seed 15), plus timing and byte counts from the
+   scratchpad rerun (`measure_extras.py d17`). Worst recovery error
+   **0.00628116603 px (f64) versus 0.00628116632 px (f32)**, a
+   degradation of **4.5e-08** of the f64 error against the D17
+   criterion of 0.10, six orders of margin. Per-case errors agree to
+   the ninth digit (f64 0.0039168450, 0.0062811660, 0.0041327015,
+   0.0050798531; f32 0.0039168448, 0.0062811663, 0.0041327016,
+   0.0050798518). Saving: the coefficient array is **1.84 MB f64
+   versus 0.92 MB f32**, resident per-grain precompute **18.27 MB
+   versus 17.34 MB** at 480x480. Fit time unchanged within noise
+   (0.0713 s f64, 0.0742 s f32 per 480 px fit; the f32 arm is not
+   faster because the kernel accumulates in f64 either way). f64
+   accumulators stay non-negotiable.
+
+10. **`step_scale` 1.0 / 1.25 / 1.5 (plan open question 9;
+    requirements D2.4 amended with this date). VERDICT: 1.0 STAYS;
+    the EMsoftOO accelerator is refuted as an accelerator.** Recipe:
+    `measure_extras.py step_scale`, the twelve-case V2 batch at
+    480 px (seeds 0 and 1) plus a basin arm (an in-plane rotation
+    ladder and the 15 px translation case).
+
+    | `step_scale` | worst error (px) | mean iterations | total iterations | non-converged | largest rotation recovered | 15 px translation |
+    |---|---|---|---|---|---|---|
+    | 1.0 | 0.012440 | 5.17 | 62 | 0 | 2.0 deg | converged, 2 iterations |
+    | 1.25 | 0.012461 | 7.33 | 88 | 0 | 2.0 deg | converged, 3 iterations |
+    | 1.5 | 0.012482 | 12.75 | 153 | 0 | 2.0 deg | converged, 6 iterations |
+
+    So 1.5 costs 2.5x the iterations for a 0.3 per cent accuracy
+    LOSS and no basin gain whatsoever. `step_scale = 1.0` stays
+    frozen. (The iteration counts here also feed plan open question
+    2: at the frozen `min_step = 1e-3` px the 480 px batch exits in
+    5.2 iterations on average and 7 at worst, far under the cap of
+    50, and the residual error sits at the interpolation floor, so
+    the convergence defaults are not the limiting factor. The full
+    error-versus-threshold curve is still a Stage B item.)
+
+11. **Performance baseline (recorded, never a gate, D16).** Recipe:
+    `measure_perf.py`, `dask.config.set(num_workers=8,
+    scheduler="threads")`, warm numba caches, best of three timed
+    runs after a two-pattern warm-up, all patterns one grain against
+    one reference so the numbers are engine throughput rather than
+    convergence failures.
+
+    | configuration | patterns | time | rate | converged | mean iterations |
+    |---|---|---|---|---|---|
+    | 480x480 oracle, default knobs, 8 workers | 40 | 1.670 s | **23.96 pat/s** | 40/40 | 4.65 |
+    | 60x60 (`nickel_ebsd_small` reference, scaled warp batch), 8 workers | 100 | 0.167 s | **600.4 pat/s** | 100/100 | 3.67 |
+
+    Per-grain precompute at 480x480: **0.0402 s** (median of three)
+    and **16.54 MB** resident with f32 coefficients, over 186624
+    subregion pixels. Nothing here is a floor: D16 makes performance
+    a recorded baseline only, and the spherical 2 pat/s/core floor
+    is EMSphInx-scoped. The Si-wafer route row of the Performance
+    table is deliberately replaced by the 480x480 ORACLE route,
+    which needs no download; the Si-wafer timing lands with the V5
+    benchmark at the Stage B gate.
+
+12. **Not measured here, still open.** The V5 Si-wafer noise floors,
+    the full convergence sweep of plan open question 2 (only the
+    iteration counts above), the border and preprocessing sweeps
+    (open questions 3 and 10), the KAM defaults (4), the weekly
+    960x960 warp-refit, and the local oldest-matrix run. All are
+    Stage B or weekly items and keep their own gates.
+
+13. **Per-grain resident memory, a drafted number REFUTED
+    (requirements D16 amended with this date).** Recipe:
+    `ReferenceState.memory_bytes()` on the 480x480 oracle reference
+    with the default `border=0.05`. The spec's drafted "~5 f32/f64
+    planes of the SR, ~4.6 MB at 480x480" is **3.6x too small**: the
+    eight steepest-descent columns of D2.1 are themselves eight
+    subregion sized f64 planes, so eleven planes plus the f32
+    coefficient plane are resident, MEASURED **17344512 B =
+    16.54 MB** over 186624 subregion pixels (11.94 MB
+    steepest-descent, 4.48 MB reference plus the two coordinate
+    planes, 0.92 MB f32 coefficients; 18.27 MB with f64
+    coefficients). The information message was already correct, its
+    whole-pattern upper bound printing 20.2 MB at this size; only
+    the prose was wrong, and the two docstrings repeating it
+    (`ReferenceState` and `EBSD.hrebsd_dic`) are corrected with this
+    date. The `EBSD.hrebsd_dic` Notes also had the basin "ending
+    near 4 degrees" from an exact seed, corrected to "between 3 and
+    4" by entry 6's measurement (3.0 deg converges in 16 iterations,
+    4.0 deg does not converge at the frozen 50-iteration cap).
+
+### 2026-09-07 (Stage A adversarial review, fixer)
+
+**Machine A** as in the implementation-gate section above: 20-core
+Windows 11 laptop (Raptor Lake, build 26200), `.venv` Python 3.13.12,
+numpy 2.4.6, scipy 1.17.1, numba 0.65.1, scikit-image 0.26.0, orix
+0.14.2, dask 2026.3.0. Warm numba caches, idle machine. Two
+adversarial reviewers (fidelity/theory, conventions/integration)
+returned 25 findings plus 2 surviving mutants; the disposition table
+is in plan.md section 9. Every number below was measured by this
+fixer, and each one that moves a frozen decision is amended in
+requirements.md with the same date.
+
+14. **D6.2 conversion frame, a frozen decision REFUTED (critical;
+    requirements D6.2 amended with this date).** The drafted rule
+    converted the ALREADY-CORRECTED homography with
+    `pc_rel = PC_t - PC_ref` and `dd = DD_target`, blessed as "first
+    order equivalent". Re-derivation: a raw fit in the D1.3 frame is
+    `W = T(delta) . diag(1, 1, 1/DD_t) . Fe . diag(1, 1, DD_r)`, and
+    its `Fe = I` case reproduces the D6.2 closed-form phantom to
+    **0.0** (so the ray model and the V6-pinned phantom are the same
+    object); removing that phantom therefore leaves
+    `W_corr = diag(1, 1, DD_r)^-1 . Fe . diag(1, 1, DD_r)`, a pure
+    reference-frame homography, whose exact conversion is
+    `pc_rel = (0, 0)`, `dd = DD_reference`. Recipe and numbers,
+    scratchpad `v1_d6_algebra.py` then the committed oracle:
+
+    | quantity | drafted route | corrected route |
+    |---|---|---|
+    | analytic, V6 geometry, 1 deg out-of-plane tilt | 3.8668e-04 | 6.9e-18 |
+    | analytic, V6 geometry, generic 2e-3 `Fe` | 4.0492e-05 | 1.3e-18 |
+    | ENGINE, V6 map + 1 deg tilt, worst \|Fe - Fe_true\| | **3.9967e-04** | **2.2255e-05** |
+
+    3.9967e-04 is 13x the pinned `DEFORMED_MASTER_FE_TOL = 3.1e-5`
+    and 5x the 8e-5 strain precision the `hrebsd_dic` docstring
+    quotes. The blindness was structural: V6's
+    `test_phantom_corrected` imposes `Fe = I`, where `h_corr = 0`
+    makes every `pc_rel`/`dd` give the identity, and V3's
+    `test_deformed_master_fe_through_the_engine` states in its own
+    comment that "every point shares one projection centre". NEW
+    ORACLE, committed:
+    `TestPcShiftPhantom::test_corrected_fe_on_a_deformed_per_point_pc_map`
+    -- the V6 `(2, 3)` per-point-PC map with a 1 degree out-of-plane
+    tilt imposed on every target, which needs BOTH a moving
+    projection centre and a real deformation. It measures 2.2255e-05
+    against the 3.1e-5 band (1.39x margin, recorded because it is
+    the tightest margin in the suite) and FAILS at 3.9967e-04 with
+    the drafted route re-injected. Three geometry tests were
+    rewritten with a GENERIC `Fe` (nonzero Fe13/Fe23/Fe31/Fe32) and
+    a ray-model construction; `test_phantom_corrected` itself is
+    unchanged at 1.6956e-05, exactly as predicted, since at `Fe = I`
+    the two routes coincide identically.
+
+15. **Surviving mutant "correction applied after Fe conversion"
+    (plan 2.5), resolved by the D6.2 fix + a strengthened test.**
+    Under the corrected conversion the map is a conjugation by
+    `diag(1, 1, DD_ref)`, a group HOMOMORPHISM, so removing the
+    phantom in homography space and removing it in Fe space agree
+    **to 2.2e-16**: that form is an EQUIVALENT mutant and is recorded
+    as such by `test_correcting_after_the_conversion_is_now_identical`,
+    which re-checks the equivalence whenever the conversion moves.
+    The NON-equivalent form -- convert with the target PC first,
+    then divide out the phantom in Fe space -- dies at
+    `test_correction_precedes_conversion` and
+    `test_correcting_after_the_conversion_is_now_identical`
+    (verified by injection and restore).
+
+16. **Surviving mutant "mirror-boundary derivative sign dropped"
+    (`_bicubic_evaluate_gradient`), KILLED.** Recipe: injected
+    `out_gx[i] = gradient_x` / `out_gy[i] = gradient_y`, ran
+    `test_hrebsd_interpolation.py` -> `1 failed, 29 passed`, restored
+    -> `30 passed`. The killer is the new
+    `TestMirrorBoundary::test_gradient_mirror_boundary_keeps_the_fold_sign`:
+    analytic gradients at out-of-frame coordinates against a central
+    difference of the VALUE kernel (which carries no sign logic),
+    plus the tolerance-free statement that a fold NEGATES the
+    derivative with respect to the original coordinate. The sibling
+    `test_mirror_boundary_through_py_func` executes every fold branch
+    of the VALUE kernel through `.py_func`, which is the only way
+    coverage sees a numba kernel.
+
+17. **`residual` was one iterate behind `homography` (requirements
+    D2.7 amended).** MEASURED on the 480 px oracle before the fix:
+    a converged fit reported 0.0008888143693887548 against
+    0.0008888283289345156 recomputed at the returned homography
+    (1.6e-05 relative), and a fit capped at two iterations reported
+    **1.5433811939061348 against 1.2239561138811788 -- 26 per cent
+    high**, which is exactly the point a D10 quality map is read on.
+    The criterion is now evaluated once more after the loop: the
+    same two cases measure a relative difference of **0.0** (bitwise)
+    against an independent assembly, pinned by
+    `TestResidualIsTheFinalCriterion` at `max_iterations` 2 and 50.
+    Cost, re-recorded below.
+
+18. **`ReferenceState.memory_bytes()` understated by ten per cent
+    (requirements D16 re-amended).** It omitted `reference_subregion`
+    (1492992 B at 480x480), a persistent attribute. MEASURED
+    **18837504 B = 17.96 MB** over 186624 subregion pixels, against
+    the 17344512 B = 16.54 MB the ledger recorded at entry 13, so the
+    drafted "~4.6 MB" is 3.9x too small, not 3.6x. The shared arrays
+    (mask, transfer function, window) are excluded BY DESIGN and the
+    docstring now says so: one of each is built per RUN and shared by
+    every reference. The information message model gains the same
+    plane and prints **22.0 MB** at 480x480 (was 20.2 MB), which
+    still bounds the measurement; `TestPrecomputeMemory` now asserts
+    the bound, the closed form and `n_pixels`, none of which any test
+    executed before.
+
+19. **The D4.3 `window` knob: uncovered AND implemented against its
+    own decision (requirements D4.3 amended).** It was built over the
+    WHOLE pattern and multiplied into each pattern in that pattern's
+    OWN frame inside `preprocess`, before the warp, so the taper
+    travelled with the target and broke the affine intensity model
+    ZNSSD assumes. Reviewer measurement, 120 px synthetic, D2.5
+    corner-displacement error: identity 0.00000 / 0.00000; translate
+    2 px 0.01601 -> 0.30312 (18.9x); strain 2e-3 0.00175 -> 0.00232;
+    generic h 0.00660 -> 0.11304 (17.1x) -- the error scaling with
+    the translation and vanishing at the identity is the signature.
+    Now the window is built over the SUBREGION bounding box and
+    applied as a per-pixel WEIGHT on the ZNSSD residual in the
+    reference frame, which weights the steepest-descent images by the
+    same `w` and leaves the D2.1/D2.3 formulas untouched; the
+    zero-mean unit-norm vectors stay unwindowed, so ZNSSD's affine
+    invariance is exact. MEASURED on the 480 px seed-35 pair:
+    **0.04565 px windowed against 0.00656 px plain**, and the
+    pre-correction scheme measures **0.14949 px** on the same two
+    cases. New pin `WINDOW_REFIT_TOL_480 = 0.092` (2x the
+    measurement; it fails the old scheme by 1.6x), plus a structural
+    arm asserting that `preprocess` has no `window` parameter at all
+    and one pinning the weighted steepest-descent block.
+
+20. **Scan-step units were guessed (requirements D6.1 amended, the
+    D14.5 precedent).** `EBSD.hrebsd_dic` fed the navigation axes'
+    `scale` straight into the beam-scan model without reading their
+    `units`. Reviewer measurement on the strain-free V6 phantom
+    through the single-PC route: `max|Fe - I|` = **1.70e-05** with
+    step sizes in um, **4.71e+01** with the same scan described in
+    nm, and **4.71e-02** in mm, which equals the completely
+    UNCORRECTED phantom, i.e. the correction silently became a no-op;
+    no warning in any of the three runs. The units are now read and
+    converted to the micrometres `px_size` uses, with a ValueError
+    naming the axis for a missing or unrecognized unit (including
+    HyperSpy's `"px"`), and only when the detector carries a single
+    PC, since the steps are unused otherwise. `px_size` itself
+    carries no unit and its 1.0 default is a placeholder --
+    kikuchipy's own `nickel_ebsd_small` ships it beside a 1.5 um
+    scan step, a 70x mismatch -- so it is DOCUMENTED rather than
+    guarded, and recorded here as the caller's responsibility. Tests:
+    `TestScanStepUnits` (signal level) and `TestStepSizeUnits`
+    (geometry level).
+
+21. **Capture range is a function of `filter_cutoffs`; a Context
+    overclaim WITHDRAWN.** Recipe: the V4 deformed-master in-plane
+    sweep, same engine, same phase-XC seed, same 50-iteration cap,
+    `filter_cutoffs` the only change.
+
+    | angle | `(0.05, None)` | `(None, None)` |
+    |---|---|---|
+    | 2.0 deg | 8 it, 0.01130 px, ZNCC +0.176 | 11 it, 0.00110 px, ZNCC +0.589 |
+    | 2.5 deg | cap, 148.26 px, +0.049 | 15 it, 0.00165 px, +0.472 |
+    | 3.0 deg | cap, 172.88 px, -0.024 | 18 it, 0.00167 px, +0.366 |
+    | 4.0 deg | cap, 221.43 px, -0.069 | 41 it, 0.00168 px, +0.196 |
+
+    So the default HALVES the capture range and costs a factor of
+    ten in the 2.0 deg error on noise-free patterns, and the
+    "decorrelated pair" premise is the filter's too. The requirements
+    Context clause "no conformant implementation of the frozen
+    D2/D4/D5 design converges there" is struck; the `hrebsd_dic`
+    docstring now quotes both numbers conditionally. The DEFAULT IS
+    NOT RE-PINNED: on noise-free oracles a high-pass can only remove
+    signal, and its purpose -- background gradients on real data --
+    is the V5 Si-wafer measurement of plan open question 10, at the
+    Stage B gate. Also recorded (requirements D4.1): the knob maps to
+    `highpass_fft_filter(cutoff=high_pass * width)`, a radius in FFT
+    bins, while EMsoftOO's `hipassw` is a normalized-frequency
+    Gaussian parameter, so the two share a numeral and not a unit
+    system.
+
+22. **Entry 6's seed column does NOT reproduce; the test-file figures
+    do.** Re-run of the engine's own recipe
+    (`initial_guess(state.reference_subregion,
+    preprocess(target, transfer_function)[state.bounds])`,
+    `upsample_factor=16`): the seed `(dx, dy)` is
+    **(-0.062, +127.812) px at 2.5 deg** and **(-0.062, +159.812) px
+    at 3.0 deg**, matching the `TestPureRotations` comment's 128 px
+    and 160 px, NOT entry 6's (0.062, -9.812) and (-0.062, -9.312).
+    Every other column of that table reproduces exactly here: ZNCC
+    +0.176/+0.049/-0.024/-0.069, errors 148.26/172.88/221.43 px,
+    8 iterations at 2.0 deg. Entry 6's tie-break sentence ("the
+    numbers in THIS ledger are the ones with a stated recipe")
+    therefore picked the wrong side on that one column, and this
+    entry is the correction; entry 6 stands unedited, the ledger
+    being append only. The CONCLUSION both agree on -- a seed failure
+    rather than a basin failure at 2.5 and 3.0 deg -- is unaffected,
+    since a 128 px spurious translation is a seed failure a fortiori.
+
+23. **Coverage, the Definition-of-done item that had no recorded
+    run.** Command and output, this machine, this date:
+
+    ```
+    .venv/Scripts/python.exe -m pytest \
+      tests/test_indexing/test_hrebsd_interpolation.py \
+      tests/test_indexing/test_hrebsd_homography.py \
+      tests/test_indexing/test_hrebsd_geometry.py \
+      tests/test_indexing/test_hrebsd_engine.py \
+      tests/test_signals/test_ebsd_hrebsd_dic.py \
+      --cov=src/kikuchipy/indexing/_hrebsd --cov-report=term-missing -q
+    ->
+      __init__.py          0 stmts, 0 miss, 100.00%
+      _engine.py         270 stmts, 0 miss, 100.00%
+      _geometry.py        55 stmts, 0 miss, 100.00%
+      _homography.py      62 stmts, 0 miss, 100.00%
+      _interpolation.py  186 stmts, 0 miss, 100.00%
+      _preprocessing.py   70 stmts, 0 miss, 100.00%
+      _reference.py       59 stmts, 0 miss, 100.00%
+      TOTAL              702 stmts, 0 miss, 100.00%
+      242 passed, 1 skipped in 21.65 s
+    ```
+
+    (`pytest-cov` is not in `.venv`; it was installed into a
+    scratchpad directory and put on `PYTHONPATH` for the run, which
+    changes nothing about the measurement.) The review found
+    91.98 %. The new tests are named in entries 14 to 22 above plus:
+    `TestStepScale` (the `step_scale != 1.0` branch, which committed
+    the ordering entry 10 recorded -- 1.5 costs more iterations for
+    no accuracy gain -- and a tolerance-free `step_scale=0.0` arm),
+    `TestArgumentGuards` (every previously unexecuted `raise`, with
+    its message asserted), `TestReferenceResolution`'s three new
+    `grain_labels` arms including the new same-grain guard,
+    `TestNavigationDimensions` (the documented 1-D navigation and the
+    dimension guard, neither exercised through the public method),
+    `TestGrainLabels` (`grain_labels` never reached the engine
+    through `EBSD.hrebsd_dic` at all), the `(None, 0.4)` low-pass-only
+    arm of `filter_cutoffs`, and the non-contiguous / non-f64 `out=`
+    path of `evaluate`. `EBSD.hrebsd_dic` itself is also fully
+    covered (no missing line in 2450-2820). ONE piece of genuinely
+    dead code was pruned rather than tested: the
+    `if not np.isfinite(residual)` guard inside the IC-GN loop is
+    unreachable, because `zero_mean_normalize` already refuses a
+    warped subregion whose centred 2-norm is zero or not finite and
+    the criterion of two unit-norm vectors is bounded by four times
+    the pixel count; D2.6's non-finite-CIC outcome is unchanged and
+    is now pinned through that raise instead.
+
+24. **Local oldest-matrix run, Stage A (the plan section 1 recipe;
+    validation entry 12 misclassified it as a Stage B or weekly
+    item, which plan.md section 1 and the Definition of done both
+    contradict -- it is a PER-STAGE gate).** Command:
+
+    ```
+    uv run --isolated --python 3.10 \
+      --with "numpy==1.23.0" --with "numba==0.57" \
+      --with "orix==0.12.1" --with "scikit-image==0.21.0" \
+      --with pytest-benchmark --with pytest-rerunfailures \
+      --with pytest-xdist --with pytest-randomly \
+      pytest tests/test_indexing tests/test_signals -k hrebsd -q
+    ->  242 passed, 1 skipped, 4335 deselected in 23.42 s
+    ```
+
+    Environment as resolved: Python 3.10.19, numpy 1.23.0, scipy
+    1.13.1, numba 0.57.0, orix 0.12.1, scikit-image 0.21.0, dask
+    2024.8.1. (The four pytest plugins are needed only because the
+    `pyproject.toml` `addopts` reference them; they change no
+    behaviour under test.) The D15.7 pin
+    `GET_MAP_DATA_2D_PROP_OUTCOME = "TypeError"` holds on orix
+    0.12.1 as well as on the venv's 0.14.2.
+
+25. **Performance, re-recorded after the D2.7 final-criterion
+    change.** Recipe: 40 warped 480 px targets against one reference,
+    `dask.config.set(num_workers=8, scheduler="threads")`,
+    `chunksize=6`, warm caches, best of three after a warm-up:
+    **22.72 patterns/s** (1.761 s, 41/41 converged, mean 4.75
+    iterations), against 23.96 patterns/s at the implementation gate
+    on its own 40-pattern recipe -- about 5 per cent, which is the
+    one extra interpolation per fit the final criterion costs
+    amortized over 4.75 iterations. Per-grain precompute 0.0362 s.
+    D16 makes performance a recorded baseline and never a gate.
+
+26. **Findings NOT applied, with the evidence.** (a) The conventions
+    reviewer asked for a ValueError when `detector.px_size` is still
+    at its 1.0 default: REJECTED, and the reason recorded in
+    requirements D6.1 -- a placeholder 1.0 is indistinguishable from
+    a genuine 1 um pixel, and kikuchipy's own shipped
+    `nickel_ebsd_small` detector carries the placeholder, so the
+    guard would refuse the demonstration data. The units half of the
+    same finding, which IS decidable, is applied (entry 20). (b) The
+    fidelity reviewer asked for the `correct=False` diagnostic path
+    to use "the exact general corner-origin form" instead of the
+    `beta0` shortcut: REJECTED. That path's behaviour is pinned by
+    the frozen `test_conversion_uses_the_relative_target_pc`, it
+    feeds only validation V6's uncorrected arm and D13's diagnostics,
+    and `homography_to_fe`/`fe_to_homography` are exact mutual
+    inverses as they stand (V1); changing it would move a frozen
+    algebraic pin for no production effect. What the finding is
+    really about -- the CORRECTED path -- is applied in full
+    (entry 14).
+
+27. **Full existing suite, after every fix above.**
+
+    ```
+    .venv/Scripts/python.exe -m pytest tests -q --ignore=tests/test_data
+    ->  1 failed, 4315 passed, 797 skipped, 5 rerun in 201.68 s
+    ```
+
+    The one failure is
+    `tests/test_simulations/test_kikuchi_pattern_simulator.py
+    ::TestCalculateMasterPattern::test_shape`, the SAME upstream
+    flaky test entry 4 of the implementation gate logged on this
+    machine so that a future red run would not be misread as an
+    HREBSD regression. It is upstream's own
+    `@pytest.mark.flaky(reruns=5)` hemisphere comparison
+    (`np.allclose(mp.data[0], mp.data[1], atol=1e-4)` on two
+    201x201 master patterns),
+    `git diff HEAD -- src/kikuchipy/simulations tests/test_simulations`
+    is empty on this branch, and nothing in the HREBSD path is
+    reachable from it. Deselecting it, the suite is green.

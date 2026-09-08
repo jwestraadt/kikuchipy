@@ -1,4 +1,4 @@
-# Roadmap: spherical indexing (EMSphInx port: CPU reference + optional GPU backend)
+﻿# Roadmap: spherical indexing (EMSphInx port: CPU reference + optional GPU backend)
 
 Dependency chain: 0 -> 1 -> {2, 3} -> 4 -> 5 -> 6 -> 7 -> 9 (interop) -> 10 -> 11 (Phase 10 needs the Phase 2 `.sht` writer and the Phase 9 pattern repacker) -> 12 (GPU backend; needs 6 + 7 + 8).
 
@@ -147,11 +147,11 @@ burden (incl. a recorded local oldest-matrix run per stage). Stages
 A -> B -> C, one spec folder.
 
 ## Stage A -- IC-GN engine (`EBSD.hrebsd_dic`)
-- [ ] `src/kikuchipy/indexing/_hrebsd/` engine: numba bicubic kernel (D3), band-pass/border/dead-band preprocessing (D4), phase-XC initial guess (D5), IC-GN with accumulated-W re-warp + corner-norm convergence (D2), homography<->Fe with per-point PC/DD and the beam-scan correction applied BEFORE conversion (D6), `EBSD.hrebsd_dic()` with the frozen signature returning a CrystalMap with homography/Fe/residual/iteration/convergence/grain/reference props (D15); explicit reference modes (`reference="auto"` stubs NotImplementedError until Stage B)
-- [ ] failing tests first: V0 kernel equality, V1 round trips + direction pin, V2 warp-refit (MTP pins), V3 deformed-master homography recovery, V4 pure-rotation frame/sign pins, V6 PC-shift phantom sign pins, determinism/NaN/mask/get_map_data pins
-- [ ] measured + recorded: D3 bicubic-vs-quintic decision, D17 f32/f64 verdict, D6.3 signs, D5 capture range, performance baselines
-- [ ] adversarial review (fidelity/theory + conventions/integration + mutation list) + fixes; coverage 100 % of Stage A `_hrebsd/` modules; full suite green; oldest-matrix run recorded
-- [ ] signed commits pushed to origin/hrebsd-dic (no PR)
+- [x] `src/kikuchipy/indexing/_hrebsd/` engine: numba bicubic kernel (D3), band-pass/border/dead-band preprocessing (D4), phase-XC initial guess (D5), IC-GN with accumulated-W re-warp + corner-norm convergence (D2), homography<->Fe with per-point PC/DD and the beam-scan correction applied BEFORE conversion (D6), `EBSD.hrebsd_dic()` with the frozen signature returning a CrystalMap with homography/Fe/residual/iteration/convergence/grain/reference props (D15); explicit reference modes (`reference="auto"` stubs NotImplementedError until Stage B)
+- [x] failing tests first: V0 kernel equality, V1 round trips + direction pin, V2 warp-refit (MTP pins), V3 deformed-master homography recovery, V4 pure-rotation frame/sign pins, V6 PC-shift phantom sign pins, determinism/NaN/mask/get_map_data pins
+- [x] measured + recorded: D3 bicubic-vs-quintic decision, D17 f32/f64 verdict, D6.3 signs, D5 capture range, performance baselines
+- [x] adversarial review (fidelity/theory + conventions/integration + mutation list) + fixes; coverage 100 % of Stage A `_hrebsd/` modules; full suite green; oldest-matrix run recorded
+- [x] signed commits pushed to origin/hrebsd-dic (no PR)
 
 ## Stage B -- strain/stress/rotation + references + PC + HR-KAM
 - [ ] polar decomposition + Biot strain (D8), traction-free sigma33=0 closure with user 6x6 Voigt stiffness / deviatoric fallback (D9), stress + von Mises/hydrostatic/principal maps (D10), `segment_grains` + per-grain best-IQ auto-reference wired into `reference="auto"` (D11), `hrebsd_kam` in mrad (D12), `hrebsd_pc_shift` (D13), `hrebsd_strain_stress` + `voigt_stiffness` public (D15)

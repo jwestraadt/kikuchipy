@@ -38,7 +38,7 @@ unchanged.
 import inspect
 
 import numpy as np
-from orix.crystal_map import CrystalMap
+from orix.crystal_map import CrystalMap, create_coordinate_arrays
 import pytest
 
 import kikuchipy as kp
@@ -405,3 +405,138 @@ class TestFailureSemantics:
         signal.data[0, 0] = 7
         with pytest.warns(UserWarning):
             run(signal, xmap, detector)
+
+
+# ================= Navigation dimensions and units ================== #
+
+
+class TestNavigationDimensions:
+    """The documented one-dimensional support and the navigation
+    dimension guard, neither of which the drafted suite executed
+    through the public method.  [D15.4]"""
+
+    @staticmethod
+    def line_map(xmap):
+        """Return a genuinely ONE dimensional crystal map of the first
+        three points, which slicing a 2-D map cannot give."""
+        arrays, size = create_coordinate_arrays((3,), (1.5,))
+        arrays["rotations"] = xmap.rotations[:3]
+        arrays["phase_id"] = np.zeros(size, dtype=int)
+        arrays["phase_list"] = xmap.phases.deepcopy()
+        line = CrystalMap(**arrays)
+        line.scan_unit = xmap.scan_unit
+        return line
+
+    def test_one_dimensional_navigation(self):
+        # a 1-D scan is a single map row to the engine, ``(1, nx)``
+        signal, xmap, detector = ni_inputs()
+        line = signal.inav[:, 0]
+        line_map = self.line_map(xmap)
+        result = line.hrebsd_dic(line_map, detector, reference=(0, 1), verbose=0)
+        assert isinstance(result, CrystalMap)
+        assert result.shape == (3,)
+        for name in STAGE_A_PROP_NAMES:
+            assert np.asarray(result.prop[name]).shape[0] == 3
+        assert result.prop["homography"].shape == (3, HOMOGRAPHY_PROP_SIZE)
+        # the reference is the point it was asked for, which is only
+        # right if the engine really saw ``(1, 3)``
+        assert np.all(np.asarray(result.prop["reference_index"]) == 1)
+
+    def test_zero_dimensional_navigation_raises(self):
+        signal, xmap, detector = ni_inputs()
+        single = signal.inav[0, 0]
+        with pytest.raises(ValueError, match="one or two dimensions"):
+            single.hrebsd_dic(xmap[0, 0].deepcopy(), detector, verbose=0)
+
+
+class TestScanStepUnits:
+    """The beam-scan projection centre model consumes the navigation
+    axes' ``scale`` beside the detector's ``px_size``, so the two must
+    share a unit.  The axes' ``units`` are READ and converted, and an
+    axis whose unit cannot be read raises, exactly as requirements
+    D14.5 pins for ``CrystalMap.scan_unit``.  Nothing in the drafted
+    suite touched this path.  [D6.1/D14.5]"""
+
+    @staticmethod
+    def with_units(unit, scale):
+        signal, xmap, detector = ni_inputs()
+        signal = signal.deepcopy()
+        for axis in signal.axes_manager.navigation_axes:
+            axis.units = unit
+            axis.scale = scale
+        return signal, xmap, detector
+
+    def test_the_shipped_micrometre_scan_is_unchanged(self):
+        signal, xmap, detector = ni_inputs()
+        units = {str(a.units) for a in signal.axes_manager.navigation_axes}
+        assert units == {"um"}
+        result = run(signal, xmap, detector)
+        assert np.all(np.isfinite(np.asarray(result.prop["Fe"])[4]))
+
+    def test_a_nanometre_scan_converts_to_the_micrometre_result(self):
+        # the same physical scan described two ways must give the same
+        # projection centre map and therefore the same tensors
+        as_um = run(*self.with_units("um", 1.5))
+        as_nm = run(*self.with_units("nm", 1500.0))
+        for name in ("homography", "Fe"):
+            left = np.asarray(as_um.prop[name])
+            right = np.asarray(as_nm.prop[name])
+            assert np.array_equal(left, right, equal_nan=True), name
+
+    def test_an_unreadable_unit_raises_naming_the_axis(self):
+        signal, xmap, detector = self.with_units("px", 1.0)
+        with pytest.raises(ValueError, match="navigation axis 0"):
+            run(signal, xmap, detector)
+
+    def test_a_per_point_detector_needs_no_unit(self):
+        # the steps are not used at all when the detector already
+        # carries one projection centre per map point, so refusing
+        # there would be gratuitous
+        signal, xmap, _ = self.with_units("px", 1.0)
+        detector = signal.detector.deepcopy()
+        detector.pc = np.tile(detector.pc_average, (3, 3, 1))
+        result = run(signal, xmap, detector)
+        assert np.all(np.isfinite(np.asarray(result.prop["homography"])[4]))
+
+
+class TestGrainLabels:
+    """``grain_labels`` never reached the engine through the public
+    method before 2026-09-07, so the reshape at the signal layer and
+    both D11.3 combinations were untested here.  [D11.3]"""
+
+    @staticmethod
+    def labels():
+        return np.array([[0, 0, 1], [0, 1, 1], [0, 0, 1]], dtype=np.int32)
+
+    def test_labels_reach_the_engine_with_a_tuple_reference(self):
+        signal, xmap, detector = ni_inputs()
+        labels = self.labels()
+        result = run(signal, xmap, detector, grain_labels=labels)
+        assert np.array_equal(np.asarray(result.prop["grain_id"]), labels.ravel())
+        # one global reference serves every label (D11.3)
+        assert np.all(np.asarray(result.prop["reference_index"]) == 4)
+
+    def test_labels_with_a_per_grain_index_array(self):
+        signal, xmap, detector = ni_inputs()
+        labels = self.labels()
+        result = signal.hrebsd_dic(
+            xmap,
+            detector,
+            reference=np.array([0, 2]),
+            grain_labels=labels,
+            verbose=0,
+        )
+        expected = np.where(labels.ravel() == 0, 0, 2)
+        assert np.array_equal(np.asarray(result.prop["reference_index"]), expected)
+        assert np.array_equal(np.asarray(result.prop["grain_id"]), labels.ravel())
+
+    def test_an_index_outside_its_grain_raises(self):
+        signal, xmap, detector = ni_inputs()
+        with pytest.raises(ValueError, match="grain label"):
+            signal.hrebsd_dic(
+                xmap,
+                detector,
+                reference=np.array([2, 0]),
+                grain_labels=self.labels(),
+                verbose=0,
+            )

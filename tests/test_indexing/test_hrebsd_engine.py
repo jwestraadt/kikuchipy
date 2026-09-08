@@ -75,6 +75,7 @@ skeleton and therefore fails with ``NotImplementedError`` until the
 engine lands, then passes unchanged.
 """
 
+import ast
 import functools
 import inspect
 import pathlib
@@ -93,6 +94,7 @@ from kikuchipy.indexing._hrebsd._engine import (
     HOMOGRAPHY_PROP_SIZE,
     STAGE_A_PROP_NAMES,
     ReferenceState,
+    _fit_pattern,
     fit_pattern,
     get_info_message,
     initial_guess,
@@ -101,6 +103,7 @@ from kikuchipy.indexing._hrebsd._engine import (
 from kikuchipy.indexing._hrebsd._homography import (
     N_HOMOGRAPHY_PARAMETERS,
     fe_to_homography,
+    homography_to_fe,
 )
 from kikuchipy.indexing._hrebsd._interpolation import (
     evaluate,
@@ -204,7 +207,14 @@ GET_MAP_DATA_2D_PROP_OUTCOME = "TypeError"
 # MEASURED value here, so the placeholder now fails loudly instead.
 # MEASURING RECIPE: ``test_warp_refit_small_h_480`` below; record the
 # worst error over the whole random batch and both seeds
-WARP_REFIT_TOL_480 = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.01244 px, the
+# worst over both seeds of the 480 px batch, the direction pin and the
+# 15 px seeded translation case, every one of which measures against
+# this band.  That sits at the top of the 0.01 to 0.05 px
+# cross-interpolator systematic the drafting note predicted, so the
+# emptied 0.1 px seed really was 8x too loose.  PINNED at 2x the
+# measured worst case; recorded in validation.md
+WARP_REFIT_TOL_480 = 0.025
 
 # MTP [D2, V2]: the same metric on the 60 px shipped Ni patterns, a
 # qualitative regime with no precision claim attached.  The batch is
@@ -213,18 +223,50 @@ WARP_REFIT_TOL_480 = None
 # pattern's 3 px border, so the drafted unscaled call would have
 # measured the mirror boundary rather than the engine.
 # MEASURING RECIPE: ``test_warp_refit_60px`` below
-WARP_REFIT_TOL_60 = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.06507 px, five
+# times the 480 px band on a pattern eight times smaller, which is
+# the qualitative regime this arm exists to record and is never
+# quoted as a precision claim.  PINNED at 2x; recorded in
+# validation.md
+WARP_REFIT_TOL_60 = 0.13
+
+# MTP [D4.3]: the same metric with ``window=True``, ADDED and MEASURED
+# 2026-09-07 at the Stage A adversarial review, which found the knob
+# entirely uncovered and implemented against its own decision.  A Hann
+# taper legitimately discards the subregion's outer signal, which is
+# where the perspective degrees of freedom get their leverage, so a
+# windowed fit CANNOT beat the unwindowed one; the band exists to pin
+# that it stays in the same regime.  MEASURED on the seed-35 pair at
+# 480 px: 0.04565 px windowed against 0.00656 px plain.  PINNED at 2x.
+# It discriminates: the pre-2026-09-07 scheme -- a whole-pattern taper
+# multiplied into each pattern in its OWN frame before the warp, so
+# that it travelled with the target -- measures 0.14949 px on the same
+# two cases and fails this band by 1.6x
+WINDOW_REFIT_TOL_480 = 0.092
 
 # MTP [D2, V2]: the agreement of two fits which differ only by a
 # GENERIC (non power of two) intensity factor.  Powers of two are
 # asserted BITWISE and need no constant.
 # MEASURING RECIPE: ``test_intensity_scale_invariance`` below
-INTENSITY_SCALE_GENERIC_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 3.058e-09 px,
+# six orders below the 0.01244 px fit systematic, so the generic
+# factor changes only the last bits exactly as the matched D2.1/D2.3
+# pairing predicts.  PINNED at 2x; recorded in validation.md
+INTENSITY_SCALE_GENERIC_TOL = 6e-9
 
 # MTP [D2-D7, V3]: the error-warp norm of the deformed-master
 # recovery, where the expected homography is EXACT by construction.
 # MEASURING RECIPE: ``test_deformed_master_homography_recovery``
-DEFORMED_MASTER_H_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.01130 px, the
+# worst over the four V3 deformation cases (0.00308 to 0.00424), the
+# three in-plane rotations (worst 0.01130 at 2.0 degrees), the two
+# out-of-plane tilts (worst 0.00903 at 1.0 degrees) and the sample
+# frame axis case (0.00595), all of which measure against this band.
+# The same class as the 480 px warp-refit systematic even though the
+# expected homography here is EXACT by construction, so what is left
+# is the engine's own interpolation floor.  PINNED at 2x; recorded in
+# validation.md
+DEFORMED_MASTER_H_TOL = 0.023
 
 # MTP [D6/D15.6, V3]: the worst absolute entry of
 # ``Fe_recovered - Fe_imposed`` for the reduced detector-frame tensor
@@ -234,7 +276,13 @@ DEFORMED_MASTER_H_TOL = None
 # end to end; the algebra itself is pinned literally in
 # ``test_hrebsd_homography.py``.
 # MEASURING RECIPE: ``test_deformed_master_fe_through_the_engine``
-DEFORMED_MASTER_FE_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 1.5474e-05 in
+# the worst tensor entry over the pure rotation, mixed and
+# out-of-plane cases.  The imposed tensors carry entries of 1e-3 to
+# 1.7e-2, so the wiring is recovered to better than one per cent of
+# the smallest imposed component.  PINNED at 2x; recorded in
+# validation.md
+DEFORMED_MASTER_FE_TOL = 3.1e-5
 
 # MTP [D1/D2/D7, V4]: the recovered rotation angle error in radians
 # of the pure-rotation cases.  DRAFTING NOTE, not a live number
@@ -242,7 +290,13 @@ DEFORMED_MASTER_FE_TOL = None
 # WARP_REFIT_TOL_480 and for the same reason): the drafted seed was
 # 1e-5 rad.
 # MEASURING RECIPE: ``test_in_plane_rotation`` below
-ROTATION_TOL_RAD = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 8.306e-06 rad,
+# the worst over 0.1, 1.0 and 2.0 degrees (the other two are 3.36e-06
+# and 2.36e-06).  The emptied 1e-5 rad drafting seed turns out to
+# have been the right ORDER but only 1.2x above the achievable error,
+# i.e. no margin at all.  PINNED at 2x the measured worst case;
+# recorded in validation.md
+ROTATION_TOL_RAD = 1.7e-5
 
 # MTP [D6, V6]: the agreement of the fitted homographies with the
 # closed-form beam-scan phantom, uncorrected, in binned pixels.  THE
@@ -252,23 +306,49 @@ ROTATION_TOL_RAD = None
 # were MEASURED at 11.43 px, 5.37 px and 8.1e-3 in
 # ``(gamma_x, gamma_y, alpha_s - 1)``.
 # MEASURING RECIPE: ``test_phantom_uncorrected`` below
-PC_PHANTOM_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.007015 px
+# against a phantom whose own translations reach 11.43 px, so the
+# closed form is recovered to 6e-4 of its size and the DRAFTED sign
+# set is the passing one (``alpha_s = DD_target / DD_reference``,
+# ``gamma = PC_target - PC_reference``, correction composed as
+# ``W_phantom**-1 . W``); recorded in requirements D6.3 with this
+# date.  PINNED at 2x; recorded in validation.md
+PC_PHANTOM_TOL = 0.014
 
 # MTP [D6, V6]: the residual deformation of the CORRECTED phantom,
 # which must sit at the interpolation floor.
 # MEASURING RECIPE: ``test_phantom_corrected`` below
-PC_PHANTOM_FE_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 1.6956e-05 in
+# the worst entry of ``Fe - I``, the interpolation floor of a map
+# whose UNCORRECTED phantom reaches 8.06e-03 in the same entries, so
+# the correction removes the strain phantom by a factor of about 475.
+# PINNED at 2x; recorded in validation.md
+PC_PHANTOM_FE_TOL = 3.4e-5
 
 # MTP [D13/D15.6, V6]: the agreement of the RAW stored translations
 # with the closed-form phantom translations, in binned pixels.
 # MEASURING RECIPE: ``test_raw_homography_is_stored_uncorrected``
-PC_PHANTOM_TRANSLATION_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.0010835 px on
+# translations reaching 11.43 px, i.e. the RAW stored homography
+# reproduces the closed-form beam-scan translations to 1e-4 of their
+# size.  PINNED at 2x; recorded in validation.md
+PC_PHANTOM_TRANSLATION_TOL = 0.0022
 
 # MTP [D6.1, V6]: the agreement of the two per-point projection
 # centre routes, an ENGINE result and not an algebraic identity, so
 # it carries a measured band rather than the drafted guess of 1e-9.
 # MEASURING RECIPE: ``test_single_pc_equals_per_point_pc`` below
-PC_ROUTE_EQUIVALENCE_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): EXACTLY 0.0, a
+# bitwise agreement, because the internal route calls the same
+# ``extrapolate_pc`` with the same anchor and step sizes and so feeds
+# the engine an identical projection centre array.  Literal zero is
+# not the pin: a change in the ORDER of that same arithmetic would
+# fail a correct implementation on a last-bit difference.  The band
+# is the module's frozen machine-precision one, and a real route
+# divergence still dies by orders (a per-point projection centre
+# wrong by 1e-6 px moves ``Fe`` by about 1e-9).  Recorded in
+# validation.md
+PC_ROUTE_EQUIVALENCE_TOL = ALGEBRA_TOL
 
 # MTP [D2.3, V2]: the error-warp norm in binned pixels between the
 # engine run for a FIXED number of iterations from an explicit seed
@@ -287,7 +367,16 @@ PC_ROUTE_EQUIVALENCE_TOL = None
 # measured agreement is not far below 1e-4 px, one of the D2.3
 # deviations is not implemented and that is the finding.
 # MEASURING RECIPE: ``test_iterations_match_the_hand_built_update``
-UPDATE_RULE_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): EXACTLY 0.0 at
+# one iteration and 4.019e-14 px at two, so the engine and the
+# hand-built loop agree to the linear solver's own conditioning and
+# the D2.3 deviations really are implemented.  That is nine orders
+# below the tightest mutant separation measured at the failing-tests
+# gate (8.2e-05 px, the wrong-side composition at two iterations) and
+# eleven below the smallest one-iteration separation (2.5e-03 px).
+# PINNED at 2.5x the measured worst case, which keeps eight orders of
+# margin against every mutant; recorded in validation.md
+UPDATE_RULE_TOL = 1e-13
 
 # MTP [D4.4, V2]: how far a defect planted in the EXCLUDED border
 # moves the fit, in binned pixels.  It cannot be zero and the drafted
@@ -296,11 +385,20 @@ UPDATE_RULE_TOL = None
 # every kept pixel (measured 2026-09-07: max 0.055 intensity units of
 # 242 through the band-pass alone, median 3.2e-5).
 # MEASURING RECIPE: ``test_border_keeps_a_planted_defect_out``
-BORDER_LEAK_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.08795 px of
+# leak, against the contrast arm's much larger direct effect which
+# the test asserts separately and without any tolerance.  The leak is
+# seven times the 0.01244 px fit systematic, which is exactly the
+# whole-pattern band-pass and prefilter reach the drafted bitwise
+# claim denied.  PINNED at 2x; recorded in validation.md
+BORDER_LEAK_TOL = 0.18
 
 # MTP [D4.4, V2]: the same for the dead-band cross.
 # MEASURING RECIPE: ``test_dead_band_keeps_a_planted_cross_out``
-DEAD_BAND_LEAK_TOL = None
+# MEASURED 2026-09-07 (Stage A implementation gate): 0.08850 px, the
+# same class as the border leak above and for the same reason.
+# PINNED at 2x; recorded in validation.md
+DEAD_BAND_LEAK_TOL = 0.18
 
 
 # ----------------------------- Helpers ------------------------------ #
@@ -1072,6 +1170,27 @@ class TestPreprocessing:
         ) * kp.filters.lowpass_fft_filter(shape, cutoff=0.4 * shape[1])
         np.testing.assert_allclose(got, expected, rtol=0, atol=ALGEBRA_TOL)
 
+    @pytest.mark.parametrize("shape", [SHAPE_60, (37, 61)])
+    def test_band_pass_low_pass_only(self, shape):
+        # the other half of the documented ``filter_cutoffs``
+        # contract, uncovered by the drafted suite: with the high-pass
+        # switched off the transfer function is the low-pass alone,
+        # not a product with an implicit high-pass of one
+        got = band_pass_transfer_function(shape, (None, 0.4))
+        expected = kp.filters.lowpass_fft_filter(shape, cutoff=0.4 * shape[1])
+        np.testing.assert_allclose(got, expected, rtol=0, atol=ALGEBRA_TOL)
+
+    @pytest.mark.parametrize("cutoffs", [(0.05, None), (None, 0.4), (0.05, 0.4)])
+    def test_every_cutoff_arm_fits(self, cutoffs):
+        # each arm end to end, so that a transfer function which is
+        # built but never usable cannot pass on shape alone
+        reference, detector = oracle_reference(SHAPE_60)
+        pc_px = pc_pixels_of(detector)
+        state = make_state(reference, pc_px, filter_cutoffs=cutoffs)
+        result = fit_pattern(state, reference.copy())
+        assert result["converged"]
+        assert warp_norm(result["h"], subregion_corners(SHAPE_60, pc_px)) < 1e-3
+
     def test_band_pass_none_switches_filtering_off(self):
         assert band_pass_transfer_function(SHAPE_60, (None, None)) is None
 
@@ -1600,7 +1719,41 @@ class TestPureRotations:
     known SAMPLE frame axis must come back about that axis, mapped
     through ``EBSDDetector.sample_to_detector``.  [D1/D2/D7/V4]"""
 
-    @pytest.mark.parametrize("angle_deg", [0.1, 1.0, 5.0])
+    # RE-PINNED 2026-09-07 at the Stage A implementation gate, from
+    # 5.0 degrees to 2.0.  Two independent reasons, both MEASURED, and
+    # both of them this module's own stated principles:
+    #
+    # (a) The 480 px design budget.  D4.4's ``border=0.05`` leaves
+    #     24 px of margin, and this subregion's farthest corner sits
+    #     358.5 px from the projection centre, so an in-plane rotation
+    #     displaces the corners by ``358.5 * sin(theta)``: 31.3 px at
+    #     5.0 degrees, 7 px OUTSIDE the border, against 12.5 px at 2.0.
+    #     A 5 degree case therefore measures the mirror boundary rather
+    #     than the engine -- the very reason ``SCALE_60`` exists for the
+    #     60 px arm of ``test_warp_refit_60px``, applied here to the
+    #     480 px arm.  The largest angle whose warp stays inside the
+    #     budget at all is ``asin(24/358.5)`` = 3.84 degrees.
+    # (b) The capture range, which requirements D5 and plan open
+    #     question 5 say is MEASURED and RECORDED and never gated ("the
+    #     recorded angle bounds the regime where v1 is valid"); the
+    #     "up to 5 deg" of the requirements Context is listed there
+    #     among the "Suggested spec-level acceptance seeds ... all
+    #     MTP", i.e. an unmeasured drafting seed, and D19 amends a
+    #     drafting seed which measurement refutes.  MEASURED here on
+    #     this oracle with the frozen D4.1 default ``(0.05, None)``:
+    #     0.1, 1.0 and 2.0 degrees converge (3, 5 and 8 iterations, all
+    #     under 0.012 px recovery); 2.5 and 3.0 degrees fail because
+    #     the D5 phase cross-correlation seed of a decorrelated pair
+    #     returns 128 px and 160 px of spurious translation; and even
+    #     from the EXACT translation the IC-GN basin ends between 4.0
+    #     (converges, 189 iterations) and 4.5 degrees (diverges to
+    #     45.6 px).  The preprocessed ZNCC of the pair is 0.62 at 1.0
+    #     degrees, -0.02 at 3.0 and -0.06 at 5.0: at 5 degrees the
+    #     patterns are simply uncorrelated, so no conformant
+    #     implementation of the frozen D2/D4/D5 design can converge
+    #     there.  The recorded capture range goes into the
+    #     ``hrebsd_dic`` docstring Notes, which is what D5 asks for.
+    @pytest.mark.parametrize("angle_deg", [0.1, 1.0, 2.0])
     def test_in_plane_rotation(self, angle_deg):
         reference, detector = oracle_reference(SHAPE_480)
         pc_px = pc_pixels_of(detector)
@@ -1871,6 +2024,76 @@ class TestPcShiftPhantom:
         assert worst < 0.1 * spurious
         assert_within(worst, PC_PHANTOM_FE_TOL, "PC_PHANTOM_FE_TOL")
 
+    def test_corrected_fe_on_a_deformed_per_point_pc_map(self):
+        # ADDED 2026-09-07 at the Stage A adversarial review: the
+        # oracle neither V6 nor V3 could supply, and the one which
+        # caught the D6.2 conversion-frame defect.
+        #
+        # ``test_phantom_corrected`` above imposes NO deformation, so
+        # its corrected homography is exactly zero and EVERY choice of
+        # conversion projection centre and detector distance returns
+        # the identity; ``test_deformed_master_fe_through_the_engine``
+        # imposes real deformations but says in its own comment that
+        # "every point shares one projection centre", so there
+        # ``PC_rel = 0`` and ``DD_t = DD_r`` identically.  Between them
+        # the conversion FRAME of a corrected homography was
+        # unpinned, and the shipped route -- convert with
+        # ``PC_rel = PC_t - PC_ref`` and ``DD_target`` -- injected a
+        # spurious isotropic strain of 4.0e-04 into Fe11/Fe22 at the
+        # three points of this map which carry a row offset, thirteen
+        # times ``DEFORMED_MASTER_FE_TOL`` and five times the 8e-5
+        # strain precision the ``hrebsd_dic`` docstring quotes.  This
+        # test needs BOTH a moving projection centre and a real
+        # deformation, which is exactly what it builds
+        single = make_detector(shape=SHAPE_480)
+        per_point = single.extrapolate_pc(
+            pc_indices=[0, 0],
+            navigation_shape=PHANTOM_NAVIGATION_SHAPE,
+            step_sizes=PHANTOM_STEP_SIZES,
+        )
+        rotation = generic_rotation()
+        n_points = int(np.prod(PHANTOM_NAVIGATION_SHAPE))
+        # an OUT-OF-PLANE tilt, whose ``Fe23``/``Fe32`` carry the
+        # detector distance and whose Fe11/Fe22 are exactly one, so
+        # an isotropic strain injected by a wrong conversion frame has
+        # nowhere to hide
+        omega = np.deg2rad(1.0)
+        cos, sin = np.cos(omega), np.sin(omega)
+        fe_true = np.array([[1.0, 0.0, 0.0], [0.0, cos, -sin], [0.0, sin, cos]]) / cos
+        deformation = impose_detector_frame_fe(per_point, rotation, fe_true)
+        patterns = np.stack(
+            [
+                project_pattern(
+                    per_point,
+                    rotation,
+                    None if i == 0 else deformation,
+                    pc_index=i,
+                )
+                for i in range(n_points)
+            ]
+        )
+        properties = run_hrebsd_dic(
+            patterns,
+            PHANTOM_NAVIGATION_SHAPE,
+            per_point,
+            reference=(0, 0),
+            verbose=0,
+        )
+        assert np.all(properties["converged"])
+        # the guard on the oracle: the map must really move the
+        # projection centre in BOTH directions and in the detector
+        # distance, or it degenerates into the blind cases above
+        pc_px = self.phantom_pc_pixels(per_point, n_points)
+        delta = pc_px - pc_px[0]
+        assert np.abs(delta[:, 0]).max() > 5.0
+        assert np.abs(delta[:, 1]).max() > 2.0
+        assert np.abs(delta[:, 2]).max() > 1.0
+        worst = 0.0
+        for i in range(1, n_points):
+            got = properties["Fe"][i].reshape(3, 3)
+            worst = max(worst, float(np.abs(got - fe_true).max()))
+        assert_within(worst, DEFORMED_MASTER_FE_TOL, "DEFORMED_MASTER_FE_TOL")
+
     def test_raw_homography_is_stored_uncorrected(self):
         # D15.6: the stored ``homography`` is the RAW fit, so that a
         # projection centre analysis reads the real beam-scan
@@ -1964,6 +2187,35 @@ class TestReferenceResolution:
         assert np.array_equal(grain_id == -1, labels.ravel() == -1)
         assert np.all(reference_index[labels.ravel() == -1] == -1)
 
+    def test_tuple_reference_with_grain_labels(self):
+        # D11.3's third combination, uncovered by the drafted suite:
+        # a ``(row, col)`` reference is ONE global reference whatever
+        # the labels say, and only the reported ``grain_id`` comes
+        # from them.  Unlabelled points get no reference at all
+        labels = np.array([[0, 0, 1], [0, -1, 1]])
+        grain_id, reference_index = resolve_reference((0, 1), labels, (2, 3))
+        assert np.array_equal(grain_id, np.array([0, 0, 1, 0, -1, 1], np.int32))
+        assert np.array_equal(reference_index, np.array([1, 1, 1, 1, -1, 1], np.int32))
+
+    def test_labels_may_have_gaps_and_pair_positionally(self):
+        # the mapping is positional in the SORTED unique labels, not
+        # by label value, which the docstring now states
+        labels = np.array([[0, 0, 3], [7, 3, 7]])
+        _, reference_index = resolve_reference(np.array([0, 2, 3]), labels, (2, 3))
+        assert np.array_equal(reference_index, np.array([0, 0, 2, 3, 2, 3], np.int32))
+
+    def test_a_reference_must_lie_inside_its_own_grain(self):
+        # ADDED 2026-09-07 at the Stage A adversarial review.  Without
+        # this guard a transposed or off-by-one index array silently
+        # correlates one grain's patterns against ANOTHER grain's
+        # reference while ``grain_id`` truthfully reports different
+        # grains, which no accuracy band can see
+        labels = np.array([[0, 0, 1], [0, 1, 1]])
+        with pytest.raises(ValueError, match="grain label"):
+            resolve_reference(np.array([2, 0]), labels, (2, 3))
+        # and the correct pairing still passes
+        resolve_reference(np.array([0, 2]), labels, (2, 3))
+
     def test_validation(self):
         # every ValueError condition the ``resolve_reference``
         # docstring lists, in its order.  The last two were missing
@@ -1982,6 +2234,23 @@ class TestReferenceResolution:
         # and a grain map which is not of the navigation shape
         with pytest.raises(ValueError):
             resolve_reference(np.array([0, 2]), labels, (3, 4))
+
+    def test_every_remaining_guard_message(self):
+        # the terminal type guard and the index-array guards, each of
+        # which was an unexecuted ``raise`` before 2026-09-07
+        with pytest.raises(ValueError, match="two entries"):
+            resolve_reference((0, 0), None, (3,))
+        with pytest.raises(ValueError, match="integer labels"):
+            resolve_reference((0, 0), np.zeros((2, 2)), (2, 2))
+        with pytest.raises(ValueError, match="tuple"):
+            resolve_reference(3.5, None, (2, 2))
+        labels = np.array([[0, 0], [0, 0]])
+        with pytest.raises(ValueError, match="one dimensional"):
+            resolve_reference(np.array([[0]]), labels, (2, 2))
+        with pytest.raises(ValueError, match="integer flat map indices"):
+            resolve_reference(np.array([0.0]), labels, (2, 2))
+        with pytest.raises(ValueError, match="within the map size"):
+            resolve_reference(np.array([9]), labels, (2, 2))
 
 
 # =========== D16 -- orchestration, determinism, messages ============ #
@@ -2342,6 +2611,349 @@ class TestGetMapData2dProp:
         assert xmap.get_map_data("residual").shape == (3, 4)
 
 
+# ====== D2/D4 -- contracts the drafted suite never executed ========= #
+
+
+class TestResidualIsTheFinalCriterion:
+    """Requirements D2.7 lists ``final CIC`` among the per-point
+    outputs, and D15.6 stores ``residual`` beside ``homography``, so
+    the two must describe the SAME iterate.  Before 2026-09-07 the
+    reported criterion belonged to the iterate BEFORE the last
+    composition: negligible at convergence, 26 per cent high on a
+    point capped by ``max_iterations`` -- which is precisely the
+    point a quality map is read on.  [D2.7/D15.6]"""
+
+    @staticmethod
+    def criterion_of(state, target, h):
+        """Return the ZNSSD criterion of *h*, assembled here from
+        ``_interpolation`` and ``_preprocessing`` only."""
+        coefficients = spline_coefficients(
+            preprocess(target, transfer_function=state.transfer_function),
+            dtype=state.coefficient_dtype,
+        )
+        warped_x, warped_y = project_with(matrix_of(h), state.xi_x, state.xi_y)
+        values = evaluate(
+            coefficients,
+            np.ascontiguousarray(warped_x + state.pc_pixels[0] - 0.5),
+            np.ascontiguousarray(warped_y + state.pc_pixels[1] - 0.5),
+        )
+        centred = values - values.mean()
+        residuals = state.reference - centred / np.linalg.norm(centred)
+        return float(residuals @ residuals)
+
+    @pytest.mark.parametrize("max_iterations", [2, 50])
+    def test_residual_belongs_to_the_returned_homography(self, max_iterations):
+        reference, detector = oracle_reference(SHAPE_480)
+        pc_px = pc_pixels_of(detector)
+        h_true = random_small_homographies(n=1, dd=pc_px[2], seed=31)[0]
+        target = warp_with_skimage(reference, h_true, pc_px)
+        state = make_state(reference, pc_px)
+        result = fit_pattern(state, target, max_iterations=max_iterations)
+        expected = self.criterion_of(state, target, result["h"])
+        # a machine-precision-class identity: the engine and this
+        # assembly evaluate the same interpolant at the same points
+        assert result["residual"] == pytest.approx(expected, rel=1e-9)
+        assert result["converged"] is (max_iterations == 50)
+
+
+class TestStepScale:
+    """``step_scale != 1.0`` is a public keyword whose branch no
+    committed test executed, although requirements D2.4 records a
+    dated MEASUREMENT of 1.0 / 1.25 / 1.5 as the resolution of plan
+    open question 9.  This commits the measurement's ORDERING so that
+    the recorded decision is reproducible from the repository.
+    [D2.4]"""
+
+    def test_larger_steps_cost_iterations_without_buying_accuracy(self):
+        reference, detector = oracle_reference(SHAPE_480)
+        pc_px = pc_pixels_of(detector)
+        corners = subregion_corners(SHAPE_480, pc_px)
+        h_true = random_small_homographies(n=1, dd=pc_px[2], seed=33)[0]
+        target = warp_with_skimage(reference, h_true, pc_px)
+        state = make_state(reference, pc_px)
+        results = {
+            scale: fit_pattern(state, target, step_scale=scale) for scale in (1.0, 1.5)
+        }
+        for scale, result in results.items():
+            assert result["converged"], scale
+            assert_within(
+                recovery_error(result["h"], h_true, corners),
+                WARP_REFIT_TOL_480,
+                f"WARP_REFIT_TOL_480 (step_scale {scale})",
+            )
+        # the recorded D2.4 verdict: the EMsoftOO accelerator costs
+        # iterations and buys nothing
+        assert results[1.5]["num_iterations"] > results[1.0]["num_iterations"], (
+            "step_scale 1.5 no longer costs more iterations; re-measure D2.4"
+        )
+
+    def test_the_branch_is_really_taken(self):
+        # a tolerance-free structural arm: with a step scale of zero
+        # the increment vanishes, so the fit can never move off its
+        # seed.  Nothing but ``step = step * step_scale`` can produce
+        # that, so the branch cannot be optimized away unnoticed
+        reference, detector = oracle_reference(SHAPE_60)
+        pc_px = pc_pixels_of(detector)
+        state = make_state(reference, pc_px)
+        seed = np.zeros(N_HOMOGRAPHY_PARAMETERS)
+        seed[2] = 0.75
+        result = fit_pattern(
+            state, reference.copy(), h0=seed, step_scale=0.0, max_iterations=3
+        )
+        np.testing.assert_allclose(result["h"], seed, rtol=0, atol=ALGEBRA_TOL)
+
+
+class TestWindow:
+    """The D4.3 window knob, entirely uncovered before 2026-09-07 and
+    implemented against its own decision until then: it was built over
+    the WHOLE pattern and multiplied into each pattern in that
+    pattern's OWN frame before the target was warped, so it travelled
+    with the target and broke the affine intensity model ZNSSD
+    assumes.  Measured then: a two pixel translation recovered 19
+    times worse with the window on.  It is now a per-pixel WEIGHT on
+    the residual, over the subregion, in the one reference frame.
+    [D4.3]"""
+
+    def test_window_is_built_over_the_subregion(self):
+        bounds = subregion_bounds(SHAPE_60, border=0.05)
+        window = hann_window(SHAPE_60, bounds=bounds)
+        row_start, row_stop, col_start, col_stop = bounds
+        assert window.shape == SHAPE_60
+        assert not window[:row_start].any()
+        assert not window[row_stop:].any()
+        assert not window[:, :col_start].any()
+        assert not window[:, col_stop:].any()
+        # a Hann is zero at its own edges and near one at its centre
+        # (``numpy.hanning`` samples an even length symmetrically, so
+        # its maximum sits just under one)
+        assert window[row_start, col_start] == pytest.approx(0.0, abs=ALGEBRA_TOL)
+        assert 0.99 < window.max() <= 1.0
+        # and the default is still the whole-pattern taper
+        assert hann_window(SHAPE_60)[0, 0] == pytest.approx(0.0, abs=ALGEBRA_TOL)
+
+    def test_the_window_never_reaches_a_pattern(self):
+        # the frame pin: ``preprocess`` must not know about windows at
+        # all, or the taper travels with the target
+        assert "window" not in inspect.signature(preprocess).parameters
+
+    def test_windowed_state_weights_the_steepest_descent(self):
+        reference, detector = oracle_reference(SHAPE_60)
+        pc_px = pc_pixels_of(detector)
+        plain = make_state(reference, pc_px)
+        windowed = make_state(reference, pc_px, window=True)
+        mask = subregion_mask(SHAPE_60, border=0.05)
+        weights = hann_window(SHAPE_60)[mask]
+        assert plain.weights is None
+        np.testing.assert_allclose(windowed.weights, weights, rtol=0, atol=0)
+        np.testing.assert_allclose(
+            windowed.steepest_descent,
+            plain.steepest_descent * weights[:, None],
+            rtol=PRECOMPUTE_TOL,
+            atol=0,
+        )
+        # the zero-mean unit-norm reference stays UNwindowed, which is
+        # what keeps the affine intensity invariance of ZNSSD exact
+        np.testing.assert_allclose(windowed.reference, plain.reference, rtol=0, atol=0)
+
+    def test_windowed_fit_recovers_a_known_warp(self):
+        # the end-to-end band the drafted suite never measured.  The
+        # window is a taper, so it discards signal and cannot beat the
+        # unwindowed fit; what it must NOT do is destroy the fit,
+        # which the pre-warp whole-pattern taper did
+        reference, detector = oracle_reference(SHAPE_480)
+        pc_px = pc_pixels_of(detector)
+        corners = subregion_corners(SHAPE_480, pc_px)
+        worst = 0.0
+        for h_true in random_small_homographies(n=2, dd=pc_px[2], seed=35):
+            target = warp_with_skimage(reference, h_true, pc_px)
+            properties = run_hrebsd_dic(
+                np.stack([reference, target]),
+                (1, 2),
+                detector,
+                reference=(0, 0),
+                window=True,
+                verbose=0,
+            )
+            assert bool(properties["converged"][1])
+            worst = max(
+                worst, recovery_error(properties["homography"][1], h_true, corners)
+            )
+        assert_within(worst, WINDOW_REFIT_TOL_480, "WINDOW_REFIT_TOL_480")
+
+
+class TestPrecomputeMemory:
+    """``ReferenceState.n_pixels`` and ``.memory_bytes()`` are what
+    requirements D16 quotes as MEASURED and what the information
+    message models, and neither was executed by any test before
+    2026-09-07.  [D16]"""
+
+    def test_memory_bytes_is_the_closed_form(self):
+        reference, detector = oracle_reference(SHAPE_60)
+        state = make_state(reference, pc_pixels_of(detector))
+        mask = subregion_mask(SHAPE_60, border=0.05)
+        assert state.n_pixels == int(mask.sum())
+        row_start, row_stop, col_start, col_stop = subregion_bounds(
+            SHAPE_60, border=0.05
+        )
+        expected = (
+            SHAPE_60[0] * SHAPE_60[1] * 4  # f32 coefficients
+            + state.n_pixels * N_HOMOGRAPHY_PARAMETERS * 8
+            + (row_stop - row_start) * (col_stop - col_start) * 8
+            + 3 * state.n_pixels * 8
+        )
+        assert state.memory_bytes() == expected
+
+    def test_the_reference_subregion_is_counted(self):
+        # the 2026-09-07 correction: the D5 seed image is resident for
+        # the reference's whole life and was missing from the figure
+        # requirements D16 quotes
+        reference, detector = oracle_reference(SHAPE_60)
+        state = make_state(reference, pc_pixels_of(detector))
+        assert state.memory_bytes() > (
+            state.coefficients.nbytes
+            + state.steepest_descent.nbytes
+            + 3 * state.n_pixels * 8
+        )
+
+    def test_the_information_message_bounds_the_measurement(self):
+        # the message models the PATTERN size, which bounds the
+        # subregion from above, so the printed number must never
+        # understate what a reference really holds
+        reference, detector = oracle_reference(SHAPE_60)
+        state = make_state(reference, pc_pixels_of(detector))
+        message = get_info_message(1, SHAPE_60, 1, chunksize=1)
+        printed = float(message.rsplit(":", 1)[1].strip().split()[0])
+        assert printed * 1024**2 >= state.memory_bytes()
+
+    def test_message_estimates_its_own_chunksize(self):
+        # the ``chunksize is None`` branch, which no test executed
+        message = get_info_message(2500, SHAPE_480, 3)
+        assert "chunk(s)" in message
+        assert "2500" in message
+
+
+class TestArgumentGuards:
+    """Every ``raise`` of the Stage A modules, executed with its
+    message asserted.  Twelve of them had never run before
+    2026-09-07, so the 'error messages actionable' rule was
+    unverified and a regression which swapped or dropped one was
+    invisible.  [D15]"""
+
+    @staticmethod
+    def tiny_state():
+        reference, detector = oracle_reference(SHAPE_60)
+        return make_state(reference, pc_pixels_of(detector)), reference, detector
+
+    def test_reference_state_guards(self):
+        reference, detector = oracle_reference(SHAPE_60)
+        pc_px = pc_pixels_of(detector)
+        mask = subregion_mask(SHAPE_60, border=0.05)
+        with pytest.raises(ValueError, match="bicubic"):
+            ReferenceState(reference, mask, pc_px, interpolation="bilinear")
+        with pytest.raises(ValueError, match="two dimensional"):
+            ReferenceState(reference[None], mask[None], pc_px)
+        with pytest.raises(ValueError, match="subregion mask of shape"):
+            ReferenceState(reference, np.ones((3, 3), bool), pc_px)
+        with pytest.raises(ValueError, match="keeps no pixel"):
+            ReferenceState(reference, np.zeros(SHAPE_60, bool), pc_px)
+
+    def test_initial_guess_shape_guard(self):
+        reference, _ = oracle_reference(SHAPE_60)
+        with pytest.raises(ValueError, match="same shape"):
+            initial_guess(reference, reference[:-1])
+
+    def test_fit_pattern_guards(self):
+        state, reference, _ = self.tiny_state()
+        with pytest.raises(ValueError, match="bicubic"):
+            fit_pattern(state, reference, interpolation="quintic")
+        # a target of the wrong shape is a per-pattern FAILURE, not a
+        # raise: ``fit_pattern`` wraps the loop in the NaN contract
+        result = fit_pattern(state, reference[:-1])
+        assert not result["converged"]
+        assert np.all(np.isnan(result["h"]))
+        # the message itself lives one level down, where it is not
+        # swallowed
+        with pytest.raises(ValueError, match="must have the reference shape"):
+            _fit_pattern(
+                state,
+                reference[:-1],
+                h0=None,
+                upsample_factor=16,
+                max_iterations=1,
+                min_step=1e-3,
+                step_scale=1.0,
+            )
+
+    def test_non_finite_criterion_message(self):
+        # the D2.6 non-finite-criterion case.  It is detected by
+        # ``zero_mean_normalize``, one level below the loop, which is
+        # why the loop's own finiteness guard was pruned as
+        # unreachable at the 2026-09-07 review: with two unit-norm
+        # vectors the criterion cannot exceed four times the pixel
+        # count.  ``fit_pattern`` catches bare ``Exception``, so the
+        # message is only visible through the private loop
+        state, reference, _ = self.tiny_state()
+        target = np.array(reference, dtype=np.float64)
+        target[0, 0] = np.inf
+        with pytest.raises(ValueError, match="no contrast to correlate"):
+            _fit_pattern(
+                state,
+                target,
+                h0=np.zeros(N_HOMOGRAPHY_PARAMETERS),
+                upsample_factor=16,
+                max_iterations=1,
+                min_step=1e-3,
+                step_scale=1.0,
+            )
+        # and through the public wrapper it is the NaN contract
+        result = fit_pattern(state, target)
+        assert not result["converged"]
+        assert np.isnan(result["residual"])
+
+    def test_run_guards(self):
+        patterns = np.zeros((6, 60, 60), dtype=np.float64)
+        detector = make_detector(shape=SHAPE_60, binning=8)
+        with pytest.raises(ValueError, match="bicubic"):
+            run_hrebsd_dic(patterns, (2, 3), detector, interpolation="nearest")
+        with pytest.raises(ValueError, match="exactly two entries"):
+            run_hrebsd_dic(patterns, (6,), detector, reference=(0, 0), verbose=0)
+        with pytest.raises(ValueError, match="must be"):
+            run_hrebsd_dic(patterns, (2, 4), detector, reference=(0, 0), verbose=0)
+        with pytest.raises(ValueError, match="NumPy array"):
+            run_hrebsd_dic(
+                patterns,
+                (2, 3),
+                detector,
+                reference=(0, 0),
+                navigation_mask=[[False] * 3] * 2,
+                verbose=0,
+            )
+        # and a map every point of which is unlabelled has nothing to
+        # correlate against
+        labels = np.full((2, 3), -1, dtype=np.int32)
+        with pytest.raises(ValueError, match="no map point has a reference"):
+            run_hrebsd_dic(
+                patterns,
+                (2, 3),
+                detector,
+                reference=(0, 0),
+                grain_labels=labels,
+                verbose=0,
+            )
+
+    def test_homography_algebra_guards(self):
+        with pytest.raises(ValueError, match="beta0"):
+            homography_to_fe(
+                np.array([0, 0, 0, 0, 0, 0, 1.0, 0.0]), np.array([1.0, 0.0]), 100.0
+            )
+        with pytest.raises(ValueError, match="positive detector distance"):
+            fe_to_homography(np.eye(3), np.zeros(2), 0.0)
+
+    def test_preprocessing_guards(self):
+        with pytest.raises(ValueError, match="ordered column bounds"):
+            subregion_mask((40, 40), dead_band=(0, 5, 0, 500))
+
+
 # ==================== D18 -- the import audit ======================= #
 
 
@@ -2368,6 +2980,45 @@ class TestImportAudit:
                 stripped = line.strip()
                 if stripped.startswith(("import ", "from ")):
                     assert banned not in stripped, f"{name}: {stripped}"
+
+    def test_scikit_image_is_never_imported_at_module_scope(self):
+        # ADDED 2026-09-07 at the Stage A adversarial review: the rule
+        # that actually matters for the declared scikit-image floor.
+        # ``signals/ebsd.py`` imports ``_engine`` at module scope, so
+        # hoisting ``phase_cross_correlation`` out of
+        # ``initial_guess`` would break ``import kikuchipy`` outright
+        # below scikit-image 0.18 -- the exact failure mode
+        # requirements D5 and D18 defer the import to avoid -- and
+        # both audit arms above would still pass, since ``skimage`` is
+        # an ALLOWED top-level name
+        for name, source in self.module_sources():
+            tree = ast.parse(source)
+            for node in tree.body:  # module scope only
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                for module in names:
+                    assert module.split(".")[0] != "skimage", (
+                        f"{name}: scikit-image must be imported INSIDE the "
+                        "function that uses it (requirements D18)"
+                    )
+        # and the deferred import really is there, inside the D5 seed
+        engine_path = pathlib.Path(_hrebsd.__file__).parent / "_engine.py"
+        source = engine_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        deferred = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "initial_guess"
+        ]
+        assert len(deferred) == 1
+        assert any(
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith("skimage")
+            for node in ast.walk(deferred[0])
+        )
 
     def test_no_new_required_dependency(self):
         # everything the engine imports is already required:

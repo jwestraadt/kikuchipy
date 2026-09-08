@@ -43,16 +43,18 @@ import pytest
 
 import kikuchipy as kp
 from kikuchipy.indexing._hrebsd._geometry import (
+    STEP_SIZE_UNIT_FACTORS,
     correct_homography,
     fe_from_homography,
     pc_to_pixels,
     per_point_pc_pixels,
     phantom_homography,
+    step_sizes_in_micrometres,
 )
 from kikuchipy.indexing._hrebsd._homography import (
     N_HOMOGRAPHY_PARAMETERS,
     compose,
-    fe_to_homography,
+    homography_parameters,
     homography_to_fe,
     invert,
     shape_function,
@@ -96,6 +98,39 @@ def reference_and_target_pc(delta=(3.0, -2.0, 1.5)):
     change of detector distance."""
     pc_reference = np.array([120.0, 180.0, 240.0])
     return pc_reference, pc_reference + np.asarray(delta, dtype=np.float64)
+
+
+def raw_fit_of(fe, pc_reference, pc_target):
+    """Return the homography a target of deformation *fe* really
+    fits, derived HERE from the ray model rather than taken from
+    ``_geometry``.
+
+    In the D1.3 reference-PC-centred frame a pixel ``xi`` of the
+    REFERENCE carries the ray ``(xi_x, xi_y, DD_ref)`` while the same
+    pixel of the TARGET carries ``(xi_x - dx, xi_y - dy, DD_tar)``
+    with ``d = PC_target - PC_reference``.  Deforming the first by
+    ``fe`` and re-intersecting the target screen therefore gives::
+
+        W = T(d) . diag(1, 1, 1/DD_tar) . fe . diag(1, 1, DD_ref)
+
+    whose ``fe = I`` case is exactly the closed-form phantom of
+    requirements D6.2, which is what ties this construction to the
+    signs validation V6 pinned against synthesized PATTERNS.
+    """
+    fe = np.asarray(fe, dtype=np.float64)
+    delta = (
+        np.asarray(pc_target, dtype=np.float64)[:2]
+        - np.asarray(pc_reference, dtype=np.float64)[:2]
+    )
+    translation = np.array(
+        [[1.0, 0.0, delta[0]], [0.0, 1.0, delta[1]], [0.0, 0.0, 1.0]]
+    )
+    return homography_parameters(
+        translation
+        @ np.diag([1.0, 1.0, 1.0 / pc_target[2]])
+        @ fe
+        @ np.diag([1.0, 1.0, pc_reference[2]])
+    )
 
 
 # ================== D1 -- projection centre units =================== #
@@ -361,27 +396,183 @@ class TestFeFromHomography:
         got = fe_from_homography(h, pc_reference, pc_target, correct=False)
         np.testing.assert_allclose(got, expected, rtol=ALGEBRA_TOL, atol=0)
 
+    # A GENERIC reduced deformation gradient: every off-diagonal
+    # nonzero, and in particular the perspective row ``Fe31``/``Fe32``
+    # and the out-of-plane column ``Fe13``/``Fe23``.  REWRITTEN
+    # 2026-09-07 at the Stage A adversarial review, which found the
+    # drafted tensor blind twice over: with ``Fe31 = Fe32 = 0`` every
+    # homography below has ``beta0 = 1`` and the conversion collapses
+    # to a conjugation, which is a group homomorphism, so correcting
+    # BEFORE and correcting AFTER the conversion agree to 1.4e-19 and
+    # the plan-2.5 ``correction applied after Fe conversion`` mutant
+    # lived; and with ``Fe13 = Fe23 = 0`` too the homography carries
+    # no detector distance at all, so neither the frame nor the
+    # distance of the conversion was pinned either
+    GENERIC_FE = np.array(
+        [
+            [1.0012, 6.0e-4, 9.0e-4],
+            [-4.0e-4, 0.9988, -7.0e-4],
+            [1.0e-3, -8.0e-4, 1.0],
+        ]
+    )
+
     def test_correction_precedes_conversion(self):
         # the ``correction applied after Fe conversion`` mutant of
-        # plan 2.5: a homography built as the phantom composed with a
-        # true deformation must convert back to exactly that
-        # deformation.  Note what this does and does not pin: the
-        # measured homography here is built with the SAME composition
-        # the corrector inverts, so this is an order-of-operations
-        # check, not a physical one.  The physical pin is the pattern
-        # oracle of validation V6
-        # (``test_hrebsd_engine.py::TestPcShiftPhantom``), whose map
-        # was re-pinned 2026-09-07 to move the projection centre by
-        # 11.4 px, 5.4 px and 8e-3 in the detector distance ratio,
-        # far above the fit floor, precisely so that it can carry
-        # that burden
+        # plan 2.5, on a homography built the way the ENGINE really
+        # measures one: the raw fit of a target which differs from
+        # its reference by the beam-scan geometry AND by a real
+        # deformation.  ``raw_fit_of`` derives it from the ray model
+        # in this module, so the expectation shares no arithmetic
+        # with ``_geometry``
         pc_reference, pc_target = reference_and_target_pc()
-        pc_rel = pc_target[:2] - pc_reference[:2]
-        fe_true = np.array(
-            [[1.001, 0.0004, 0.0], [-0.0004, 0.999, 0.0], [0.0, 0.0, 1.0]]
-        )
-        h_true = fe_to_homography(fe_true, pc_rel, pc_target[2])
-        phantom = phantom_homography(pc_reference, pc_target)
-        h_measured = compose(phantom, h_true)
+        fe_true = self.GENERIC_FE
+        h_measured = raw_fit_of(fe_true, pc_reference, pc_target)
         got = fe_from_homography(h_measured, pc_reference, pc_target)
         np.testing.assert_allclose(got, fe_true, rtol=0, atol=ALGEBRA_TOL)
+
+    def test_the_phantom_is_the_undeformed_raw_fit(self):
+        # the tie between ``raw_fit_of`` above and the closed form
+        # validation V6 pinned against synthesized patterns: with no
+        # deformation the ray model IS the D6.2 phantom, which is
+        # what makes the ray model usable as an oracle here
+        pc_reference, pc_target = reference_and_target_pc()
+        np.testing.assert_allclose(
+            raw_fit_of(np.eye(3), pc_reference, pc_target),
+            phantom_homography(pc_reference, pc_target),
+            rtol=0,
+            atol=ALGEBRA_TOL,
+        )
+
+    def test_corrected_homography_lives_in_the_reference_frame(self):
+        # THE frame pin of requirements D6.2, corrected 2026-09-07 at
+        # the Stage A adversarial review.  Removing the phantom
+        # cancels both the projection centre offset and the detector
+        # distance ratio, leaving the pure conjugation
+        # ``diag(1, 1, DD_ref)**-1 . Fe . diag(1, 1, DD_ref)``, so the
+        # exact conversion of a CORRECTED homography sees
+        # ``pc_rel = (0, 0)`` and ``dd = DD_reference``
+        pc_reference, pc_target = reference_and_target_pc()
+        fe_true = self.GENERIC_FE
+        h_measured = raw_fit_of(fe_true, pc_reference, pc_target)
+        corrected = correct_homography(h_measured, pc_reference, pc_target)
+        distance = np.diag([1.0, 1.0, pc_reference[2]])
+        np.testing.assert_allclose(
+            shape_function(corrected),
+            np.linalg.inv(distance) @ fe_true @ distance,
+            rtol=0,
+            atol=ALGEBRA_TOL,
+        )
+        np.testing.assert_allclose(
+            homography_to_fe(corrected, np.zeros(2), pc_reference[2]),
+            fe_true,
+            rtol=0,
+            atol=ALGEBRA_TOL,
+        )
+
+    def test_target_pc_route_is_refuted_by_measurement(self):
+        # the arm which makes the pin above a discriminator: the
+        # route requirements D6.2 called "first-order equivalent"
+        # until 2026-09-07 -- convert the CORRECTED homography with
+        # ``pc_rel = PC_t - PC_ref`` and ``dd = DD_target`` -- injects
+        # a spurious isotropic strain into Fe11/Fe22 which is orders
+        # above this module's own algebraic band, and which no oracle
+        # with ``Fe = I`` or a shared projection centre can see
+        pc_reference, pc_target = reference_and_target_pc()
+        fe_true = self.GENERIC_FE
+        h_measured = raw_fit_of(fe_true, pc_reference, pc_target)
+        corrected = correct_homography(h_measured, pc_reference, pc_target)
+        old_route = homography_to_fe(
+            corrected, pc_target[:2] - pc_reference[:2], pc_target[2]
+        )
+        assert np.abs(old_route - fe_true).max() > 1e3 * ALGEBRA_TOL
+        # and it is invisible at ``Fe = I``, which is why validation
+        # V6's corrected-phantom arm passed with it in place
+        phantom = phantom_homography(pc_reference, pc_target)
+        np.testing.assert_allclose(
+            fe_from_homography(phantom, pc_reference, pc_target),
+            np.eye(3),
+            rtol=0,
+            atol=ALGEBRA_TOL,
+        )
+
+    def test_correcting_after_the_conversion_is_now_identical(self):
+        # RECORDED, not a bug: once the conversion happens in the
+        # reference frame it is the conjugation by
+        # ``diag(1, 1, DD_ref)``, a group HOMOMORPHISM, so removing
+        # the phantom in homography space and removing it in Fe space
+        # give the same tensor exactly.  The plan-2.5 "correction
+        # applied after Fe conversion" mutant is therefore an
+        # EQUIVALENT mutant of the corrected design rather than a
+        # live defect, and this test states that with numbers so that
+        # the equivalence is re-checked whenever the conversion moves
+        pc_reference, pc_target = reference_and_target_pc()
+        h_measured = raw_fit_of(self.GENERIC_FE, pc_reference, pc_target)
+        phantom = phantom_homography(pc_reference, pc_target)
+        origin = np.zeros(2)
+        after = np.linalg.inv(
+            homography_to_fe(phantom, origin, pc_reference[2])
+        ) @ homography_to_fe(h_measured, origin, pc_reference[2])
+        after = after / after[2, 2]
+        before = fe_from_homography(h_measured, pc_reference, pc_target)
+        np.testing.assert_allclose(after, before, rtol=0, atol=ALGEBRA_TOL)
+
+    def test_uncorrected_route_keeps_the_target_pc(self):
+        # the diagnostic path is unchanged: validation V6's
+        # uncorrected arm reads the target's own projection centre
+        pc_reference, pc_target = reference_and_target_pc()
+        h = raw_fit_of(self.GENERIC_FE, pc_reference, pc_target)
+        np.testing.assert_allclose(
+            fe_from_homography(h, pc_reference, pc_target, correct=False),
+            homography_to_fe(h, pc_target[:2] - pc_reference[:2], pc_target[2]),
+            rtol=ALGEBRA_TOL,
+            atol=0,
+        )
+
+
+# ============ D14.5 precedent -- scan step size units =============== #
+
+
+class TestStepSizeUnits:
+    """The navigation axes' units are READ and converted into the
+    micrometres of ``EBSDDetector.px_size``, never guessed: the
+    beam-scan model of D6.1 divides every step by
+    ``px_size * binning``, so a nanometre scan described as
+    micrometres moves every derived projection centre by a factor of
+    a thousand.  Requirements D14.5 sets the precedent.  [D6.1]"""
+
+    @pytest.mark.parametrize(
+        "unit, factor",
+        [("um", 1.0), ("nm", 1e-3), ("mm", 1e3), ("m", 1e6), ("µm", 1.0)],
+    )
+    def test_known_units_convert(self, unit, factor):
+        got = step_sizes_in_micrometres((2.0, 4.0), (unit, unit))
+        assert got == pytest.approx((2.0 * factor, 4.0 * factor), rel=1e-12)
+
+    def test_case_and_whitespace_are_tolerated(self):
+        assert step_sizes_in_micrometres((1.0,), (" NM ",)) == pytest.approx((1e-3,))
+
+    @pytest.mark.parametrize("unit", ["px", "", "<undefined>", "arb. units"])
+    def test_unknown_unit_raises_naming_the_axis(self, unit):
+        with pytest.raises(ValueError, match="navigation axis 1"):
+            step_sizes_in_micrometres((1.0, 1.0), ("um", unit))
+
+    def test_the_factor_table_is_the_d14_5_set(self):
+        # the same units D14.5 pins for ``CrystalMap.scan_unit``, in
+        # the micrometre base ``px_size`` uses
+        assert STEP_SIZE_UNIT_FACTORS["m"] == 1e6
+        assert STEP_SIZE_UNIT_FACTORS["nm"] == 1e-3
+        assert STEP_SIZE_UNIT_FACTORS["um"] == 1.0
+        assert "px" not in STEP_SIZE_UNIT_FACTORS
+
+    def test_a_nanometre_scan_moves_the_projection_centres(self):
+        # the reason the conversion exists, in binned pixels: the
+        # same scan described in nanometres and in micrometres must
+        # not give the same projection centre map
+        detector = make_detector()
+        as_um = per_point_pc_pixels(detector, (3, 3), (0.4, 0.4))
+        as_nm = per_point_pc_pixels(
+            detector, (3, 3), step_sizes_in_micrometres((400.0, 400.0), ("nm", "nm"))
+        )
+        np.testing.assert_allclose(as_um, as_nm, rtol=0, atol=ALGEBRA_TOL)
+        unconverted = per_point_pc_pixels(detector, (3, 3), (400.0, 400.0))
+        assert np.abs(unconverted - as_um).max() > 1.0

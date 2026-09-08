@@ -320,6 +320,23 @@ keys; docs registration (`doc/tutorials/index.rst`, nbval
     documented reshape route. Resolves: the Stage A pin on the
     venv orix + a note against the 0.12.1 floor from the local
     oldest-matrix run (section 1).
+13. **Si-indent real-data application** (user request 2026-09-07,
+    during the Stage A build): AFTER Stages A-C complete, apply the
+    full chain to the Zenodo Si-indentation dataset of Cios and
+    Winkelmann, record 14059950
+    (`AGH__Si_indent_1_512x672.h5oina`, 18.9 GB, patterns stored at
+    622x512 px, Oxford h5oina, CC-BY-4.0, DOI
+    10.5281/zenodo.14059950; download URL
+    https://zenodo.org/records/14059950/files/AGH__Si_indent_1_512x672.h5oina?download=1),
+    which reproduces the Wilkinson and Britton (2012) Si-indent
+    conditions (doi:10.1016/S1369-7021(12)70163-3). Deliverable:
+    strain/rotation/HR-KAM/PC-shift/GND maps around the indent
+    compared against the record's own strain-map image
+    (`AGH__Si_indent_1-Strain Maps_672x512_X10Y10_SS3x3.png`,
+    reference point X10Y10, 3x3 subsampling) and the
+    Wilkinson-Britton figures. NOT part of Stages A-C; no
+    auto-download (18.9 GB); starts on the user's go once Stage C
+    is closed.
 
 ## 7. Commits
 
@@ -364,3 +381,40 @@ rejected. Overlapping pairs are folded into one row.
 | 13 | tech-stack "never imported in `src/`" refuted by `_fit_projection_center.py:32` | applied: scoped to `_hrebsd/` modules; D18 carries the same scoping |
 | 14 | oldest-matrix recipe omits `tests/test_signals` | applied: recipe runs `tests/test_indexing tests/test_signals -k hrebsd` |
 | 15 | D14.5 silently assumes micrometer steps | applied: `CrystalMap.scan_unit`-driven conversion; ValueError on unknown/"px" units |
+
+## 9. Stage A code-review disposition table (2026-09-07, fixer)
+
+25 findings from the two adversarial reviewers (fidelity/theory,
+conventions/integration) plus 2 surviving mutants. Every finding was
+re-verified by measurement on Machine A before disposition; the
+numbers, recipes and the coverage/oldest-matrix command output are in
+validation.md "Recorded results" entries 14 to 26. Overlapping pairs
+are folded into one row. 23 applied, 2 rejected with evidence.
+
+| # | Finding (short) | Disposition |
+|---|---|---|
+| 1 | D6.2 converts the CORRECTED homography with the target PC/DD; re-derivation gives `(0, 0)`/`DD_ref` (critical, fidelity) | applied: confirmed by measurement (3.9967e-04 vs 2.2255e-05 at engine level, 13x the pinned band); `fe_from_homography` fixed, requirements D6.2 amended, new oracle `test_corrected_fe_on_a_deformed_per_point_pc_map` + three rewritten geometry tests (entry 14) |
+| M1 | surviving mutant "correction applied after Fe conversion" | resolved by the D6.2 fix: the non-equivalent form dies at `test_correction_precedes_conversion` (verified by injection); the reference-frame form is now provably EQUIVALENT (2.2e-16) and is recorded as such by its own test (entry 15) |
+| M2 | surviving mutant "mirror-boundary derivative sign dropped" | killed: `test_gradient_mirror_boundary_keeps_the_fold_sign` (injected -> 1 failed, restored -> 30 passed), plus `test_mirror_boundary_through_py_func` for the value kernel's fold branches (entry 16) |
+| 2, 7 | scan-step units guessed; `px_size` silently consumed (major fidelity + critical conventions) | applied in part: units READ and converted with a ValueError naming the axis (D14.5 precedent), requirements D6.1 amended, `TestScanStepUnits`/`TestStepSizeUnits` added. The `px_size == 1.0` guard is REJECTED with evidence -- a placeholder is indistinguishable from a genuine 1 um pixel and the guard would refuse kikuchipy's own shipped data -- and is documented instead (entries 20, 26a) |
+| 3 | capture-range limit attributed to the seed, not to the band-pass default (major, fidelity) | applied: measured both ways (2.0 deg vs 4.0 deg), requirements Context clause "no conformant implementation converges there" struck, D4.1 gains the provenance and effect record, docstring restated conditionally, V4 records it. Default NOT re-pinned: V5/plan open question 10 owns it (entry 21) |
+| 4 | validation entry 6's seed column does not reproduce (minor, fidelity) | applied: re-measured (127.8 / 159.8 px, matching the test-file comment), correction appended as entry 22; entry 6 left unedited, the ledger being append only |
+| 5, 23 | `residual` belongs to the iterate before the last composition (minor x2) | applied: the criterion is re-evaluated at the returned homography (26 per cent error on capped points before), requirements D2.7 amended, `TestResidualIsTheFinalCriterion` added, performance re-recorded (entry 17) |
+| 6, 24 | `memory_bytes()` understates by ten per cent (minor x2) | applied: `reference_subregion` counted, exclusions documented, 17344512 -> 18837504 B re-recorded in requirements D16, validation and both docstrings; info-message model and its 22.0 MB updated; `TestPrecomputeMemory` added (entry 18) |
+| 8 | `window` uncovered and applied whole-pattern pre-warp (major, conventions) | applied: built over the subregion and applied as a residual weight in the reference frame; requirements D4.3 amended; `WINDOW_REFIT_TOL_480` measured and pinned; `TestWindow` added (entry 19) |
+| 9 | coverage 91.98 %, no recorded command output | applied: 100.00 % of every `_hrebsd/` Stage A module, command and output recorded (entry 23) |
+| 10 | mirror-fold branches of both kernels uncovered | applied with M2 (entry 16) |
+| 11 | `step_scale != 1.0` never executed | applied: `TestStepScale` commits the D2.4 ordering plus a tolerance-free `step_scale=0.0` arm |
+| 12 | `grain_labels` never reaches the engine through the public method; no same-grain guard | applied: guard added to `_resolve_index_array` with the positional pairing documented; `TestGrainLabels` and three `TestReferenceResolution` arms added; requirements D11.3 amended |
+| 13 | 1-D navigation and the dimension guard untested | applied: `TestNavigationDimensions`; the unreachable 0-D step-size fallback pruned |
+| 14 | twelve argument-validation `raise`s unexecuted | applied: `TestArgumentGuards` with every message asserted; the non-finite-CIC guard was UNREACHABLE dead code and is pruned, its D2.6 outcome pinned through `zero_mean_normalize` instead |
+| 15 | `n_pixels`/`memory_bytes`/`get_info_message(chunksize=None)` uncovered | applied with finding 6 |
+| 16 | low-pass-only `filter_cutoffs` arm uncovered | applied: parametrized over `(0.05, None)`, `(None, 0.4)`, `(0.05, 0.4)` |
+| 17 | D17 verdict overclaims its own measurement | applied: narrowed to "f32 spline coefficients confirmed, measured", with the f64 steepest-descent/reference/coordinate planes recorded as by design (they are accumulands, not bulk storage) |
+| 18 | oldest-matrix run misclassified as Stage B; Stage A's undischarged | applied: run and recorded with versions and output; validation's Local-gated section corrected (entry 24) |
+| 19 | `grain_labels`/`misorientation_threshold` promise Stage B behaviour | applied: both descriptions reworded; `misorientation_threshold` stated to have no effect in this release |
+| 20 | numpydoc: `_as_parameters`/`_prepare` missing sections; three missing Raises | applied: `numpydoc.validate` now reports no PR01/RT01 on any `_hrebsd` object |
+| 21 | `_RESIDENT_PLANES` comment and the reused `HOMOGRAPHY_PROP_SIZE` | applied: `_N_STEEPEST_DESCENT_COLUMNS` and `_RESIDENT_F64_PLANES` replace it, comments corrected |
+| 22 | one docstring line over 72 characters | applied: an AST/tokenize scan of all six modules now reports none |
+| 25 | import audit allows top-level `skimage` | applied: `test_scikit_image_is_never_imported_at_module_scope`, which also asserts the deferred import IS inside `initial_guess` |
+| -- | `correct=False` diagnostic path should use the exact conjugation (part of finding 1) | REJECTED with evidence: pinned by the frozen `test_conversion_uses_the_relative_target_pc`, feeds only V6's uncorrected arm and D13, and the two conversions are exact mutual inverses as they stand (entry 26b) |

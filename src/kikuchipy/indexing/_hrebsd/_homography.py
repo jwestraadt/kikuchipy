@@ -81,7 +81,14 @@ def shape_function(h: np.ndarray) -> np.ndarray:
         If *h* does not hold exactly
         :data:`N_HOMOGRAPHY_PARAMETERS` entries.
     """
-    raise NotImplementedError
+    h = _as_parameters(h)
+    return np.array(
+        [
+            [1 + h[0], h[1], h[2]],
+            [h[3], 1 + h[4], h[5]],
+            [h[6], h[7], 1.0],
+        ]
+    )
 
 
 def homography_parameters(matrix: np.ndarray) -> np.ndarray:
@@ -108,7 +115,24 @@ def homography_parameters(matrix: np.ndarray) -> np.ndarray:
     ValueError
         If *matrix* is not 3 by 3, or if ``matrix[2, 2]`` is zero.
     """
-    raise NotImplementedError
+    matrix = np.asarray(matrix, dtype=np.float64)
+    if matrix.shape != (3, 3):
+        raise ValueError(f"matrix must have shape (3, 3), not {matrix.shape}")
+    if matrix[2, 2] == 0:
+        raise ValueError("matrix[2, 2] must be nonzero to renormalize the homography")
+    matrix = matrix / matrix[2, 2]
+    return np.array(
+        [
+            matrix[0, 0] - 1,
+            matrix[0, 1],
+            matrix[0, 2],
+            matrix[1, 0],
+            matrix[1, 1] - 1,
+            matrix[1, 2],
+            matrix[2, 0],
+            matrix[2, 1],
+        ]
+    )
 
 
 def compose(h_left: np.ndarray, h_right: np.ndarray) -> np.ndarray:
@@ -131,7 +155,7 @@ def compose(h_left: np.ndarray, h_right: np.ndarray) -> np.ndarray:
     h
         Renormalized parameters of shape ``(8,)``.
     """
-    raise NotImplementedError
+    return homography_parameters(shape_function(h_left) @ shape_function(h_right))
 
 
 def invert(h: np.ndarray) -> np.ndarray:
@@ -152,7 +176,7 @@ def invert(h: np.ndarray) -> np.ndarray:
     numpy.linalg.LinAlgError
         If ``W(h)`` is singular.
     """
-    raise NotImplementedError
+    return homography_parameters(np.linalg.inv(shape_function(h)))
 
 
 def project(
@@ -182,7 +206,13 @@ def project(
     this a homography rather than an affinity, and dropping it is one
     of the mutants the oracles kill.
     """
-    raise NotImplementedError
+    matrix = shape_function(h)
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    scale = matrix[2, 0] * x + matrix[2, 1] * y + matrix[2, 2]
+    x_warped = matrix[0, 0] * x + matrix[0, 1] * y + matrix[0, 2]
+    y_warped = matrix[1, 0] * x + matrix[1, 1] * y + matrix[1, 2]
+    return x_warped / scale, y_warped / scale
 
 
 def corner_norm(h: np.ndarray, corners: np.ndarray) -> float:
@@ -208,7 +238,10 @@ def corner_norm(h: np.ndarray, corners: np.ndarray) -> float:
     norm
         The maximum displacement in binned pixels.
     """
-    raise NotImplementedError
+    corners = np.asarray(corners, dtype=np.float64)
+    x, y = corners[:, 0], corners[:, 1]
+    x_warped, y_warped = project(h, x, y)
+    return float(np.max(np.hypot(x_warped - x, y_warped - y)))
 
 
 def error_norm(h_fit: np.ndarray, h_true: np.ndarray, corners: np.ndarray) -> float:
@@ -235,7 +268,7 @@ def error_norm(h_fit: np.ndarray, h_true: np.ndarray, corners: np.ndarray) -> fl
         The error warp's maximum corner displacement in binned
         pixels, zero for an exact recovery.
     """
-    raise NotImplementedError
+    return corner_norm(compose(invert(h_true), h_fit), corners)
 
 
 def homography_to_fe(h: np.ndarray, pc_rel: np.ndarray, dd: float) -> np.ndarray:
@@ -281,7 +314,25 @@ def homography_to_fe(h: np.ndarray, pc_rel: np.ndarray, dd: float) -> np.ndarray
     ``homography2Fe_`` (``mod_DIC.f90:970-1040``) in corner-origin
     coordinates; the equations agree, the coordinate origin does not.
     """
-    raise NotImplementedError
+    h = _as_parameters(h)
+    pc_rel = np.asarray(pc_rel, dtype=np.float64)
+    dd = float(dd)
+    if dd <= 0:
+        raise ValueError(f"dd must be a positive detector distance in pixels, not {dd}")
+    beta0 = 1.0 - h[6] * pc_rel[0] - h[7] * pc_rel[1]
+    if beta0 == 0:
+        raise ValueError(
+            "beta0 = 1 - h31*PCx_rel - h32*PCy_rel is zero, so the homography "
+            "sends the frame origin to infinity"
+        )
+    fe = np.array(
+        [
+            [1 + h[0], h[1], h[2] / dd],
+            [h[3], 1 + h[4], h[5] / dd],
+            [dd * h[6], dd * h[7], beta0],
+        ]
+    )
+    return fe / beta0
 
 
 def fe_to_homography(fe: np.ndarray, pc_rel: np.ndarray, dd: float) -> np.ndarray:
@@ -316,4 +367,55 @@ def fe_to_homography(fe: np.ndarray, pc_rel: np.ndarray, dd: float) -> np.ndarra
         If *fe* is not 3 by 3, if *dd* is not positive, or if
         ``fe[2, 2]`` is zero.
     """
-    raise NotImplementedError
+    fe = np.asarray(fe, dtype=np.float64)
+    if fe.shape != (3, 3):
+        raise ValueError(f"fe must have shape (3, 3), not {fe.shape}")
+    if fe[2, 2] == 0:
+        raise ValueError("fe[2, 2] must be nonzero to reduce the tensor")
+    pc_rel = np.asarray(pc_rel, dtype=np.float64)
+    dd = float(dd)
+    if dd <= 0:
+        raise ValueError(f"dd must be a positive detector distance in pixels, not {dd}")
+    fe = fe / fe[2, 2]
+    # Inverting ``beta0 = 1 - h31*PCx_rel - h32*PCy_rel`` with
+    # ``h3i = beta0 * Fe3i / DD`` gives beta0 in closed form
+    beta0 = 1.0 / (1.0 + (fe[2, 0] * pc_rel[0] + fe[2, 1] * pc_rel[1]) / dd)
+    return np.array(
+        [
+            beta0 * fe[0, 0] - 1,
+            beta0 * fe[0, 1],
+            beta0 * fe[0, 2] * dd,
+            beta0 * fe[1, 0],
+            beta0 * fe[1, 1] - 1,
+            beta0 * fe[1, 2] * dd,
+            beta0 * fe[2, 0] / dd,
+            beta0 * fe[2, 1] / dd,
+        ]
+    )
+
+
+def _as_parameters(h: np.ndarray) -> np.ndarray:
+    """Return *h* as a 64-bit float parameter vector.
+
+    Parameters
+    ----------
+    h
+        Homography parameters, of any type NumPy can cast.
+
+    Returns
+    -------
+    parameters
+        Array of shape ``(8,)`` and 64-bit float data type.
+
+    Raises
+    ------
+    ValueError
+        If *h* does not hold exactly
+        :data:`N_HOMOGRAPHY_PARAMETERS` entries.
+    """
+    h = np.asarray(h, dtype=np.float64)
+    if h.shape != (N_HOMOGRAPHY_PARAMETERS,):
+        raise ValueError(
+            f"h must have shape ({N_HOMOGRAPHY_PARAMETERS},), not {h.shape}"
+        )
+    return h

@@ -193,6 +193,19 @@ everywhere inside the engine.**
    spans ~(half-width)^4 between translation and perspective dofs;
    f64 Cholesky holds ~1e15 so this is safe by ~6 orders at
    480 px, and the warp-refit oracle (validation V2) measures it.
+   **MEASURED 2026-09-07 (Stage A implementation gate),
+   CONCLUSION CONFIRMED, the estimate itself slightly
+   conservative**: the assembled 8x8 Hessian of the 480 px oracle
+   reference (186624 subregion pixels) has 2-norm condition number
+   5.75e+08 (eigenvalues 1.51e-01 to 8.70e+07), i.e. 6.2 orders of
+   headroom under 1e15 exactly as claimed, though the spread is
+   5.8x SMALLER than the drafted `(half-width)^4 = 3.32e+09`
+   estimate. Symmetrically scaled by its own diagonal the same
+   matrix conditions at 4.5, so the spread is entirely the unit
+   system and not a near-degeneracy. At 60 px the condition number
+   is 3.03e+05 (scaled 9.5). `scipy.linalg.cho_factor` succeeds on
+   both, and the V2 recovery bands sit at the interpolation floor,
+   so the recorded normalize-by-width fallback is NOT taken.
    If (and only if) the oracle refutes f64 solvability, the
    recorded fallback is internal normalization by the pattern
    width -- an implementation detail invisible in the API, to be
@@ -300,6 +313,18 @@ Loop, per target pattern (Ernould/Pan IC-GN; cross-checked against
    `mod_HREBSDDIC.f90:846-854`, is an unproven heuristic --
    measured on the warp-refit oracle and re-pinned only if it
    demonstrably helps, plan open question 9).
+   **MEASURED 2026-09-07 (Stage A implementation gate):
+   `step_scale = 1.0` CONFIRMED; the EMsoftOO accelerator is
+   refuted as an accelerator.** On the twelve-case V2 batch at
+   480 px (seeds 0 and 1), all three settings converge every case
+   to the same accuracy -- worst recovery error 0.012440 px at
+   1.0, 0.012461 at 1.25, 0.012482 at 1.5 -- while the iteration
+   count goes the WRONG way: mean 5.17 (62 total) at 1.0, 7.33
+   (88) at 1.25, 12.75 (153) at 1.5. The basin is unchanged too:
+   the largest in-plane rotation recovered is 2.0 degrees for all
+   three, and the 15 px translation case converges at each (2, 3
+   and 6 iterations). So 1.5 costs 2.5x the iterations for a
+   0.3 % accuracy loss and no robustness gain. No re-pin.
 5. Convergence norm, frozen: `norm_dp` = the maximum displacement
    in pixels that the increment warp `W(dp)` induces over the four
    SR corners, `max_corners |proj(W(dp), xi_c) - xi_c|_2`. This is
@@ -322,6 +347,19 @@ Loop, per target pattern (Ernould/Pan IC-GN; cross-checked against
    spherical result-contract precedent (tech-stack.md:33).
 7. Outputs per point: `h` (8), final `CIC`, iteration count,
    final `norm_dp`, `converged`, plus the D6-derived `Fe`.
+   **"Final CIC" made literal 2026-09-07 (Stage A adversarial
+   review).** The criterion is evaluated ONCE MORE after the loop
+   exits, at the returned `h`, so that the stored `residual` and the
+   stored `homography` describe the SAME iterate. The earlier code
+   reported the criterion of the iterate BEFORE the last
+   composition: MEASURED 1.6e-05 relative high on a converged 480 px
+   fit, which is negligible, and **26 per cent high** on a fit
+   capped by `max_iterations` (1.5434 reported against 1.2240 at the
+   returned homography) -- exactly the points D10's quality map is
+   read on. Cost, recorded: one extra interpolation per fit, so the
+   480 px oracle baseline moves from 23.96 to 22.72 patterns/s,
+   about 5 per cent, on a quantity D16 makes a recorded baseline and
+   never a gate.
 
 ### D3 -- Interpolation (frozen default, order MTP)
 
@@ -361,6 +399,23 @@ Loop, per target pattern (Ernould/Pan IC-GN; cross-checked against
   h-accuracy at < 1.5x cost, in which case the default is
   re-pinned here with the dated measurement. The
   `interpolation="bicubic"` keyword stays either way.
+- **ORDER DECIDED 2026-09-07 (Stage A implementation gate):
+  BICUBIC STAYS THE DEFAULT.** Measured both ways and neither
+  meets the re-pin criterion. On the V2 warp-refit oracle
+  (controlled A/B, identical loop/preprocessing/seed/Hessian/exit,
+  only the spline order changed, six random small homographies at
+  480 px): worst corner-displacement recovery error 0.0105 px
+  bicubic versus 0.0126 px QUINTIC, i.e. quintic is 0.83x as
+  accurate -- WORSE, not 2x better -- at 3.31x the evaluation cost
+  (4.62 ms versus 15.31 ms for the 186624 subregion points). On
+  the analytic band-limited truth (`test_order_ab_harness`)
+  quintic is 1.84x more accurate (5.75e-05 versus 1.05e-04 scale
+  relative), which is below the 2x threshold and is anyway swamped
+  at oracle level by the cross-interpolator systematic. This
+  reproduces Ruggles 2018's finding (no significant biquintic gain)
+  and refutes nothing in the drafted design; Ernould/EMsoftOO's
+  quintic choice stays a recorded deviation. Recorded in
+  validation.md with the recipe and machine.
 
 ### D4 -- Preprocessing, subregion, border, dead-band (frozen)
 
@@ -380,6 +435,31 @@ demonstrated in the tutorial, never implied):
    Si-wafer noise-floor benchmark (V5) measures the default's
    effect and any re-pin is recorded (plan open question 10).
    `scipy.fft` calls pass `workers=1` (tech-stack.md:44).
+   **PROVENANCE AND EFFECT, recorded 2026-09-07 (Stage A
+   adversarial review); the DEFAULT IS UNCHANGED.** Two things
+   about it are now on the record rather than assumed. (a) The
+   number is not a transplant of EMsoftOO's `hipassw`: kikuchipy's
+   knob maps to `highpass_fft_filter(cutoff=high_pass * width)`, a
+   cut-off RADIUS in FFT bins (24 bins at 480 px, DC transmission
+   `exp(-8) = 3.4e-4`), while EMsoftOO's `hipassw` is a
+   normalized-frequency Gaussian parameter. The two share a numeral,
+   not a unit system; the kikuchipy definition is self-consistent
+   and is what is frozen, and the EMsoftOO citation is demoted to
+   "the same numeral, a different filter". (b) It COSTS capture
+   range and noise-free accuracy, MEASURED on the V4
+   deformed-master in-plane sweep with `filter_cutoffs` the ONLY
+   change: `(0.05, None)` recovers 0.5/1.0/2.0 deg (5, 5, 8
+   iterations; 0.00215/0.00397/0.01130 px) and fails from 2.5 deg,
+   while `(None, None)` recovers 2.0 (11 it, 0.00110 px), 2.5 (15,
+   0.00165), 3.0 (18, 0.00167) and 4.0 (41, 0.00168) and fails at
+   5.0. The pair ZNCC at 4.0 deg is -0.069 with the default and
+   +0.196 without, so the "decorrelated pair" of the D5 record is a
+   property of the filter too. The default STAYS: on noise-free
+   oracles a high-pass can only remove signal, and what it exists
+   for -- background gradients on real noisy patterns -- is the V5
+   Si-wafer measurement of plan open question 10, at the Stage B
+   gate. Recorded so that the V5 re-pin has a baseline, and quoted
+   CONDITIONALLY in the `hrebsd_dic` docstring.
 2. **No adaptive histogram equalization** in the DIC chain --
    recorded deviation from EMsoftOO's shared DI preprocessing
    (`PreProcessPatterns` with AHE nregions=10,
@@ -392,6 +472,29 @@ demonstrated in the tutorial, never implied):
    EMsoftOO's DIC path windows, emsoftoo_report section 1.7; the
    knob exists because the classic-HREBSD literature windows
    ROIs). Measured on the Si benchmark, recorded.
+   **WHERE IT IS APPLIED, made explicit 2026-09-07 (Stage A
+   adversarial review, which found the shipped knob implemented
+   against this decision and uncovered by any test).** "Over the SR"
+   is now literal on both counts: the Hann is built over the
+   SUBREGION bounding box (`hann_window(shape, bounds=...)`), and
+   the engine applies it as a per-pixel WEIGHT on the ZNSSD residual
+   IN THE REFERENCE FRAME -- after the target is warped -- which
+   weights the steepest-descent images by the same `w` and leaves
+   the D2.1 Hessian and D2.3 gradient formulas untouched. The
+   zero-mean unit-norm vectors stay UNwindowed, so the affine
+   intensity invariance of ZNSSD is exact. The earlier code built
+   the window over the WHOLE pattern and multiplied it into each
+   pattern in that pattern's OWN frame inside `preprocess`, before
+   the warp, so the taper travelled with the target and broke the
+   affine intensity model: MEASURED on a 120 px synthetic, a 2 px
+   translation recovered 0.30312 px against 0.01601 px unwindowed
+   (18.9x) and a generic homography 0.11304 against 0.00660 (17.1x),
+   with the error vanishing at the identity -- the signature of a
+   window applied in the un-warped frame. With the correction, the
+   480 px V2 pair measures 0.04565 px windowed against 0.00656 px
+   plain, and the band `WINDOW_REFIT_TOL_480 = 0.092` (2x) is now
+   exercised end to end; the pre-correction scheme measures
+   0.14949 px on the same two cases and fails it.
 4. **Subregion**: full pattern minus a border of
    `border` (fraction of the pattern side per edge) --
    `border=0.05` MTP (measuring tests: V2 warp-refit with the
@@ -427,6 +530,24 @@ translations; deviation recorded in our favor).
   translation-only seeding) is MEASURED on the pure-rotation sweep
   (V4) and RECORDED in the docstring Notes; Fourier-Mellin
   pre-rotation (Ernould 2020) is deferred (plan open question 5).
+  **MEASURED 2026-09-07 (Stage A implementation gate): the capture
+  range is 2.0 degrees of pure in-plane rotation at 480x480 with
+  the frozen `(0.05, None)` band-pass, NOT the 5 degrees the
+  Context section listed as a drafting seed (that seed is amended
+  there with this date, requirements D19).** Sweep on the
+  deformed-master oracle, phase-XC seeded, converged AND within
+  1.0 px of the exact homography: 0.5 deg (5 iterations,
+  0.0021 px), 1.0 deg (5, 0.0040 px), 2.0 deg (8, 0.0113 px);
+  2.5 deg onward fail at the 50-iteration cap. Two separate limits,
+  measured apart: (a) the SEED decorrelates -- the preprocessed
+  ZNCC of the pair falls 0.876, 0.622, 0.176, 0.049, -0.024 at
+  0.5/1.0/2.0/2.5/3.0 deg, and the phase cross-correlation returns
+  9.8 px and 9.3 px of spurious translation at 2.5 and 3.0 deg
+  where the true translation is zero; (b) from the exact
+  (identity) seed the IC-GN basin itself reaches 3.0 deg
+  (11 and 16 iterations at 2.5 and 3.0) and fails at 4.0 deg.
+  This is what sizes the deferred Fourier-Mellin stage, and it is
+  the number the `hrebsd_dic` docstring Notes carry.
 - A future orientation-delta seed from the input `CrystalMap`
   (compose the reference->target misorientation into `W0` via D6)
   is recorded as a deferred extension beside Fourier-Mellin, not
@@ -483,6 +604,29 @@ Per-point PC/DD and the beam-scan correction, frozen:
    signal axes -- this is mathematically the same beam-scan model
    as Ernould Ch. 2 section 3.3.2 (theory report section 3.7
    establishes the equivalence).
+   **SCAN-STEP UNITS, added 2026-09-07 (Stage A adversarial review;
+   the D14.5 precedent applied to this path).** That model divides
+   every step by `px_size * binning`
+   (`_ebsd_detector.py:1360-1379`), so the navigation axes' `scale`
+   and `EBSDDetector.px_size` must share a unit. `EBSD.hrebsd_dic`
+   therefore READS `axes_manager.navigation_axes[i].units` and
+   converts to the micrometres `px_size` is measured in, raising a
+   ValueError naming the axis for a missing or unrecognized unit
+   (HyperSpy's unscaled `"px"` included) whenever the detector
+   carries a single PC -- the same rule D14.5 pins for `scan_unit`,
+   for the same reason. The earlier code fed `scale` in unchecked,
+   which the review MEASURED: a strain-free phantom map whose steps
+   were described in nm instead of um gave `max|Fe - I| = 4.71e+01`
+   instead of 1.70e-05, and in mm the correction silently became a
+   no-op (4.71e-02, the uncorrected value), with no warning in any
+   of the three runs. `px_size` itself carries NO unit and cannot be
+   checked -- its default 1.0 is a placeholder and kikuchipy's own
+   `nickel_ebsd_small` ships it beside a 1.5 um scan step, a 70x
+   mismatch -- so the requirement that it be set is DOCUMENTED in
+   the `hrebsd_dic` Notes, in `run_hrebsd_dic` and in
+   `per_point_pc_pixels`, and stays the caller's (recorded: a
+   placeholder is indistinguishable from a genuine 1 um pixel, so a
+   guard there would fire on the shipped demonstration data).
 2. **Correction before conversion.** For each target, the measured
    homography contains a rigid translation `gamma = (g1, g2)` and
    an isotropic scaling `alpha_s` induced purely by the
@@ -504,15 +648,53 @@ Per-point PC/DD and the beam-scan correction, frozen:
    vanishes only when the PC is the coordinate origin, which is
    exactly the spec's frame (Ernould Ch. 2 section 3.3.2 is the
    common source). The correction is applied analytically BEFORE
-   the Fe conversion, and the conversion then uses the TARGET's
-   own `(PC, DD)` expressed in the same frame
-   (`PC_rel = PC_t - PC_ref` via the D6 general form; the
-   residual bookkeeping choices here are first-order equivalent
-   and pinned by V6's corrected-phantom `Fe = I` plus V3's
-   exactness). This is a frozen deviation
+   the Fe conversion. This is a frozen deviation
    from EMsoftOO, which computes the corrected homographies but
    converts the uncorrected ones (`mod_HREBSDDIC.f90:978-982`,
    risk row 10, recorded).
+   **CONVERSION FRAME, CORRECTED 2026-09-07 (Stage A adversarial
+   review, requirements D19). The drafted rule -- "the conversion
+   then uses the TARGET's own `(PC, DD)` expressed in the same
+   frame, `PC_rel = PC_t - PC_ref`; the residual bookkeeping choices
+   here are first-order equivalent" -- is REFUTED by re-derivation
+   and by measurement. The corrected homography converts with
+   `PC_rel = (0, 0)` and `DD = DD_REFERENCE`.** Re-derivation: a raw
+   fit in the D1.3 frame is
+   `W = T(delta) . diag(1, 1, 1/DD_t) . Fe . diag(1, 1, DD_r)`,
+   whose `Fe = I` case is EXACTLY the closed-form phantom above (so
+   the ray model and the V6-pinned phantom agree, to 0.0). Removing
+   that phantom on the D6.2 side therefore leaves
+   `W_corr = diag(1, 1, DD_r)^-1 . Fe . diag(1, 1, DD_r)`, a PURE
+   reference-frame homography in which both the PC offset and the DD
+   ratio have already cancelled by construction; and at
+   `PC_rel = (0, 0)` the D6 conversion IS that conjugation, so
+   `Fe = homography_to_fe(W_corr, (0, 0), DD_ref)` is exact.
+   Measurement: the drafted route injects the spurious isotropic
+   strain `-(Fe31*dx + Fe32*dy)/DD_ref` into Fe11/Fe22 and rescales
+   Fe13/Fe23/Fe31/Fe32 by the DD ratio. On the V6 phantom geometry
+   with a 1 degree out-of-plane tilt imposed, the stored `Fe` was
+   wrong by **3.9967e-04** at the three map points carrying a row
+   offset -- 13x the pinned `DEFORMED_MASTER_FE_TOL = 3.1e-5` and 5x
+   the 8e-5 strain precision the `hrebsd_dic` docstring quotes --
+   against **2.2255e-05** through the corrected route (inside the
+   band). The blindness was structural, which is why the drafted
+   oracles all passed: V6's `test_phantom_corrected` imposes `Fe = I`,
+   where `h_corr = 0` makes EVERY `pc_rel`/`dd` give the identity,
+   and V3's `test_deformed_master_fe_through_the_engine` says in its
+   own comment that "every point shares one projection centre", so
+   `PC_rel = 0` and `DD_t = DD_r` there. A new oracle,
+   `TestPcShiftPhantom::test_corrected_fe_on_a_deformed_per_point_pc_map`,
+   supplies BOTH a moving projection centre and a real deformation
+   and is the killer. Consequence, recorded: with the conversion a
+   group homomorphism (a conjugation), removing the phantom in
+   homography space and removing it in Fe space now agree EXACTLY
+   (measured 2.2e-16), so the plan-2.5 "correction applied after Fe
+   conversion" mutant is an EQUIVALENT mutant of the corrected
+   design; the non-equivalent form, which keeps the target PC in the
+   conversion, dies at
+   `test_hrebsd_geometry.py::TestFeFromHomography::test_correction_precedes_conversion`.
+   The `correct=False` DIAGNOSTIC path keeps `PC_rel = PC_t - PC_ref`
+   and `DD_t`, which is what V6's uncorrected arm reads.
 3. **Signs are pinned by oracle, not by reading.** The exact signs
    of `deltaDD` and `alpha_s` (EMsoftOO's `alpha =
    (Dref - deltaDD)/Dref` with `deltaD = -stepy*sin(...)`,
@@ -522,6 +704,23 @@ Per-point PC/DD and the beam-scan correction, frozen:
    the closed-form phantom homography when the correction is OFF
    and (b) `Fe = I` everywhere to the noise floor when it is ON.
    The pinned signs are then recorded here with the date.
+   **SIGNS PINNED 2026-09-07 (Stage A implementation gate): the
+   DRAFTED set passes, unchanged.** On the `(2, 3)` phantom map
+   with 400.0 unit steps (per-point offsets to `gamma_x = -11.43`
+   px, `gamma_y = -5.37` px, `alpha_s - 1 = 8.06e-3`),
+   `test_phantom_uncorrected` recovers the closed form
+   `alpha_s = DD_target / DD_reference` (the ratio in THAT
+   orientation), `gamma = PC_target - PC_reference` in binned
+   pixels, `W_phantom = [[alpha_s, 0, gamma_x],
+   [0, alpha_s, gamma_y], [0, 0, 1]]`, to 0.0070 px worst -- 6e-4
+   of the phantom's own size. `test_phantom_corrected` then gives
+   `Fe = I` to 1.70e-05 in the worst entry with the correction
+   composed as `W_corr = W_phantom^-1 . W` (also the drafted side),
+   against 8.06e-03 in the same entries uncorrected: the correction
+   removes the strain phantom by a factor of about 475. A flipped
+   DD ratio or a flipped `gamma` sign doubles the phantom instead
+   of removing it and dies by three orders. Recorded in
+   validation.md.
 4. `sample_tilt`/`tilt`/`azimuthal`/`twist` all come from the
    `EBSDDetector` (D1.5); nothing is hardcoded.
 
@@ -673,6 +872,22 @@ in scope by user decision 4.
      with a user-supplied `grain_labels` map: explicit control.
    `grain_labels : (ny, nx) int array | None` accepts a
    user-supplied grain map with any of the above.
+   **GUARD AND PAIRING RULE, added 2026-09-07 (Stage A adversarial
+   review).** The index array pairs POSITIONALLY with the SORTED
+   UNIQUE labels, so labels may have gaps (`(0, 3, 7)` pairs
+   `reference[1]` with label 3), and each index MUST lie inside the
+   grain it serves -- a ValueError names the offending index, the
+   label it carries and the label it was paired with. Without that
+   guard a transposed or off-by-one array silently correlates one
+   grain's patterns against another grain's reference while
+   `grain_id` truthfully reports different grains, which no accuracy
+   band can see. The `(row, col)` + `grain_labels` combination is
+   unchanged and deliberate: one global reference serves every
+   label, and only the reported `grain_id` comes from the labels.
+   `misorientation_threshold` is threaded through but READ BY
+   NOTHING in Stage A (it belongs to the `"auto"` segmentation of
+   Stage B); the docstring says so rather than implying an internal
+   segmentation that does not exist yet.
 4. Everything relative: each point's homography is measured
    against ITS grain's reference; `grain_id` and
    `reference_index` are stored per point (D15.6); cross-grain
@@ -958,6 +1173,37 @@ because the antisymmetry fix is defined in the detector frame:
   the memory note in the info message follows the
   `SphericalIndexer.get_info_message` precedent
   (`_indexer.py:1964`).
+  **CORRECTED 2026-09-07 (Stage A implementation gate,
+  requirements D19): the drafted "~5 planes, ~4.6 MB" is refuted by
+  measurement and is 3.6x too small.** The eight steepest-descent
+  columns of D2.1 are themselves eight subregion sized f64 planes,
+  so the real count is eleven planes plus the f32 coefficient
+  plane: MEASURED `ReferenceState.memory_bytes()` = 17344512 B =
+  **16.54 MB** at 480x480 with `border=0.05` (186624 subregion
+  pixels), of which 11.94 MB is the steepest-descent block, 0.92 MB
+  the f32 coefficients and 4.48 MB the reference and the two
+  coordinate planes. The information message was already right, its
+  whole-pattern upper bound printing 20.2 MB at this size; only the
+  prose was wrong, and the two docstrings repeating it are
+  corrected with this date.
+  **RE-CORRECTED 2026-09-07 (Stage A adversarial review): 16.54 MB
+  itself understated the figure by ten per cent.**
+  `ReferenceState.memory_bytes()` omitted `reference_subregion`, the
+  preprocessed subregion bounding box the D5 phase-correlation seed
+  is measured on, which is a persistent attribute for the
+  reference's whole life: 1492992 B at 480x480. MEASURED
+  **18837504 B = 17.96 MB** over 186624 subregion pixels (11.94 MB
+  steepest-descent, 4.48 MB reference plus the two coordinate
+  planes, 1.42 MB reference subregion, 0.92 MB f32 coefficients), so
+  the drafted "~4.6 MB" is 3.9x too small. `memory_bytes()` now
+  counts every array the instance ALLOCATES and documents what it
+  excludes and why: the subregion mask, the band-pass transfer
+  function and the window are built once per RUN and shared by every
+  reference, so counting them per instance would multiply one
+  allocation by the grain count. The information message's model
+  gains the same plane and prints **22.0 MB** at 480x480, which
+  still bounds the measurement from above; a test now asserts that
+  bound rather than leaving it to prose.
 - Performance numbers are recorded baselines in validation.md,
   never merge gates (tech-stack.md:39); no hard floor is set for
   v1 (recorded; the spherical >= 2 pat/s/core floor is
@@ -977,6 +1223,39 @@ with f32 vs f64 coefficient storage and pins f32 only if the
 h-recovery degradation is < 10 % of the f64 error; the verdict and
 numbers are recorded in validation.md. Whichever way it lands, the
 choice is recorded HERE with the date.
+
+**VERDICT 2026-09-07 (Stage A implementation gate): f32 bulk
+storage CONFIRMED, no longer provisional.** Measured by
+`test_dtype_ab_harness` on the V2 480 px batch (four random small
+homographies, seed 15): worst corner-displacement recovery error
+0.00628116603 px with f64 coefficients versus 0.00628116632 px with
+f32, a degradation of 4.5e-08 of the f64 error against a criterion
+of 0.10 -- six orders of margin, because the f32 coefficient error
+(measured 2.4e-08 scale relative in V0's `KERNEL_F32_TOL` arm) sits
+far below the cross-interpolator systematic the fit is limited by.
+The saving is the point: 0.92 MB per reference on the coefficient
+array (1.84 MB f64 versus 0.92 MB f32) and 17.34 MB versus 18.27 MB
+of resident per-grain precompute at 480x480. Fit time is unchanged
+within noise (0.0713 s f64, 0.0742 s f32 per 480 px fit). f64
+accumulators stay non-negotiable and untouched.
+
+**SCOPE OF THAT VERDICT, narrowed 2026-09-07 (Stage A adversarial
+review).** The policy sentence above names three bulk-storage
+categories -- "patterns, spline coefficients, gradient planes" --
+but the A/B harness varies only `coefficient_dtype`, i.e. the single
+0.92 MB coefficient array, which is 5 per cent of the 17.96 MB
+resident state. The 11.94 MB steepest-descent block (66 per cent),
+the reference vector and the two coordinate planes are hard-coded
+f64 and were never A/B'd. The verdict is therefore recorded as
+**"f32 SPLINE COEFFICIENTS confirmed, measured"**, with the
+steepest-descent, reference and coordinate planes staying f64 BY
+DESIGN: they are solver accumulands, not bulk storage, and D17's own
+first clause makes f64 non-negotiable for those. The gradient planes
+named in the policy are not resident at all -- `gradient_planes()`
+output is consumed into the steepest-descent block and discarded --
+so nothing is left provisional. Extending the harness to a separate
+storage dtype for those planes would be a re-opening of D17, not a
+discharge of it, and is not proposed.
 
 ### D18 -- Dependencies, licensing, attribution (frozen)
 
@@ -1075,6 +1354,33 @@ dated correction (the Phase 8/10 precedent).
   2e-4 per component at 480^2; pure-rotation strain leakage <=
   1e-4 up to 5 deg; constant-curvature GND oracle < 1 % on
   analytic beta.
+- **AMENDED 2026-09-07 (Stage A implementation gate,
+  requirements D19): two of those drafting seeds are refuted by
+  measurement and are superseded by the pinned values.** (a) "up
+  to 5 deg" in the pure-rotation seed is not reached at the frozen
+  DEFAULTS: the measured capture range is 2.0 deg with the phase-XC
+  seed and 3.0 deg from the exact one (D5, recorded), and at 5 deg
+  the preprocessed pair's ZNCC is -0.056; the V4 in-plane cases are
+  pinned at 0.1, 1.0 and 2.0 deg instead.
+  **WITHDRAWN 2026-09-07 (Stage A adversarial review): the clause
+  "so no conformant implementation of the frozen D2/D4/D5 design
+  converges there" is FALSE and is struck.** The limit belongs to
+  the frozen `filter_cutoffs=(0.05, None)` default, which is a
+  PUBLIC keyword of the same frozen signature, not to D2/D4/D5.
+  MEASURED with `filter_cutoffs` the only change: `(None, None)`
+  recovers 2.5, 3.0 and 4.0 deg (15, 18 and 41 iterations) and
+  improves the 2.0 deg error tenfold, and the 4.0 deg pair's ZNCC is
+  +0.196 rather than -0.069, so the decorrelation is the filter's
+  too (D4.1, recorded there with the full table). What survives is
+  the conditional statement, which is what the `hrebsd_dic`
+  docstring now carries: 2.0 deg at the default band-pass, 4.0 deg
+  with none. The V4 pins stay at the defaults they gate. (b) The V2 warp-recovery seed was 2 to 10 times looser
+  than achievable: the MEASURED worst corner-displacement error is
+  0.0124 px at 480x480 against the 0.1 px the seed carried, so the
+  band is pinned at 0.025 px. The 480x480 rotation error is
+  8.3e-06 rad against a 1e-5 rad seed which left no margin at all,
+  pinned at 1.7e-5. The Stage B seeds (strain 2e-4 per component,
+  GND 1 %) are untouched and stay MTP for their own stages.
 - **EMsoftOO quirk ledger consumed by the deviations above**
   (single index): inverted W + sign flip (`mod_DIC.f90:888-967`,
   `mod_HREBSDDIC.f90:902`); warp-of-warp re-splining
