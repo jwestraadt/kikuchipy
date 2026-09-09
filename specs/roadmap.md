@@ -180,3 +180,7 @@ deferred). Execution plan: `specs/2026-09-07-hrebsd-dic/si-indent-application-pl
 - [x] pre-flight measurements recorded (CCC reference resolution, filter_cutoffs A/B on row 10, measured patterns/s)
 - [x] `doc/tutorials/hrebsd_si_indent.ipynb` authored, adversarially reviewed BEFORE the one-shot execute, then executed with stored outputs
 - [x] post-execute review (markdown claims vs printed numbers) + nbval/ruff/full-suite gates recorded; signed commits pushed (no PR)
+
+Deferred follow-up paths (performance, super-resolution, stress) are
+recorded with baselines and resolving measurements in
+`specs/2026-09-07-hrebsd-dic/plan.md` section 9; none is commissioned.
