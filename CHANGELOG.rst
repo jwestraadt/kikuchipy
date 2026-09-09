@@ -18,6 +18,17 @@ Unreleased
 
 Added
 -----
+- Tutorial replicating a published HR-EBSD measurement,
+  ``doc/tutorials/hrebsd_si_indent.ipynb``: the full resolution half of
+  Winkelmann et al., *Ultramicroscopy* **276** (2025) 114180, on their own
+  Zenodo Si-indent data set, with the band-pass and iteration budget chosen by
+  measurement on the data, a Fig-5 style gallery of deviatoric strain, lattice
+  rotation, distortion invariants, HR-KAM and GND density, a component by
+  component comparison against the strain field the file itself carries, and
+  the noise floor beside the paper's Table 1. The 18.9 GB data file is local
+  and is never downloaded automatically: every cell that needs it is gated on
+  finding it. Fork-only, specified in ``specs/2026-09-07-hrebsd-dic/``
+  (``si-indent-application-plan.md``).
 - Tutorial on high angular resolution EBSD by digital image correlation,
   ``doc/tutorials/hrebsd_dic.ipynb``: a known elastic deformation imposed on
   simulated patterns and recovered, the full map gallery, the stiffness input

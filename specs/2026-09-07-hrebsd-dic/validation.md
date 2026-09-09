@@ -3589,3 +3589,641 @@ the 9 skips are the same `--weekly` gates. `ruff check` and
 `ruff format --check` on the three touched files (`_api.py`,
 `test_oxford_h5ebsd.py`, `test_ebsd_hrebsd_dic.py`): "All checks
 passed!" and "3 files already formatted".
+
+80. **The pre-flight on the real file, and the notebook it fixed
+    (2026-09-08, plan OQ13 steps 3 and 4).** Twelve read-only scripts
+    were run against `AGH__Si_indent_1_512x672.h5oina` before a single
+    cell of the tutorial was written, on the venv of tech-stack
+    section 1, dask threaded scheduler, 8 workers. They live in the
+    session scratchpad
+    (`.../8ee4140a-.../scratchpad/si_indent_preflight/`, scripts
+    `00_probe.py` to `10_assemble_results.py` plus `results.json`) and
+    that location is **ephemeral**: the durable record of every number
+    that survived is this entry and the executed
+    `doc/tutorials/hrebsd_si_indent.ipynb`, whose cells re-measure the
+    decisions rather than quote them.
+
+    **The plan's premise about the reference was wrong, and the
+    replacement is better.** The plan expected to find the authors'
+    reference point by looking for a self-correlation of 1 in their
+    `Cross Correlation Coefficient`. No such point exists: the field
+    runs 0.0395 to 0.6931 with a median of 0.6866, the count at 0.999
+    or above is zero, and its unique maximum (row 116, column 164, 1e-4
+    above the second largest) sits in the deformed region, so it is a
+    pattern quality maximum. `Cross Correlation Coefficient`, `Delta R
+    Phase` and `Delta R Pseudosymmetry` are bit identical, and their
+    `Strain` is nowhere all zero. MapSweeper refined every pattern
+    against the dynamically simulated 3001 x 3001 master the same file
+    carries, so **their strain is absolute and simulation referenced**
+    while ours is relative to a measured pattern. Both fields are
+    therefore reference-differenced at the same point before any
+    comparison, which is the paper's own section 3.5 argument applied
+    to both engines. The reference is the plan's fallback, (row 10,
+    column 10), which is also the `X10Y10` reading of the record's
+    strain-map PNG: the file's `Pattern Center Calibration` entries
+    carry `Position X` 0 to 246 against 250 columns and `Position Y` 0
+    to 228 against 234 rows, so X is the column, Y is the row, both
+    zero based. Zero versus one based cannot be settled from the data
+    and is one 0.2 um step inside a strain-free far field.
+
+    **`filter_cutoffs=(None, None)`, measured twice over.** Row 10,
+    250 points, the paper's own strain-free row, with its eq 17/18
+    neighbour-pair estimator (std of successive along-row differences
+    over sqrt(2)):
+
+    | filter_cutoffs | converged | median sigma_eps | median sigma_theta |
+    |---|---|---|---|
+    | (0.05, None) | 250/250 | 0.0287 mm/m | 0.0277 mrad |
+    | (None, None) | 250/250 | 0.0267 mm/m | 0.0258 mrad |
+
+    No penalty at all: the unfiltered floor is 0.93 of the default's
+    on both quantities. The capture-range test then makes the choice
+    mandatory rather than merely preferable. On a 5 x 5 patch at the
+    indent's south rim (rows 125:130, columns 115:120), at 500
+    iterations: `(None, None)` converges 25/25 at a median rotation of
+    42.08 mrad, residual 0.312, 128 iterations; `(0.05, None)`
+    converges 7/25 at a median 29.28 mrad and residual 1.412, four and
+    a half times worse. At the 200-iteration budget of the first
+    pre-flight pass the same patch gave 2/25 at a spurious 2.10 mrad,
+    residual 1.77. The default high-pass loses the initial phase
+    cross-correlation lock at exactly the rotations this map carries.
+
+    **`max_iterations=500` is not a tuning choice, it is the
+    difference between a result and an empty map.** The first sub-map
+    attempt at the 50 default converged **0 of 400** points. The same
+    fits at 300 iterations converge 25/25 with the SAME residual
+    (0.312 against 0.324) and the SAME translations (11.876 against
+    11.933 px): a `min_step` threshold artefact, not a capture-range
+    failure. At 200 iterations the 20 x 20 sub-map converges 345/400;
+    retrying the 55 failures at 600 recovers 28 more, which needed 205
+    to 497 iterations, and leaves 27 unfittable crater points at a
+    residual of 1.19.
+
+    **The crater is unmeasurable and is masked.** A 10 x 10 patch at
+    its centre (rows 103:113, columns 122:132) converges **1 of 100**
+    at a residual of 1.83. The notebook pre-masks it with
+    `navigation_mask` from their CCC below 0.35, 728 points; masked
+    points come back NaN exactly as non-converged ones do, so the hole
+    in the figures is honest either way and the mask only stops those
+    points burning the full iteration budget.
+
+    **Reader traps, sharper than the plan recorded.** The reader does
+    NOT return an empty crystal map: it returns a full-size
+    **placeholder** of 58500 identity rotations with no phase, an
+    empty structure and `scan_unit` "px", which is silently usable and
+    silently wrong, so the notebook builds the map from
+    `EBSD/Data/Euler`. `binning` reads 2 after the entry 79 fix and
+    the notebook keeps the set-then-assert cell anyway. `px_size`
+    stays a 1.0 placeholder and is provably unused: the file carries
+    one PC per map point, and `_geometry.per_point_pc_pixels` takes
+    that branch. The detector reads `sample_tilt` 74.9979 and `tilt`
+    6.9933 degrees, not the 75 and 6.979 the plan recorded, and the PC
+    spans 1.31, 1.14 and 0.47 binned px over the map.
+
+    **The 20 x 20 sub-map (rows 125:145, columns 115:135, the south
+    rim), at 200 iterations**: 345/400 converged, 1.81 patterns/s,
+    median residual 0.131, strain inside +-12.4 mm/m so the paper's
+    +-15 mm/m Fig 5 scale is the right one, lattice rotation to 58.8
+    mrad (3.37 degrees), HR-KAM median 1.58 mrad, GND median 1.3e14
+    m^-2 with b = 3.84e-10 m and estimator "a5". The whole analysis
+    chain costs 0.15 s.
+
+    **The convention verdict: one rigid frame rotation, not a fitted
+    permutation.** Both fields reference-differenced at (10, 10), then
+    all 36 component pairings correlated over the 345 converged
+    points. The winner is `eps_theirs = R eps_ours R^T` with
+    `R = [[0,1,0],[-1,0,0],[0,0,1]]`, a +90 degree rotation of the
+    sample frame about z (their x is our y, their y is minus our x),
+    in the plain Voigt order (11, 22, 33, 23, 13, 12) with tensor
+    shears. All three sign flips fall out of that single rotation.
+    Four candidate frames tie on |r|, which is sign blind; the
+    regression slopes separate them, and +90 about z is the only one
+    with all six slopes positive (mean +0.925 against 0.24 to 0.33 for
+    the rest). Per component: e11 r=0.915 slope 0.857, e22 r=0.974
+    slope 0.984, e33 r=0.939 slope 0.961, e12 r=0.991 slope 0.953,
+    e23 r=0.778 slope 1.104, e13 r=0.536 slope 0.692. The four well
+    resolved components (own std above 2 mm/m) all pass |r| > 0.9, so
+    the pre-registered invariant-only fallback is NOT engaged. The two
+    out-of-plane shears carry the smallest amplitudes of the six and
+    are the pair HR-EBSD trades against the rigid translation, which
+    is why they are weaker and why they are reported rather than
+    hidden. Whole-field agreement 1.08 mm/m rms, 0.49 mm/m median
+    absolute difference. Their first three columns are traceless to
+    8.3e-5 rms, confirming a deviatoric closure like ours without
+    having to assume it.
+
+    **Floors and rates.** Far-field 20 x 20 patch (rows 20:40, columns
+    20:40): 400/400 converged, median sigma_eps 0.0271 mm/m, median
+    sigma_theta 0.0253 mrad, HR-KAM floor 0.064 mrad, GND floor
+    2.39e12 m^-2 against a 4e12 to 8e12 m^-2 literature class, strain
+    absmax 0.19 mm/m. **Ours are BELOW the paper's Table 1 (0.079 mm/m
+    and 0.043 mrad) at the same pattern resolution, measured with
+    their own estimator, but theirs is a 3 x 3 supersampled measure
+    and ours 1 x 1**: the notebook labels both columns and makes no
+    apples-to-apples victory claim. `hrebsd_pc_shift` in that same far
+    field predicts the measured translations to 0.013 px rms in x and
+    0.007 px rms in y on translations of about 0.09 px, which
+    validates the paper's affine PC calibration and our per-point-PC
+    geometry together; in the deformed zone its residual is 15.9 px,
+    all of it the 43 mrad lattice rotation acting over a 379.6 binned
+    px detector distance, so the notebook fits the plane on the
+    strain-free region only and prints that arithmetic beside it. Zone
+    rates: 9.97 pat/s on contiguous row 10, 6.75 pat/s on a scattered
+    far-field patch, 3.38 in the intermediate ring, 1.81 in the
+    deformed zone, 1.00 in the crater; zone-blended projection 3.76 h
+    at 200 iterations and about 4.6 h at 500, 3.9 h with the crater
+    masked.
+
+    **The notebook and its smoke gate.**
+    `doc/tutorials/hrebsd_si_indent.ipynb`, 32 cells (16 code, 16
+    markdown), gate = `KIKUCHIPY_LOCAL_DATA_DIR` plus a
+    working-directory, parent and grandparent probe (entry 81 makes
+    the environment variable exclusive when it is set), every
+    data-dependent cell under `if si_path:` and tagged
+    `nbval-ignore-output`, so `tutorials_sanitize.cfg` needed no new
+    entry. Wired into `doc/tutorials/index.rst`, `run_nbval.sh` and
+    `CHANGELOG.rst`. The repository copy is left UNEXECUTED for the
+    one-shot full-map run. Before returning it, a copy was patched to
+    a rows 5:20, columns 5:25 slice, which contains the (10, 10)
+    reference, and executed end to end against the real file:
+
+    ```
+    # from .../scratchpad/si_smoke, KIKUCHIPY_LOCAL_DATA_DIR set
+    .venv/Scripts/python.exe -m nbconvert --to notebook --execute \
+      --ExecutePreprocessor.timeout=-1 \
+      --ExecutePreprocessor.kernel_name=kikuchipy-spherical \
+      --output smoke_out.ipynb hrebsd_si_indent.ipynb
+    -> 16 of 16 code cells executed, 0 errors, 5 figures, 264 s
+    ```
+
+    The same notebook executed WITHOUT the data file (no environment
+    variable, file not found) in 7.2 s: 0 errors, and the only output
+    produced by any cell is the gate's "not available" line, which is
+    the nbval-without-data guarantee by construction rather than by
+    tagging.
+
+    The smoke run earned its keep by falsifying a sentence. The
+    pre-flight's "the high-pass locks onto a spurious 2.1 mrad near
+    identity solution" was measured at a 200-iteration budget; at the
+    500 iterations the notebook gives every trial, the same patch
+    converges 7/25 at 29.28 mrad, so the markdown was rewritten to the
+    claim the printed table actually supports: a minority converged, a
+    residual several times worse, rotations below the unfiltered
+    answer.
+
+81. **The pre-execute adversarial review of the Si-indent notebook
+    (2026-09-08, plan OQ13 step 5).** Twenty findings from a theory
+    and a conventions reviewer, checked one by one against the
+    pre-flight record, the file and the code before the one-shot
+    execute, because a code fix afterwards costs the whole run. All
+    twenty were upheld (four pairs were duplicates across the two
+    reviewers, so seventeen distinct defects), and twenty six edits
+    were applied. One reviewer's arithmetic was corrected in passing,
+    recorded below.
+
+    **The critical one: K3 was a saturation artefact.** The notebook's
+    `strain_invariants` helper formed the Lode cosine
+    `K3 = (3 sqrt 3 / 2) det(eps) / J2^1.5` from the reported strain,
+    which is NOT traceless. Our deviatoric closure sets the trace of
+    the DISTORTION to zero (`_tensors.py:350-352`), and the polar
+    decomposition that follows leaves a second-order trace in the Biot
+    strain, `tr(eps) = |omega|^2` to second order. MEASURED on the
+    pre-flight sub-map (`submap_final.npz`, 345 converged points):
+    `tr(eps)` against `|omega|^2` gives r = 0.99999, slope 0.9973,
+    largest difference 0.0123 mm/m, and `tr(eps)` reaches 3.444 mm/m.
+    The consequence, computed directly: `|K3| > 1` at **256 of 345
+    points (74 per cent)**, range -1.320 to 0.815, silently hidden by
+    the helper's `np.clip`. With the trace removed first: 0 of 345
+    outside, range -1.000 to 0.963, and the clipped values differ from
+    the true deviatoric ones by more than 0.2 at 18 per cent of points
+    (median 0.092). K2 is barely touched (11.80 against 11.72 mm/m).
+    The helper now removes the trace before either invariant, keeps
+    the clip as a numerical guard, and returns the count that was
+    outside; the cell prints that count both ways, and the markdown
+    states the closure argument instead of asserting a range the clip
+    was enforcing.
+
+    **The trace is now disclosed rather than implied.** Their field is
+    traceless to 0.083 mm/m rms (largest 2.261 mm/m); ours carries the
+    rotation-driven trace above, up to 3.44 mm/m, 23 per cent of the
+    +-15 mm/m display scale, spread isotropically over e11, e22 and
+    e33, and invisible to the eqs 17-18 estimator, which measures
+    scatter and not smooth variation. On the far-field patch our trace
+    is 0.000038 mm/m, so it is purely a large-rotation effect and
+    appears exactly where the paper's Fig. 5 has signal. Its effect on
+    the comparison, recomputed on the sub-map with the notebook's own
+    FRAME: whole-field rms difference 1.0800 mm/m as printed against
+    0.9931 mm/m with our trace removed, per component e11 1.328 ->
+    0.986 and e22 1.421 -> 0.959 (e33 1.149 -> 1.459). The strain cell
+    now prints our trace, its rms and its correlation with
+    `|omega|^2`, the comparison cell prints the trace-removed
+    agreement beside the reported one, and a limitations bullet names
+    the magnitude.
+
+    **The rechunk was 250 times larger than its own comment.**
+    `kp.load` returns a 4-D lazy array, so
+    `rechunk({0: 32, 1: -1, 2: -1})` set 32 map ROWS per chunk and
+    left axis 3 alone. VERIFIED against the real file: as loaded
+    `(1, 1, 512, 622)` = 0.32 MB; after the old rechunk
+    `(32, 250, 512, 622)` = **2.5477 GB per chunk, 8 blocks**, which
+    `EBSD.hrebsd_dic`'s `reshape((-1,) + sig_shape)`
+    (`ebsd.py:2835`) turns into flat chunks of 8000 patterns, against
+    a comment and a markdown paragraph that both said "about 32
+    patterns per chunk" and "never held in memory". The old smoke run
+    printed `chunks: (32, 250, 512, 622)` directly under that prose.
+    Now `rechunk({0: 1, 1: 32, 2: -1, 3: -1})`, measured
+    `(1, 32, 512, 622)` = 10.19 MB, 1872 blocks, flat chunks of 32,
+    no dask warnings. It changed no number and it is faster: the
+    re-run smoke measured 12.09 pat/s against 10.49 on the same 300
+    points, and 8.12 and 9.21 pat/s on row 10 against 7.83 and 8.48.
+    Every pre-flight rate behind the run-time projection was measured
+    with the old chunking, so the projection is conservative.
+
+    **The noise-floor comparison had the like-for-like number in
+    memory and never computed it.** The table compared our measured
+    0.0267 mm/m against the paper's PUBLISHED 0.079 mm/m and explained
+    the gap as "ours 1x1, theirs 3x3 supersampled", an explanation
+    that runs the wrong way, since smoothing lowers a point-to-point
+    scatter estimator. Their own delivered field is in the file, its
+    header reads `Refinement Binning = None` (read here, read-only),
+    so it is their full-resolution refinement of the same patterns.
+    The same estimator on the same row 10 of THEIR field gives per
+    component [0.0278, 0.0584, 0.0593, 0.0253, 0.0474, 0.0403] mm/m,
+    median **0.0438**, which the table now prints as a third column.
+    The published 0.079 keeps its own column and is stated as neither
+    reproduced by their own field nor explained here, rather than
+    attributed to a cause the notebook has not measured.
+
+    **The acceptance gate would have dropped a component it passes.**
+    The pre-registered rule "own std over the map > 2 mm/m, then
+    |r| > 0.9" was calibrated on a 20x20 deformed sub-map; the full
+    map is four fifths far field. Predicting each component's full-map
+    std from their field over the 57772 unmasked points times the
+    measured slopes: e11 1.978 x 0.857 = **1.70**, e22 2.223 x 0.984 =
+    2.19, e33 2.268 x 0.961 = 2.18, e23 0.294 x 1.104 = 0.32, e13
+    0.291 x 0.692 = 0.20, e12 3.047 x 0.953 = 2.90. So e11, whose
+    correlation is r = +0.915, falls below the old threshold and would
+    have been silently dropped from a verdict reading "3 of 3 pass".
+    (The reviewer paired their e22 std with the e11 slope and reported
+    1.91 and a 5 per cent miss; the pairing is fixed by the rotated
+    frame, and the real margin is 15 per cent. The finding stands, the
+    arithmetic did not.) The threshold is now 1 mm/m, about forty
+    times the 0.0267 mm/m floor, still admitting exactly the four
+    components the pre-flight called well resolved and still excluding
+    the two out-of-plane shears; the markdown states it and its
+    dilution argument before the numbers, and the empty case is
+    guarded so no vacuous "0 of 0" can print. The test is also now
+    `r > 0.9` rather than `abs(r) > 0.9`, since the frame is pinned to
+    one specific rotation and a negative correlation would mean it is
+    wrong, and the count of positive slopes, which is the
+    discriminator the frame was actually chosen by, is printed with
+    the verdict.
+
+    **The nbval gate did not hold on this machine.** The cell-4
+    fallback probed the working directory, its parent and its
+    grandparent unconditionally; `run_nbval.sh` runs from the
+    repository root; the 18.9 GB file sits at the repository root
+    (untracked, ignored by `.gitignore`). So nbval, which executes
+    every cell and only suppresses output comparison with
+    `nbval-ignore-output`, would have started the multi-hour map cell.
+    The gate now makes `KIKUCHIPY_LOCAL_DATA_DIR` exclusive: when it
+    is set, only that directory is searched, so naming an empty one
+    switches the tutorial off; only when it is unset are the working
+    directory and its two parents tried, which keeps the one-shot
+    execute working with no environment variable set. `run_nbval.sh`
+    exports it to a fresh `mktemp -d` when the caller has not, with
+    the reason in a comment. MEASURED, both branches, from the
+    repository root: unset -> the file at the repository root is
+    found; set to an empty directory -> `si_path` is None, and a full
+    `nbconvert --execute` of the repository notebook finishes in
+    **7.3 s with exactly one output**, the gate's "not available"
+    line, on the `nbval-ignore-output` cell. `nbval` itself is not
+    installed in this venv, so the plan's step-7 gate is still to be
+    run; what is measured here is that it cannot start the
+    correlation.
+
+    **The remaining corrections, all against measurements.** Their
+    correlation maximum at (row 116, column 164) sits at a band
+    contrast of 218 against a map median of 220 and a maximum of 242,
+    the 17.5th percentile, so "a pattern quality maximum" was replaced
+    by what the pre-flight supports: unique, but only 1e-4 above the
+    runner up, and in the deformed region. "The file's own metadata
+    says it is the same point the authors used" was replaced by what
+    X10Y10 can mean, since their refinement had no experimental
+    reference at all. The tracelessness check now prints the next best
+    zero-sum triple beside the winner (36.43 mm/m against 2.26 mm/m,
+    16x) so it reads as a discrimination. The patterns are lzf
+    compressed with the shuffle filter, one per HDF5 chunk, at a ratio
+    of 1.0003 (18.630 GB of pixels, 18.625 GB stored), not
+    "uncompressed". The `num_workers` pin's comment claimed to pin
+    "the chunking reported by the correlation", but every call passes
+    an explicit `chunksize` and `verbose=0`, so `estimate_chunksize`
+    and `get_info_message` are never reached; it now says what it
+    does. The binning note says "released kikuchipy versions", since
+    the entry 79 fix is fork-only. `FAR` is labelled as the 20 by 50
+    corner it is, distinct from the 250 points of row 10 the sigma
+    columns come from. The predicted pattern shift is printed as "at
+    most", since it uses the full rotation magnitude including the
+    component about the surface normal, which shifts nothing. The
+    K2/K3 caveat covers both invariants. Three limitations bullets
+    were added: the closure trace above, "relative to one pattern"
+    (their absolute field puts our reference at
+    [1.18, -2.33, 1.15, -0.61, -0.16, 0.31] mm/m, so our zero is
+    demonstrably not zero strain), and "one map, one indent, no
+    repeat". The run-time sentence no longer promises "four to five
+    hours" ahead of a measurement the faster chunking changes.
+
+    **The re-run smoke.** Nine code cells changed, so the author's
+    smoke procedure was repeated on the same rows 5:20, columns 5:25
+    slice:
+
+    ```
+    # from .../scratchpad/si_smoke, KIKUCHIPY_LOCAL_DATA_DIR set
+    .venv/Scripts/python.exe -m nbconvert --to notebook --execute \
+      --ExecutePreprocessor.timeout=-1 \
+      --ExecutePreprocessor.kernel_name=kikuchipy-spherical \
+      --output smoke_out2.ipynb hrebsd_si_indent.ipynb
+    -> 16 of 16 code cells executed, 0 errors, 5 figures
+    ```
+
+    Every number that both smoke runs print is identical (row 10
+    floors 0.0287 and 0.0267 mm/m, the rim table 7/25, 0/25 and 25/25
+    at 29.28, nan and 42.08 mrad, the residual medians, the PC-shift
+    planes), so the chunking fix moved nothing but the rate. The new
+    lines print correctly on far-field-only data:
+    `chunks: (1, 32, 512, 622)` under the markdown that claims 32
+    patterns, K3 outside the range at 0 points both ways, the
+    empty-verdict guard reading "no component reaches the threshold,
+    so the rule is not tested here", six of six slopes positive, and
+    the third noise-floor column at 0.0438 mm/m. The repository
+    notebook is still UNEXECUTED, with 0 outputs and every
+    `execution_count` None.
+
+82. **The one-shot full-map execute and its post-execute
+    verification (2026-09-08, plan OQ13 step 6).** The notebook was
+    executed once, in place, on the whole 250 by 234 map with the
+    real file present, and every markdown claim in it was then
+    checked against the printed outputs. Machine A, the repository
+    `.venv` (CPython 3.13.12), kernelspec name `python3`, which is
+    what every tutorial but `spherical_indexing.ipynb` carries, and
+    `dask.config num_workers=8` pinned in the notebook's first cell.
+    Wall clock from the notebook's own `execution` metadata: first
+    cell in at 2026-09-08T23:52:12Z, last cell out at
+    2026-09-09T02:16:53Z, 2 h 25 min end to end, of which the map
+    cell alone is 2 h 20 min.
+
+    ```
+    # plan step 6 recipe; no shell log was kept, so the notebook's
+    # own per-cell execution metadata is the record of the run
+    .venv/Scripts/python.exe -m nbconvert --to notebook --execute \
+      --inplace --ExecutePreprocessor.timeout=-1 \
+      doc/tutorials/hrebsd_si_indent.ipynb
+    -> 16 of 16 code cells executed, execution counts 1..16, no
+       error output, 5 figures, 1.39 MB stored
+    ```
+
+    **The run, as the notebook prints it.** Crater mask from their
+    CCC below 0.35: **728 points masked** (the pre-flight's number
+    exactly), 57772 correlated. **2.34 h at 6.85 patterns/s on 8
+    workers**, against entry 80's zone-blended projection of about
+    4.6 h at 500 iterations and 3.9 h with the crater masked: the
+    projection was conservative, as entry 81 predicted it would be,
+    since every zone rate behind it was measured with the old
+    chunking. Convergence **57685 of 57772 converged, 87 did not,
+    728 masked**, so 815 of 58500 points carry NaN. Iterations
+    median 14, largest 500, which is the cap itself; residual median
+    0.046. The four-function analysis chain after it: 0.43 s on
+    58500 points, as the markdown promises.
+
+    **Strain, rotation, invariants.** Deviatoric closure, 1st to
+    99th percentile per component (mm/m): e11 -8.62 to +3.15, e22
+    -8.23 to +3.15, e33 -0.14 to +9.20, e23 -0.45 to +0.57, e13
+    -0.65 to +1.04, e12 -9.75 to +11.11, with 99.94 per cent of all
+    components inside the paper's +-15 mm/m Fig. 5 scale, so the
+    pre-flight's choice of that scale holds on the full map. Lattice
+    rotation median 0.42 mrad, **largest 87.1 mrad = 4.99 degrees**,
+    well past the pre-flight sub-map's 58.8 mrad (3.37 degrees) and
+    past the 4.0 degree unfiltered figure of V4 (see the markdown
+    reconciliation below). Our closure trace: largest 7.587 mm/m,
+    rms 0.462 mm/m, correlated with `|omega|^2` at r = 1.00000, and
+    0.0871^2 = 7.586 mm/m, so entry 81's `tr(eps) = |omega|^2`
+    identity is confirmed to four figures on the real map. **K3
+    outside [-1, 1] at 5025 of 57685 points without the trace
+    removal and 0 with it**: entry 81's critical fix is load bearing
+    here too, at 8.7 per cent rather than the deformed sub-map's 74
+    per cent, because four fifths of this map is far field where the
+    trace is nothing. HR-KAM median 0.081 mrad, largest 39.3 mrad.
+    GND median 3.76e12 m^-2, largest 2.26e15 m^-2, over 57535 finite
+    points.
+
+    **The comparison with their own field, the headline result.**
+    Both fields reference differenced at (10, 10), ours rotated into
+    their frame by the pre-flight's `R = [[0,1,0],[-1,0,0],[0,0,1]]`,
+    over the 57685 usable points:
+
+    | component | our std | their std | r | slope | rms difference |
+    |-----------|---------|-----------|-------|-------|------|
+    | e11 | 1.838 | 1.971 | 0.971 | 0.905 | 0.492 |
+    | e22 | 1.967 | 2.189 | 0.982 | 0.882 | 0.483 |
+    | e33 | 2.142 | 2.245 | 0.979 | 0.934 | 0.467 |
+    | e23 | 0.433 | 0.285 | 0.260 | 0.396 | 0.452 |
+    | e13 | 0.320 | 0.277 | 0.224 | 0.259 | 0.396 |
+    | e12 | 2.949 | 2.995 | 0.991 | 0.976 | 0.413 |
+
+    (mm/m throughout except r and the slope.) Well resolved by the
+    pre-registered rule, own std above 1 mm/m: e11, e22, e33, e12,
+    and **4 of 4 pass r > 0.9 with a positive slope**. **6 of 6
+    slopes positive**, the discriminator the frame was actually
+    chosen by, so the +90 degree frame verdict of entry 80 survives
+    the full map. **Whole field agreement: rms difference 0.452 mm/m,
+    median absolute difference 0.133 mm/m**, and 0.441 mm/m with our
+    rotation driven trace removed first, so the closure trace
+    accounts for 0.011 mm/m of the 0.452 and the rest is real
+    disagreement between the two implementations. Entry 81's
+    threshold change from 2 to 1 mm/m was necessary exactly as it
+    predicted: e11's own std is 1.838 and e22's is 1.967, both under
+    the old gate, so the old rule would have printed "2 of 2 pass"
+    and silently dropped two components that agree at r = 0.971 and
+    0.982.
+
+    **The noise floors, all three columns.** Row 10, all 250 points,
+    the paper's own strain free row, the eqs 17-18 neighbour pair
+    estimator, `(None, None)` band-pass:
+
+    | quantity | ours, measured | theirs, measured | theirs, published |
+    |----------|----------------|------------------|-------------------|
+    | strain, median | 0.0267 mm/m | 0.0438 mm/m | 0.079 mm/m |
+    | rotation, median | 0.0258 mrad | not in the file | 0.043 mrad |
+
+    Per component, ours (mm/m): e11 0.0475, e22 0.0236, e33 0.0465,
+    e23 0.0246, e13 0.0160, e12 0.0287; theirs: 0.0278, 0.0584,
+    0.0593, 0.0253, 0.0474, 0.0403. The `(0.05, None)` arm of the
+    same cell gives 0.0287 mm/m and 0.0277 mrad, so no band-pass is
+    the better floor as well as the required capture range, and the
+    penalty clause of the pick rule does not fire (ratio 0.929).
+    **The caveats that travel with every number in this table**:
+    (i) ours is relative to a measured reference and theirs is
+    absolute and simulation referenced, so the columns share an
+    estimator and not a quantity; (ii) **the two per component rows
+    are in different frames**, ours in our sample frame and theirs
+    in theirs, and those differ by the +90 degree rotation above, so
+    reading them entry against entry is wrong. Paired through the
+    frame (ours e11 against their e22, ours e22 against their e11,
+    ours e33 against their e33, ours e23 against their e13, ours e13
+    against their e23, ours e12 against their e12), OUR FLOOR IS
+    LOWER ON ALL SIX: 0.0475/0.0584, 0.0236/0.0278, 0.0465/0.0593,
+    0.0246/0.0474, 0.0160/0.0253, 0.0287/0.0403. That pairing is
+    arithmetic done in this entry on the printed numbers, not
+    something the notebook computes; what the notebook now says is
+    that the two rows compare as sets and not entry by entry, which
+    is the honest claim. (iii) The estimator measures point to point
+    scatter only and is blind to smooth error. (iv) The published
+    0.079 mm/m is reproduced by neither measured column and is left
+    unexplained rather than attributed to a cause not measured here.
+
+    **The far field, and the GND floor.** 1000 points of the 20 by
+    50 strain free corner: largest |strain| 0.221 mm/m, largest
+    |rotation| 0.216 mrad, HR-KAM median 0.0610 mrad, **GND median
+    2.49e12 m^-2** against the 4e12 to 8e12 m^-2 class quoted for
+    HR-EBSD at fine steps, so our floor sits below that class rather
+    than inside it, which the markdown now says plainly ("sits
+    under" rather than "just under"). The deformed zone reaches
+    **2.26e15 m^-2**, 906 times the far field floor. Throughput in
+    context: 6.85 pat/s on 8 CPU workers at 622 by 512 px against
+    the paper's own about 20 pat/s on two RTX 4090 GPUs.
+
+    **The PC-shift diagnostic.** Strain free corner, 1000 points, in
+    binned pixels: translations median -0.0759 (x) and -0.0150 (y)
+    at rms 0.1086 and 0.0262; residuals **rms 0.0082 px in x and
+    0.0203 px in y**, plane fits -0.0009, -1.34e-4 per column,
+    +3.78e-4 per row (x) and -0.0180, -4.19e-4 per column, +1.25e-3
+    per row (y). So the paper's affine PC calibration and our
+    per-point-PC geometry agree to about one hundredth of a pixel in
+    x and two hundredths in y, on measured translations of about a
+    tenth of a pixel. Deformed zone, 4489 points above 20 mrad: DD
+    379.6 binned px, median |rotation| 32.4 mrad, residual 12.13 px
+    against at most 12.28 px predicted from the rotation alone, so
+    it is lattice signal and not miscalibration, the same verdict
+    the pre-flight reached at its own 43 mrad and 15.9 px.
+
+    **The post-execute markdown verification, and what it rests on.**
+    Every quantitative and qualitative claim in the sixteen markdown
+    cells was checked against the printed outputs; where an output
+    cannot settle a claim, against the file itself (read-only
+    `h5py`) or against this ledger. VERIFIED FROM THE FILE in this
+    entry: their CCC maximum is unique by **9.239e-5** ("only 1e-4
+    above the runner up") at row 116, column 164, at a band contrast
+    of 218 against a map median of 220, the 17.5th percentile, and
+    38.5 map points from the centroid of the sub-0.35 crater, so
+    "unique, in the deformed region, a little below the median band
+    contrast" all hold; `Refinement Binning` reads `b"None"`; the
+    master is 3001 by 3001; `Pattern Center X`, `Pattern Center Y`
+    and `Detector Distance` carry 58500 values each, so
+    `detector.pc` is (234, 250, 3); `Camera Binning Mode` is
+    `b"Speed 1 (622x512 px)"`. VERIFIED FROM THIS LEDGER: the crater
+    patch converging 1 of 100 at residual 1.83 (entry 80), the
+    iteration-50 versus later-iterate residuals and translations
+    (entry 80), and the 2.0 against 4.0 degree capture range, which
+    is `EBSD.hrebsd_dic`'s own docstring number from V4.
+
+    **The figures, and the honest limit of that check.** Five PNGs,
+    110 to 244 KB, 902 by 249 to 906 by 481 px, 2928 to 14420
+    distinct colours, none blank or collapsed. Panel counts from the
+    `text/plain` companion: 12, 12, 6, 12 and 6 axes, which is 6, 6,
+    3, 6 and 3 map panels plus one colour bar each, as the gallery
+    calls expect. The NaN grey the helper sets (`cmap.set_bad`,
+    0.75 grey) covers 0.62 to 0.79 per cent of the four figures
+    built on our own fields and 0.07 per cent of the their-field
+    figure, which has no NaN at all: consistent with 815 missing
+    points of 58500 spread over map panels that occupy about half of
+    each figure. THE LIMIT: the pixels were not looked at, only
+    their statistics and the axis counts, so what is established is
+    "not blank, right number of panels, the mask hole is present and
+    of the right size", not "the figure looks right".
+
+    **Hygiene, all checked on the final file.** 32 cells (16 code,
+    16 markdown); execution counts 1..16, monotonic, none missing or
+    `None`; zero error outputs; every output-producing code cell
+    tagged `nbval-ignore-output`, the two untagged ones (imports,
+    helper definitions) producing no output at all; exactly one
+    `nbsphinx-thumbnail`, the strain gallery of cell 21, carrying
+    both the tag and the tooltip metadata; kernelspec `python3`; no
+    em-dash or en-dash anywhere in any cell source or output, and no
+    non-ASCII character in any markdown source. The three
+    `UserWarning`s in the stored stderr (18 of 25 and 25 of 25 on
+    the rim configurations, 87 of 57772 on the map) are the
+    demonstration itself, and the markdown around them says so
+    before they appear, so they are kept.
+
+    **Thirteen markdown edits, no code cell and no output touched,
+    so no re-execution.** Applied with `nbformat` under a
+    one-occurrence assertion each.
+
+    1. Cell 1, "the same 58500 points" -> "the 57685 points of 58500
+       where our own fit returns a number": the crater mask and the
+       87 failures are not in the comparison.
+    2. Cell 5, the binning bullet now adds that the run stored below
+       prints 2, from the entry 79 fix that is not in a release,
+       since the claim around it is about released versions and the
+       output says 2.
+    3. **Cell 11, the capture range reconciliation**, a new
+       paragraph after the pick rule: the 50 mrad was an estimate,
+       the map reaches 87.1 mrad = 4.99 degrees, past the 4.0 degree
+       unfiltered figure, and that is not a contradiction, because
+       the 4.0 degrees is measured on a pure IN-PLANE rotation,
+       which nothing in the initial guess can undo, whereas a
+       lattice rotation about an in-plane axis mostly TRANSLATES the
+       pattern, by omega times DD pixels, and every fit is seeded
+       per point by the phase cross-correlation of `initial_guess`,
+       which measures exactly that translation. The PC-shift cell's
+       12.13 px against 12.28 px is that arithmetic on this map.
+    4. Cell 14, "the same as at iteration 300" -> "iteration 500",
+       which is the comparison the table below it actually prints
+       (the 300 is true of the pre-flight run of entry 80 and
+       appears nowhere in the notebook).
+    5. Cell 16, "the rate varies over the map by a factor of five"
+       -> "close to an order of magnitude", and "about ten
+       iterations" -> "ten to fifteen", against the printed median
+       14 over the map and 128 on the rim.
+    6. Cell 18, the closure trace "reaches a few mm/m" -> "reaches
+       7.6 mm/m", against the printed largest 7.587 mm/m.
+    7. Cell 20, a new sentence: the rotation panels saturate,
+       because the map's 87.1 mrad is above the paper's +-50 mrad
+       scale the panels are drawn at.
+    8. Cell 26, "sits just under the 4e12 to 8e12" -> "sits under",
+       for a measured 2.49e12.
+    9. Cell 26, the new frame caveat on the two per component
+       noise-floor rows, described above.
+    10. Cell 28, "a rotation of 43 mrad is a shift of 16 pixels" ->
+        "32 mrad ... 12 pixels", the map's own printed numbers
+        rather than the pre-flight sub-map's.
+    11. Cell 30, "to about a millimetre per metre" -> "to about half
+        a millimetre per metre", against the printed 0.452 mm/m rms
+        and 0.133 mm/m median absolute.
+    12. Cell 30, their tracelessness "to a fraction of a hundredth
+        of a mm/m" -> "to 0.08 mm/m rms, 2.3 mm/m at worst", against
+        the printed 0.08316 and 2.2610 mm/m.
+    13. Cell 30, our trace "a few mm/m at the largest lattice
+        rotations" -> "7.6 mm/m at the largest lattice rotation".
+
+    One repair was needed on the way in: a heredoc ate a backslash
+    and put a TAB into cell 11's `\times`, caught by a tab scan over
+    every cell and fixed; the final file carries no TAB anywhere.
+
+    **No BLOCKING findings: nothing in a code cell needs changing.**
+    Every printed number the markdown depends on is computed by the
+    cell that prints it, the two invariants are formed on a
+    trace-removed tensor as entry 81 requires, the comparison
+    rotates our tensors rather than permuting columns, the verdict
+    counts are computed from the same arrays they describe, and the
+    empty-case guards were not needed on the full map but are still
+    correct. The one structural remark, recorded and NOT acted on
+    because it would be a code-cell change: the imports cell and the
+    helper cell carry no `nbval-ignore-output`, which is right today
+    because they print nothing, but a future deprecation warning
+    from an import would then be an nbval diff rather than an
+    ignored output.
+
+    Plan step 7 (nbval on the full list, ruff, untouched-suite
+    check, commit) is still to run; nothing in this entry is a gate
+    result.

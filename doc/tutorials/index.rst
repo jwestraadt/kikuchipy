@@ -56,6 +56,7 @@ Strain and lattice rotation
     :caption: Strain and lattice rotation
 
     hrebsd_dic
+    hrebsd_si_indent
 
 Simulations
 ===========
