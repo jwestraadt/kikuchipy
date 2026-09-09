@@ -4235,9 +4235,126 @@ rotation ramp whose far points exceed the phase-XC-seeded basin but
 whose neighbour chain is everywhere within it; the default path must
 FAIL those points (establishing the premise) and the seeded path must
 recover the imposed field within the deformed-master band. (b) D20.6
-equivalence: on points both paths converge, corner-displacement
-agreement within SEED_EQUIVALENCE_TOL (MTP). (c) Determinism: seeded
-runs bitwise across repeats, chunksizes, lazy/eager. (d) Isolation:
-grain-boundary and mask non-crossing, constructed so a violation
-corrupts visibly. (e) PASS1_CAP semantics and the rescue pass.
-(f) D20.7 Si rim timing, recorded. Entries from 83 below.
+equivalence: on points both paths converge WITHIN THE RUN'S OWN
+BUDGET, corner-displacement agreement within SEED_EQUIVALENCE_TOL
+(MTP). (c) Determinism: seeded runs bitwise across repeats,
+chunksizes, lazy/eager, on a map whose cascade rounds each carry TWO
+points with different seeds. (d) Isolation: grain-boundary and mask
+non-crossing, constructed so a violation corrupts visibly.
+(e) PASS1_CAP semantics and the rescue pass. (f) D20.7 Si rim timing,
+recorded. Entries from 83 below.
+
+#### V8 recorded results, failing-tests gate (2026-09-09)
+
+Measured on this machine with the venv Python, engine at commit
+cec39de4 (the last pre-Stage-D commit) for every default-path number.
+`tests/test_indexing/test_hrebsd_seeding.py` carries each recipe in
+the comment next to the constant it feeds.
+
+**V8(b), the D20.6 counterexample (the reason D20.6 carries a dated
+correction).** Default path on the V8(a) ramp row, `fit_pattern`
+against the row's own reference, seeded by phase cross-correlation:
+
+| ramp point | budget 200 | budget 2000 | seeded (chained) |
+| --- | --- | --- | --- |
+| 0.8 deg | conv, 5 it, 0.0019 px | conv, 5 it, 0.0019 px | conv, 5 it, 0.0019 px |
+| 1.6 deg | conv, 10 it, 0.0056 px | conv, 10 it, 0.0056 px | conv, 5 it, 0.0056 px |
+| 2.4 deg | NOT conv, 200 it, 47.66 px | conv, 291 it, 50.84 px | conv, 5 it, 0.0096 px |
+| 3.2 deg | NOT conv, 200 it, 48.70 px | conv, 281 it, 50.81 px | conv, 5 it, 0.0143 px |
+| 4.0 deg | NOT conv, 200 it, 42.85 px | conv, 320 it, 49.90 px | conv, 5 it, 0.0119 px |
+| 4.8 deg | NOT conv, 200 it, 105.24 px | conv, 728 it, 108.04 px | conv, 5 it, 0.0138 px |
+
+Errors are the V2 corner-displacement metric against the EXACT
+imposed homography. So the unqualified D20.6 is refuted: above a
+budget of about 291 the default path converges those points to a
+different optimum ~50 px away. D20.6 is narrowed to the budget-bounded
+claim; the both-converged population at `MAX_ITERATIONS = 200` is
+`{0, 1, 2, 17}` and is now pinned literally in the test.
+
+**V8(d), what the grain gate buys (the crossed-seed simulation).**
+`fit_pattern` of the isolation map's hard point against grain 1's own
+reference, budget 200, seeded with the exact homography of the
+neighbour named:
+
+- from column 3, the same-grain neighbour: CONVERGED in 19 iterations,
+  0.100195 px of the 36.4788 px imposed (0.27 %)
+- from column 1, the cross-grain neighbour: NOT converged, budget
+  exhausted, 30.8866 px away (84.67 %)
+
+Residual ordering premise, independent fits: cross 8.039623e-04 <
+same 1.024855e-02, a 12.75-fold ordering, so the lowest-residual
+neighbour of the hard point IS the one across the boundary.
+
+**Mutant M10, the two-ramp fixture (per-point h0 off by one in flat
+order).** Cascade round membership measured on the pre-existing
+fixtures is ONE point per round everywhere (ramp, isolation, and the
+four-point pin map), so the mutant had no designed killer. On the new
+two-ramp map (rows 0 and 2 carrying opposite-signed ramps, row 1
+masked) each round carries two points with seeds 3.2 degrees apart:
+
+| round | correct seed | swapped seed (the mutant) |
+| --- | --- | --- |
+| 1, row 0 col 3 | conv, 5 it, 0.0096 px | NOT conv, 200 it, 47.60 px (365 % of imposed) |
+| 1, row 2 col 3 | conv, 5 it, 0.0078 px | NOT conv, 200 it, 49.51 px (379 %) |
+| 2, row 0 col 4 | conv, 5 it, 0.0143 px | NOT conv, 200 it, 47.37 px (272 %) |
+| 2, row 2 col 4 | conv, 5 it, 0.0098 px | NOT conv, 200 it, 52.78 px (303 %) |
+
+**D20.1, the pre-Stage-D pin.** The default-off pin used to compare
+two live calls on the same code path (`f(x) == f(x)`) and was
+demonstrated unable to fail. It now compares against frozen literals
+measured on commit cec39de4 and verified bitwise against today's
+`False` path. Sizing on the four-point pin map, corner-displacement
+against the frozen homography: two live runs 5.6843e-14 px (the
+metric's own inversion floor), `upsample_factor=4` 1.9614e-06 px,
+`upsample_factor=8` 3.1815e-06 px, `min_step=1e-2` 5.6042e-06 px.
+Pinned at 1e-9 px. The exact `num_iterations` pin `[1, 5, 10, 200]`
+independently kills every regression that moves an iteration count
+(`max_iterations=6` gives `[1, 5, 6, 6]`, `min_step=1e-2` gives
+`[1, 4, 10, 200]`, `border=0.06` gives `[1, 5, 7, 9]`). Same
+correction and same provenance in the signal-level twin, on the
+shipped Ni map.
+
+**D20.2, the PC-transport bound, re-measured on the REAL projection
+centre.** Read from `AGH__Si_indent_1_512x672.h5oina` 2026-09-09
+(`/1/EBSD/Data`): Pattern Center X mean 0.526845 span 0.002110,
+Pattern Center Y mean 0.678911 span 0.001827, Detector Distance mean
+0.610303 span 0.000759. Oxford normalises all three by the pattern
+WIDTH, so those spans times ncols = 622 reproduce ledger entry 80's
+1.31, 1.14 and 0.47 binned px. In the kikuchipy (Bruker) frame the PC
+is (327.70, 89.72, 379.61) px. Worst per-step phantom and its
+fraction of the 2.0 degree capture range:
+
+| reading | worst (px) | fraction |
+| --- | --- | --- |
+| kikuchipy Bruker frame (the real one) | 0.009727 | 5.637e-04 |
+| raw Oxford, PCy from the top | 0.008578 | 4.972e-04 |
+| raw Oxford, PCy from the bottom | 0.009727 | 5.637e-04 |
+| fractions of the pattern height | 0.009171 | 6.014e-04 |
+| the superseded central stand-in | 0.009478 | 7.508e-04 |
+
+All five stay under `PC_TRANSPORT_BOUND = 0.019` and
+`PC_TRANSPORT_BASIN_FRACTION = 1.6e-3`, so the D20.2 decision is
+unchanged; only its provenance is corrected. The test now sweeps all
+five rather than asserting the one.
+
+**PASS1_CAP admissible window.** The frozen `seed_round` EXPECTED
+array holds for `PASS1_CAP` in [10, 112]. It follows from two
+measurements: the 1.6 degree ramp point converges from its own phase
+cross-correlation seed in 10 iterations (a cap of 9 shifts the whole
+ramp by one round), and the isolated rescue point in 113 (a cap of
+113 or more converges it in pass 1, so `seed_round[17]` becomes 0
+rather than -2 and the rescue pass stops being exercised). The
+drafting candidate 50 sits comfortably inside.
+
+**Tightest margin in the module.** The rescue point recovers to
+0.388833 px of the 91.2533 px it imposes, 0.4261 % against the 1 %
+`SAME_OPTIMUM_FRACTION` bound, i.e. 2.35x -- next to 23x for the
+easiest ramp point and 3.6x for the isolation hard point.
+
+**Imposed corner norms of the fixtures**, which correct two
+denominators the `SAME_OPTIMUM_FRACTION` audit comment had wrong:
+ramp 0, 4.3500, 8.6999, 13.0493, 17.3980, 21.7460, 26.0928 px; rescue
+point 91.2533 px; unfittable point 43.4654 px; isolation hard 36.4788,
+cross 4.3500, same 26.8657 px. So a recovered field is 0.044 to
+0.43 % of its imposed displacement and a wrong optimum 85 to 403 %,
+two populations about 200x apart.

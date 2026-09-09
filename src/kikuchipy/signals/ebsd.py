@@ -2496,6 +2496,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         max_iterations: int = 50,
         min_step: float = 1e-3,
         step_scale: float = 1.0,
+        seed_from_neighbors: bool = False,
         navigation_mask: np.ndarray | None = None,
         chunksize: int | None = None,
         verbose: int = 1,
@@ -2586,6 +2587,15 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         step_scale
             Factor applied to every Gauss-Newton increment. Default
             is 1.0, plain Gauss-Newton.
+        seed_from_neighbors
+            Whether to seed a pattern the phase cross-correlation
+            misses from an already correlated neighbour of the same
+            grain, instead of from that translation only guess alone.
+            Default is ``False``, which correlates every pattern
+            independently and is bitwise the behaviour of every
+            release before this keyword existed. Not implemented yet:
+            ``True`` raises
+            :class:`NotImplementedError`.
         navigation_mask
             A boolean mask equal to the signal's navigation (map)
             shape, where only patterns equal to ``False`` are
@@ -2626,6 +2636,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             single projection center and a navigation axis has no
             readable length unit; or for any invalid correlation
             parameter.
+        NotImplementedError
+            If ``seed_from_neighbors=True``, which is not implemented
+            yet.
 
         Warns
         -----
@@ -2851,6 +2864,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             max_iterations=max_iterations,
             min_step=min_step,
             step_scale=step_scale,
+            seed_from_neighbors=seed_from_neighbors,
             navigation_mask=engine_mask,
             chunksize=chunksize,
             verbose=verbose,

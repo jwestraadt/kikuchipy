@@ -46,6 +46,14 @@ was square-only and the rectangular pins lived at unit level alone
 ``test_hrebsd_geometry.py``).  The Si-indent data set is 512 rows by
 622 columns, so the whole application runs on a shape this suite had
 never exercised end to end.
+
+ADDED 2026-09-09 at the Stage D failing-tests gate:
+:class:`TestSeedFromNeighbors`, the public surface of the
+neighbour-seeded propagation of requirements D20 -- the frozen
+keyword and its default, the default-off bitwise pin, the D20.5
+absence rule and the new ``seed_round`` property on the way out
+through the crystal map.  The cascade's own oracles are in
+``tests/test_indexing/test_hrebsd_seeding.py`` (validation V8).
 """
 
 import functools
@@ -73,7 +81,15 @@ from kikuchipy.indexing._hrebsd._engine import (
 # The ordered parameter list of requirements D15.4, with the kind and
 # the literal default of each.  ``xmap`` is an argument like the
 # refinement methods take it, never ``self.xmap`` implicitly, and
-# everything after ``detector`` is keyword only
+# everything after ``detector`` is keyword only.
+#
+# EXTENDED 2026-09-09 at the Stage D failing-tests gate by the ONE new
+# keyword requirements D20.1 freezes, ``seed_from_neighbors``, placed
+# with the other solver knobs and before the three orchestration ones.
+# Its default ``False`` is the whole of D20.1: the default path stays
+# bitwise what it was, which
+# ``TestSeedFromNeighbors::test_explicit_false_is_bitwise_the_call
+# _without_it`` pins on this very map
 FROZEN_SIGNATURE = [
     ("self", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
     ("xmap", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
@@ -94,10 +110,164 @@ FROZEN_SIGNATURE = [
     ("max_iterations", inspect.Parameter.KEYWORD_ONLY, 50),
     ("min_step", inspect.Parameter.KEYWORD_ONLY, 1e-3),
     ("step_scale", inspect.Parameter.KEYWORD_ONLY, 1.0),
+    ("seed_from_neighbors", inspect.Parameter.KEYWORD_ONLY, False),
     ("navigation_mask", inspect.Parameter.KEYWORD_ONLY, None),
     ("chunksize", inspect.Parameter.KEYWORD_ONLY, None),
     ("verbose", inspect.Parameter.KEYWORD_ONLY, 1),
 ]
+
+# The one property a SEEDED run adds (requirements D20.5).  Named
+# here rather than imported, because the pin is precisely that the
+# engine's own ``STAGE_A_PROP_NAMES`` does NOT grow this entry: with
+# ``seed_from_neighbors=False`` the property is ABSENT
+SEED_ROUND_PROP = "seed_round"
+
+# ---- The FROZEN pre-Stage-D default-path result of D20.1 ----------- #
+#
+# MEASURED 2026-09-09 by running ``EBSD.hrebsd_dic`` from commit
+# cec39de4 -- the last commit before the Stage D skeleton, whose
+# engine has no ``seed_from_neighbors`` in it at all -- on the shipped
+# Ni map through :func:`run` above, and VERIFIED on that date to be
+# bitwise what today's working tree gives on the ``False`` path.
+#
+# Why literals and not a second live call: a pin which calls the
+# CURRENT default path twice, once with the frozen default passed
+# explicitly and once with it omitted, is ``f(x) == f(x)`` and cannot
+# fail whatever a later Stage D commit does to that path.  That was
+# demonstrated at the 2026-09-09 adversarial review with two injected
+# regressions which the whole hrebsd suite also passed.  The engine
+# twin of this pin, with the same correction and the same provenance,
+# is in ``tests/test_indexing/test_hrebsd_seeding.py``.
+#
+# REFRESH RULE: these numbers change only on a DELIBERATE change to
+# the default path, recorded in validation.md with its own date and
+# reason.  A failure here is a Stage D regression until proven
+# otherwise.
+PRE_STAGE_D_NUM_ITERATIONS = np.array(
+    [50, 24, 26, 36, 1, 16, 50, 36, 20], dtype=np.int32
+)
+PRE_STAGE_D_CONVERGED = np.array(
+    [False, True, True, True, True, True, False, True, True]
+)
+PRE_STAGE_D_RESIDUAL = np.array(
+    [
+        1.4026420381285634e00,
+        7.8121209573833184e-01,
+        7.7472330633036801e-01,
+        1.4231336348796806e00,
+        1.0901903697489432e-15,
+        7.2779970420510642e-01,
+        1.4131673318566087e00,
+        7.7700667146406777e-01,
+        7.8286353914383067e-01,
+    ]
+)
+PRE_STAGE_D_HOMOGRAPHY = np.array(
+    [
+        [
+            2.6723081607091359e-02,
+            -4.2645438109685839e-03,
+            -9.6410080018131311e-02,
+            2.1835146921004835e-02,
+            2.9861047610119096e-02,
+            -4.7380637635130807e-03,
+            9.5730310812537211e-04,
+            1.1176369164215155e-03,
+        ],
+        [
+            -3.8596709411855556e-03,
+            6.5694992492173511e-04,
+            4.1339666212638765e-02,
+            3.2240419198947216e-03,
+            -3.1643765474593799e-03,
+            3.3984414461785017e-02,
+            7.5774635361064105e-05,
+            -1.2063433912497543e-05,
+        ],
+        [
+            9.6229501295841402e-05,
+            3.7926208379046680e-03,
+            2.1725180667436755e-02,
+            2.7877047753586950e-03,
+            -5.8880709881845572e-03,
+            2.1392191432784445e-02,
+            1.5271466874421203e-04,
+            -2.7677662902202290e-04,
+        ],
+        [
+            -2.0130465012881960e-03,
+            -9.4982814809627218e-03,
+            1.2606942625571054e-02,
+            6.6833632086794855e-03,
+            1.0666577480778372e-02,
+            1.0750203616454983e-01,
+            -6.7878907596590401e-05,
+            6.2949727524140098e-04,
+        ],
+        [
+            -4.0526693112497014e-11,
+            -2.7083899319660281e-11,
+            -2.3957379718178357e-11,
+            -7.7079356695455380e-11,
+            7.1377792565385789e-11,
+            -1.0355112419598144e-09,
+            -1.1595661731805551e-12,
+            3.5054149017042153e-13,
+        ],
+        [
+            -1.8474805496615510e-04,
+            -5.7366041011639914e-03,
+            1.0753814074103764e-01,
+            4.3828578135413892e-03,
+            -2.8775935924891805e-03,
+            3.2890560707103385e-03,
+            1.6705692868202704e-04,
+            -6.3457173082472073e-05,
+        ],
+        [
+            9.9118640985895734e-03,
+            -2.8642008573856459e-03,
+            -1.5796377330783376e-01,
+            2.5774429598156992e-03,
+            2.8276227513438057e-02,
+            2.2067699171764720e-02,
+            -1.7391034950545411e-04,
+            1.2637664867519867e-03,
+        ],
+        [
+            3.6348080184600562e-04,
+            -2.4094694898726555e-03,
+            7.7787308117802642e-02,
+            7.3511460536961016e-03,
+            1.7031447415363221e-03,
+            5.2593396874680010e-03,
+            2.9315365777656368e-04,
+            4.0822881619690591e-05,
+        ],
+        [
+            1.8348019230636226e-03,
+            1.6533990096587266e-03,
+            -5.2541792957181465e-03,
+            4.5566314063850118e-03,
+            -2.1233198618755278e-03,
+            3.3798840227536223e-02,
+            2.3658689910698323e-05,
+            2.1735363240865237e-05,
+        ],
+    ]
+)
+
+# The bands the frozen floats above are compared in.  MEASURED
+# 2026-09-09 on this map: two live default runs agree EXACTLY (0.0 in
+# every entry), while the subtlest demonstrated default-path
+# regression -- ``upsample_factor=4`` instead of 16, a new Stage D
+# call site which forgets to forward the knob -- moves a homography
+# entry by 9.675e-04 in absolute terms and a residual by 6.967e-05,
+# and also changes ``num_iterations``.  Pinned five orders below that
+# and well above any float-noise the shipped 60 px patterns can
+# produce
+PRE_STAGE_D_RTOL = 1e-9
+PRE_STAGE_D_ATOL = 1e-8
 
 # The property data types of D15.6
 PROP_DTYPES = {
@@ -623,6 +793,109 @@ class TestGrainLabels:
                 grain_labels=self.labels(),
                 verbose=0,
             )
+
+
+# ======= D20 -- the neighbour-seeded keyword at signal level ======== #
+
+
+class TestSeedFromNeighbors:
+    """The one new public keyword of requirements D20.1 through the
+    public method.
+
+    ADDED at the Stage D failing-tests gate.  The oracles of the
+    cascade itself live in
+    ``tests/test_indexing/test_hrebsd_seeding.py`` (validation V8);
+    what belongs HERE is the public surface: the default is off, off
+    reproduces a FROZEN pre-Stage-D result, the default path emits
+    exactly the pre-Stage-D property set, and a seeded run carries the
+    new ``seed_round`` property out through the crystal map.  Only the
+    last of those calls the seeded path, so only the last one failed
+    at this gate.
+
+    CORRECTED 2026-09-09 (adversarial review): the default-off pin
+    used to compare a call passing ``seed_from_neighbors=False`` with
+    a call omitting it.  Both take the identical code path, so that is
+    ``f(x) == f(x)`` and cannot fail.  It now compares against the
+    frozen literals above, which are a genuine pre-Stage-D result; the
+    two-live-calls check is kept as a separate, weaker statement that
+    the keyword is inert.  [D20.1/D20.5]
+    """
+
+    def test_the_docstring_documents_the_keyword(self):
+        docstring = kp.signals.EBSD.hrebsd_dic.__doc__
+        assert "seed_from_neighbors" in docstring
+        # and it says which way round the default is, since a reader
+        # who assumes the cascade is on gets a different run
+        assert "neighbour" in docstring or "neighbor" in docstring
+
+    def test_the_default_path_still_gives_the_pre_stage_d_result(self):
+        # requirements D20.1's core promise, on the shipped map, and
+        # the only test at this level which can see a Stage D
+        # regression of the DEFAULT path
+        signal, xmap, detector = ni_inputs()
+        result = run(signal, xmap, detector)
+        # the integer and boolean bookkeeping EXACTLY, which alone
+        # kills every regression that moves any point's iteration
+        # count
+        np.testing.assert_array_equal(
+            np.asarray(result.prop["num_iterations"]), PRE_STAGE_D_NUM_ITERATIONS
+        )
+        np.testing.assert_array_equal(
+            np.asarray(result.prop["converged"]), PRE_STAGE_D_CONVERGED
+        )
+        np.testing.assert_allclose(
+            np.asarray(result.prop["homography"]),
+            PRE_STAGE_D_HOMOGRAPHY,
+            rtol=PRE_STAGE_D_RTOL,
+            atol=PRE_STAGE_D_ATOL,
+        )
+        np.testing.assert_allclose(
+            np.asarray(result.prop["residual"]),
+            PRE_STAGE_D_RESIDUAL,
+            rtol=PRE_STAGE_D_RTOL,
+            atol=PRE_STAGE_D_ATOL,
+        )
+
+    def test_explicit_false_is_the_call_without_it(self):
+        # a weaker but separate statement: the keyword is inert, so
+        # passing its frozen default explicitly changes nothing
+        signal, xmap, detector = ni_inputs()
+        without = run(signal, xmap, detector)
+        explicit = run(signal, xmap, detector, seed_from_neighbors=False)
+        assert set(without.prop) == set(explicit.prop)
+        for name in STAGE_A_PROP_NAMES:
+            left = np.asarray(without.prop[name])
+            right = np.asarray(explicit.prop[name])
+            if np.issubdtype(left.dtype, np.floating):
+                assert np.array_equal(left, right, equal_nan=True), name
+            else:
+                assert np.array_equal(left, right), name
+
+    def test_the_default_path_emits_no_seed_round(self):
+        # the D20.5 absence rule: with the keyword off the property
+        # set is EXACTLY the pre-Stage-D one, so a result written by
+        # an older release and one written today carry the same keys
+        signal, xmap, detector = ni_inputs()
+        result = run(signal, xmap, detector)
+        assert SEED_ROUND_PROP not in result.prop
+        assert set(STAGE_A_PROP_NAMES) <= set(result.prop)
+
+    def test_a_seeded_run_carries_seed_round_out_through_the_map(self):
+        signal, xmap, detector = ni_inputs()
+        result = run(signal, xmap, detector, seed_from_neighbors=True)
+        assert isinstance(result, CrystalMap)
+        assert set(STAGE_A_PROP_NAMES) <= set(result.prop)
+        seed_round = np.asarray(result.prop[SEED_ROUND_PROP])
+        assert seed_round.dtype == np.int32
+        assert seed_round.shape == (9,)
+        # the D20.5 encoding, whatever this particular map does: 0 or
+        # a positive round or the rescue -2 where a point converged,
+        # and -1 exactly where it did not
+        converged = np.asarray(result.prop["converged"])
+        assert np.array_equal(seed_round == -1, ~converged)
+        assert np.all(seed_round[converged] >= -2)
+        # the input orientations are still untouched (D7)
+        assert np.array_equal(result.rotations.data, xmap.rotations.data)
 
 
 # ============ D11.1-D11.3 -- the ``reference="auto"`` mode ========== #

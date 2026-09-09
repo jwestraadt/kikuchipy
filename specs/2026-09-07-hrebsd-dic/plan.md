@@ -652,6 +652,22 @@ record on the Si rim patch.
    neighbour; drop the mask check; per-point h0 array off by one in
    flat order. Then fixer; every surviving mutant killed and
    re-verified.
+   **Mapped at the failing-tests gate (2026-09-09)**, in the mutation
+   map at the foot of `tests/test_indexing/test_hrebsd_seeding.py`,
+   with the coverage the review found missing closed there: "per-point
+   h0 array off by one" had NO designed killer (every fixture fitted
+   at most one point per cascade round) and now has one, the two-ramp
+   map of `TestSimultaneousSeeding`, verified by simulation; and
+   "highest-residual seed", "tie order shuffled" and "seed from an
+   unconverged neighbour" were unit-only kills resting on an
+   unasserted seam, which `TestSeedChoiceIsTheSeamTheCascadeUses` now
+   asserts by spying on `_engine.choose_seed_indices` during a real
+   seeded run. Two limitations are RECORDED rather than papered over:
+   the frozen offset order equals ascending flat index for every map
+   width >= 2, so a tie case cannot separate it from a flat-index
+   argmin (the `NEIGHBOR_OFFSETS` constant pin carries that mutant),
+   and the mask gate on the SEED side is unobservable at map level
+   because a masked point is never converged.
 4. Gates as every stage (hrebsd suite green, default-path bitwise
    unchanged, coverage, ruff, oldest-matrix, full suite), signed
    commits pushed together (failing tests ride with implementation),

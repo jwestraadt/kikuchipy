@@ -759,6 +759,7 @@ def run_hrebsd_dic(
     max_iterations: int = 50,
     min_step: float = 1e-3,
     step_scale: float = 1.0,
+    seed_from_neighbors: bool = False,
     navigation_mask: np.ndarray | None = None,
     chunksize: int | None = None,
     verbose: int = 1,
@@ -821,6 +822,14 @@ def run_hrebsd_dic(
         Convergence threshold in binned pixels. Default is 1e-3.
     step_scale
         Factor on the Gauss-Newton increment. Default is 1.0.
+    seed_from_neighbors
+        Whether to seed every fit which the per-point phase
+        cross-correlation misses from an already converged same-grain
+        neighbour's homography, the three-phase cascade of
+        requirements D20.2. Default is ``False``, which is the
+        BITWISE-unchanged behaviour of every release before Stage D
+        and emits exactly the pre-Stage-D property set (D20.1, D20.5).
+        Not implemented yet; ``True`` raises.
     navigation_mask
         Boolean mask of *navigation_shape* in kikuchipy polarity,
         where only patterns equal to ``False`` are fitted.
@@ -859,7 +868,20 @@ def run_hrebsd_dic(
     ------
     ValueError
         For any invalid argument, each naming the offending one.
+    NotImplementedError
+        If *seed_from_neighbors* is ``True``, until the Stage D
+        cascade lands.
     """
+    if seed_from_neighbors:
+        # The Stage D skeleton of requirements D20: the keyword and its
+        # frozen default exist so that the default-off bitwise pin and
+        # the signature freeze can be written before the cascade is,
+        # and NOTHING on the ``False`` path is touched
+        raise NotImplementedError(
+            "Stage D: seed_from_neighbors=True (the neighbour-seeded cascade of "
+            "requirements D20) is not implemented yet; the default False path is "
+            "unchanged"
+        )
     if interpolation not in SUPPORTED_INTERPOLATION:
         raise ValueError(
             f"interpolation must be one of {SUPPORTED_INTERPOLATION}, not "

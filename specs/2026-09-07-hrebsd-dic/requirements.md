@@ -1851,12 +1851,32 @@ cross-correlation there.
   converged or masked. D15.6's Stage A list is amended by this entry
   for seeded runs only; with `seed_from_neighbors=False` the prop is
   ABSENT (default path emits exactly the pre-Stage-D prop set).
-- **D20.6 Equivalence oracle (MTP)**: wherever the independent
-  (default-path) fit converges, the seeded run's answer agrees within
+- **D20.6 Equivalence oracle (MTP)**: on every point the independent
+  (default-path) fit converges WITHIN THE RUN'S OWN `max_iterations`
+  budget, the seeded run's answer agrees within
   `SEED_EQUIVALENCE_TOL` (corner-displacement metric, measured then
   pinned at ~2x on the deformed-master oracle map and the Si sub-map)
-  -- seeding may only change HOW the optimum is reached, never WHICH
-  optimum, on points both paths solve.
+  -- seeding may only change HOW that optimum is reached, never WHICH
+  optimum, on points both paths solve at that budget.
+  **DATED CORRECTION 2026-09-09 (adversarial review, measured):** the
+  unqualified form of this clause ("wherever the independent fit
+  converges") is FALSE and was measured false on the V8(a) ramp. At
+  `max_iterations=200` the far ramp points (2.4, 3.2, 4.0 and 4.8
+  degrees) do not converge on the default path; at
+  `max_iterations=2000` they DO, in 291, 281, 320 and 728 iterations,
+  to 50.84, 50.81, 49.90 and 108.04 px from the imposed field, i.e.
+  to a DIFFERENT optimum, while the seeded path reaches each in 5
+  iterations to 0.0096, 0.0143, 0.0119 and 0.0138 px. So at any
+  budget above about 291 the two paths disagree by ~50 px on those
+  points. A seed moving a point out of a spurious far basin into the
+  correct one is the entire benefit D20 was commissioned for and is
+  not an equivalence violation, so the clause is narrowed to the
+  budget-bounded statement above rather than the test being loosened.
+  The oracle pins the both-converged population literally
+  (`EQUIVALENCE_BOTH_CONVERGED = {0, 1, 2, 17}` at
+  `MAX_ITERATIONS = 200`) so that a budget change fails loudly
+  instead of silently widening the claim. Recorded in validation.md
+  V8(b).
 - **D20.7 Performance (recorded, never a gate)**: the Si-indent rim
   patch (ledger entry 80's rows 125:145, cols 115:135) re-measured
   seeded vs default; the plan 9.4 projection is 3-8x on deformed
