@@ -145,6 +145,59 @@ _N_STEEPEST_DESCENT_COLUMNS: int = N_HOMOGRAPHY_PARAMETERS
 # D5 seed is measured on (requirements D16)
 _RESIDENT_F64_PLANES: int = 4
 
+# ---------------- Stage D, neighbour-seeded propagation ------------- #
+
+# The FROZEN neighbour offset order of requirements D20.2, ``(dy, dx)``
+# in row-major reading order of the eight-neighbourhood with the centre
+# skipped.  It breaks a residual tie between two equally cheap
+# converged neighbours, and it is frozen rather than incidental because
+# the tie rule is invisible in a run's result: two neighbours whose
+# residuals are bitwise equal have bitwise equal homographies too
+NEIGHBOR_OFFSETS: tuple[tuple[int, int], ...] = (
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+)
+
+# The iteration budget of PASS 1 of the requirements D20.2 cascade,
+# which runs at ``min(max_iterations, PASS1_CAP)``.  An INTERNAL
+# constant, never a public knob (D20.1), and MEASURED-THEN-PINNED: the
+# measurement is the fraction of pass-1 conversions lost at the cap
+# against the full budget on the Si-indent data, and this name is where
+# that measurement re-pins the number.
+#
+# PROVISIONAL VALUE 50, the drafting candidate of D20.2: the Si-indent
+# far field converges at a median of 5 to 14 iterations (validation
+# ledger entries 80 and 82), so a cap of 50 catches essentially every
+# easy point while leaving the 80 to 500 iteration rim points to the
+# cascade, which reaches them from a neighbour in a handful.  A cap
+# never truncates a FINAL answer: every point pass 1 leaves unconverged
+# is re-fitted at the full budget by a cascade round or by the rescue
+# pass.
+#
+# ADMISSIBLE WINDOW of the frozen ``seed_round`` oracle, recorded
+# 2026-09-09 in validation.md V8 so that a re-pin knows what it may not
+# cross: ``PASS1_CAP`` in [10, 112].  Below 10 the 1.6 degree ramp
+# point of ``test_hrebsd_seeding.py`` drops out of pass 1 and the whole
+# ramp shifts by one round; at 113 and above the isolated rescue point
+# converges IN pass 1 and the rescue pass stops being exercised
+PASS1_CAP: int = 50
+
+# The ``seed_round`` property of requirements D20.5, emitted by a
+# SEEDED run only: 0 for a point pass 1 converged (the reference point
+# included), ``r >= 1`` for one converted by cascade round ``r``, -2 for
+# one converged only in the rescue pass, and -1 for a point which never
+# converged or is masked out
+SEED_ROUND_PROP_NAME: str = "seed_round"
+SEED_ROUND_PASS1: int = 0
+SEED_ROUND_RESCUE: int = -2
+SEED_ROUND_NONE: int = -1
+
 
 class ReferenceState:
     """Per-reference precomputed state of the IC-GN loop.
@@ -741,6 +794,95 @@ def _fit_pattern(
     }
 
 
+def choose_seed_indices(
+    converged: np.ndarray,
+    residual: np.ndarray,
+    grain_id: np.ndarray,
+    navigation_shape: tuple[int, int],
+    *,
+    navigation_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return the flat index of the neighbour which seeds each point.
+
+    The frozen seed choice of requirements D20.2, as the pure function
+    of arrays it is: the seed of a point is the converged, unmasked,
+    SAME-grain neighbour of its eight-neighbourhood with the LOWEST
+    residual, ties broken by the frozen :data:`NEIGHBOR_OFFSETS`
+    order.  Nothing here knows which round it is called from, so the
+    cascade's determinism (D20.3) follows from feeding it results of
+    strictly earlier rounds only.
+
+    Parameters
+    ----------
+    converged
+        Boolean convergence flag of every map point, flat in map
+        order.
+    residual
+        Final ZNSSD criterion of every map point, flat in map order.
+        A NaN entry is never chosen, so a point which failed outright
+        cannot seed anything.
+    grain_id
+        Grain label of every map point, flat in map order. A seed
+        never crosses a boundary between two different labels
+        (D20.4).
+    navigation_shape
+        Map shape ``(ny, nx)``, which turns a flat index into a row
+        and a column. The map edge is never wrapped around.
+    navigation_mask
+        Boolean mask of *navigation_shape* in kikuchipy polarity,
+        where ``True`` is masked out. A masked point neither seeds
+        nor is seeded (D20.4). If not given, nothing is masked.
+
+    Returns
+    -------
+    seeds
+        Flat index of the chosen seed of every map point, ``-1``
+        where no eligible neighbour exists.
+    """
+    nrows, ncols = (int(i) for i in navigation_shape)
+    size = nrows * ncols
+    converged = np.asarray(converged, dtype=bool).reshape(size)
+    residual = np.asarray(residual, dtype=np.float64).reshape(size)
+    grain_id = np.asarray(grain_id).reshape(size)
+    if navigation_mask is None:
+        masked = np.zeros(size, dtype=bool)
+    else:
+        masked = np.asarray(navigation_mask, dtype=bool).reshape(size)
+
+    rows, cols = np.divmod(np.arange(size, dtype=np.int64), ncols)
+    # A seed must have converged and must not be masked out; a
+    # candidate must not be masked out either
+    can_seed = converged & ~masked
+    can_be_seeded = ~masked
+
+    seeds = np.full(size, -1, dtype=np.int64)
+    best = np.full(size, np.inf, dtype=np.float64)
+    for row_offset, col_offset in NEIGHBOR_OFFSETS:
+        neighbor_rows = rows + row_offset
+        neighbor_cols = cols + col_offset
+        inside = (
+            (neighbor_rows >= 0)
+            & (neighbor_rows < nrows)
+            & (neighbor_cols >= 0)
+            & (neighbor_cols < ncols)
+        )
+        # ``np.where`` keeps the gather in range; ``inside`` throws the
+        # out-of-map entries away again below
+        neighbors = np.where(inside, neighbor_rows * ncols + neighbor_cols, 0)
+        eligible = (
+            inside
+            & can_be_seeded
+            & can_seed[neighbors]
+            & (grain_id[neighbors] == grain_id)
+        )
+        # STRICTLY lower, so an exact tie keeps the neighbour the
+        # frozen offset order reached first
+        better = eligible & (residual[neighbors] < best)
+        best = np.where(better, residual[neighbors], best)
+        seeds = np.where(better, neighbors, seeds)
+    return seeds
+
+
 def run_hrebsd_dic(
     patterns: np.ndarray,
     navigation_shape: tuple[int, int],
@@ -829,7 +971,8 @@ def run_hrebsd_dic(
         requirements D20.2. Default is ``False``, which is the
         BITWISE-unchanged behaviour of every release before Stage D
         and emits exactly the pre-Stage-D property set (D20.1, D20.5).
-        Not implemented yet; ``True`` raises.
+        With ``True`` the returned dictionary carries one more entry,
+        ``"seed_round"``.
     navigation_mask
         Boolean mask of *navigation_shape* in kikuchipy polarity,
         where only patterns equal to ``False`` are fitted.
@@ -863,25 +1006,31 @@ def run_hrebsd_dic(
         Dictionary keyed by :data:`STAGE_A_PROP_NAMES`, every value
         an array whose first axis is the full map size in map order,
         with NaN or the not-indexed fill on masked and failed points.
+        A run with *seed_from_neighbors* carries the one further
+        entry :data:`SEED_ROUND_PROP_NAME` of requirements D20.5.
 
     Raises
     ------
     ValueError
         For any invalid argument, each naming the offending one.
-    NotImplementedError
-        If *seed_from_neighbors* is ``True``, until the Stage D
-        cascade lands.
+
+    Notes
+    -----
+    With *seed_from_neighbors* the three phases of requirements D20.2
+    run in turn: pass 1 is the ordinary per-point phase
+    cross-correlation seeded fit at
+    ``min(max_iterations, PASS1_CAP)``; cascade round ``r`` then
+    fits, at the full budget, every not-yet-converged unmasked point
+    with a converged same-grain eight-neighbour from rounds strictly
+    earlier than ``r``, seeded by that neighbour's RAW homography
+    through :func:`choose_seed_indices`; and the rescue pass gives
+    every point still unconverged one full-budget fit from its best
+    available seed, its own pass-1 last iterate or the phase
+    cross-correlation seed, in that order.  Every seed is a pure
+    function of completed rounds, so the run is deterministic
+    whatever the chunking and whatever order the fits of one round
+    happen to run in (D20.3).
     """
-    if seed_from_neighbors:
-        # The Stage D skeleton of requirements D20: the keyword and its
-        # frozen default exist so that the default-off bitwise pin and
-        # the signature freeze can be written before the cascade is,
-        # and NOTHING on the ``False`` path is touched
-        raise NotImplementedError(
-            "Stage D: seed_from_neighbors=True (the neighbour-seeded cascade of "
-            "requirements D20) is not implemented yet; the default False path is "
-            "unchanged"
-        )
     if interpolation not in SUPPORTED_INTERPOLATION:
         raise ValueError(
             f"interpolation must be one of {SUPPORTED_INTERPOLATION}, not "
@@ -985,8 +1134,15 @@ def run_hrebsd_dic(
         )
 
     # Grain by grain, so that a chunk correlates against ONE reference's
-    # precomputed state; the map order is restored below (D16)
-    state_of_point = np.searchsorted(unique_references, reference_index[fit_indices])
+    # precomputed state; the map order is restored below (D16).  The
+    # whole-map identifier is kept as well, because the Stage D cascade
+    # fits an arbitrary subset of the map per round and has to order
+    # each one the same way
+    state_of_map = np.zeros(map_size, dtype=np.int64)
+    state_of_map[fit_indices] = np.searchsorted(
+        unique_references, reference_index[fit_indices]
+    )
+    state_of_point = state_of_map[fit_indices]
     order = np.argsort(state_of_point, kind="stable")
     fit_indices = fit_indices[order]
     state_of_point = np.ascontiguousarray(state_of_point[order].astype(np.int64))
@@ -999,23 +1155,6 @@ def run_hrebsd_dic(
     if verbose >= 1:
         print(get_info_message(n_fit, signal_shape, len(states), chunksize=chunksize))
 
-    time_start = time.time()
-    packed = _run_chunks(
-        patterns,
-        fit_indices,
-        state_of_point,
-        states,
-        chunksize,
-        progressbar=verbose >= 1,
-        options={
-            "upsample_factor": upsample_factor,
-            "max_iterations": max_iterations,
-            "min_step": min_step,
-            "step_scale": step_scale,
-        },
-    )
-    total_time = time.time() - time_start
-
     homography = np.full((map_size, HOMOGRAPHY_PROP_SIZE), np.nan, dtype=np.float64)
     fe = np.full((map_size, FE_PROP_SIZE), np.nan, dtype=np.float64)
     residual = np.full(map_size, np.nan, dtype=np.float64)
@@ -1023,11 +1162,137 @@ def run_hrebsd_dic(
     norm_dp = np.full(map_size, np.nan, dtype=np.float64)
     converged = np.zeros(map_size, dtype=bool)
 
-    homography[fit_indices] = packed[:, :HOMOGRAPHY_PROP_SIZE]
-    residual[fit_indices] = packed[:, _SLOT_RESIDUAL]
-    num_iterations[fit_indices] = packed[:, _SLOT_ITERATIONS].astype(np.int32)
-    norm_dp[fit_indices] = packed[:, _SLOT_NORM_DP]
-    converged[fit_indices] = packed[:, _SLOT_CONVERGED] > 0.5
+    fit_options = {
+        "upsample_factor": upsample_factor,
+        "max_iterations": max_iterations,
+        "min_step": min_step,
+        "step_scale": step_scale,
+    }
+
+    def store(indices: np.ndarray, packed: np.ndarray) -> None:
+        """Write one phase's packed rows into the map arrays."""
+        homography[indices] = packed[:, :HOMOGRAPHY_PROP_SIZE]
+        residual[indices] = packed[:, _SLOT_RESIDUAL]
+        num_iterations[indices] = packed[:, _SLOT_ITERATIONS].astype(np.int32)
+        norm_dp[indices] = packed[:, _SLOT_NORM_DP]
+        converged[indices] = packed[:, _SLOT_CONVERGED] > 0.5
+
+    def fit_phase(
+        indices: np.ndarray, budget: int, seeds: np.ndarray | None = None
+    ) -> None:
+        """Fit one Stage D phase and store it, grain ordered.
+
+        *indices* are flat map indices and *seeds* their per-point
+        seed homographies in the SAME order, so the pairing survives
+        the grain ordering and the chunking alike.
+        """
+        phase_order = np.argsort(state_of_map[indices], kind="stable")
+        ordered_indices = indices[phase_order]
+        options = dict(fit_options)
+        options["max_iterations"] = int(budget)
+        store(
+            ordered_indices,
+            _run_chunks(
+                patterns,
+                ordered_indices,
+                np.ascontiguousarray(state_of_map[ordered_indices]),
+                states,
+                max(1, min(int(chunksize), int(ordered_indices.size))),
+                progressbar=verbose >= 1,
+                options=options,
+                h0=None if seeds is None else np.asarray(seeds)[phase_order],
+            ),
+        )
+
+    time_start = time.time()
+    if seed_from_neighbors:
+        # PASS 1 of requirements D20.2: the ordinary phase
+        # cross-correlation seeded fit of every point, at the capped
+        # budget.  The cap never truncates a final answer -- the
+        # cascade rounds and the rescue pass below re-fit every point
+        # it leaves unconverged at the FULL budget
+        fit_phase(fit_indices, min(int(max_iterations), PASS1_CAP))
+    else:
+        packed = _run_chunks(
+            patterns,
+            fit_indices,
+            state_of_point,
+            states,
+            chunksize,
+            progressbar=verbose >= 1,
+            options=fit_options,
+        )
+        store(fit_indices, packed)
+
+    seed_round = None
+    if seed_from_neighbors:
+        seed_round = np.full(map_size, SEED_ROUND_NONE, dtype=np.int32)
+        seed_round[converged] = SEED_ROUND_PASS1
+        fittable = np.zeros(map_size, dtype=bool)
+        fittable[fit_indices] = True
+
+        def current_seeds() -> np.ndarray:
+            """Return the seed of every point from EARLIER rounds.
+
+            Looked up through the module global on purpose, so that
+            the frozen helper the seed-choice oracles pin is
+            demonstrably the one the cascade uses.
+            """
+            return choose_seed_indices(
+                converged,
+                residual,
+                grain_id,
+                navigation_shape,
+                navigation_mask=navigation_mask,
+            )
+
+        # CASCADE ROUNDS of requirements D20.2: round r fits, in
+        # parallel and at the FULL budget, every not-yet-converged
+        # unmasked point with at least one converged same-grain
+        # neighbour from rounds STRICTLY earlier than r.  Round
+        # membership and every seed are computed here, on the host,
+        # from completed rounds only, so nothing depends on
+        # intra-round scheduling or on the chunking (D20.3)
+        round_index = 0
+        while True:
+            round_index += 1
+            seeds = current_seeds()
+            candidates = np.flatnonzero(fittable & ~converged & (seeds >= 0))
+            if candidates.size == 0:
+                break
+            if verbose >= 1:
+                print(
+                    f"  Cascade round {round_index}: "
+                    f"{candidates.size} pattern(s) seeded from a neighbour"
+                )
+            fit_phase(candidates, max_iterations, homography[seeds[candidates]])
+            converted = candidates[converged[candidates]]
+            if converted.size == 0:
+                break
+            seed_round[converted] = round_index
+
+        # RESCUE PASS of requirements D20.2: ONE fit at the full budget
+        # for every point still unconverged, from the best seed there
+        # is by now, else from its own pass-1 last iterate, else from
+        # the phase cross-correlation seed.  This is what makes the
+        # pass-1 cap safe: no point is ever left with a cap-truncated
+        # pass-1 iterate as its final answer
+        rescued = np.flatnonzero(fittable & ~converged)
+        if rescued.size:
+            seeds = current_seeds()[rescued]
+            # a row which is not finite throughout tells ``_fit_chunk``
+            # to fall back to the phase cross-correlation seed, which
+            # is the third branch of the rule above
+            rescue_h0 = np.where(
+                (seeds >= 0)[:, None],
+                homography[np.where(seeds >= 0, seeds, 0)],
+                homography[rescued],
+            )
+            if verbose >= 1:
+                print(f"  Rescue pass: {rescued.size} pattern(s) re-fitted")
+            fit_phase(rescued, max_iterations, rescue_h0)
+            seed_round[rescued[converged[rescued]]] = SEED_ROUND_RESCUE
+    total_time = time.time() - time_start
 
     # The D2.6 contract: a non-converged point KEEPS its last iterate in
     # ``homography`` and is never zeroed, while every DERIVED property
@@ -1057,7 +1322,7 @@ def run_hrebsd_dic(
     if verbose >= 1 and total_time > 0:
         print(f"  Correlation speed: {n_fit / total_time:.5f} patterns/s")
 
-    return {
+    properties = {
         "homography": homography,
         "Fe": fe,
         "residual": residual,
@@ -1067,6 +1332,11 @@ def run_hrebsd_dic(
         "grain_id": grain_id,
         "reference_index": reference_index,
     }
+    # The D20.5 absence rule: the property exists on a SEEDED run only,
+    # so a default-path result carries EXACTLY the pre-Stage-D set
+    if seed_round is not None:
+        properties[SEED_ROUND_PROP_NAME] = seed_round
+    return properties
 
 
 def _gather(patterns, indices: np.ndarray) -> np.ndarray:
@@ -1093,6 +1363,7 @@ def _gather(patterns, indices: np.ndarray) -> np.ndarray:
 def _fit_chunk(
     patterns_block: np.ndarray,
     state_index_block: np.ndarray,
+    h0_block: np.ndarray | None = None,
     states: tuple = (),
     options: dict | None = None,
 ) -> np.ndarray:
@@ -1105,6 +1376,14 @@ def _fit_chunk(
     state_index_block
         ``(n,)`` block of indices into *states*, paired with
         *patterns_block* along the same named dask index.
+    h0_block
+        ``(n, 8)`` block of seed homographies of the Stage D cascade,
+        paired with *patterns_block* along the same named dask index,
+        or ``None`` for the phase cross-correlation seed of every
+        pattern. A row which is not finite throughout also means the
+        phase cross-correlation seed, which is what the rescue pass of
+        requirements D20.2 falls back to for a pattern with no seed
+        and no usable pass-1 iterate.
     states
         The per-reference precomputed states.
     options
@@ -1120,7 +1399,12 @@ def _fit_chunk(
     results = np.empty((n_patterns, _ROW_WIDTH), dtype=np.float64)
     for i in range(n_patterns):
         state = states[int(state_index_block[i])]
-        result = fit_pattern(state, patterns_block[i], **options)
+        h0 = None
+        if h0_block is not None:
+            row = np.asarray(h0_block[i], dtype=np.float64)
+            if np.all(np.isfinite(row)):
+                h0 = row
+        result = fit_pattern(state, patterns_block[i], h0=h0, **options)
         results[i, :HOMOGRAPHY_PROP_SIZE] = result["h"]
         results[i, _SLOT_RESIDUAL] = result["residual"]
         results[i, _SLOT_ITERATIONS] = result["num_iterations"]
@@ -1138,6 +1422,7 @@ def _run_chunks(
     *,
     progressbar: bool,
     options: dict,
+    h0: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return the packed results of every fitted point, in fit order.
 
@@ -1165,6 +1450,13 @@ def _run_chunks(
         Whether to show a progress bar.
     options
         Keyword arguments forwarded to :func:`fit_pattern`.
+    h0
+        ``(fit_indices.size, 8)`` seed homographies of the Stage D
+        cascade, in the order of *fit_indices*, or ``None`` for the
+        phase cross-correlation seed of every pattern. It is paired
+        with the patterns along the SAME named dask index as the
+        state identifiers, so a per-point seed cannot be handed to
+        the wrong pattern whatever the chunking is.
 
     Returns
     -------
@@ -1177,13 +1469,19 @@ def _run_chunks(
         patterns_da = da.from_array(np.asarray(patterns), chunks=(chunksize, -1, -1))
     ordered = patterns_da[fit_indices].rechunk((chunksize, -1, -1))
     state_da = da.from_array(state_of_point, chunks=(chunksize,))
+    if h0 is None:
+        # The default path, untouched: two paired arguments and no
+        # seed array in the graph at all
+        arguments = (ordered, "ikl", state_da, "i")
+    else:
+        h0_da = da.from_array(
+            np.ascontiguousarray(h0, dtype=np.float64), chunks=(chunksize, -1)
+        )
+        arguments = (ordered, "ikl", state_da, "i", h0_da, "im")
     results = da.blockwise(
         _fit_chunk,
         "ij",
-        ordered,
-        "ikl",
-        state_da,
-        "i",
+        *arguments,
         states=tuple(states),
         options=options,
         new_axes={"j": _ROW_WIDTH},

@@ -427,8 +427,25 @@ PRE_STAGE_D_PIN_TOL = 1e-9
 # over the six warped points, so the pin is expected near 0.03.  A
 # live seed 2 to 10 times above the achievable error is an acceptance
 # gate a mediocre implementation passes silently, so this fails loudly
-# instead
-SEED_RESCUE_TOL = None
+# instead.
+# MEASURED 2026-09-09 at the Stage D implementation gate on the live
+# cascade, both fixtures which carry this pin:
+#   ``TestRescueOracle::test_the_seeded_path_recovers
+#     _the_whole_ramp``, worst over the seven ramp
+#     points ................................. 0.0142852057 px
+#   ``TestSimultaneousSeeding::test_each_point
+#     _of_a_round_gets_its_own_seed``, worst over
+#     the ten unmasked two-ramp points ....... 0.0142852057 px
+# The two agree to every digit because the worst point of both maps is
+# the same construction, a 3.2 degree point fitted from a seed 0.8
+# degrees away.  The live cascade lands exactly on the 0.0143 px the
+# simulation predicted, so the cap-truncated pass-1 iterate a real seed
+# carries costs nothing against the simulation's exact homography.
+# PINNED at 0.03 px, 2.1x the measurement, which is the drafting note's
+# own expectation.  This is an accuracy claim, not a float-noise band:
+# the same fits are about 3500x closer to their own imposed field than
+# the default path's far-basin answers
+SEED_RESCUE_TOL = 0.03
 
 # MTP [D20.6/V8(b)]: the corner-displacement disagreement in binned
 # pixels between the default-path answer and the seeded answer, worst
@@ -457,8 +474,37 @@ SEED_RESCUE_TOL = None
 # one.  The correction is recorded in requirements D20.6 and in
 # validation.md V8(b), and the ``both`` set is pinned literally in the
 # test so that a budget change fails loudly instead of silently
-# widening the claim
-SEED_EQUIVALENCE_TOL = None
+# widening the claim.
+# MEASURED 2026-09-09 at the Stage D implementation gate, on the live
+# cascade rather than the simulation, on BOTH populations D20.6 names
+# for this constant -- the oracle map and the Si sub-map:
+#   this ramp, worst over the four points of
+#     ``EQUIVALENCE_BOTH_CONVERGED`` (the three
+#     easy columns and the isolated rescue
+#     point) ................................. 5.6843e-14 px
+#   the REAL Si-indent rim, entry 80's rows
+#     125:145 columns 115:135 at 500
+#     iterations, worst over the 373 points
+#     both paths converge .................... 2.3437e-13 px
+#   the same file's far field, rows 20:40
+#     columns 20:40, worst over 400 ........... 2.3437e-13 px
+# Every one of them is the metric's OWN floor and not a disagreement:
+# the seeded and the default homography of each of those points are
+# bitwise equal, so what is measured is ``inv(W) @ W`` in float64.  The
+# Si floor is 4.1x the ramp's because the metric is evaluated on a
+# bigger support (the D4.4 corners of the 512 by 622 Si detector reach
+# 494 px from its off-centre projection centre against the oracle's
+# 312) and on warps carrying more rotation.
+# PINNED at 5e-13 px, 2.1x the worst of the two populations, which
+# leaves 8.8x on the ramp the test actually evaluates.  A
+# machine-precision band, never a tolerance, and the width costs
+# nothing: the subtlest regression ``PRE_STAGE_D_PIN_TOL`` could
+# demonstrate above is 1.96e-06 px, four million times this pin.  The
+# claim it guards is a strong one -- on the Si rim the seeded path
+# reaches all 373 points through a cap-truncated pass 1 and a rescue
+# re-fit, a completely different route from the default path's single
+# fit, and lands on the same float64 bits at every one of them
+SEED_EQUIVALENCE_TOL = 5e-13
 
 # The points of the ramp map on which BOTH paths converge at
 # ``MAX_ITERATIONS``, pinned so that the equivalence band above cannot

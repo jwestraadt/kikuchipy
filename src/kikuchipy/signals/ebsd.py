@@ -55,7 +55,11 @@ from kikuchipy.indexing._hough_indexing import (
     _optimize_pc,
     _phase_lists_are_compatible,
 )
-from kikuchipy.indexing._hrebsd._engine import STAGE_A_PROP_NAMES, run_hrebsd_dic
+from kikuchipy.indexing._hrebsd._engine import (
+    SEED_ROUND_PROP_NAME,
+    STAGE_A_PROP_NAMES,
+    run_hrebsd_dic,
+)
 from kikuchipy.indexing._hrebsd._geometry import step_sizes_in_micrometres
 from kikuchipy.indexing._refinement._refinement import (
     _refine_orientation,
@@ -2593,9 +2597,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             grain, instead of from that translation only guess alone.
             Default is ``False``, which correlates every pattern
             independently and is bitwise the behaviour of every
-            release before this keyword existed. Not implemented yet:
-            ``True`` raises
-            :class:`NotImplementedError`.
+            release before this keyword existed. With ``True`` the
+            returned map carries one further property,
+            ``"seed_round"``; see the ``Notes``.
         navigation_mask
             A boolean mask equal to the signal's navigation (map)
             shape, where only patterns equal to ``False`` are
@@ -2621,7 +2625,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             ``"Fe"`` (n, 9), ``"residual"`` (n,),
             ``"num_iterations"`` (n,), ``"norm_dp"`` (n,),
             ``"converged"`` (n,), ``"grain_id"`` (n,) and
-            ``"reference_index"`` (n,), see the ``Notes``.
+            ``"reference_index"`` (n,), see the ``Notes``. With
+            ``seed_from_neighbors=True`` it also carries
+            ``"seed_round"`` (n,).
 
         Raises
         ------
@@ -2636,9 +2642,6 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             single projection center and a navigation axis has no
             readable length unit; or for any invalid correlation
             parameter.
-        NotImplementedError
-            If ``seed_from_neighbors=True``, which is not implemented
-            yet.
 
         Warns
         -----
@@ -2724,6 +2727,32 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         derived from it downstream is NaN. A pattern which fails
         outright, having no variance or a non-finite criterion, gets
         NaN properties.
+
+        **Seeding from a neighbour.** With
+        ``seed_from_neighbors=True`` the correlation runs in three
+        phases instead of one. Every pattern is first correlated from
+        its own phase cross-correlation guess at a capped number of
+        iterations. Each round after that correlates, from the
+        already correlated same-grain neighbour with the lowest
+        residual, every pattern the earlier rounds left
+        unconverged and which has such a neighbour, at the full
+        ``max_iterations``; rounds repeat until one converges
+        nothing new. A final rescue round gives every pattern still
+        unconverged one more correlation at the full number of
+        iterations, so a capped first pass is never anyone's answer.
+        Seeds never cross a grain boundary and never involve a masked
+        out point, and every seed is decided from earlier rounds
+        alone, so the result does not depend on ``chunksize`` or on
+        the order the patterns of one round happen to be correlated
+        in. This helps where the translation only guess is outside
+        the capture range but a neighbour is not, which is a strongly
+        deformed region such as the field around an indent; where
+        every pattern is correlated in the first pass anyway it only
+        costs the extra bookkeeping. The extra property
+        ``"seed_round"`` records how each point was reached: 0 for
+        the first pass, a positive round number for the cascade, -2
+        for the rescue round and -1 for a point which never converged
+        or is masked out.
 
         **Limitations of this release, each documented rather than
         silently absorbed.** Optical and radial distortion of the
@@ -2874,8 +2903,13 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         # The input orientations, phases and scan unit are carried
         # through untouched: this feature never modifies an orientation
         xmap_out = xmap.deepcopy()
-        for name in STAGE_A_PROP_NAMES:
-            xmap_out.prop[name] = prop[name]
+        # The Stage D `"seed_round"` is there on a seeded run only, so
+        # a default-path result carries exactly the property set every
+        # release before that keyword existed wrote (requirements
+        # D20.5)
+        for name in (*STAGE_A_PROP_NAMES, SEED_ROUND_PROP_NAME):
+            if name in prop:
+                xmap_out.prop[name] = prop[name]
 
         return xmap_out
 
