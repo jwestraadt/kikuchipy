@@ -529,3 +529,85 @@ publicly); and the two items the reviewer verified as already dying
 hard -- the D6.2 re-application and the plan's remaining Stage B
 mutants -- are left as they are, with their measured margins
 recorded above.
+
+## 9. Performance and super-resolution follow-up paths (recorded 2026-09-09)
+
+Measured baselines these paths are judged against (ledger entries 80-82):
+full Si-indent map at 512x622 px ran 2.34 h = 6.85 patterns/s on 8 workers
+(median 14 iterations; far-field zones 10-12 patterns/s, indent rim ~1.8);
+row-10 noise floor 0.0267 mm/m / 0.0258 mrad; the paper's MapSweeper runs
+~20 patterns/s on two RTX 4090 GPUs. Every estimate below is a PROJECTION
+until its named measurement runs; none is commissioned by this section.
+
+1. **More Dask workers** (config only, free). The IC-GN loop is
+   compute-bound and pattern-parallel (unlike the spherical FFT path,
+   which saturates memory bandwidth near 8 workers), so 16-20 workers on
+   a 20-logical-core machine should approach 2x. The 8-worker pin stays
+   in tutorials for machine-independent stored output; non-tutorial runs
+   may raise it freely. Resolves: one timed far-field patch at 8 vs 16
+   vs 20 workers, recorded.
+2. **Plain pattern binning** (one-evening experiment). Cost per
+   iteration scales with pixel count: 2x2 binning to 256x311 is ~4x
+   speed (~27 patterns/s map-wide projected; ~55 with item 1). The
+   floor cost is the unknown: with an experimental reference BOTH images
+   lose information, est. ~2x floor (to ~0.05-0.08 mm/m, still under
+   the paper's published full-res 0.079). Camera-side binning
+   additionally buys acquisition rate and per-pixel SNR. Resolves:
+   rebin the Si-indent data 2x2 and 4x4, rerun the row-10 estimator +
+   a timed patch, record the speed-vs-floor curve.
+3. **min_step relaxation** (one-evening experiment). Entry 80: deformed
+   points reach their answer well before the corner-norm criterion
+   declares convergence (~128 iterations declared where the fit was
+   already stationary; the 50-cap failure was a threshold artefact, not
+   capture). A looser min_step (2e-3 to 5e-3 px) could cut iteration
+   counts ~2x in deformed zones. Resolves: V2 warp-refit accuracy +
+   Si row-10 floor at each candidate threshold, dated re-pin only on a
+   measured win.
+4. **Neighbour-seeded propagation** (reliability-guided DIC; a feature,
+   ~half to one build stage). Today every point seeds from
+   translation-only phase cross-correlation; deformed points then spend
+   80-500 iterations. Seeding from an already-converged neighbour's
+   homography (processing order by a reliability queue, residual-gated
+   acceptance, phase-XC fallback) collapses iterations in smooth fields
+   - the classic DIC strategy. Iterations, not pixels, dominate
+   deformed-zone cost, so est. 3-8x there. Risks to spec: error
+   propagation across grain/twin boundaries (gate by residual and
+   grain_id), determinism of the processing order. Oracle: identical
+   converged answers to independent seeding within a pinned band.
+5. **GPU backend for the DIC engine** (a feature, ~one build stage,
+   Phase-12 recipe). Batch many patterns' IC-GN iterations in lockstep
+   on the device (CuPy): batched bicubic evaluation, gradient
+   reductions, 8x8 solves; backend="gpu" with the CPU path as parity
+   oracle, no silent fallback. Est. 5-20x; the paper's own two-4090
+   figure (~20 patterns/s at full res, heavier per-candidate work) is
+   the calibration point. Risks: divergent per-pattern iteration counts
+   (mask-and-retire within the batch), f32 discipline vs the pinned
+   bands, device bicubic parity.
+6. **Binned-gradient hybrid** (cheap partial win, rides with 7b).
+   Precompute the steepest-descent images and Hessian from a FULL-RES
+   reference, then bin them to the target grid: better gradients than
+   differentiating a binned image, one-time per-grain cost, zero
+   per-iteration cost. May claw back part of item 2's floor penalty.
+   Resolves: item 2's experiment re-run with hybrid gradients.
+7. **Super-resolution** (the deferred OQ13 scope; a feature path).
+   Explicitly NOT an analysis-speed lever: Winkelmann et al. 2025 state
+   the operation count stays comparable across binning x supersampling
+   scenarios, and the op-count argument reaches the same conclusion for
+   any variant here. What it buys is detector pixels, storage (~two
+   orders of magnitude) and acquisition rate at near-full-res precision
+   (their Table 1: 311x256 @ 7x7 supersampling matches full resolution).
+   Two variants to spec:
+   (a) Simulation-reference, as published: dynamical master + projection
+   model + supersampled binning of the simulation; requires the bias
+   treatment (relative differencing) and a new reference mode; largest
+   scope.
+   (b) Asymmetric experimental: one slow full-resolution reference per
+   grain, fast binned targets, reference evaluated with pixel-footprint
+   integration (s^2 samples per binned pixel, so compute returns to
+   full-res scale per comparison); no simulation needed; moderate scope;
+   pairs naturally with item 6.
+8. **Combined outlook** (projection): items 1+2(+3) put CPU-only maps in
+   the tens of patterns/s; item 4 or 5 alone reaches the same class at
+   full resolution; 1+4+5 together plausibly exceed 100 patterns/s.
+   Order of attack when commissioned: 1-3 (measurements), then 4, then
+   5, with 6/7 as the acquisition-economy track.
