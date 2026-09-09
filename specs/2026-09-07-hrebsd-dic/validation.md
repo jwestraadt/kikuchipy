@@ -4227,3 +4227,17 @@ passed!" and "3 files already formatted".
     Plan step 7 (nbval on the full list, ruff, untouched-suite
     check, commit) is still to run; nothing in this entry is a gate
     result.
+
+### V8 -- neighbour-seeded propagation oracles (Stage D, 2026-09-09)
+
+(a) Rescue oracle: a deformed-master synthetic map carrying a smooth
+rotation ramp whose far points exceed the phase-XC-seeded basin but
+whose neighbour chain is everywhere within it; the default path must
+FAIL those points (establishing the premise) and the seeded path must
+recover the imposed field within the deformed-master band. (b) D20.6
+equivalence: on points both paths converge, corner-displacement
+agreement within SEED_EQUIVALENCE_TOL (MTP). (c) Determinism: seeded
+runs bitwise across repeats, chunksizes, lazy/eager. (d) Isolation:
+grain-boundary and mask non-crossing, constructed so a violation
+corrupts visibly. (e) PASS1_CAP semantics and the rescue pass.
+(f) D20.7 Si rim timing, recorded. Entries from 83 below.

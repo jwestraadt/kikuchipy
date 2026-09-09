@@ -611,3 +611,48 @@ until its named measurement runs; none is commissioned by this section.
    full resolution; 1+4+5 together plausibly exceed 100 patterns/s.
    Order of attack when commissioned: 1-3 (measurements), then 4, then
    5, with 6/7 as the acquisition-economy track.
+
+## 10. Stage D -- neighbour-seeded propagation (commissioned 2026-09-09)
+
+Plan section 9 item 4, commissioned by the user 2026-09-09; requirements
+D20 (frozen 2026-09-09) govern; oracles in validation V8; branch policy
+section 1 unchanged (hrebsd-dic only, no PR, never merged).
+
+Deliverables: `seed_from_neighbors` on `EBSD.hrebsd_dic` (D20.1), the
+three-phase cascade inside `run_hrebsd_dic`/_engine.py with per-point h0
+support (D20.2), the `seed_round` prop (D20.5), PASS1_CAP and
+SEED_EQUIVALENCE_TOL measured then pinned, and the D20.7 performance
+record on the Si rim patch.
+
+1. Failing tests first (tests/test_signals/test_ebsd_hrebsd_dic.py +
+   a new tests/test_indexing/test_hrebsd_seeding.py): default-off
+   bitwise pin; signature freeze; V8 rescue oracle (a deformed-master
+   map with a rotation ramp where phase-XC-only fails at far points but
+   the chain rescues them, expectation from the imposed field); D20.6
+   equivalence band (MTP placeholder); determinism pins (two runs,
+   chunksize, lazy) on the seeded path; grain-boundary isolation (a
+   two-grain map with a discontinuity where a crossed seed would
+   visibly corrupt the second grain); mask isolation; seed_round
+   encoding incl. rescue -2 and never -1; tie-order pin (a constructed
+   neighbourhood where the frozen offset order decides); PASS1_CAP
+   semantics (cap never truncates a final answer, rescue pass exists);
+   the PC-transport bound measurement recorded.
+2. Implementation: per-point h0 plumbing through the chunked fit;
+   frontier/round orchestration on the host (round membership and seed
+   choice computed from completed rounds only); the rescue pass;
+   prop assembly. Measurement debt: PASS1_CAP (fraction of pass-1
+   conversions lost at candidate caps on Si data), SEED_EQUIVALENCE_TOL
+   (~2x measured), the PC-transport bound, D20.7 rim timing.
+3. Adversarial review (theory: cascade correctness, determinism proof
+   read, equivalence honesty; conventions: API/docs/coverage 100 % of
+   touched _hrebsd modules) then bug injection ALONE. Mutation list:
+   seed from the HIGHEST-residual neighbour; tie order shuffled; seed
+   across grain_id; use same-round results (race); ignore PASS1_CAP;
+   skip the rescue pass; mislabel seed_round; seed from an unconverged
+   neighbour; drop the mask check; per-point h0 array off by one in
+   flat order. Then fixer; every surviving mutant killed and
+   re-verified.
+4. Gates as every stage (hrebsd suite green, default-path bitwise
+   unchanged, coverage, ruff, oldest-matrix, full suite), signed
+   commits pushed together (failing tests ride with implementation),
+   roadmap Stage D boxes ticked, ledger entries from 83.

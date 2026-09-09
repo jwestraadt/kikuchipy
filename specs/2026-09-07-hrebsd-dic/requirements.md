@@ -1794,6 +1794,75 @@ D3 order comparison, the D17 dtype verdict, the V5 noise floor).
 Any decision refuted by measurement is amended in THIS file with a
 dated correction (the Phase 8/10 precedent).
 
+### D20 -- Neighbour-seeded propagation (Stage D, commissioned 2026-09-09)
+
+User go 2026-09-09 for plan section 9 item 4 (reliability-guided DIC).
+Motivation, measured: iterations dominate deformed-zone cost (Si-indent
+rim ~1.8 patterns/s at 80-500 iterations vs far field 10-12 patterns/s
+at median 5-14; ledger entries 80, 82); a converged neighbour's
+homography is a far better seed than the translation-only phase
+cross-correlation there.
+
+- **D20.1 API (FROZEN)**: one new keyword-only parameter on
+  `EBSD.hrebsd_dic`: `seed_from_neighbors: bool = False`. The default
+  False path is BITWISE-UNCHANGED current behaviour (pinned by the
+  existing determinism tests re-run unmodified plus an explicit
+  default-off bitwise pin against a pre-Stage-D result). No other
+  public knob in v1; internal constants are MTP.
+- **D20.2 Algorithm (FROZEN)**: with `seed_from_neighbors=True`, three
+  phases inside `run_hrebsd_dic`:
+  (1) PASS 1: the existing per-point phase-XC-seeded fit, with the
+  iteration budget capped at `min(max_iterations, PASS1_CAP)` where
+  `PASS1_CAP` is an internal constant, MEASURED-THEN-PINNED on the
+  Si-indent data (drafting candidate 50: far-field median is 5-14
+  iterations, so the cap must catch essentially every easy point;
+  the measurement is the fraction of pass-1 conversions lost at the
+  cap vs the full budget).
+  (2) CASCADE ROUNDS: round r fits, in parallel, every not-yet-
+  converged, unmasked point that has at least one converged
+  SAME-GRAIN neighbour in its 8-neighbourhood from rounds < r
+  (pass 1 counts as round 0). The seed h0 is the converged
+  neighbour's homography, chosen as the one with the LOWEST residual;
+  ties broken by the FROZEN neighbour offset order
+  ((-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)).
+  The raw homography is copied without PC-frame transport: the
+  neighbour PC differs by ~5e-3 px per step on real data (ledger
+  entry 80 spans), a bound the build must MEASURE and record as the
+  justification. Cascade fits run at the FULL `max_iterations`
+  budget. Rounds repeat until a round converts nothing new.
+  (3) RESCUE PASS: every point still unconverged gets ONE fit at the
+  full budget from its best available seed (lowest-residual converged
+  neighbour if any exists by then, else its own pass-1 last iterate,
+  else the phase-XC seed); the result keeps the D2.6 non-converged
+  semantics if it still fails. No point is ever left with a
+  cap-truncated pass-1 iterate as its final answer.
+- **D20.3 Determinism (FROZEN)**: the seed of every fit is a pure
+  function of results from STRICTLY EARLIER phases/rounds and frozen
+  tie rules; nothing depends on intra-round scheduling or chunking.
+  Pins: two seeded runs bitwise-identical; chunksize invariance
+  bitwise; lazy == eager bitwise (the Stage A pin extended to the
+  seeded path).
+- **D20.4 Isolation (FROZEN)**: seeds never cross `grain_id`
+  boundaries; masked points neither seed nor get seeded nor get
+  fitted; the reference point itself is round 0 by construction.
+- **D20.5 Props (FROZEN)**: one new int32 prop `seed_round`: 0 =
+  converged in pass 1 (or the reference point), r >= 1 = converged in
+  cascade round r, -2 = converged only in the rescue pass, -1 = never
+  converged or masked. D15.6's Stage A list is amended by this entry
+  for seeded runs only; with `seed_from_neighbors=False` the prop is
+  ABSENT (default path emits exactly the pre-Stage-D prop set).
+- **D20.6 Equivalence oracle (MTP)**: wherever the independent
+  (default-path) fit converges, the seeded run's answer agrees within
+  `SEED_EQUIVALENCE_TOL` (corner-displacement metric, measured then
+  pinned at ~2x on the deformed-master oracle map and the Si sub-map)
+  -- seeding may only change HOW the optimum is reached, never WHICH
+  optimum, on points both paths solve.
+- **D20.7 Performance (recorded, never a gate)**: the Si-indent rim
+  patch (ledger entry 80's rows 125:145, cols 115:135) re-measured
+  seeded vs default; the plan 9.4 projection is 3-8x on deformed
+  zones. Recorded honestly whatever it measures, with a full-map
+  wall-time row if run.
+
 ## Context
 
 - **Constitution**: `specs/tech-stack.md` (layout rule :43, numba

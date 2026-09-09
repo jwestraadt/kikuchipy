@@ -184,3 +184,9 @@ deferred). Execution plan: `specs/2026-09-07-hrebsd-dic/si-indent-application-pl
 Deferred follow-up paths (performance, super-resolution, stress) are
 recorded with baselines and resolving measurements in
 `specs/2026-09-07-hrebsd-dic/plan.md` section 9; none is commissioned.
+
+## Stage D -- neighbour-seeded propagation (commissioned 2026-09-09; D20, V8)
+- [ ] failing tests first: default-off bitwise pin, V8 rescue/equivalence/determinism/isolation oracles, seed_round encoding, tie-order pin
+- [ ] implementation: per-point h0, cascade rounds + rescue pass, seed_round prop; PASS1_CAP + SEED_EQUIVALENCE_TOL + PC-transport bound measured and pinned
+- [ ] adversarial review + bug injection (10-mutant list) + fixes; coverage; default path bitwise unchanged; oldest-matrix + full suite
+- [ ] D20.7 Si rim performance record (seeded vs default); signed commits pushed to origin/hrebsd-dic (no PR)
