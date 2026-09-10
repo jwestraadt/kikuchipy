@@ -4358,3 +4358,249 @@ point 91.2533 px; unfittable point 43.4654 px; isolation hard 36.4788,
 cross 4.3500, same 26.8657 px. So a recovered field is 0.044 to
 0.43 % of its imposed displacement and a wrong optimum 85 to 403 %,
 two populations about 200x apart.
+
+
+#### V8 recorded results, Stage D measurement-close gate (2026-09-09)
+
+Machine A (the 20-core Windows 11 laptop of every entry above:
+Intel64 Family 6 Model 186 Raptor Lake, 20 logical cores, Windows 11
+build 26200, `.venv` Python 3.13.12, numpy 2.4.6, scipy 1.17.1, numba
+0.65.1, scikit-image 0.26.0, orix 0.14.2, dask 2026.3.0, 8 dask
+workers). Scripts in the session scratchpad `hrebsd_measure_d/`
+(`common.py` load recipe = the executed `hrebsd_si_indent.ipynb`:
+`AGH__Si_indent_1_512x672.h5oina` lazy, binning 2, per-point Euler
+crystal map, reference (10, 10), `filter_cutoffs=(None, None)`; the
+18.9 GB file READ ONLY). These close the D20.2 PASS1_CAP debt and the
+D20.7 performance record, and they CORRECT the flawed
+rim-in-isolation reading of the failing-tests gate (`rim_timing.json`).
+No engine constant, requirement or frozen test was changed by this
+gate; the whole hrebsd suite stays green (`132 passed` on the two
+Stage D files, `694 passed, 9 weekly-skipped` on the hrebsd `-n 4`
+selection).
+
+83. **PASS1_CAP re-pin, done right: the far-field convergence
+distribution, and why the rim-in-isolation panic was misleading
+(requirements D20.2; decision KEPT at 50).** [script
+`05_anchor_bearing.py`, `anchor_bearing.json`]
+
+PASS1_CAP must sit just above the iteration count the EASIEST points
+need, so anchors form wherever easy points exist. MEASURED on a clean
+far-field patch (rows 20:40 cols 20:40, 400 points, default path,
+budget 500): every point converges, in min 6, median 9, p90 9, **p95
+10**, p99 10, max 10 iterations (378 of 400 in 5 to 10, 22 in 10 to
+15). The shipped `PASS1_CAP = 50` sits **5.0x above that p95**, so it
+catches every easy point in pass 1 with wide margin. KEPT at 50; the
+engine constant is untouched.
+
+The rim-in-isolation cap sweep of the failing-tests gate
+(`cap_sweep.log`, on rows 125:145 cols 115:135: cap 50 gives 0 pass-1
+anchors, a dead cascade and 373/400 all-rescue; cap 80 gives 8 anchors
+plus 189 cascade) is a PATCH ARTEFACT, not a reason to raise the
+global default. That patch lies entirely inside the deformed rim and
+excludes the far field, so it has NO easy points at all: at cap 50
+nothing converges in pass 1 because nothing in it converges under 50
+phase-XC iterations, so no anchor can form. On the full map the far
+field surrounds the rim and seeds inward, which the anchor-bearing
+patch of entry 84 demonstrates directly (46 pass-1 anchors seeding 571
+cascade conversions at the shipped cap 50). The measurement does NOT
+say 50 is wrong for anchor-bearing use, so per the Stage D
+commissioning rule the constant is KEPT and the rim panic is recorded
+as misleading. (50 carries generous margin over p95 = 10; a lower cap
+near 15 to 20 would trim the pass-1 waste of entry 84 but is a speed
+micro-optimisation for a feature whose real-data speed benefit is
+negative (entry 84), is uncommissioned, and would move real-data
+`seed_round` assignments, so it is refused.)
+
+84. **The CORRECTED D20.7 performance record, on an ANCHOR-BEARING
+patch (requirements D20.7).** [same script and json]
+
+The failing-tests D20.7 (`rim_timing.json`) measured the
+rim-in-isolation patch and found 0.94x (seeding slightly SLOWER) with
++0 extra conversions, because at cap 50 that all-deformed patch formed
+zero anchors and the cascade was dead (all 373 via the rescue pass).
+The honest measurement needs a patch that straddles the strain-field
+edge so anchors exist and can propagate. CHOSEN by inspecting the
+Oxford CCC map: rows 115:140 cols 100:130 with the entry-80 crater
+mask (CCC < 0.35), 618 fitted points, a strong far-field margin (cols
+100 to 108 at CCC 0.7) wrapping the crater rim. Both ways at
+`max_iterations=500` and the shipped `PASS1_CAP=50`:
+
+| path | wall | pat/s | converged | iterations | phase groups |
+|---|---|---|---|---|---|
+| default | 338.3 s | 1.83 | 618/618 | 54032 | 1 |
+| seeded | 603.2 s | 1.02 | 617/618 | 61879 | 23 |
+
+Speedup **0.56x (seeding 1.8x SLOWER)**, iteration ratio 0.87x
+(seeding used 15 % MORE iterations), extra conversions **-1**. The
+cascade ENGAGED strongly this time (46 pass-1 anchors, then 20 cascade
+rounds converting 571 points, 0 rescued, 1 never), so the number is a
+real cascade, not a dead one, and it is slower for two measured
+reasons. (a) The pass-1 cap of 50 spends 30693 of the 61879 seeded
+iterations, and only 46 of 618 points converge inside it, because
+patch C's near-indent "far field" is not fast: those points carry a
+real lattice rotation against the (10,10) reference and need a mean of
+87 phase-XC iterations (54032/618), not the 9 of the pristine far
+field of entry 83. So 572 points burn ~50 wasted pass-1 iterations
+before the cascade re-fits them. (b) The cascade fits are cheap per
+point (~37 iterations from a neighbour seed) but 50 wasted + 37 is
+about 87, the default's own per-point count, so the saving is
+cancelled, and the 23 phase-group launches add orchestration overhead
+the single default batch never pays. The plan 9.4 projection of 3 to
+8x assumed neighbour seeds collapse deformed-point iterations to a
+handful, which they do on the SMOOTH synthetic ramp (5 iterations) but
+not on the real steep-gradient indent field (37), where phase-XC is
+already only ~87.
+
+85. **The correctness disentanglement: on real Si the cascade rescues
+NOTHING and slightly HARMS the marginal rim (requirements D20.6,
+honest record).** [script `06_disagreement.py`,
+`disagreement.json`/`.npz`]
+
+For the "extra conversion" question D20.7 asks, points the seeded path
+converges that the default does not, the answer on patch C at budget
+500 is NONE (0 extra; seeding LOST one, r128 c122, a CCC-0.382 rim
+point default solved in 456 iterations and seeding left unconverged at
+500). So the correctness benefit is not exercised on real Si at this
+budget: phase-XC already reaches every convergeable optimum. To find
+whether seeding nonetheless changes WHICH optimum, the per-point
+seeded-vs-default corner-displacement disagreement was measured over
+the 617 both-converged points. 612 of 617 agree to the metric's float
+floor (median 6.3e-04 px). FIVE disagree by more than 0.1 px, every
+one of them a low-CCC crater-rim point converted in a late cascade
+round:
+
+| r | c | CCC | seed_round | disagree | def resid | seeded resid | winner |
+|---|---|---|---|---|---|---|---|
+| 125 | 126 | 0.431 | 16 | 0.107 px | 0.8901 | 0.8901 | tie |
+| 129 | 122 | 0.371 | 12 | 52.6 px | 0.8974 | 1.0628 | default |
+| 131 | 120 | 0.489 | 12 | 0.154 px | 0.5986 | 0.5987 | tie |
+| 133 | 120 | 0.417 | 14 | 22.0 px | 0.6835 | 0.6988 | default |
+| 134 | 120 | 0.382 | 15 | 26.4 px | 0.6641 | 0.6738 | default |
+
+On all three large-disagreement points the SEEDED fit has the HIGHER
+ZNSSD residual: the neighbour seed dragged the point into a WORSE local
+optimum tens of pixels away. Seeded strictly better 0; default strictly
+better 3; tie 2 (and over all 617 both-converged the median residual is
+identical, 0.1141 either way, with seeded strictly lower on none). This
+is ERROR PROPAGATION across the steep rim gradient, the risk plan 9.4
+named, and it is un-gated: the cascade accepts any converged fit and
+never compares its residual to the independent one, so plan 9.4's own
+"residual-gated acceptance" is NOT in the implementation. The damage is
+confined to already-marginal points (residual ~0.7 to 1.1, an order
+above the good-field ~0.11 floor, right at the CCC-0.35 mask edge), so
+on the trustworthy bulk of the field seeding and independent fitting
+are float-noise identical, which is exactly what the frozen
+`SEED_EQUIVALENCE_TOL` populations (the synthetic ramp and the rim/far
+Si patches, worst 2.3e-13 px) measure. The frozen test is untouched and
+still passes; this entry records the empirical caveat that D20.6's
+budget-bounded equivalence, though it holds on well-conditioned points,
+is NOT universal on real data: at steep-gradient rim points both paths
+converge yet reach different optima, and the seeded one can be the
+worse. A future gate that wants Stage D trustworthy on such points
+should add the residual-acceptance gate before widening D20.6.
+
+86. **Ship recommendation: a correctness lever for a narrow
+basin-failure regime, not a speed lever, shipped default-off.**
+
+Weighing all of the above:
+- CORRECTNESS, proven and real, but narrow. The synthetic V8(a) rescue
+  oracle (frozen, passing) proves the guarantee Stage D was
+  commissioned for: where a large about-detector-normal rotation
+  carries a point outside the ~2 deg phase-XC capture range of D5, the
+  neighbour cascade reaches the correct optimum in ~5 iterations while
+  the independent fit lands in a spurious basin ~50 px away even at 10x
+  budget (ramp points 2.4 to 4.8 deg, ledger V8(b): default converges
+  to 49.9 to 108 px of the imposed field at budget 2000, seeded to
+  0.0096 to 0.0143 px in 5 iterations). No higher `max_iterations`
+  recovers those; only a better seed does. This value is
+  data-independent and genuine.
+- On real Si-indent data that regime does not arise, phase-XC reaches
+  every convergeable optimum at budget 500, so Stage D delivers zero
+  measurable correctness benefit there (entry 85) and a small
+  error-propagation RISK at the marginal rim (3 of 618 points to a
+  worse optimum, 1 lost), because the residual-acceptance gate plan 9.4
+  envisioned is not implemented.
+- SPEED is negative on real Si: 0.56x on the anchor-bearing patch
+  (entry 84), because the PASS1_CAP waste cancels the per-fit cascade
+  saving on a field whose per-point cost is already only ~87
+  iterations. The plan 9.4 3 to 8x projection does not hold on this
+  data.
+
+VERDICT: Stage D earns its place ONLY as a correctness lever for the
+specific basin-failure regime (rotations beyond the phase-XC capture
+range of D5), shipped correctly as `seed_from_neighbors=False` by
+default so non-users pay nothing (the default path is bitwise
+unchanged, pinned by `PRE_STAGE_D_*`). It is NOT a speed feature and
+must not be sold as one; on smooth or marginal real fields it can only
+match or slightly harm the independent fit at ~1.8x the wall time, so
+it should be reached for only where large rotations actually defeat the
+phase-XC seed. Two follow-ups are recorded, neither commissioned here:
+add plan 9.4's residual-acceptance gate to the cascade (it would have
+caught the three harmed points of entry 85), and, if Stage D speed on
+real data is ever wanted, revisit PASS1_CAP downward (entry 83)
+together with the cascade round-batching overhead (entry 84).
+
+
+#### V8 recorded results, Stage D adversarial review fix gate (2026-09-09)
+
+Fixer pass over the theory and conventions review. The applied
+findings are documentation and coverage only: the stale PASS1_CAP
+engine comment reconciled to entry 83's pinned state; the seeded-run
+`num_iterations` last-phase semantics documented at the signal and
+engine level; the engine-level `seed_round` Returns given its int32
+dtype and 0 / r>=1 / -2 / -1 encoding; the signal-level "Seeding from a
+neighbour" example reframed from the indent field (which entry 85 shows
+does NOT benefit) to the measured basin-failure regime with the entry
+85 error-propagation caveat; a fork-style CHANGELOG entry with honest
+framing (a capture-range correctness lever, NOT a speedup, per entry
+86); and the coverage gap of entry 88 closed. No engine constant, no
+requirement, and no frozen test ASSERTION was changed; the new test of
+entry 88 only ADDS coverage. Two measurements are re-recorded here.
+
+87. **The Stage D local oldest-matrix run, the per-stage gate plan
+    section 10 item 4 lists and the measurement-close section had left
+    unrecorded (requirements D18; plan section 1 recipe).** Command
+    (the constitution recipe, the four pytest plugins added because the
+    `pyproject.toml` `addopts` reference them, exactly as Stage A entry
+    24):
+
+    ```
+    uv run --isolated --python 3.10 \
+      --with "numpy==1.23.0" --with "numba==0.57" \
+      --with "orix==0.12.1" --with "scikit-image==0.21.0" \
+      --with pytest-benchmark --with pytest-rerunfailures \
+      --with pytest-xdist --with pytest-randomly \
+      pytest tests/test_indexing tests/test_signals -k hrebsd -q
+    ->  695 passed, 9 skipped, 4335 deselected in 126.75 s
+    ```
+
+    Environment as resolved: Python 3.10.19, numpy 1.23.0, scipy
+    1.13.1, numba 0.57.0, orix 0.12.1, scikit-image 0.21.0, dask
+    2024.8.1, kikuchipy 0.14.dev0 (BUILT from the branch source, so the
+    edited engine and the new `TestVerboseProgress` test both ran).
+    The 695 is the Stage-C figure 694 plus that one new test; the 9
+    skips are the weekly `[download]` markers. The only orix API the
+    Stage D tests add is `Rotation.from_axes_angles`
+    (`test_hrebsd_seeding.py`), already exercised by the Stage A/B
+    hrebsd files this same recipe covers, so the 0.12.1 floor was never
+    at risk; the gap the review found was the missing RECORD, now
+    closed. (A first attempt WITHOUT the four plugins failed at
+    conftest import because the `--benchmark-skip` addopt is unknown
+    without `pytest-benchmark`; the recorded recipe carries them for
+    exactly this reason.)
+
+88. **Coverage of the touched `_hrebsd` modules, re-closed to 100 %
+    after the two Stage D verbose progress-print bodies were found
+    uncovered.** The implementation gate left `_engine.py` at 99.44 %
+    (2 of 355 statements: the `Cascade round` line and the `Rescue
+    pass` line, both behind `if verbose >= 1`, which every seeded
+    fixture ran at `verbose=0` through `run_map`). `TestVerboseProgress`
+    now runs one seeded ramp map at `verbose=1`; the ramp walks the
+    cascade one point per round and the isolated slow point goes to the
+    rescue pass, so both lines execute, and the test asserts only that
+    the two messages appear (the counts they carry are pinned by other
+    fixtures). Re-measured on the venv Python over `tests/test_indexing
+    tests/test_signals -k hrebsd`: `_engine.py` 355 statements, 0
+    missed, 100.00 %; every other `_hrebsd` module 100.00 %; the
+    package total 1480 / 1480. `694 passed` becomes `695 passed, 9
+    weekly-skipped`.

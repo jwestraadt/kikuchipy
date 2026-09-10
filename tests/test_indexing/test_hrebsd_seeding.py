@@ -1743,6 +1743,33 @@ class TestPass1CapSemantics:
         assert int(np.asarray(properties[SEED_ROUND_PROP])[index]) == SEED_ROUND_NONE
 
 
+class TestVerboseProgress:
+    """The Stage D progress messages, which the seeded path alone
+    prints and only at ``verbose >= 1``.  Not a frozen oracle: the
+    counts they carry are pinned by the fixtures elsewhere, so this
+    asserts only that a run exercising both phases emits both the
+    per-round cascade line and the rescue-pass line.  [D20.2]"""
+
+    def test_the_seeded_run_prints_the_cascade_and_rescue_lines(self, capsys):
+        # the ramp map walks the cascade along row 0 one point per
+        # round (each far point is seeded from its inner neighbour once
+        # that neighbour has converged) and rescues the isolated slow
+        # point at RAMP_RESCUE_INDEX, whose whole neighbourhood is
+        # masked, so a verbose seeded run must print BOTH messages
+        patterns, mask, _, _ = ramp_map()
+        run_map(
+            patterns,
+            RAMP_NAVIGATION_SHAPE,
+            (0, 0),
+            seeded=True,
+            navigation_mask=mask,
+            verbose=1,
+        )
+        out = capsys.readouterr().out
+        assert "Cascade round 1:" in out
+        assert "Rescue pass:" in out
+
+
 # ========== D20.2 -- the seed choice, the tie and the gates ========= #
 
 

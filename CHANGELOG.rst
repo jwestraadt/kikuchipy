@@ -58,6 +58,21 @@ Added
   every convention pinned by synthetic oracles; no new dependency. Fork-only,
   developed on the ``hrebsd-dic`` branch and specified in
   ``specs/2026-09-07-hrebsd-dic/``, with no pull request into ``develop``.
+- Optional neighbour seeding for ``EBSD.hrebsd_dic()``: the new keyword-only
+  ``seed_from_neighbors`` (default ``False``, which is bitwise the previous
+  independent-fit behaviour) runs the correlation in three phases, seeding every
+  pattern the phase cross-correlation guess leaves unconverged from an already
+  correlated same-grain neighbour, so a point whose lattice rotation lies beyond
+  the roughly two degree capture range of the translation only guess reaches the
+  optimum a neighbour already found. It is a correctness lever that extends the
+  rotation capture range and recovers points the independent fit leaves in a
+  spurious basin at any iteration budget; it is not a general speedup, and on
+  smooth or already reachable fields it only matches the independent fit at more
+  wall time (measured negative on the real Si-indent data), so it is off by
+  default. A seeded run carries one extra property, ``"seed_round"``, recording
+  how each point was reached. Fork-only, developed on the ``hrebsd-dic`` branch
+  and specified in ``specs/2026-09-07-hrebsd-dic/`` (requirements D20), with no
+  pull request into ``develop``.
 - Optional CuPy GPU backend for spherical indexing: the new ``backend`` parameter of
   ``kikuchipy.indexing.SphericalIndexer`` and ``EBSD.spherical_indexing()`` accepts
   ``"cpu"`` (the default, unchanged and bitwise-identical to before) or ``"gpu"``,

@@ -2744,15 +2744,30 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         out point, and every seed is decided from earlier rounds
         alone, so the result does not depend on ``chunksize`` or on
         the order the patterns of one round happen to be correlated
-        in. This helps where the translation only guess is outside
-        the capture range but a neighbour is not, which is a strongly
-        deformed region such as the field around an indent; where
-        every pattern is correlated in the first pass anyway it only
-        costs the extra bookkeeping. The extra property
-        ``"seed_round"`` records how each point was reached: 0 for
-        the first pass, a positive round number for the cascade, -2
-        for the rescue round and -1 for a point which never converged
-        or is masked out.
+        in. It helps where the translation only guess falls outside
+        the capture range but a neighbour's does not, which happens
+        when a lattice rotation carries a point beyond the roughly two
+        degree phase cross-correlation capture range of that guess:
+        the neighbour then reaches the correct optimum the independent
+        fit cannot find at any iteration budget. It is a correctness
+        lever, not a general speed feature. Where every pattern is
+        already correlated in the first pass it only adds the
+        bookkeeping, and on a smooth or already reachable field it
+        merely matches the independent fit at more wall time, which is
+        why it is off by default. On a real steep gradient field, such
+        as an indent rim, the phase cross-correlation guess often
+        already reaches those optima, and because the cascade accepts
+        any converged fit without comparing its residual to the
+        independent one, a neighbour seed can occasionally pull a
+        marginal point into a worse optimum; reach for it where large
+        rotations actually defeat the translation only seed. The extra
+        property ``"seed_round"`` records how each point was reached: 0
+        for the first pass, a positive round number for the cascade,
+        -2 for the rescue round and -1 for a point which never
+        converged or is masked out. On a point a cascade round or the
+        rescue pass re-fitted, ``"num_iterations"`` counts only that
+        final fit, the one which produced the stored homography, not
+        the capped first pass before it.
 
         **Limitations of this release, each documented rather than
         silently absorbed.** Optical and radial distortion of the

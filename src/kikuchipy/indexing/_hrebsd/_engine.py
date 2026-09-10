@@ -167,18 +167,21 @@ NEIGHBOR_OFFSETS: tuple[tuple[int, int], ...] = (
 # The iteration budget of PASS 1 of the requirements D20.2 cascade,
 # which runs at ``min(max_iterations, PASS1_CAP)``.  An INTERNAL
 # constant, never a public knob (D20.1), and MEASURED-THEN-PINNED: the
-# measurement is the fraction of pass-1 conversions lost at the cap
-# against the full budget on the Si-indent data, and this name is where
-# that measurement re-pins the number.
+# measurement is the far-field convergence distribution on the
+# Si-indent data, and the cap must sit just above the iteration count
+# the EASIEST points need so that an anchor forms wherever easy points
+# exist.
 #
-# PROVISIONAL VALUE 50, the drafting candidate of D20.2: the Si-indent
-# far field converges at a median of 5 to 14 iterations (validation
-# ledger entries 80 and 82), so a cap of 50 catches essentially every
-# easy point while leaving the 80 to 500 iteration rim points to the
-# cascade, which reaches them from a neighbour in a handful.  A cap
-# never truncates a FINAL answer: every point pass 1 leaves unconverged
-# is re-fitted at the full budget by a cascade round or by the rescue
-# pass.
+# PINNED at 50 (measurement-close 2026-09-09, validation.md V8 entry
+# 83): on a clean far-field patch of the real Si-indent data every
+# point converges by p95 = 10 iterations (median 9), so the shipped cap
+# sits 5.0x above that p95 and catches every easy point in pass 1 with
+# wide margin.  The measurement KEPT 50; the earlier rim-in-isolation
+# cap sweep that appeared to want a higher cap is recorded there as a
+# patch artefact (an all-deformed patch with no easy points), not a
+# reason to raise the global default.  A cap never truncates a FINAL
+# answer: every point pass 1 leaves unconverged is re-fitted at the
+# full budget by a cascade round or by the rescue pass.
 #
 # ADMISSIBLE WINDOW of the frozen ``seed_round`` oracle, recorded
 # 2026-09-09 in validation.md V8 so that a re-pin knows what it may not
@@ -1007,7 +1010,14 @@ def run_hrebsd_dic(
         an array whose first axis is the full map size in map order,
         with NaN or the not-indexed fill on masked and failed points.
         A run with *seed_from_neighbors* carries the one further
-        entry :data:`SEED_ROUND_PROP_NAME` of requirements D20.5.
+        entry :data:`SEED_ROUND_PROP_NAME` of requirements D20.5, an
+        ``int32`` array recording how each point was reached:
+        :data:`SEED_ROUND_PASS1` (``0``) for a point pass 1 converged,
+        the reference included; a positive round number ``r >= 1`` for
+        one a cascade round converted; :data:`SEED_ROUND_RESCUE`
+        (``-2``) for one converged only in the rescue pass; and
+        :data:`SEED_ROUND_NONE` (``-1``) for a point which never
+        converged or is masked out.
 
     Raises
     ------
@@ -1030,6 +1040,12 @@ def run_hrebsd_dic(
     function of completed rounds, so the run is deterministic
     whatever the chunking and whatever order the fits of one round
     happen to run in (D20.3).
+
+    On a point a cascade round or the rescue pass re-fitted,
+    ``num_iterations`` reports that final fit's OWN iteration count,
+    the fit which produced the stored homography, not the sum across
+    the phases: the capped pass-1 iterations spent on the point before
+    it are not added in.
     """
     if interpolation not in SUPPORTED_INTERPOLATION:
         raise ValueError(

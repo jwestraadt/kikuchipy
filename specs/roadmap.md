@@ -186,7 +186,28 @@ recorded with baselines and resolving measurements in
 `specs/2026-09-07-hrebsd-dic/plan.md` section 9; none is commissioned.
 
 ## Stage D -- neighbour-seeded propagation (commissioned 2026-09-09; D20, V8)
-- [ ] failing tests first: default-off bitwise pin, V8 rescue/equivalence/determinism/isolation oracles, seed_round encoding, tie-order pin
-- [ ] implementation: per-point h0, cascade rounds + rescue pass, seed_round prop; PASS1_CAP + SEED_EQUIVALENCE_TOL + PC-transport bound measured and pinned
-- [ ] adversarial review + bug injection (10-mutant list) + fixes; coverage; default path bitwise unchanged; oldest-matrix + full suite
-- [ ] D20.7 Si rim performance record (seeded vs default); signed commits pushed to origin/hrebsd-dic (no PR)
+
+VERDICT (measured, ledger 78-88): shipped default-off as a CORRECTNESS
+lever, NOT the speed lever it was commissioned as. The plan 9.4 3-8x
+projection is REFUTED on real Si (0.56x, i.e. 1.8x slower: the real
+steep-gradient field's ~87 iterations/point cancel the cascade saving);
+the proven benefit is the synthetic V8(a) basin rescue only (large
+about-normal rotation past the ~2 deg phase-XC capture range, which the
+default fit misses at any budget). On real Si the regime does not arise,
+so zero correctness gain there and a small un-gated error-propagation
+risk (3/618 points to a worse optimum). Ships default-off so non-users
+pay nothing. Two follow-ups recorded below, neither commissioned.
+- [x] failing tests first: default-off bitwise pin, V8 rescue/equivalence/determinism/isolation oracles, seed_round encoding, tie-order pin
+- [x] implementation: per-point h0, cascade rounds + rescue pass, seed_round prop; PASS1_CAP kept at 50 (far-field p95 = 10 iters, 5x margin; rim-panic was a patch artifact) + SEED_EQUIVALENCE_TOL/SEED_RESCUE_TOL/PC-transport bound measured and pinned
+- [x] adversarial review + bug injection (13 mutants, all killed) + fixes; coverage 100 % of _hrebsd; default path bitwise unchanged; oldest-matrix + full suite green
+- [x] D20.7 performance record (seeded vs default, honest 0.56x); signed commits pushed to origin/hrebsd-dic (no PR)
+
+### Stage D follow-ups (recorded 2026-09-09, NOT commissioned)
+- [ ] residual-acceptance gate on the cascade: reject a cascade fit whose
+  residual exceeds the point's independent-fit alternative (or a
+  threshold) and fall back; plan 9.4 called for it, and its absence is
+  what let 3 real-Si rim points seed into worse optima. Makes seeding
+  never-worse-than-default when used. (D20.7 finding, ledger 84.)
+- [ ] revisit PASS1_CAP downward (near 15-20) WITH the cascade
+  round-batching overhead, only if real-data speed is ever wanted; would
+  trim pass-1 waste but moves real-data seed_round assignments.
