@@ -18,6 +18,16 @@ Unreleased
 
 Added
 -----
+- ``kikuchipy.indexing.write_emsphinx_patterns()``: write EBSD patterns to the repacked
+  HDF5 layout EMSphInx's ``IndexEBSD`` reads (``PatternRepack`` equivalent plus the
+  required ``Manufacturer`` dataset).
+  (`#10 <https://github.com/jwestraadt/kikuchipy/pull/10>`_)
+- ``kikuchipy.indexing.EMSphInxNamelist``: read and write ``IndexEBSD`` namelist files
+  and convert them to and from spherical-indexing arguments and an ``EBSDDetector``.
+  (`#10 <https://github.com/jwestraadt/kikuchipy/pull/10>`_)
+- ``kikuchipy.io.plugins.oxford_binary.get_scan_info()``: probe the scan grid and layout
+  of an ``.ebsp`` file (``EBSPDims`` equivalent).
+  (`#10 <https://github.com/jwestraadt/kikuchipy/pull/10>`_)
 - Newton refinement of spherical-indexing orientations on the sphere:
   ``EBSD.refine_orientation_spherical()``, and ``refine=True`` -- the new default,
   EMSphInx's own -- in ``EBSD.spherical_indexing()`` /

@@ -45,6 +45,12 @@ Submodules
 ``_master_pattern_harmonics``
     Spherical harmonic coefficients of an EBSD master pattern,
     read from and written to EMSphInx *.sht files.
+``_namelist``
+    The EMSphInx ``IndexEBSD`` namelist file: its grammar, its EBSD
+    fields and the conversions to kikuchipy's arguments.
+``_pattern_repack``
+    Writing of EBSD patterns to the HDF5 file EMSphInx's
+    ``IndexEBSD`` reads.
 ``_preprocessing``
     EMSphInx pattern preprocessing: Gaussian background, mosaic
     adaptive histogram equalisation.

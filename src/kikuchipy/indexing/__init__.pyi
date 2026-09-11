@@ -27,6 +27,8 @@ from ._spherical._back_projection import SphericalBackProjector
 from ._spherical._fft import fast_bandwidths
 from ._spherical._indexer import SphericalIndexer
 from ._spherical._master_pattern_harmonics import MasterPatternHarmonics
+from ._spherical._namelist import EMSphInxNamelist
+from ._spherical._pattern_repack import write_emsphinx_patterns
 from .similarity_metrics._normalized_cross_correlation import (
     NormalizedCrossCorrelationMetric,
 )
@@ -34,6 +36,7 @@ from .similarity_metrics._normalized_dot_product import NormalizedDotProductMetr
 from .similarity_metrics._similarity_metric import SimilarityMetric
 
 __all__ = [
+    "EMSphInxNamelist",
     "MasterPatternHarmonics",
     "NormalizedCrossCorrelationMetric",
     "NormalizedDotProductMetric",
@@ -46,5 +49,6 @@ __all__ = [
     "fast_bandwidths",
     "merge_crystal_maps",
     "orientation_similarity_map",
+    "write_emsphinx_patterns",
     "xmap_from_hough_indexing_data",
 ]

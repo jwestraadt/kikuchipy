@@ -43,8 +43,10 @@ if _XDIST_WORKER and "NUMBA_CACHE_DIR" not in os.environ:
         Path(tempfile.gettempdir()) / "kikuchipy-numba-cache" / _XDIST_WORKER
     )
 
+from contextlib import contextmanager
 from io import TextIOWrapper
 from numbers import Number
+import time
 from typing import Callable, Generator, Literal
 
 import dask.array as da
@@ -646,6 +648,120 @@ def ebsdsim_master_pattern_file(tmp_path_factory) -> Generator[Path, None, None]
 
 
 # ------------------------- EMSphInx formats ------------------------- #
+
+# Seconds to wait for the EMSphInx program lock, and the age at which
+# one is assumed to belong to a killed run and taken over
+_EMSPHINX_LOCK_TIMEOUT = 600.0
+_EMSPHINX_LOCK_STALE = 900.0
+
+
+@pytest.fixture
+def emsphinx_dir() -> Generator[Path, None, None]:
+    """Yield the EMSphInx checkout, skipping if it is not set up.
+
+    The locally gated tests need ``KIKUCHIPY_EMSPHINX_DIR`` to point
+    at a checkout with the built programs and the shipped Ni file.
+    """
+    value = os.environ.get("KIKUCHIPY_EMSPHINX_DIR")
+    if not value:
+        pytest.skip(
+            "KIKUCHIPY_EMSPHINX_DIR is not set; set it to an EMSphInx "
+            "checkout with build/Release/{mp2sht,sht2png,IndexEBSD,"
+            "PatternRepack,EBSPDims} and data/'Ni {20kV 75.7deg}.sht' "
+            "to run this test"
+        )
+    yield Path(value)
+
+
+@contextmanager
+def _emsphinx_program_lock() -> Generator[None, None, None]:
+    """Hold a lock shared by every process running an EMSphInx
+    program.
+
+    The programs read FFTW wisdom from one machine wide file in a
+    global constructor and write it back in a global destructor
+    (``include/util/fft.hpp`` lines 320-372, ``C:\\ProgramData\\
+    fftw.wisdom`` here, 384 kB).  Two of them at once therefore race
+    on that file, and a program which imports a half written one
+    fast fails: measured under ``pytest -n 4``, ``IndexEBSD.exe``
+    exits with 3221226505 (``STATUS_STACK_BUFFER_OVERRUN``) and an
+    empty standard output and error, in roughly one run in two.
+    Serialising the programs removes the race; it costs nothing,
+    since they take a few seconds in total.
+
+    A stdlib exclusive create is used rather than a lock library, so
+    that the test suite gains no dependency, and a lock older than
+    ``_EMSPHINX_LOCK_STALE`` seconds is taken over, so that a killed
+    run cannot block the next one.
+    """
+    path = Path(tempfile.gettempdir()) / "kikuchipy-emsphinx-program.lock"
+    deadline = time.monotonic() + _EMSPHINX_LOCK_TIMEOUT
+    while True:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                stale = time.time() - path.stat().st_mtime > _EMSPHINX_LOCK_STALE
+            except OSError:  # it went away between the two calls
+                continue
+            if stale:
+                path.unlink(missing_ok=True)
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Waited {_EMSPHINX_LOCK_TIMEOUT} s for the EMSphInx "
+                    f"program lock {str(path)!r}. Delete it if no test is "
+                    "running an EMSphInx program"
+                )
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def emsphinx_program(emsphinx_dir) -> Generator[Callable, None, None]:
+    """Yield a callable returning the path of a built EMSphInx
+    program, skipping if the checkout or the program is missing.
+
+    Every invocation of a returned program must pass ``cwd=tmp_path``
+    to :func:`subprocess.run`: ``IndexEBSD -t`` writes to a hard
+    coded relative path and namelist paths resolve against the
+    process working directory.
+
+    The fixture holds :func:`_emsphinx_program_lock` for the whole
+    test, so that no two of these tests run a program at the same
+    time under ``pytest -n``.
+    """
+
+    def program(name: str) -> Path:
+        directory = emsphinx_dir / "build" / "Release"
+        for candidate in (directory / f"{name}.exe", directory / name):
+            if candidate.is_file():
+                return candidate
+        pytest.skip(f"{name} not built in {directory}")
+
+    with _emsphinx_program_lock():
+        yield program
+
+
+@pytest.fixture
+def read_ang() -> Generator[Callable, None, None]:
+    """Yield a callable reading an EMSphInx written *.ang file into a
+    plain array of its eight columns.
+
+    ``orix.io.load`` reads the file but warns about the column
+    layout and names the quality columns ``unknown1``/``unknown2``,
+    while the assertions index the array.
+    """
+
+    def read(filename) -> np.ndarray:
+        return np.loadtxt(filename, comments="#")
+
+    yield read
 
 
 @pytest.fixture(scope="session")

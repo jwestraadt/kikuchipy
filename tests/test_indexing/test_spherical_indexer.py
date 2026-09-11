@@ -57,7 +57,13 @@ import pytest
 import kikuchipy as kp
 from kikuchipy.detectors import EBSDDetector
 from kikuchipy.indexing import _spherical
-from kikuchipy.indexing._spherical import _back_projection, _fft, _indexer
+from kikuchipy.indexing._spherical import (
+    _back_projection,
+    _fft,
+    _indexer,
+    _namelist,
+    _pattern_repack,
+)
 from kikuchipy.indexing._spherical._back_projection import SphericalBackProjector
 from kikuchipy.indexing._spherical._indexer import (
     SphericalIndexer,
@@ -71,6 +77,8 @@ from kikuchipy.indexing._spherical._preprocessing import _circular_mask
 from kikuchipy.indexing._spherical._xcorr import (
     NormalizedSphericalCrossCorrelator,
 )
+from kikuchipy.io.plugins import oxford_binary
+from kikuchipy.io.plugins.oxford_binary import _api as _oxford_api
 
 # The bandwidth of the real data tests and the Euler cube it gives
 NI_BANDWIDTH = 68
@@ -217,15 +225,17 @@ def njit_kernels(module):
     }
 
 
-def public_docstrings(module):
+def public_docstrings(module, exported=None):
     """Return the docstrings of the module's exported names and their
     public methods, keyed on a readable name.
 
-    Only names in :data:`kikuchipy.indexing.__all__` count as public:
-    ``fast_size`` has no leading underscore but is not exported, so
-    it is documentation of a private helper.
+    Only names in :data:`kikuchipy.indexing.__all__` count as public
+    by default: ``fast_size`` has no leading underscore but is not
+    exported, so it is documentation of a private helper.  ``exported``
+    gives another package's ``__all__``, for a module outside
+    :mod:`kikuchipy.indexing`.
     """
-    exported = set(kp.indexing.__all__)
+    exported = set(kp.indexing.__all__ if exported is None else exported)
     docstrings = {}
     for name, obj in vars(module).items():
         if name not in exported:
@@ -931,7 +941,14 @@ class TestMemoryModel:
 
 class TestExports:
     @pytest.mark.parametrize(
-        "name", ["SphericalIndexer", "SphericalBackProjector", "fast_bandwidths"]
+        "name",
+        [
+            "EMSphInxNamelist",
+            "SphericalBackProjector",
+            "SphericalIndexer",
+            "fast_bandwidths",
+            "write_emsphinx_patterns",
+        ],
     )
     def test_the_name_resolves_through_the_lazy_loader(self, name):
         assert hasattr(kp.indexing, name)
@@ -965,8 +982,15 @@ class TestExports:
         # links predate this module and are not part of this pass
         role = re.compile(r":(?:func|class|meth|attr|mod):`~?([\w.]+)`")
         docstrings = {}
-        for module in (_indexer, _back_projection, _fft):
+        for module in (
+            _indexer,
+            _back_projection,
+            _fft,
+            _namelist,
+            _pattern_repack,
+        ):
             docstrings.update(public_docstrings(module))
+        docstrings.update(public_docstrings(_oxford_api, oxford_binary.__all__))
         docstrings["EBSD.spherical_indexing"] = (
             kp.signals.EBSD.spherical_indexing.__doc__
         )
@@ -982,8 +1006,15 @@ class TestExports:
 
     def test_no_public_docstring_names_a_roadmap_phase(self):
         docstrings = {}
-        for module in (_indexer, _back_projection, _fft):
+        for module in (
+            _indexer,
+            _back_projection,
+            _fft,
+            _namelist,
+            _pattern_repack,
+        ):
             docstrings.update(public_docstrings(module))
+        docstrings.update(public_docstrings(_oxford_api, oxford_binary.__all__))
         docstrings["EBSD.spherical_indexing"] = (
             kp.signals.EBSD.spherical_indexing.__doc__
         )
@@ -992,7 +1023,14 @@ class TestExports:
         )
         assert len(docstrings) > 3
         for name, doc in docstrings.items():
-            for phase in ("Phase 5", "Phase 6", "Phase 7", "Phase 8"):
+            for phase in (
+                "Phase 5",
+                "Phase 6",
+                "Phase 7",
+                "Phase 8",
+                "Phase 9",
+                "Phase 10",
+            ):
                 assert phase not in doc, f"{name} names {phase}"
 
 
