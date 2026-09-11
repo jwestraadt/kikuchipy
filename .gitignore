@@ -117,3 +117,6 @@ dask-worker-space
 
 # uv
 uv.lock
+
+# Fork-local design documents (kept out of the upstream staging branch)
+specs/
