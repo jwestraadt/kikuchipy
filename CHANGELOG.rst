@@ -18,6 +18,16 @@ Unreleased
 
 Added
 -----
+- Reader for EMSphInx ``.sht`` master patterns, ``kp.load("*.sht")`` (io plugin
+  ``emsphinx_master_pattern``).
+  (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
+- New class ``kikuchipy.indexing.MasterPatternHarmonics`` holding an EBSD master
+  pattern's spherical harmonic coefficients, read from and written to EMSphInx ``.sht``
+  files.
+  (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
+- New ``EBSDMasterPattern.get_spherical_harmonics()``, the equivalent of EMSphInx's
+  ``mp2sht``.
+  (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
 
 Fixed
 -----

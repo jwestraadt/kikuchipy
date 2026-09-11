@@ -601,6 +601,76 @@ class TestBandwidthArgument:
         assert np.array_equal(part, full[:bandwidth, :bandwidth])
 
 
+class TestLazyQuadratureWeights:
+    """Phase 2 amendment (``specs/2026-08-16-sht-master-spectra-and-file``
+    plan task 1): the quadrature weights are computed on first access
+    instead of by the constructor, so that a Lambert transformer of any
+    odd ``dim`` can synthesize. Only ``analyze`` needs the weights, and
+    the Lambert weight sets cannot be solved with sufficient precision
+    above ``dim`` 275.
+    """
+
+    def test_a_large_lambert_transformer_constructs(self):
+        sht = _sht.SphericalHarmonicTransform(384, "lambert", 769)
+        assert sht.dim == 769
+        assert sht.bandwidth == 384
+        assert sht.layout == "lambert"
+        # Nothing was solved yet
+        assert sht._quadrature_weights is None
+
+    def test_a_large_lambert_transformer_synthesizes_a_single_harmonic(self):
+        sph_harm_y = _sph_harm_y()
+        degree, order = 6, 4
+        sht = _sht.SphericalHarmonicTransform(384, "lambert", 769)
+        alm = np.zeros((sht.bandwidth, sht.bandwidth), dtype=np.complex128)
+        alm[order, degree] = 1
+        north, south = sht.synthesize(alm)
+        # A real function of the single order m > 0 is 2 Re Y_l^m, on
+        # the rings which carry the order, see
+        # ``TestSynthesizeOracle``
+        north_ref, south_ref = TestSynthesizeOracle._expected(
+            sph_harm_y, sht.dim, "lambert", degree, order
+        )
+        mask = TestSynthesizeOracle._mask_compared_pixels(sht.dim, order)
+        assert np.abs(north - north_ref)[mask].max() < 1e-10
+        assert np.abs(south - south_ref)[mask].max() < 1e-10
+        # Synthesizing must not have solved the weights
+        assert sht._quadrature_weights is None
+
+    def test_analyze_on_a_large_lambert_transformer_raises(self):
+        sht = _sht.SphericalHarmonicTransform(384, "lambert", 769)
+        north = np.ones((sht.dim, sht.dim))
+        with pytest.raises(ValueError, match="Insufficient precision"):
+            sht.analyze(north, north)
+
+    def test_the_quadrature_weights_property_raises_directly(self):
+        sht = _sht.SphericalHarmonicTransform(384, "lambert", 769)
+        with pytest.raises(ValueError, match="Insufficient precision"):
+            _ = sht.quadrature_weights
+
+    @pytest.mark.parametrize(
+        "bandwidth, layout, dim",
+        [(8, "legendre", 11), (32, "lambert", 65)],
+    )
+    def test_the_weights_are_computed_once_and_cached(self, bandwidth, layout, dim):
+        sht = _sht.SphericalHarmonicTransform(bandwidth, layout)
+        assert sht._quadrature_weights is None
+        first = sht.quadrature_weights
+        second = sht.quadrature_weights
+        # Identity, not equality: a second solve would give an equal
+        # but distinct array
+        assert first is second
+        assert first is sht._quadrature_weights
+        assert np.array_equal(first, _grid.quadrature_weights(dim, layout))
+
+    def test_analyze_populates_the_cache(self):
+        sht = _sht.SphericalHarmonicTransform(8, "legendre")
+        north = np.ones((sht.dim, sht.dim))
+        assert sht._quadrature_weights is None
+        sht.analyze(north, north)
+        assert sht._quadrature_weights is not None
+
+
 class TestKernels:
     @staticmethod
     def _transform_arrays(sht):

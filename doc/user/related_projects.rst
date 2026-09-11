@@ -49,3 +49,5 @@ that users of kikuchipy might find useful:
   `EMSphInx <https://github.com/EMsoft-org/EMSphInx>`__ software. Master patterns in
   its spherical harmonic ``.sht`` format are available from the
   `SHT database <https://github.com/EMsoft-org/SHTdatabase>`__.
+  kikuchipy reads ``.sht`` files with :func:`~kikuchipy.load` and writes them with
+  :meth:`~kikuchipy.indexing.MasterPatternHarmonics.save`.

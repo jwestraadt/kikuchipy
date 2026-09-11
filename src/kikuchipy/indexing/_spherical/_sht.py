@@ -774,7 +774,8 @@ class SphericalHarmonicTransform:
         Cosines of the ring latitudes, of shape ``(n_rings,)``.
     quadrature_weights : numpy.ndarray
         Ring quadrature weights, of shape
-        ``((dim - 2) // 4 + 1, n_rings)``.
+        ``((dim - 2) // 4 + 1, n_rings)``, computed on first access
+        and cached.
     ring_offsets : numpy.ndarray
         Start of each ring in ``ring_indices``, of shape
         ``(n_rings + 1,)``.
@@ -788,6 +789,11 @@ class SphericalHarmonicTransform:
         If ``layout`` is unknown, if ``dim`` is even or smaller than
         three, or if ``bandwidth`` exceeds
         :func:`~kikuchipy.indexing._spherical._grid.max_bandwidth`.
+        The quadrature weights are *not* solved by the constructor,
+        so an imprecise weight set only raises from
+        :attr:`quadrature_weights` and therefore from
+        :meth:`analyze`, never from the constructor or from
+        :meth:`synthesize`.
 
     Notes
     -----
@@ -873,7 +879,7 @@ class SphericalHarmonicTransform:
         self.layout = layout
         self.n_rings = _grid.n_rings(dim)
         self.cos_latitudes = _grid.cos_latitudes(dim, layout)
-        self.quadrature_weights = _grid.quadrature_weights(dim, layout)
+        self._quadrature_weights: np.ndarray | None = None
         self.ring_offsets, self.ring_indices = _grid.ring_indices(dim)
         self._amn, self._bmn = _alf_recursion_tables(bandwidth)
 
@@ -894,6 +900,32 @@ class SphericalHarmonicTransform:
             f"{type(self).__name__}: {self.layout}, bw = {self.bandwidth}, "
             f"dim = {self.dim}"
         )
+
+    @property
+    def quadrature_weights(self) -> np.ndarray:
+        """Return the ring quadrature weights, of shape
+        ``((dim - 2) // 4 + 1, n_rings)``.
+
+        Computed by
+        :func:`~kikuchipy.indexing._spherical._grid.quadrature_weights`
+        on first access and cached, since only :meth:`analyze` needs
+        them: :meth:`synthesize` never does, and the weights of the
+        ``"lambert"`` layout cannot be solved with sufficient
+        precision above ``dim`` 275. A Lambert transformer of any odd
+        ``dim`` can therefore be constructed and used to synthesize,
+        which is what building a master pattern from harmonic
+        coefficients needs, while :meth:`analyze` on the same
+        transformer raises.
+
+        Raises
+        ------
+        ValueError
+            If the weights are too imprecise, see
+            :func:`~kikuchipy.indexing._spherical._grid._ring_weights_skip`.
+        """
+        if self._quadrature_weights is None:
+            self._quadrature_weights = _grid.quadrature_weights(self.dim, self.layout)
+        return self._quadrature_weights
 
     @property
     def uses_numba_ring_dft(self) -> bool:
