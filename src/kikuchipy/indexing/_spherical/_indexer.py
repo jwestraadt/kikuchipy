@@ -239,6 +239,23 @@ chunk size of one) and the north and south buffers are allocated per
 chunk.  The arithmetic of a pattern therefore does not depend on how
 the patterns are grouped, and results are **bitwise identical**
 across chunk sizes, worker counts and lazy against eager input.
+That pledge is scoped **per backend** since the optional GPU backend
+joined (spec ``2026-09-07-spherical-gpu``, D5): it holds verbatim
+for ``backend="cpu"``, the default and the reference implementation,
+while ``backend="gpu"`` -- whose coarse correlation stages run as
+float32/complex64 device batches -- is bitwise deterministic
+run-to-run at a fixed device, driver and batch size, is measured
+(not promised) across batch sizes, and holds a measured-then-pinned
+tolerance parity against the CPU oracle, never bitwise equality.
+Under ``backend="gpu"`` the dask machinery survives unchanged for
+the host stages, the chunk size doubles as the device batch size
+(``_batch_estimate`` is bypassed), every chunk's device section is
+serialized under one process-wide lock, and the compute is pinned to
+the threaded scheduler so device handles never cross process
+boundaries.  Device-section exceptions **fail the run** rather than
+being swallowed into per-pattern fill rows -- a recorded deviation
+from the per-pattern isolation contract, which continues to govern
+the host stages of both backends (D7.7).
 
 **Chunk sizing.**  With no explicit chunk size the ported
 ``BatchEstimate`` model is used: with ``scl = bw^3 ln(bw^3)`` and
@@ -313,6 +330,7 @@ from __future__ import annotations
 # The collaborators are bound in this namespace, as the rest of the
 # package binds its own, so that one place is patched in tests and
 # one import block changes if a collaborator moves.
+import gc
 import math
 import os
 from typing import TYPE_CHECKING, Sequence
@@ -324,11 +342,13 @@ from dask.diagnostics.progress import ProgressBar
 import numpy as np
 from orix.quaternion import Rotation
 
+from kikuchipy.indexing._spherical import _gpu
 from kikuchipy.indexing._spherical._back_projection import SphericalBackProjector
 from kikuchipy.indexing._spherical._euler import (
     quaternion_to_zyz,
     zyz_to_quaternion,
 )
+from kikuchipy.indexing._spherical._gpu import _verify_gpu_or_raise
 from kikuchipy.indexing._spherical._master_pattern_harmonics import (
     MasterPatternHarmonics,
 )
@@ -566,7 +586,10 @@ def _variant_seed_zyz(zyz: np.ndarray, op: "Rotation") -> np.ndarray:
 
 
 def _index_chunk(
-    patterns_block: np.ndarray, indexer: "SphericalIndexer", n_best: int
+    patterns_block: np.ndarray,
+    indexer: "SphericalIndexer",
+    n_best: int,
+    session: "_SessionHandle | None" = None,
 ) -> np.ndarray:
     """Return the packed indexing results of one chunk of patterns.
 
@@ -582,6 +605,12 @@ def _index_chunk(
         serves every worker.
     n_best
         Number of candidates to keep per pattern, at least one.
+    session
+        The :class:`_SessionHandle` around the one
+        ``_gpu._GpuSession`` of a ``backend="gpu"`` call, shared read
+        only by every chunk invocation of that call, or ``None`` (the
+        default) for the CPU path, which is byte-for-byte the code
+        that existed before the GPU backend joined.
 
     Returns
     -------
@@ -628,7 +657,16 @@ def _index_chunk(
     documentation for the pipeline, the fill values, the five failure
     cases and the insertion rule which never records a candidate with
     a non-positive score.
+
+    Under ``backend="gpu"`` (``session`` given) the per-pattern
+    pipeline is restructured into three passes with identical
+    semantics (spec ``2026-09-07-spherical-gpu``, D7.1): host stages
+    0-3 for the whole chunk, one lock-guarded device batch per phase
+    for stages 4-6, and host stages 7-9 per pattern in the original
+    per-pattern order -- see :func:`_index_chunk_gpu`.
     """
+    if session is not None:
+        return _index_chunk_gpu(patterns_block, indexer, n_best, session.session)
     n_patterns = int(patterns_block.shape[0])
     # Every row starts at the fill value, so a pattern which is
     # failed anywhere below simply keeps it
@@ -739,8 +777,286 @@ def _index_chunk(
     return results
 
 
+class _SessionHandle:
+    """Opaque dask-graph handle around one ``_gpu._GpuSession``.
+
+    :func:`dask.array.map_blocks` tokenizes every argument to build
+    its graph keys, and tokenizing the raw session would try to
+    pickle its device residents (megabytes of device-to-host copies)
+    or fall over its process-wide lock.  The handle short-circuits
+    that with ``__dask_tokenize__``: the session is per
+    ``index_patterns`` call and shared read-only by every chunk of
+    that one call (D7.2), so its identity is its token.  Only the
+    threaded scheduler ever sees it -- the GPU path pins
+    ``scheduler="threads"`` (D7.5) -- so it is never serialized.
+    """
+
+    def __init__(self, session) -> None:
+        self.session = session
+
+    def __dask_tokenize__(self):
+        return ("kikuchipy-spherical-gpu-session", id(self.session))
+
+
+def _to_host(array) -> np.ndarray:
+    """Return a NumPy copy of a NumPy or CuPy array (D2H for the
+    latter, a no-op view for the former)."""
+    if hasattr(array, "get"):
+        return array.get()
+    return np.asarray(array)
+
+
+def _index_chunk_gpu(
+    patterns_block: np.ndarray,
+    indexer: "SphericalIndexer",
+    n_best: int,
+    session,
+) -> np.ndarray:
+    """Return the packed indexing results of one chunk of patterns
+    with the coarse correlation stages 4-6 run as device batches.
+
+    The ``backend="gpu"`` restructure of :func:`_index_chunk` (spec
+    ``2026-09-07-spherical-gpu``, D7.1), semantics-preserving by
+    construction:
+
+    1. **Host stages 0-3** (guards, preprocessing, back-projection,
+       SHT analysis) run for every pattern of the chunk first,
+       collecting the complex128 ``gln`` batch, the image qualities
+       and the failure mask.  The per-pattern exception contract of
+       the CPU path governs unchanged: a pattern which fails a guard
+       or raises here keeps its fill row and is **excluded from the
+       device batch** (its slot zero-padded, D7.4).
+    2. **One lock-guarded device section** runs stages 4-6 for the
+       whole chunk, one batch per phase: the pattern-side ``G``
+       factors (phase-independent, built once), the two spectrum
+       GEMMs and the mirror fill into the session's ``fxc`` buffer,
+       the separable inverse FFT with the ``m % n_fold`` pruning, the
+       scale (skipped on the un-normalized path) + first-occurrence
+       argmax, and the 27-neighborhood gather at host-computed
+       offsets.  The last partial chunk is zero-padded to the fixed
+       batch size and the padded slots' results are computed and
+       discarded (D7.3).  Exceptions of this section -- cuFFT plan
+       failures, driver resets, out-of-memory past the caller's
+       halving -- **propagate and fail the run**; they are never
+       converted to per-pattern fill rows (D7.7): the section runs
+       once per chunk, outside every per-pattern ``try``.
+    3. **Host stages 7-9** run per pattern in the original per-pattern
+       order, inside the per-pattern ``try`` exactly as on the CPU
+       path: the shared neighborhood-fed peak epilogue
+       (``_interp_peak_from_neighborhood``, byte-identical to
+       ``interp_peak``), the optional Newton refinement seeded from
+       the **interpolated** triple, the always-refined
+       pseudo-symmetry variants and the positive-score insertion.
+
+    All three ``emsphinx_compatible`` switch points stay in host code
+    or the host offsets helper, so the device stages are
+    compat-neutral (D2).
+
+    The ``session`` is the ``_gpu._GpuSession`` of this
+    ``index_patterns`` call.  The attribute contract consumed here:
+    ``xp`` (the array module), ``fft`` (its FFT namespace), ``lock``
+    (the process-wide device lock), ``batch_size``, ``table`` (the
+    device-resident NaN-zeroed transposed pi/2 Wigner table),
+    ``a_tables`` (per phase, the ``(A, A2)`` complex64 residents),
+    ``r_dens`` (per phase, the float32 reciprocal denominator, or
+    ``None`` everywhere on the un-normalized path) and ``fxc`` (the
+    ``(B, slP, slP, bwP)`` complex64 batch buffer, re-zeroed or fully
+    written by ``_spectrum_batch`` on every per-phase call -- the D2
+    freshness rule).
+    """
+    n_patterns = int(patterns_block.shape[0])
+    # Every row starts at the fill value, exactly as on the CPU path
+    results = np.zeros((n_patterns, n_best, _ROW_WIDTH_INDEX))
+    results[:, :, 4] = -1.0
+    results[:, :, 6] = -1.0
+
+    projector = indexer.projector
+    dim = projector.dim
+    # Zeroed, never ``numpy.empty``: ``unproject`` writes only the
+    # window points of the first buffer and never touches the second
+    buffers = (np.zeros((dim, dim)), np.zeros((dim, dim)))
+
+    # One clone per invocation, so that no scratch is shared between
+    # threads; the clones serve the host epilogue and refinement only
+    # and never duplicate device tables (D7.2)
+    if indexer.normalize:
+        correlators = [c.clone() for c in indexer.correlators]
+        prototype = None
+        spectra = None
+        phase_flags = [(c.n_fold, c.mirror) for c in correlators]
+    else:
+        correlators = None
+        prototype = indexer.correlator.clone()
+        spectra = indexer.spectra
+        phase_flags = [(n_fold, mirror) for _, n_fold, mirror in spectra]
+
+    good_pixels = indexer.good_pixels
+    gaussian_background = indexer.gaussian_background
+    n_regions = indexer.n_regions
+    compatible = indexer.emsphinx_compatible
+    refine = indexer.refine
+    ops = indexer.pseudo_symmetry_ops
+    n_ops = 0 if ops is None else int(ops.size)
+
+    bandwidth = indexer.bandwidth
+    slp = indexer.side_length
+    bwp = indexer._half_side_length
+
+    # ---- pass 1: host stages 0-3 for the whole chunk --------------
+    # The per-pattern catch of the CPU contract governs these host
+    # stages unchanged: a failing pattern keeps its fill row and its
+    # ``keep`` slot stays False, which excludes it from the device
+    # batch below (D7.4)
+    gln_stack = np.zeros((n_patterns, bandwidth, bandwidth), dtype=np.complex128)
+    iq_values = np.zeros(n_patterns)
+    keep = np.zeros(n_patterns, dtype=bool)
+    for i in range(n_patterns):
+        try:
+            pattern = patterns_block[i]
+            # (a) a zero variance pattern is failed, not indexed
+            if np.ptp(pattern) == 0:
+                continue
+            processed = _preprocess_pattern(
+                pattern,
+                good_pixels=good_pixels,
+                gaussian_background=gaussian_background,
+                n_regions=n_regions,
+                emsphinx_compatible=compatible,
+            )
+            # (b) the pipeline degenerated to a constant
+            if np.ptp(processed) == 0:
+                continue
+            north, south, image_quality = projector.unproject(
+                processed, out=buffers, return_image_quality=True
+            )
+            gln_stack[i] = projector.sht.analyze(north, south)
+            iq_values[i] = image_quality
+            keep[i] = True
+        except Exception:
+            # (d) one bad pattern never kills the run -- the host
+            # stages keep the ``ebsdWorkItem`` catch
+            continue
+
+    # ---- pass 2: the lock-guarded device section (stages 4-6) -----
+    # Once per chunk, OUTSIDE every per-pattern scope: its exceptions
+    # propagate and fail the run, never fill rows (D7.7).  Every
+    # pipeline seam is resolved through the ``_gpu`` module at call
+    # time, the one place tests patch
+    phase_peaks: list[tuple[np.ndarray, np.ndarray]] = []
+    if keep.any():
+        xp = session.xp
+        padded, slots = _gpu._pad_batch(np, gln_stack, session.batch_size, keep)
+        with session.lock:
+            gln_batch = xp.asarray(padded)
+            # The pattern-side factors carry no phase term, so one
+            # build serves every phase of the batch
+            g, g2 = _gpu._build_g_batch(xp, gln_batch, session.table, bandwidth)
+            for p, (n_fold, mirror) in enumerate(phase_flags):
+                a, a2 = session.a_tables[p]
+                _gpu._spectrum_batch(xp, g, g2, a, a2, session.fxc, n_fold, mirror)
+                xc = _gpu._inverse_fft_batch(xp, session.fft, session.fxc, n_fold)
+                indices, _ = _gpu._scale_argmax_batch(xp, xc, session.r_dens[p])
+                indices_host = _to_host(indices).astype(np.int64)
+                # The host offsets helper ports the
+                # ``_extract_neighborhood`` index arithmetic exactly,
+                # including the ``emsphinx_compatible`` glide and the
+                # even-slP clamp defect -- the device stays
+                # compat-neutral (D2)
+                offsets = np.stack(
+                    [
+                        _gpu._neighborhood_offsets(int(index), bwp, slp, compatible)
+                        for index in indices_host
+                    ]
+                )
+                neighborhoods = _to_host(
+                    _gpu._gather_neighborhoods(xp, xc, xp.asarray(offsets))
+                )
+                index_rows, _ = _gpu._strip_padding(np, indices_host, slots, n_patterns)
+                nh_rows, _ = _gpu._strip_padding(
+                    np,
+                    np.ascontiguousarray(neighborhoods, dtype=np.float64),
+                    slots,
+                    n_patterns,
+                )
+                phase_peaks.append((index_rows, nh_rows))
+            # Bound the transient device residency to the D8 model
+            # (review-fixed 2026-09-07): without this the batch
+            # factors and the last phase's arrays stay referenced as
+            # frame locals through the host pass 3 below (tens of ms
+            # per chunk), so with N dask workers the finishing
+            # chunks' leftovers coexist with the locked chunk's live
+            # working set beyond the single-batch g(bw) budget
+            del g, g2, gln_batch, xc, indices
+
+    # ---- pass 3: host stages 7-9 per pattern, original order ------
+    for i in range(n_patterns):
+        if not keep[i]:
+            continue
+        try:
+            gln = gln_stack[i]
+            image_quality = float(iq_values[i])
+            rows = np.zeros((n_best, _ROW_WIDTH_INDEX))
+            rows[:, 4] = -1.0
+            rows[:, 6] = -1.0
+            if correlators is not None:
+                for phase_id, correlator in enumerate(correlators):
+                    index_rows, nh_rows = phase_peaks[phase_id]
+                    nh = np.ascontiguousarray(nh_rows[i].reshape(3, 3, 3))
+                    # The shared neighborhood-fed epilogue, then the
+                    # refinement seeded from the INTERPOLATED triple,
+                    # exactly as ``correlate()`` seeds it (D2 stage 7)
+                    zyz, score, _ = (
+                        correlator.correlator._interp_peak_from_neighborhood(
+                            int(index_rows[i]), nh, compatible
+                        )
+                    )
+                    if refine:
+                        zyz, score = correlator.refine_zyz(gln, zyz)
+                    _insert_candidate(rows, zyz, score, phase_id, image_quality, 0.0)
+                    # The pseudo-symmetry loop, byte-identical to the
+                    # CPU path: seeded from THIS phase's best
+                    # orientation and always refined (D9)
+                    for j in range(n_ops):
+                        seed = _variant_seed_zyz(zyz, ops[j])
+                        zyz_v, score_v = correlator.refine_zyz(gln, seed)
+                        _insert_candidate(
+                            rows, zyz_v, score_v, phase_id, image_quality, float(j + 1)
+                        )
+            else:
+                for phase_id, (alm, n_fold, mirror) in enumerate(spectra):
+                    index_rows, nh_rows = phase_peaks[phase_id]
+                    nh = np.ascontiguousarray(nh_rows[i].reshape(3, 3, 3))
+                    zyz, score, _ = prototype._interp_peak_from_neighborhood(
+                        int(index_rows[i]), nh, compatible
+                    )
+                    if refine:
+                        zyz, score = prototype.refine_zyz(alm, gln, n_fold, mirror, zyz)
+                    _insert_candidate(rows, zyz, score, phase_id, image_quality, 0.0)
+                    for j in range(n_ops):
+                        seed = _variant_seed_zyz(zyz, ops[j])
+                        zyz_v, score_v = prototype.refine_zyz(
+                            alm, gln, n_fold, mirror, seed
+                        )
+                        _insert_candidate(
+                            rows, zyz_v, score_v, phase_id, image_quality, float(j + 1)
+                        )
+
+            # (c) a winning score or angle which is not finite
+            if not np.isfinite(rows[0, :4]).all():
+                continue
+            results[i] = rows
+        except Exception:
+            # (d) the host epilogue keeps the per-pattern catch
+            continue
+
+    return results
+
+
 def _map_chunks(
-    patterns_da: da.Array, indexer: "SphericalIndexer", n_best: int
+    patterns_da: da.Array,
+    indexer: "SphericalIndexer",
+    n_best: int,
+    session=None,
 ) -> da.Array:
     """Return the lazy packed indexing results of a chunked pattern
     array.
@@ -754,6 +1070,11 @@ def _map_chunks(
         Indexer to pass to :func:`_index_chunk`.
     n_best
         Number of candidates to keep per pattern.
+    session
+        The ``_gpu._GpuSession`` of a ``backend="gpu"`` call, or
+        ``None`` (the default) for the CPU path.  It is wrapped in a
+        :class:`_SessionHandle` here, so nothing device-resident is
+        ever tokenized or pickled into the graph.
 
     Returns
     -------
@@ -768,11 +1089,19 @@ def _map_chunks(
     declares the shape ``(n, 1, 1)`` -- measured -- which computes
     correctly but lies to anything which slices or inspects the array
     before computing it.
+
+    The session argument is appended **only on the GPU path**, so the
+    CPU graph keeps calling ``_index_chunk(block, indexer, n_best)``
+    exactly as it always has -- the D5.1 protection of the reference
+    path extends to its graph shape.
     """
+    if session is None:
+        args = (indexer, n_best)
+    else:
+        args = (indexer, n_best, _SessionHandle(session))
     return patterns_da.map_blocks(
         _index_chunk,
-        indexer,
-        n_best,
+        *args,
         dtype=np.float64,
         drop_axis=(1, 2),
         new_axis=(1, 2),
@@ -1033,6 +1362,15 @@ class SphericalIndexer:
         :func:`~kikuchipy.indexing.find_pseudo_symmetry_operators`'s
         ``exclude_symmetry=True`` default removes such operators at
         the source.
+    backend
+        Which backend runs the coarse correlation stage, ``"cpu"``
+        (default) or ``"gpu"``.  ``"cpu"`` is the reference
+        implementation; ``"gpu"`` runs the cross-correlation
+        spectrum, the inverse FFT and the peak search as
+        float32/complex64 device batches through CuPy, leaving every
+        other stage on the CPU.  ``"gpu"`` requires that
+        :mod:`cupy` is installed, which is an optional dependency of
+        kikuchipy. See :ref:`dependencies` for details.
     signal_mask
         Boolean mask of the detector shape in kikuchipy polarity,
         ``True`` = ignore the pixel, as in
@@ -1076,6 +1414,10 @@ class SphericalIndexer:
     pseudo_symmetry_ops : orix.quaternion.Rotation or None
         The flattened pseudo-symmetry operators, and ``None`` when
         none were given or a size-0 rotation was.
+    backend : str
+        Which backend runs the coarse correlation stage, ``"cpu"``
+        or ``"gpu"``.  Only the string is stored: no device state
+        ever lives on the indexer.
     wigner_d_factors : tuple or None
         The beta independent Wigner d factor triple every correlator
         of a refining indexer shares, and ``None`` when
@@ -1124,7 +1466,8 @@ class SphericalIndexer:
         ``detector`` is not an
         :class:`~kikuchipy.detectors.EBSDDetector`.
     ValueError
-        If ``bandwidth`` is outside ``[16, 512]``; if ``harmonics``
+        If ``bandwidth`` is outside ``[16, 512]``; if ``backend`` is
+        not ``"cpu"`` or ``"gpu"``; if ``harmonics``
         is empty; if two phases disagree on ``sample_tilt`` or
         ``beam_energy``; if the phases' ``sample_tilt`` differs from
         the detector's; if ``n_regions`` is negative or larger than
@@ -1278,6 +1621,7 @@ class SphericalIndexer:
         normalize: bool = True,
         refine: bool = True,
         pseudo_symmetry_ops: "Rotation | None" = None,
+        backend: str = "cpu",
         signal_mask: np.ndarray | None = None,
         n_regions: int = 10,
         gaussian_background: bool = False,
@@ -1291,6 +1635,20 @@ class SphericalIndexer:
                 f"Bandwidth {bandwidth} is an unreasonable bandwidth "
                 f"(should be [{smallest}, {largest}])"
             )
+
+        # The backend switch (spec 2026-09-07-spherical-gpu, D1): an
+        # explicit per-call keyword, never dispatch-on-availability.
+        # The three-stage CuPy gate fires here for "gpu" -- fail
+        # fast, before any expensive construction -- while "cpu"
+        # never touches cupy
+        backend = str(backend)
+        if backend not in ("cpu", "gpu"):
+            raise ValueError(
+                f"Backend {backend!r} not in the list of supported "
+                "backends ['cpu', 'gpu']"
+            )
+        if backend == "gpu":
+            _verify_gpu_or_raise()
 
         # The operators are flattened once here, and a size-0
         # rotation is ``None``-equivalent: no variants, no
@@ -1454,6 +1812,7 @@ class SphericalIndexer:
         self.normalize = bool(normalize)
         self.refine = bool(refine)
         self.pseudo_symmetry_ops = pseudo_symmetry_ops
+        self.backend = backend
         self.projector = projector
         self.correlators = correlators
         self.correlator = correlator
@@ -1558,6 +1917,50 @@ class SphericalIndexer:
         """
         return self._memory_model(self.refine)
 
+    def gpu_memory_per_batch_bytes(self, batch_size: int) -> int:
+        """Return the estimated device memory one batch of the GPU
+        backend needs, in bytes.
+
+        Parameters
+        ----------
+        batch_size
+            Device batch size ``B``, i.e. the ``chunksize`` of a
+            ``backend="gpu"`` run, at least one.
+
+        Returns
+        -------
+        n_bytes
+            The per-batch working-set model ``batch_size * g(bw)``
+            plus the per-phase resident term (the device spectrum
+            tables and, when :attr:`normalize`, the reciprocal
+            denominator), pure model math.
+
+        Raises
+        ------
+        ValueError
+            If ``batch_size`` is smaller than one.
+
+        Notes
+        -----
+        The counterpart in spirit of
+        :attr:`memory_per_worker_bytes`, but a **method taking the
+        batch size**, since the GPU batch is a per-call choice rather
+        than an indexer property.  It performs no device query: the
+        free-VRAM query and the default batch size live in
+        :meth:`index_patterns`, which prints this model in its
+        information message and warns when it exceeds the measured
+        free device memory.  Usable with ``backend="cpu"`` too, as a
+        what-if.
+        """
+        batch_size = int(batch_size)
+        if batch_size < 1:
+            raise ValueError(f"`batch_size` {batch_size} must be at least one")
+        return batch_size * _gpu._gpu_memory_per_pattern_bytes(
+            self.bandwidth
+        ) + self.n_phases * _gpu._gpu_resident_bytes_per_phase(
+            self.bandwidth, self.normalize
+        )
+
     def get_info_message(
         self,
         n_patterns: int,
@@ -1611,8 +2014,45 @@ class SphericalIndexer:
         The memory line prints
         :attr:`memory_per_worker_bytes`, the model, not a
         measurement.
+
+        With ``backend="gpu"`` (and not ``refining``, since
+        refinement runs on the host under both backends) the message
+        gains a device block: the device name with its free and total
+        VRAM, the device batch size -- the ``chunksize``, which
+        doubles as the batch size there, resolved from the VRAM model
+        when not given -- and the modelled device memory of one batch
+        (:meth:`gpu_memory_per_batch_bytes`), with a warning line
+        when that model exceeds the measured free VRAM, the device
+        counterpart of the 2 GiB host warning.
         """
         n_patterns = int(n_patterns)
+        device_block = ""
+        if self.backend == "gpu" and not refining:
+            # The ctor gate passed for this indexer, so cupy imports;
+            # guard-then-function-scope-import, the D6.3 convention
+            import cupy
+
+            free_bytes, total_bytes = cupy.cuda.runtime.memGetInfo()
+            if chunksize is None:
+                # chunk size == device batch size; ``_batch_estimate``
+                # is bypassed on the GPU path (D8.1-2)
+                chunksize = _gpu._default_batch_size(self.bandwidth, int(free_bytes))
+            chunksize = max(1, int(chunksize))
+            model_bytes = self.gpu_memory_per_batch_bytes(chunksize)
+            name = cupy.cuda.runtime.getDeviceProperties(0)["name"].decode()
+            device_block = (
+                f"\n  GPU device: {name} "
+                f"({free_bytes / 1e6:.0f} of {total_bytes / 1e6:.0f} MB VRAM "
+                "free)\n"
+                f"  Device batch size: {chunksize} pattern(s) per batch, "
+                f"estimated device memory {model_bytes / 1e6:.0f} MB"
+            )
+            if model_bytes > free_bytes:
+                device_block += (
+                    "\n  WARNING: the estimated device memory of one batch "
+                    "exceeds the free VRAM; reduce `chunksize` (the device "
+                    "batch size), the bandwidth or the number of phases"
+                )
         if chunksize is None:
             chunksize = _batch_estimate(self.bandwidth, _n_workers(), n_patterns)
         chunksize = max(1, int(chunksize))
@@ -1645,7 +2085,7 @@ class SphericalIndexer:
             f"  Projection center (Bruker): {pc}\n"
             + work
             + "  Estimated memory per worker: "
-            f"{self._memory_model(refine) / 1e6:.0f} MB"
+            f"{self._memory_model(refine) / 1e6:.0f} MB" + device_block
         )
 
     def index_patterns(
@@ -1675,7 +2115,12 @@ class SphericalIndexer:
             Number of patterns per chunk, at least one.  If not
             given, the ported chunk sizing model sizes the chunks
             from the bandwidth, the number of dask workers and the
-            number of patterns.
+            number of patterns.  With ``backend="gpu"`` the meaning
+            changes: the chunk size **is** the device batch size, the
+            CPU chunk model is bypassed, and the default is chosen
+            from the device memory model fed with the measured free
+            device memory (half of it kept as headroom, clamped to
+            [1, 64]); an explicit value overrides that choice.
         progressbar
             Whether to show dask's progress bar, ``True`` by default.
 
@@ -1709,6 +2154,16 @@ class SphericalIndexer:
             If the last two axes of ``patterns`` do not match the
             detector shape, if ``n_best`` is smaller than one, or if
             ``chunksize`` is given and smaller than one.
+        MemoryError
+            With ``backend="gpu"``, if the device runs out of memory
+            even at a batch size of one: an out-of-memory error at
+            session build or inside the compute halves the batch
+            size and retries the whole run, and only a halving which
+            bottoms out raises, with the bandwidth, the modelled
+            bytes, the free device memory and the remedies in the
+            message.  There is **never** a silent fallback to the
+            CPU backend.  Any other device error fails the run as
+            well rather than filling the affected patterns.
 
         Warns
         -----
@@ -1724,11 +2179,20 @@ class SphericalIndexer:
         The patterns are always computed eagerly, so the result holds
         NumPy arrays for a lazy input as well.  The default dask
         scheduler for arrays, the threaded one, is used as is, so an
-        outer :func:`dask.config.set` is honoured.
+        outer :func:`dask.config.set` is honoured -- except that
+        ``backend="gpu"`` pins ``scheduler="threads"`` on its
+        compute, so device handles can never cross process
+        boundaries; a configured worker count is still honoured.
 
-        Results are bitwise identical across chunk sizes, worker
-        counts and lazy against eager input, see the module
-        documentation.
+        With the default ``backend="cpu"``, results are bitwise
+        identical across chunk sizes, worker counts and lazy against
+        eager input, see the module documentation.  With
+        ``backend="gpu"`` the coarse correlation runs in 32-bit
+        precision on the device: results are bitwise deterministic
+        from run to run on one device, driver and batch size, and
+        agree with the CPU backend to small measured tolerances
+        rather than bitwise (the image quality is bitwise equal, the
+        refined orientations and scores land within pinned bands).
         """
         n_best = int(n_best)
         if n_best < 1:
@@ -1749,8 +2213,20 @@ class SphericalIndexer:
 
         n_patterns = int(shape[0])
         n_workers = _n_workers()
+        backend_gpu = self.backend == "gpu"
         if chunksize is None:
-            chunksize = _batch_estimate(self.bandwidth, n_workers, n_patterns)
+            if backend_gpu:
+                # D8.1-2: the CPU chunk model is bypassed -- the
+                # chunk size doubles as the device batch size, chosen
+                # from the VRAM model fed with the measured free
+                # device memory (half of it as headroom, clamped to
+                # [1, 64]).  The ctor gate passed, so cupy imports
+                import cupy
+
+                free_bytes = int(cupy.cuda.runtime.memGetInfo()[0])
+                chunksize = _gpu._default_batch_size(self.bandwidth, free_bytes)
+            else:
+                chunksize = _batch_estimate(self.bandwidth, n_workers, n_patterns)
 
         needed = n_workers * self.memory_per_worker_bytes
         if needed > _MEMORY_WARNING_BYTES:
@@ -1762,20 +2238,23 @@ class SphericalIndexer:
                 UserWarning,
             )
 
-        if isinstance(patterns, da.Array):
-            blocks = patterns.rechunk((chunksize, -1, -1))
+        if backend_gpu:
+            packed = self._index_patterns_gpu(patterns, n_best, chunksize, progressbar)
         else:
-            blocks = da.from_array(patterns, chunks=(chunksize, -1, -1))
-        results = _map_chunks(blocks, self, n_best)
+            if isinstance(patterns, da.Array):
+                blocks = patterns.rechunk((chunksize, -1, -1))
+            else:
+                blocks = da.from_array(patterns, chunks=(chunksize, -1, -1))
+            results = _map_chunks(blocks, self, n_best)
 
-        # One eager compute, as dictionary indexing does: the graph
-        # is an implementation detail and no consumer of a lazy one
-        # exists yet
-        if progressbar:
-            with ProgressBar():
+            # One eager compute, as dictionary indexing does: the
+            # graph is an implementation detail and no consumer of a
+            # lazy one exists yet
+            if progressbar:
+                with ProgressBar():
+                    packed = results.compute()
+            else:
                 packed = results.compute()
-        else:
-            packed = results.compute()
 
         # A failed pattern is never re-raised on, so without this the
         # only trace of it is the invalid phase of its best row: a run
@@ -1803,6 +2282,120 @@ class SphericalIndexer:
         if self.pseudo_symmetry_ops is not None:
             results["pseudo_symmetry_index"] = packed[:, :, 6].astype(np.int32)
         return results
+
+    def _index_patterns_gpu(
+        self,
+        patterns: "np.ndarray | da.Array",
+        n_best: int,
+        batch_size: int,
+        progressbar: bool,
+    ) -> np.ndarray:
+        """Return the packed indexing results of a ``backend="gpu"``
+        run: the device session lifecycle around one eager compute.
+
+        The two-window out-of-memory rule (spec
+        ``2026-09-07-spherical-gpu``, D8.4), each loop flooring at a
+        batch size of one where the error re-raises as an actionable
+        :class:`MemoryError` -- **never a silent fallback to the CPU
+        backend**, since the backend choice is explicit and
+        result-affecting (D1):
+
+        (a) an ``OutOfMemoryError`` at **session build** frees the
+            memory pool, halves the batch size and retries;
+        (b) an ``OutOfMemoryError`` **inside the compute** -- cuFFT
+            work areas materialize at the first transform, and a
+            display-attached card is under external VRAM pressure at
+            any time -- aborts the compute; the session is disposed,
+            the pool freed, and session **and graph** are rebuilt at
+            half the batch size, re-running the whole map.  A
+            completed halved run's results therefore come entirely
+            from the final batch size, never mixed sizes, which is
+            what keeps the run-to-run determinism pin applicable at
+            that final size (D5.2-3).
+
+        There is no device sub-batching inside a chunk -- chunk size
+        and device batch size stay one number (D8.1), the last
+        partial chunk is padded (D7.3).  The compute is pinned to
+        ``scheduler="threads"``, so a globally configured process or
+        distributed scheduler can never move device handles across
+        process boundaries (D7.5).  Non-OOM device errors never enter
+        the halving loop: they propagate and fail the run (D7.7),
+        with the session disposed on the way out.
+        """
+        # The ctor gate passed for this indexer, so cupy imports
+        import cupy
+
+        oom_error = cupy.cuda.memory.OutOfMemoryError
+        batch_size = int(batch_size)
+        while True:
+            # Window (a): out of memory at session build
+            try:
+                session = _gpu._GpuSession(self, batch_size)
+            except oom_error as error:
+                # Release the failed build's device arrays pinned by
+                # the caught error's traceback frames BEFORE freeing
+                # the pool (review-fixed 2026-09-07: the frames keep
+                # the dead allocations alive until a cyclic gc pass,
+                # shrinking the retry's -- and the MemoryError
+                # message's -- free VRAM)
+                error.__traceback__ = None
+                gc.collect()
+                cupy.get_default_memory_pool().free_all_blocks()
+                if batch_size <= 1:
+                    raise self._gpu_out_of_memory_error() from error
+                batch_size //= 2
+                continue
+            # Window (b): out of memory inside the compute
+            try:
+                try:
+                    if isinstance(patterns, da.Array):
+                        blocks = patterns.rechunk((batch_size, -1, -1))
+                    else:
+                        blocks = da.from_array(patterns, chunks=(batch_size, -1, -1))
+                    results = _map_chunks(blocks, self, n_best, session)
+                    if progressbar:
+                        with ProgressBar():
+                            packed = results.compute(scheduler="threads")
+                    else:
+                        packed = results.compute(scheduler="threads")
+                finally:
+                    # The session is per call (D7.2): disposed on
+                    # success, on OOM before the rebuild, and on any
+                    # propagating device error
+                    session.close()
+            except oom_error as error:
+                # As in window (a): drop the dead batch pinned by the
+                # error's traceback frames before freeing the pool,
+                # so the halved retry starts clean and the bottomed-
+                # out MemoryError reports an honest free-VRAM figure
+                # (review-fixed 2026-09-07)
+                error.__traceback__ = None
+                gc.collect()
+                cupy.get_default_memory_pool().free_all_blocks()
+                if batch_size <= 1:
+                    raise self._gpu_out_of_memory_error() from error
+                batch_size //= 2
+                continue
+            return packed
+
+    def _gpu_out_of_memory_error(self) -> MemoryError:
+        """Return the actionable error of an out-of-memory GPU run
+        whose batch-size halving bottomed out at one (D8.4)."""
+        import cupy
+
+        try:
+            free_bytes = int(cupy.cuda.runtime.memGetInfo()[0])
+        except Exception:
+            free_bytes = 0
+        model_bytes = self.gpu_memory_per_batch_bytes(1)
+        return MemoryError(
+            "The GPU backend ran out of device memory even at a device "
+            f"batch size of 1 at bandwidth {self.bandwidth}: the VRAM "
+            f"model needs {model_bytes / 1e6:.0f} MB for one batch "
+            f"against {free_bytes / 1e6:.0f} MB of free VRAM; free "
+            "device memory, index at a smaller bandwidth, or use the "
+            'CPU path (backend="cpu")'
+        )
 
     def refine_patterns(
         self,

@@ -2471,6 +2471,67 @@ class SphericalCrossCorrelator:
         _extract_neighborhood(
             self.xc.reshape(-1), slp, bwp, k, n, m, bool(emsphinx_compatible), nh
         )
+        # the shared neighborhood-fed epilogue (spec
+        # 2026-09-07-spherical-gpu, D2 stage 7): one source of truth
+        # for the bounds bug, the step rejection and the grid formula
+        return self._interp_peak_from_neighborhood(index, nh, bool(emsphinx_compatible))
+
+    def _interp_peak_from_neighborhood(
+        self,
+        index: int,
+        neighborhood: np.ndarray,
+        emsphinx_compatible: bool = True,
+    ) -> tuple[np.ndarray, float, np.ndarray]:
+        """Return the sub-pixel maximum near a grid point from an
+        already extracted 3 x 3 x 3 neighborhood.
+
+        The shared, neighborhood-fed peak epilogue of both backends
+        (spec ``2026-09-07-spherical-gpu``, D2 stage 7): the flat
+        index to ``(k, n, m)`` decomposition, the tri-quadratic
+        :func:`_interpolate_maxima`, the ``emsphinx_compatible``
+        bounds check which reads ``|x[0]|`` twice and never
+        ``|x[2]|``, the step-rejection reset and the ZYZ grid
+        formula -- byte-for-byte the epilogue of
+        :meth:`interp_peak`, which extracts the neighborhood from
+        :attr:`xc` itself, while the GPU path feeds the 27 values
+        its device gather shipped back.
+
+        Parameters
+        ----------
+        index
+            Flat index into a ``(bwP, slP, slP)`` cube, at or near a
+            local maximum.  Unlike :meth:`interp_peak` it is not
+            validated against :attr:`xc`, which the GPU path never
+            materialises on the host.
+        neighborhood
+            ``(3, 3, 3)`` 64-bit float neighborhood around the
+            index, e.g. the ``nh`` of :func:`_extract_neighborhood`
+            or the reshaped device gather.
+        emsphinx_compatible
+            Whether to reproduce the two C++ defects, ``True`` by
+            default, see :meth:`interp_peak`.
+
+        Returns
+        -------
+        zyz
+            Passive ZYZ Euler angles as :meth:`interp_peak` returns
+            them.
+        peak
+            Value of the fitted tri-quadratic at the maximum, or the
+            value at the centre of the neighbourhood when the step
+            was rejected.
+        x
+            Sub-pixel offset of the maximum from the centre, exactly
+            zero when the step was rejected.
+        """
+        index = int(index)
+        slp = self.side_length
+        # detail::extractInds(), lines 1249-1255
+        k, remainder = divmod(index, slp * slp)
+        n, m = divmod(remainder, slp)
+        # a float32 device gather is accepted and promoted; for the
+        # CPU path's own 64-bit contiguous ``nh`` this is a no-op
+        nh = np.ascontiguousarray(neighborhood, dtype=np.float64)
         x = np.zeros(3)
         peak = _interpolate_maxima(nh, x)
         if emsphinx_compatible:

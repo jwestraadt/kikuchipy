@@ -311,6 +311,9 @@ class TestSignature:
             "circular_mask": False,
             "emsphinx_compatible": True,
             "pseudo_symmetry_ops": None,
+            # ``backend`` joined in spec 2026-09-07-spherical-gpu
+            # (D1): the CPU path stays the default and the reference
+            "backend": "cpu",
             "chunksize": None,
             "verbose": 1,
         }
@@ -1330,7 +1333,13 @@ class TestPseudoSymmetryOps:
         names = list(inspect.signature(kp.signals.EBSD.spherical_indexing).parameters)
         position = names.index("pseudo_symmetry_ops")
         assert names[position - 1] == "emsphinx_compatible"
-        assert names[position + 1] == "chunksize"
+        # ``backend`` was appended after ``pseudo_symmetry_ops`` and
+        # before ``chunksize`` in spec 2026-09-07-spherical-gpu (D1),
+        # shifting the ``chunksize``/``verbose`` positional slots --
+        # the recorded deviation of that spec (no positional caller
+        # of either exists in the repo or tests)
+        assert names[position + 1] == "backend"
+        assert names[position + 2] == "chunksize"
 
     def test_pseudo_symmetry_index_only_with_ops(self):
         # the property exists exactly when operators were passed,
