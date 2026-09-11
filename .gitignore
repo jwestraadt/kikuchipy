@@ -120,3 +120,34 @@ uv.lock
 
 # Fork-local design documents (kept out of the upstream staging branch)
 specs/
+
+# Raw EBSD data sets and arrays dropped into the working tree; the
+# package data directory is re-included so fixtures stay addable
+*.h5oina
+*.h5ebsd
+*.h5
+*.hdf5
+*.up1
+*.up2
+*.ebsp
+*.ang
+*.ctf
+*.osc
+*.dat
+*.sht
+*.npz
+*.npy
+!src/kikuchipy/data/**/*.h5oina
+!src/kikuchipy/data/**/*.h5ebsd
+!src/kikuchipy/data/**/*.h5
+!src/kikuchipy/data/**/*.hdf5
+!src/kikuchipy/data/**/*.up1
+!src/kikuchipy/data/**/*.up2
+!src/kikuchipy/data/**/*.ebsp
+!src/kikuchipy/data/**/*.ang
+!src/kikuchipy/data/**/*.ctf
+!src/kikuchipy/data/**/*.osc
+!src/kikuchipy/data/**/*.dat
+!src/kikuchipy/data/**/*.sht
+!src/kikuchipy/data/**/*.npz
+!src/kikuchipy/data/**/*.npy
