@@ -18,6 +18,9 @@ Unreleased
 
 Added
 -----
+- Tutorial on pseudo-symmetry operator discovery and variant indexing,
+  ``doc/tutorials/pseudo_symmetry.ipynb``.
+  (`#14 <https://github.com/jwestraadt/kikuchipy/pull/14>`_)
 - Pseudo-symmetry prediction and handling for spherical indexing, a CPU port of
   EMSphInx's ``MasterXcorr`` program:
   ``kikuchipy.indexing.find_pseudo_symmetry_operators()`` predicts pseudo-symmetry
