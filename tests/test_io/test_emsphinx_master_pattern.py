@@ -20,7 +20,7 @@
 """Tests for the EMSphInx *.sht master pattern reader.
 
 Covers the "io plugin" assertions of
-``specs/2026-08-16-sht-master-spectra-and-file/validation.md``.
+the master spectra and .sht file validation checklist.
 """
 
 from pathlib import Path

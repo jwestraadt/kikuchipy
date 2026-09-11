@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._namelist``.
 
 Covers the ``test_spherical_namelist.py`` assertions of
-``specs/2026-09-02-sht-interop/validation.md``:
+the EMSphInx interoperability validation checklist:
 
 - The generic parser: the ported ``test/util/nml.cpp`` suite (scalar
   and vector parsing, partial parsing detection and its eleven error

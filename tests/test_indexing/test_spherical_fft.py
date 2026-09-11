@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._fft``.
 
 Covers the "FFT sizing" assertions of
-``specs/2026-08-16-sht-square-grid-transform/validation.md``:
+the square-grid transform validation checklist:
 
 - ``fast_size(n) >= max(1, n)`` and ``fast_size(n)`` is 13-smooth for
   ``n`` in ``range(0, 1101)``.
@@ -83,7 +83,7 @@ NOT_FAST_BANDWIDTH = 55
 # EMSphInx/include/util/fft.hpp:438-491 (commit 60f3517) verbatim with
 # g++ 15.2.0 and tabulating fastSize(n) for n in [0, 1100]; parity with
 # the C++ wins over the brute force oracle, per
-# specs/2026-08-16-sht-square-grid-transform/plan.md.
+# the port's design rule of bit-for-bit parity with EMSphInx.
 EMSPHINX_COUNTEREXAMPLES = {n: 770 for n in range(757, 769)}
 
 SMOOTH_PRIMES = (2, 3, 5, 7, 11, 13)

@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._indexer``.
 
 Covers the assertions of
-``specs/2026-09-02-spherical-indexing-ebsd/validation.md`` which
+the EBSD spherical indexing validation checklist which
 belong to the module rather than to the signal method:
 
 - Construction and guards: the frozen signature defaults, the
@@ -917,7 +917,7 @@ class TestIndexPatterns:
 
 # ------------- Pseudo-symmetry indexing (Phase 8 spec D4/D5) -------- #
 
-# Constants of ``specs/2026-09-06-pseudo-symmetry`` (requirement IDs
+# Constants of the pseudo-symmetry design (requirement IDs
 # in the test docstrings).  The measured-then-pinned values were
 # filled 2026-09-07 at the implementation gate; the measurements and
 # their recipes are in validation.md Recorded results.

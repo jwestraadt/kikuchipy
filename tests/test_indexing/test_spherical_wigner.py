@@ -22,7 +22,7 @@ reference tables in ``kikuchipy.data.emsphinx``.
 
 Covers the "Reference tables", "Wigner d", ``rotate_harmonics``,
 "Derivatives", "Kernels and conventions" and "Weekly" assertions of
-``specs/2026-08-16-sht-wigner-d/validation.md``:
+the Wigner d validation checklist:
 
 - The seven Mathematica tables transcribed from
   ``EMSphInx/test/sht/wigner.cpp`` are structurally sound, and the

@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._sht``.
 
 Covers the "SHT", real data, timing and "Weekly" assertions of
-``specs/2026-08-16-sht-square-grid-transform/validation.md``:
+the square-grid transform validation checklist:
 
 - Analyze oracle: the complex ``Y_l^m`` sampled on the grid normals
   gives ``alm[m, l] == 1`` (1e-10) and every other entry below 1e-10
@@ -602,8 +602,8 @@ class TestBandwidthArgument:
 
 
 class TestLazyQuadratureWeights:
-    """Phase 2 amendment (``specs/2026-08-16-sht-master-spectra-and-file``
-    plan task 1): the quadrature weights are computed on first access
+    """Phase 2 amendment (made while building the master spectra and
+    .sht file): the quadrature weights are computed on first access
     instead of by the constructor, so that a Lambert transformer of any
     odd ``dim`` can synthesize. Only ``analyze`` needs the weights, and
     the Lambert weight sets cannot be solved with sufficient precision
@@ -1045,5 +1045,5 @@ class TestTimingBaseline:
         # so these bounds leave three orders of magnitude of headroom
         # for a loaded machine under -n 4 while still catching a
         # catastrophic regression. The bw 68 bound is the floor of
-        # two patterns per second per core of specs/tech-stack.md
+        # two patterns per second per core fixed as the throughput target
         assert elapsed < max_seconds

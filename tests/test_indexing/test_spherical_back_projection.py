@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._back_projection``.
 
 Covers every named assertion of
-``specs/2026-08-17-spherical-back-projection/validation.md`` which
+the spherical back-projection validation checklist which
 belongs to the back-projector:
 
 - Construction and guards: the attribute table at ``bw`` 68 with and

@@ -21,8 +21,7 @@
 ``IndexEBSD`` program.
 
 Covers every named assertion of
-``specs/2026-09-03-spherical-indexing-emsphinx-regression/
-validation.md``.  The eight shipped
+the EMSphInx regression validation checklist.  The eight shipped
 ``src/kikuchipy/data/emsphinx/regression_*.npz`` files hold what
 ``IndexEBSD.exe`` at commit ``60f3517`` wrote for eight configurations
 of kikuchipy's own inputs, together with the provenance needed to

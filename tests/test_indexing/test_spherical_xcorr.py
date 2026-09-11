@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._xcorr``.
 
 Covers every named assertion of
-``specs/2026-08-17-spherical-cross-correlation/validation.md``:
+the spherical cross-correlation validation checklist:
 
 - Sizes and layouts: the ``bw -> slP`` table of the ported
   ``fft::fastSize()`` (and a guard against

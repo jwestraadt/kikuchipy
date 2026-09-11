@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._preprocessing``.
 
 Covers every named assertion of
-``specs/2026-08-17-spherical-back-projection/validation.md`` which
+the spherical back-projection validation checklist which
 belongs to the pattern preprocessing:
 
 - The integer circular mask against ``kikuchipy.filters.Window``.

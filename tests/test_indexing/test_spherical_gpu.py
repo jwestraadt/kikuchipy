@@ -21,7 +21,7 @@
 (``kikuchipy.indexing._spherical._gpu`` and the ``backend`` plumbing
 of ``SphericalIndexer``/``EBSD.spherical_indexing``).
 
-Covers ``specs/2026-09-07-spherical-gpu/validation.md``:
+Covers the GPU backend validation checklist:
 
 - **Default suite** (no GPU, runs on CI): the backend switch and the
   CPU-default bitwise guard [D1/D5.1], the three-stage availability

@@ -1136,7 +1136,7 @@ class TestFitPatternDetectorOrientation:
 class TestGetSphericalHarmonics:
     """``EBSDMasterPattern.get_spherical_harmonics``, the kikuchipy
     equivalent of EMSphInx' ``mp2sht``
-    (``specs/2026-08-16-sht-master-spectra-and-file/validation.md``,
+    (the master spectra and .sht file validation checklist,
     "Signal method").
     """
 

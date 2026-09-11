@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.signals.EBSD.spherical_indexing``.
 
 Covers the assertions of
-``specs/2026-09-02-spherical-indexing-ebsd/validation.md`` which
+the EBSD spherical indexing validation checklist which
 belong to the signal method:
 
 - Real data: the nine ``nickel_ebsd_small`` patterns against the
@@ -1293,7 +1293,7 @@ class TestNickelLargeSubset:
 
 # --------------- Pseudo-symmetry (Phase 8 spec D2/D4/D9) ------------- #
 
-# Constants of ``specs/2026-09-06-pseudo-symmetry`` (requirement IDs
+# Constants of the pseudo-symmetry design (requirement IDs
 # in the docstrings; the measured-then-pinned values were filled
 # 2026-09-07 at the implementation gate, see validation.md Recorded
 # results).

@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._euler``.
 
 Covers the "Euler" assertions of
-``specs/2026-08-16-sht-wigner-d/validation.md``:
+the Wigner d validation checklist:
 
 - The ZYZ to Bunge relation ``(alpha + pi/2, beta, gamma - pi/2)``
   against :meth:`orix.quaternion.Rotation.from_euler` on 1000 random
@@ -282,8 +282,8 @@ class TestEmsphinxRotationsGrid:
     """
 
     def test_the_transcribed_eu2qu_equals_orix_from_euler_to_a_few_ulp(self):
-        # pins specs/_research/explore-emsphinx-xtal-util-vs-orix.md
-        # 1.2, and thereby the whole grid test as an EMSphInx oracle.
+        # pins the research finding that EMSphInx' eu2qu and orix's
+        # from_euler agree, and thereby the whole grid test as an EMSphInx oracle.
         # Bitwise on this machine, but numpy's CPU-dispatched sin/cos
         # (AVX512 vs AVX2 runners) and LLVM on arm64 differ in the last
         # ulp, so the cross-library comparison is pinned to 4 eps

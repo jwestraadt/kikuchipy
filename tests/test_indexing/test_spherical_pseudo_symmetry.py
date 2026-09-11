@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._pseudo_symmetry``.
 
 Covers the codec, prediction, result-object, export and binary
-sections of ``specs/2026-09-06-pseudo-symmetry/validation.md``:
+sections of the pseudo-symmetry validation checklist:
 
 - ``TestPsymFileCodec``: the EMsoft ``qu`` angle file grammar, the
   exact-identity skip, the frozen writer format, and the D2

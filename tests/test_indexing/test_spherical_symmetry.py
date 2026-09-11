@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._symmetry``.
 
 Covers the "Symmetry" assertions of
-``specs/2026-08-16-sht-master-spectra-and-file/validation.md``:
+the master spectra and .sht file validation checklist:
 
 - The 40 keys of ``Z_ROTATION_ORDER_AND_MIRROR`` are exactly the 38
   ``orix.quaternion.symmetry._groups`` names plus the ``"2"`` and

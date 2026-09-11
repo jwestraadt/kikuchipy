@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._grid``.
 
 Covers the "Grids" assertions of
-``specs/2026-08-16-sht-square-grid-transform/validation.md``:
+the square-grid transform validation checklist:
 
 - ``validate_dim``: ``dim < 3`` and even ``dim`` raise ``ValueError``.
 - ``normals(dim, layout)`` is unit length to 1e-15, the centre pixel is

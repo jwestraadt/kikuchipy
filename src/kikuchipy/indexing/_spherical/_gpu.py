@@ -141,7 +141,7 @@ if TYPE_CHECKING:  # pragma: no cover
 # Version floor of the three-stage gate's stage (a): the first CuPy
 # line built against NumPy 2.  Only 14.2.0 is actually tested
 # (machine-specific: RTX 2000 Ada 8 GB, driver 595.71, Windows 11;
-# recorded in specs/2026-09-07-spherical-gpu/validation.md)
+# measured 2026-09-07 at the implementation gate)
 _CUPY_MINIMUM_VERSION = 13
 
 # The frozen stage messages of the three-stage gate (D6.2).  Each
@@ -473,7 +473,7 @@ def _build_g_batch(xp: Any, gln_batch: Any, table: Any, bandwidth: int) -> tuple
         the complex128-multiply-then-cast alternative at bw 68,
         B=32, with indistinguishable cube parity (1.40e-7 against
         1.25e-7 relative to the float64 CPU cube; recorded in
-        ``specs/2026-09-07-spherical-gpu/validation.md``).
+        the implementation-gate measurements of 2026-09-07).
     table
         The NaN-zeroed transposed ``pi/2`` Wigner d table resident on
         the device, ``(bw, bw, bw)``, 32-bit float (any float dtype
@@ -991,7 +991,7 @@ def _gpu_memory_per_pattern_bytes(bandwidth: int) -> int:
     (float32).  Calibrated at the implementation gate against
     measured pool high-water marks (machine-specific, RTX 2000 Ada
     8 GB: recorded in
-    ``specs/2026-09-07-spherical-gpu/validation.md``): the model
+    the implementation-gate measurements of 2026-09-07): the model
     returns ~49.9 MB at bw 68 and ~108.3 at 88 against measured
     unpruned/pruned working sets of 52.4/37.6 and (pruned) 82.3
     MB/pattern -- the few percent the unpruned bw-68 run sits above

@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._pattern_repack``.
 
 Covers the ``test_spherical_pattern_repack.py`` assertions of
-``specs/2026-09-02-sht-interop/validation.md``:
+the EMSphInx interoperability validation checklist:
 
 - The HDF5 contract: contiguous layout, early allocation, zero
   filters, no chunks, a defined data offset, the data set shape and

@@ -21,7 +21,7 @@
 ``kikuchipy.indexing._spherical._master_pattern_harmonics``.
 
 Covers the "Harmonics" assertions of
-``specs/2026-08-16-sht-master-spectra-and-file/validation.md``:
+the master spectra and .sht file validation checklist:
 
 - The container: a copied, C-contiguous, square and lower triangle
   free coefficient array.
@@ -1843,7 +1843,7 @@ def _evaluate_harmonics(alm, direction):
 
 class TestRotate:
     """``MasterPatternHarmonics.rotate`` per D7 of the Phase 8 spec
-    (``specs/2026-09-06-pseudo-symmetry``): the active-rotation
+    (pseudo-symmetry): the active-rotation
     contract ``g(n) = f((~rotation) n)`` on top of the tested
     ``_wigner.rotate_harmonics``, with uniform symmetry-flag
     neutralization.  Replaces the pinned ``NotImplementedError``

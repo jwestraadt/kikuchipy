@@ -20,7 +20,7 @@
 """Tests of the Newton refinement on the sphere.
 
 Covers every named assertion of
-``specs/2026-09-02-spherical-refinement/validation.md``, which spans
+the Newton refinement validation checklist, which spans
 three modules and is therefore collected here rather than split
 across the three coarse-path suites:
 

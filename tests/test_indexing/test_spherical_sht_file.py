@@ -20,7 +20,7 @@
 """Tests of ``kikuchipy.indexing._spherical._sht_file``.
 
 Covers the ".sht codec" assertions of
-``specs/2026-08-16-sht-master-spectra-and-file/validation.md``:
+the master spectra and .sht file validation checklist:
 
 - CRC-32C check values, table spot values by true index, the table
   sum and a recorded timing on the 74 828 B shipped file.
