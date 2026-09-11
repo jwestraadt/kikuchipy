@@ -2091,26 +2091,69 @@ class MasterPatternHarmonics:
         )
 
     def rotate(self, rotation: Rotation) -> MasterPatternHarmonics:
-        """Return coefficients of the rotated master pattern.
+        """Return the coefficients of the master pattern actively
+        rotated by a rotation.
 
         Parameters
         ----------
         rotation
-            The rotation.
+            The rotation, of size one.
 
         Returns
         -------
         harmonics
-            New instance.
+            New instance whose synthesized function is
+            ``g(n) = f((~rotation) * n)``, i.e. a feature of ``f``
+            at a direction ``n0`` moves to ``rotation * n0``.  The
+            composition identity is
+            ``h.rotate(r1).rotate(r2) == h.rotate(r2 * r1)`` on the
+            coefficients.
 
-        Raises
-        ------
-        NotImplementedError
-            Always, until the Wigner-d tables arrive.
+        Notes
+        -----
+        The returned object's symmetry flags are **neutralized**:
+        its phase is replaced so that ``n_fold == 1`` and
+        ``has_equatorial_mirror == False``, since a rotation about
+        anything but the z axis falsifies both flags and the uniform
+        rule is the safe one.  Reassign the phase explicitly when a
+        rotation about z should keep its folding.
+
+        This allocates a full Wigner d table of the bandwidth, 5.0
+        MB at a bandwidth of 68 and 906 MB at 384, so it is a
+        construction and visualization tool and never a per pattern
+        operation.
         """
-        raise NotImplementedError(
-            "Rotating spherical harmonic coefficients requires the Wigner-d "
-            "tables of Phase 3 (sht-wigner-d)"
+        from orix.crystal_map import Phase
+
+        from kikuchipy.indexing._spherical._euler import quaternion_to_zyz
+        from kikuchipy.indexing._spherical._wigner import rotate_harmonics
+
+        # The frozen Wigner identity: ``rotate_harmonics(alm, zyz)``
+        # synthesizes ``g(n) = f((~R) * n)`` with
+        # ``R = Rotation(zyz_to_quaternion(zyz))``, so passing the ZYZ
+        # angles whose quaternion is the given rotation realises the
+        # active contract above exactly
+        zyz = quaternion_to_zyz(rotation.data).reshape(3)
+        alm = rotate_harmonics(self.alm, zyz)
+        if self.phase is None:
+            phase = None
+        else:
+            # The uniform neutralization: a phase whose point group
+            # claims no z fold and no equatorial mirror, keeping the
+            # material identity.  The constructor derives the flags
+            # from this point group and a claim of no symmetry never
+            # warns nor downgrades
+            phase = Phase(
+                name=self.phase.name,
+                point_group="1",
+                structure=self.phase.structure,
+            )
+        return type(self)(
+            alm,
+            phase=phase,
+            beam_energy=self.beam_energy,
+            sample_tilt=self.sample_tilt,
+            original_metadata=deepcopy(self.original_metadata),
         )
 
     def power_spectrum(self) -> np.ndarray:

@@ -18,6 +18,20 @@ Unreleased
 
 Added
 -----
+- Pseudo-symmetry prediction and handling for spherical indexing, a CPU port of
+  EMSphInx's ``MasterXcorr`` program:
+  ``kikuchipy.indexing.find_pseudo_symmetry_operators()`` predicts pseudo-symmetry
+  operators from the rotational cross-correlation of one master pattern (or between
+  two), returned as ``kikuchipy.indexing.PseudoSymmetryOperators``;
+  ``kikuchipy.indexing.read_emsphinx_psym_file()`` and
+  ``kikuchipy.indexing.write_emsphinx_psym_file()`` read and write EMSphInx psymfiles;
+  the new ``pseudo_symmetry_ops`` parameter of
+  ``kikuchipy.indexing.SphericalIndexer`` and ``EBSD.spherical_indexing()`` scores
+  operator variants during indexing, reporting the winning variant in the
+  ``"pseudo_symmetry_index"`` property; and
+  ``kikuchipy.indexing.MasterPatternHarmonics.rotate()`` rotates a master pattern's
+  harmonic coefficients.
+  (`#13 <https://github.com/jwestraadt/kikuchipy/pull/13>`_)
 - Tutorial on spherical indexing, ``doc/tutorials/spherical_indexing.ipynb``, and a
   section on reading EMSphInx ``*.sht`` master pattern files in the load/save
   tutorial.
