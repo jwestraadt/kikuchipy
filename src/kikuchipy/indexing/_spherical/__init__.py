@@ -30,12 +30,16 @@ developers, not for users.
 
 Submodules
 ----------
+``_euler``
+    ZYZ Euler angle conversions and the beta wrap.
 ``_fft``
     Fast FFT sizes and the bandwidths that use them.
 ``_grid``
     Square Lambert and square Legendre grids on the unit sphere.
 ``_sht``
     Discrete spherical harmonic transform on those grids.
+``_wigner``
+    Wigner (lowercase) d functions, tables and harmonic rotation.
 
 Nothing is imported here on purpose: each submodule is imported
 directly by the code that needs it, keeping the import cost of
