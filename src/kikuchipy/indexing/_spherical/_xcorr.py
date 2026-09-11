@@ -146,8 +146,13 @@ with the peak value equal to the total power ``<f, f>``.  An on-grid
 equal in each direction and the Newton step from ``x = 0`` vanishes.
 
 The boundary orientation of a result is
-``_euler.rotation_from_zyz(zyz)``, i.e. sample to crystal, which is
-**provisional until Phase 5** as Phase 3 recorded.
+``_euler.rotation_from_zyz(zyz)``, i.e. sample to crystal.  Phase 5
+(``spherical-back-projection``, D8) froze that sign by measurement:
+over 27 rotations of ``EBSDMasterPattern.get_patterns`` back-projected
+and correlated at ``bw`` 68, with either correlator,
+``~Rotation(zyz_to_quaternion(zyz))`` is 0.34 degrees from the true
+orientation in the median and 0.72 at worst, while
+``Rotation(zyz_to_quaternion(zyz))`` is 35 degrees out.
 
 **Grid and layouts** (frozen).  With ``bw`` the bandwidth,
 
