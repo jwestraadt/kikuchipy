@@ -45,4 +45,7 @@ that users of kikuchipy might find useful:
   crystallographic GUI software for Windows.
   Has numerous features, including EBSD simulation.
 - `EMSphinxEBSD <https://emsphinx.readthedocs.io/en/latest/emsphinxebsd.html>`__: GUI
-  for indexing EBSD patterns using spherical harmonics, part of the EMSphinx software.
+  for indexing EBSD patterns using spherical harmonics, part of the
+  `EMSphInx <https://github.com/EMsoft-org/EMSphInx>`__ software. Master patterns in
+  its spherical harmonic ``.sht`` format are available from the
+  `SHT database <https://github.com/EMsoft-org/SHTdatabase>`__.
