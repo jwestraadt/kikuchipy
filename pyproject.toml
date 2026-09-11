@@ -156,6 +156,9 @@ precision = 2
 [tool.coverage.run]
 branch = false
 source = ["src/kikuchipy"]
+# Scripts which create shipped data files, run once by a maintainer
+# with external programs and never imported by the package
+omit = ["src/kikuchipy/data/*/create_*.py"]
 relative_files = true
 
 [tool.pytest.ini_options]

@@ -1616,6 +1616,44 @@ class TestVendorConversions:
         ]
         assert not np.allclose(pcs[0], pcs[1])
 
+    def test_emsoft_delta_invariance_of_the_conversion(self):
+        # ``delta`` is live in the EMsoft *formula* above, and inert
+        # in the EMsoft *route*: ``from_kwargs`` scales the
+        # scintillator distance as ``sDst = PCz h delta`` and
+        # ``to_detector`` divides it back out, and the three values
+        # halve exactly at the six significant digits ``to_string``
+        # writes, so the round tripped pattern centre is **bit
+        # identical**.  Measured through the binary as well: an EMsoft
+        # name list at ``delta`` 250 and at 500 gives bitwise
+        # identical Euler angles, image quality and metric, which is
+        # why the Phase 10 reference matrix sweeps no ``delta`` axis
+        # and pins its whole content here instead
+        detector = kp.data.nickel_ebsd_small().detector.deepcopy()
+        detector.pc = detector.pc_average
+        pcs = []
+        for delta, distance in (
+            (125.0, "3755.3"),
+            (250.0, "7510.6"),
+            (500.0, "15021.2"),
+        ):
+            namelist = EMSphInxNamelist.from_kwargs(
+                pattern_file="patterns.h5",
+                master_files=["ni.sht"],
+                detector=detector,
+                scan_shape=(3, 3),
+                scan_steps=(1.5, 1.5),
+                data_file="out.h5",
+                vendor="EMsoft",
+                delta=delta,
+            )
+            text = namelist.to_string()
+            assert line_of(text, "pctr").endswith(f", {distance},")
+            pcs.append(
+                EMSphInxNamelist.from_string(text).to_detector(sample_tilt=70.0).pc
+            )
+        assert np.array_equal(pcs[0], pcs[1])
+        assert np.array_equal(pcs[0], pcs[2])
+
     @pytest.mark.parametrize("vendor", VENDORS)
     def test_pctr_pc_round_trip(self, vendor):
         pctr = RECTANGULAR_TABLE[(48, 60)][vendor]
