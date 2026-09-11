@@ -49,6 +49,9 @@ Submodules
     Symmetry of the coefficients of a master pattern.
 ``_wigner``
     Wigner (lowercase) d functions, tables and harmonic rotation.
+``_xcorr``
+    SO(3) cross-correlation of two spherical functions from their
+    harmonic coefficients, and its peak.
 
 Nothing is imported here on purpose: each submodule is imported
 directly by the code that needs it, keeping the import cost of
