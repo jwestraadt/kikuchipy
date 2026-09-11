@@ -196,8 +196,9 @@ def fast_bandwidths(bandwidth_min: int = 16, bandwidth_max: int = 512) -> np.nda
     The spherical cross-correlation of two functions band-limited at
     ``bandwidth`` needs three-dimensional FFTs of side length
     ``2 * bandwidth - 1``. Bandwidths for which this length is already
-    a fast size (see :func:`fast_size`) need no zero padding and are
-    therefore the fastest to index with.
+    a fast transform size, i.e. a product of the prime factors 2, 3, 5,
+    7, 11 and 13 which the transform library is fastest for, need no
+    zero padding and are therefore the fastest to index with.
 
     Parameters
     ----------
@@ -221,12 +222,26 @@ def fast_bandwidths(bandwidth_min: int = 16, bandwidth_max: int = 512) -> np.nda
         If ``bandwidth_min`` is smaller than one or larger than
         ``bandwidth_max``.
 
+    See Also
+    --------
+    kikuchipy.indexing.SphericalIndexer
+    kikuchipy.signals.EBSD.spherical_indexing
+
     Notes
     -----
     The returned array contains all bandwidths recommended in
     EMSphInx' EBSD name list (``include/modality/ebsd/nml.hpp``, lines
     298 and 415), which are the bandwidths this function is validated
     against.
+
+    Examples
+    --------
+    The bandwidths between 50 and 90 which need no zero padding, of
+    which 68 is the indexing default:
+
+    >>> import kikuchipy as kp
+    >>> kp.indexing.fast_bandwidths(50, 90)
+    array([50, 53, 59, 61, 63, 68, 72, 74, 83, 85, 88])
     """
     if bandwidth_min < 1:
         raise ValueError(f"Smallest bandwidth {bandwidth_min} must be at least one")

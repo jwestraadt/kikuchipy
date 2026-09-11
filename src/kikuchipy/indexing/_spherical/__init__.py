@@ -39,6 +39,9 @@ Submodules
     Fast FFT sizes and the bandwidths that use them.
 ``_grid``
     Square Lambert and square Legendre grids on the unit sphere.
+``_indexer``
+    The spherical indexer: per-pattern pipeline, multi-phase top-n
+    bookkeeping, dask chunking.
 ``_master_pattern_harmonics``
     Spherical harmonic coefficients of an EBSD master pattern,
     read from and written to EMSphInx *.sht files.

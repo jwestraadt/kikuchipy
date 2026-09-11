@@ -18,6 +18,14 @@ Unreleased
 
 Added
 -----
+- Spherical indexing of EBSD patterns against one or more master patterns with
+  ``EBSD.spherical_indexing()``, ``kikuchipy.indexing.SphericalIndexer`` and
+  ``kikuchipy.indexing.SphericalBackProjector``, a CPU port of EMSphInx's
+  ``IndexEBSD``.
+  (`#8 <https://github.com/jwestraadt/kikuchipy/pull/8>`_)
+- ``kikuchipy.indexing.fast_bandwidths()``, the spherical indexing bandwidths with
+  fast transforms.
+  (`#8 <https://github.com/jwestraadt/kikuchipy/pull/8>`_)
 - Reader for EMSphInx ``.sht`` master patterns, ``kp.load("*.sht")`` (io plugin
   ``emsphinx_master_pattern``).
   (`#5 <https://github.com/jwestraadt/kikuchipy/pull/5>`_)
