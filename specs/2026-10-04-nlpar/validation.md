@@ -274,8 +274,8 @@ compile.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| `EXP_KERNEL_ULP` | 1 float32 ulp | |
-| all other kernels vs `py_func` | bitwise (not MTP) | |
+| `EXP_KERNEL_ULP` | 1 float32 ulp | **0** (exact ulp count), 2026-10-05, entry 7 machine, `probe_pins.py` (the two test bodies) + broad probe: measured 0 ulp compiled vs `py_func` (4 arms) and kernel vs closed form (4 arms); 0 of 2e5 (`py_func`) and 2e6 (closed form) random d in [-5, 60] per (lam, dthresh), lam {0.5, 0.7, 1.0, 2.5}, dthresh {0, 0.5} (entry 7, item 3) |
+| all other kernels vs `py_func` | bitwise (not MTP) | bitwise confirmed 2026-10-05: every `TestKernels` `py_func` test passes (`-k TestKernels` 179 passed, 0 failed, after the pins) |
 
 ### V1 -- Analytic identities (`tests/test_signals/test_ebsd_nlpar.py`, `TestIdentities`) -- Stage A
 
@@ -417,11 +417,11 @@ its `astype(np.float32)`) and `random_uniform_saturated((4, 5), (6,
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| `REFERENCE_MAX_ABS_GREY`, float32 vs float64 reference, max abs | 1e-3 grey levels (MTP; ~2x the measured value) | |
-| pixels differing by 1 after `rint` | only where the reference is within `REFERENCE_MAX_ABS_GREY` of a half-integer; none by >= 2 (bound) | |
-| constant map (`saturation_protect=False`) and box mean, float32 output vs exact | <= `n_window` float32 ulp (structural; probe 2026-10-04: 2-3 / 3-4 / 11-13 ulp at 9 / 20 / 49 weights) | |
-| constant map (`saturation_protect=True`), every dtype | bitwise (the `n2 == 0` exclusion route; not MTP) | |
-| everything else in V1 | bitwise or exact | |
+| `REFERENCE_MAX_ABS_GREY`, float32 vs float64 reference, max abs | 1e-3 grey levels (MTP; ~2x the measured value) | **1.4e-4** (2.03x), 2026-10-05, entry 7 machine, `probe_pins.py` (the bodies of the reference agreement and `test_map_smaller_than_the_window`): measured worst 6.91e-5 (arm `sr=1-lam=0.7`) over 13 readings 1.96e-5 to 6.91e-5 (entry 7, item 3) |
+| pixels differing by 1 after `rint` | only where the reference is within `REFERENCE_MAX_ABS_GREY` of a half-integer; none by >= 2 (bound) | measured 2026-10-05: 0 pixels differ after `rint` + clip in all 11 arms; closest reference value to a half-integer 3.9e-5 (arm `saturation_protect=False`), excluded by the `far` filter |
+| constant map (`saturation_protect=False`) and box mean, float32 output vs exact | <= `n_window` float32 ulp (structural; probe 2026-10-04: 2-3 / 3-4 / 11-13 ulp at 9 / 20 / 49 weights) | measured 2026-10-05 (`probe_extra.py`): constant map 2 / 0 ulp at 9 / 20 weights (uint8 and float32 input); box mean 2.0 / 2.07 / 2.0 spacings at sr 1 / (1, 2) / 2 |
+| constant map (`saturation_protect=True`), every dtype | bitwise (the `n2 == 0` exclusion route; not MTP) | bitwise confirmed 2026-10-05 (test passes, all 8 arms) |
+| everything else in V1 | bitwise or exact | confirmed 2026-10-05: `-k TestIdentities` 36 passed, 0 failed, after the pins |
 
 ### V2 -- PyEBSDIndex sigma parity (`tests/test_signals/test_util/test_nlpar.py`, `TestSigmaOracle`) -- Stage A [skipif pyebsdindex]
 
@@ -519,10 +519,10 @@ after warm-up.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| sigma vs `sigma_numba`, all arms | bitwise (fallback `SIGMA_PARITY_ULP`, expected 0) | |
-| normalised 3x3 distances, neighbour slots with `nout >= 1` (self slot excluded) | bitwise | |
-| `sigma_numba` wall time, Ni, single thread | 0.12 s (recorded, never gated) | |
-| uint16 two-threshold arm | 0.9961 excludes [65280, 65469], 0.999 keeps them (computed 2026-10-04) | |
+| sigma vs `sigma_numba`, all arms | bitwise (fallback `SIGMA_PARITY_ULP`, expected 0) | **`SIGMA_PARITY_ULP = 0`** kept, 2026-10-05, entry 7 machine: 18 of 18 `test_sigma_parity_compiled_*` pass bitwise (`-k sigma_parity`, 18 passed) |
+| normalised 3x3 distances, neighbour slots with `nout >= 1` (self slot excluded) | bitwise | bitwise confirmed 2026-10-05 (the same 18 tests); on the V4 map ours and `dout` both give mean 1.2049, std 0.8266 over 1012 neighbour slots |
+| `sigma_numba` wall time, Ni, single thread | 0.12 s (recorded, never gated) | recorded 2026-10-05 (`probe_warmup.py`, 3 repeats): 0.127-0.132 s raw, 0.128-0.129 s corrected single thread; 0.0245-0.0336 s at the default 20 numba threads |
+| uint16 two-threshold arm | 0.9961 excludes [65280, 65469], 0.999 keeps them (computed 2026-10-04) | confirmed 2026-10-05: `TestPolicyOracles::test_uint16_two_threshold_arm` and `TestSigmaOracle::test_sigma_saturation_threshold_constant` pass |
 
 ### V3 -- PyEBSDIndex averaged-pattern parity (`tests/test_signals/test_util/test_nlpar.py`, `TestAveragingOracle`) -- Stage A [skipif pyebsdindex]
 
@@ -636,11 +636,11 @@ end to end). Runtime: small maps < 5 s after warm-up; Ni compiled
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| float32 output vs `nlpar_nb`, all arms | bitwise (fallback `AVERAGE_PARITY_ULP`, expected 0) | |
-| pixels differing by >= 2 grey levels after `rint` | 0 (bound) | |
-| `BORDER_BAND_MIN_DIFF`, worst border pixel vs clamp / zero-extend | O(1) grey level (expected class; MTP) | |
-| `nlpar_nb` wall time, Ni, sr=3, single thread | 0.54 s (recorded) | |
-| `PYEBSDINDEX_JIT_WARMUP_S`, both kernels | unmeasured (recorded) | |
+| float32 output vs `nlpar_nb`, all arms | bitwise (fallback `AVERAGE_PARITY_ULP`, expected 0) | **`AVERAGE_PARITY_ULP = 0`** kept, 2026-10-05, entry 7 machine: 392 of 392 `test_average_parity_compiled_*` pass bitwise (`-k average_parity`, 392 passed), the Ni arms included |
+| pixels differing by >= 2 grey levels after `rint` | 0 (bound) | 0 confirmed 2026-10-05 (the same 392 tests) |
+| `BORDER_BAND_MIN_DIFF`, worst border pixel vs clamp / zero-extend | O(1) grey level (expected class; MTP) | **3.63** (half the measured minimum), 2026-10-05, entry 7 machine, `probe_pins.py` (the test body): all four worst-pixel readings (oracle and ours, vs clamp and vs zero-extend) equal 7.2599640 grey levels |
+| `nlpar_nb` wall time, Ni, sr=3, single thread | 0.54 s (recorded) | recorded 2026-10-05 (`probe_warmup.py`, 3 repeats): raw 0.578-0.579 s (lam 0.7) / 0.493-0.503 s (lam 2.5); corrected 0.619-0.627 s / 0.492-0.502 s; 0.087-0.196 s at the default 20 numba threads |
+| `PYEBSDINDEX_JIT_WARMUP_S`, both kernels | unmeasured (recorded) | **7.4** recorded 2026-10-05 (`probe_warmup.py`, 3 fresh processes each): cold compile 7.39-7.40 s (`sigma_numba` 4.06-4.08 s + `nlpar_nb` 3.31-3.34 s, fresh `cache=False` dispatchers of the kernels' `py_func`); the fixture recipe with the numba cache present 0.078-0.088 s |
 
 ### V4 -- iid-noise oracle (`tests/test_signals/test_ebsd_nlpar.py`, `TestNoiseOracle`) -- Stage A
 
@@ -701,10 +701,10 @@ Gating: default. Runtime: < 5 s.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| `NOISE_SIGMA_RATIO_BAND`, N 1024 | derived 0.969-0.978 (2026-09-11 "-1.0..-1.4 sqrt(2/N) in sigma^2"; arithmetic 2026-10-04) | |
-| `D_MEAN_BAND` / `D_STD_BAND`, N 1024 | derived ~+1.2 / ~1.0 (2026-10-04) | |
-| `UNIT_WEIGHT_FRACTION_BAND` | derived ~0.1 (2026-10-04) | |
-| `NOISE_REDUCTION_TOL` | ~5 % class | |
+| `NOISE_SIGMA_RATIO_BAND`, N 1024 | derived 0.969-0.978 (2026-09-11 "-1.0..-1.4 sqrt(2/N) in sigma^2"; arithmetic 2026-10-04) | **(0.963, 0.983)**, 2026-10-05, entry 7 machine, `probe_pins.py` + `probe_bands.py`: measured 0.97302 (seed 0); seeds 0-19 range 0.96852-0.97762 (the derived band confirmed); band = measured +- that range (entry 7, item 4); S5 mean / median estimators 1.0009 / 1.0002, outside |
+| `D_MEAN_BAND` / `D_STD_BAND`, N 1024 | derived ~+1.2 / ~1.0 (2026-10-04) | **(1.01, 1.40) / (0.69, 0.97)**, 2026-10-05, same recipe: measured 1.2049 / 0.8266 (seed 0), seeds 0-19 1.1367-1.3270 / 0.7543-0.8880. Mean seed confirmed; std seed ~1.0 REFUTED (entry 7, item 6 (a)): the compiled `sigma_numba` `dout` on the same map has the same std 0.8266. M3 1.704 / 1.169, M4 6.50 / 4.45, M1 mean 46.5, all outside |
+| `UNIT_WEIGHT_FRACTION_BAND` | derived ~0.1 (2026-10-04) | **(0.057, 0.136)**, 2026-10-05, same recipe: measured 0.09606 (seed 0), seeds 0-19 0.06047-0.09954; M6 gives 0.0029 and weights > 1 |
+| `NOISE_REDUCTION_TOL` | ~5 % class | **0.08** (~2x, 2.06x), 2026-10-05, same recipe: measured 0.0388 (variance 2.061 vs 1.984 expected); seeds 0-19 0.010-0.068 |
 
 ### V5 -- Two-grain sharp boundary (`tests/test_signals/test_ebsd_nlpar.py`, `TestTwoGrain`) -- Stage A (tutorial figure Stage C)
 
@@ -752,10 +752,10 @@ not exactly zero. Gating: default. Runtime: < 5 s.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| cross-boundary d at Delta 30, sigma 8, N 1024 | derived 159 (2026-09-11; 159.1 recomputed 2026-10-04) | |
-| cross-boundary weights, lam <= 1.2 | exactly 0.0 (exact) | |
-| `TWO_GRAIN_CONTRAST_MIN` | 0.995 | |
-| `TWO_GRAIN_BOUNDARY_RESIDUAL_TOL` | ~1.0-1.3 class | |
+| cross-boundary d at Delta 30, sigma 8, N 1024 | derived 159 (2026-09-11; 159.1 recomputed 2026-10-04) | measured 2026-10-05 (`probe_extra.py`, our distances kernel at sr 3 on `two_grain()`): min 157.03, mean 168.46 over the 840 cross-boundary window slots |
+| cross-boundary weights, lam <= 1.2 | exactly 0.0 (exact) | exact 0.0 confirmed 2026-10-05 (test passes at lam 0.7 / 1.0; probe: largest float32 cross weight 0.0 at lam 0.7 / 1.0 / 1.2, 1.2e-11 at lam 2.5) |
+| `TWO_GRAIN_CONTRAST_MIN` | 0.995 | **0.995** (~2x the measured loss), 2026-10-05, entry 7 machine, `probe_pins.py` + `probe_two_grain.py`: measured 0.99842 (lam 0.7) / 0.99776 (lam 2.5), worst loss 0.0022; seeds 1-20 0.991-1.007 (no systematic loss); Gaussian arm 0.401 |
+| `TWO_GRAIN_BOUNDARY_RESIDUAL_TOL` | ~1.0-1.3 class | **1.65** (~2x the measured excess over 1), 2026-10-05, same recipe: measured 1.3228 (rms 1.932 boundary / 1.461 interior); seeds 1-20 1.246-1.347 |
 
 ### V6 -- Lambda optimisation (`tests/test_signals/test_util/test_nlpar.py`, `TestLambdaOracle`; `tests/test_signals/test_ebsd_nlpar.py`, `TestLambdaMethod`) -- Stage B
 
@@ -1175,11 +1175,11 @@ default; Ni arms [download]. Runtime:
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| lazy vs eager, every chunking | bitwise (not MTP) | |
-| depth for (26, 26, 3) at r=3 / r=4; (47, 8) at r=4 | 4 / 6; 4 (rule, re-computed 2026-10-04) | |
-| default chunking of `nickel_ebsd_large` at 8e6 bytes | `((47, 8), (47, 28))` (measured 2026-10-04, dask 2026.3.0) | |
-| `_reduce_chunks` on the lazy inputs of the method arms (V7 header) | row chunks kept, columns one chunk; Ni `((26, 26, 3), (75,))` -> `((26, 26, 3), (40, 35))` (measured 2026-10-04, dask 2026.3.0) | |
-| output mean vs input mean | within 0.5 grey levels (bound) | |
+| lazy vs eager, every chunking | bitwise (not MTP) | Stage B (lazy route). Stage A driver arms bitwise confirmed 2026-10-05: `TestDepthAndHalo::test_pass_one_driver_on_multichunk_dask_array_equals_the_kernel` and `test_pass_two_driver_on_multichunk_dask_array_equals_single_chunk` pass, every chunking |
+| depth for (26, 26, 3) at r=3 / r=4; (47, 8) at r=4 | 4 / 6; 4 (rule, re-computed 2026-10-04) | confirmed 2026-10-05: `TestDepthAndHalo::test_depth_helper` passes |
+| default chunking of `nickel_ebsd_large` at 8e6 bytes | `((47, 8), (47, 28))` (measured 2026-10-04, dask 2026.3.0) | re-measured 2026-10-05: `get_dask_array(signal=s, chunk_bytes=8e6, rechunk=True).chunks[:2] == ((47, 8), (47, 28))`, dask 2026.3.0 (without `rechunk=True` the in-memory map is one chunk, `((55,), (75,))`) |
+| `_reduce_chunks` on the lazy inputs of the method arms (V7 header) | row chunks kept, columns one chunk; Ni `((26, 26, 3), (75,))` -> `((26, 26, 3), (40, 35))` (measured 2026-10-04, dask 2026.3.0) | Stage B (lazy inputs); not measured at this gate |
+| output mean vs input mean | within 0.5 grey levels (bound) | measured 2026-10-05 (`probe_extra.py`, the `test_dtype_round_trip` arms): worst shift +0.019 grey levels (`float32-shifted`); uint8 +0.0075 / +0.0108 (default / float32 output) |
 
 ### V8 -- Real-data effect (`tests/test_signals/test_ebsd_nlpar.py`, `TestRealData`) -- Stage B [download], Hough arms [skipif pyebsdindex], full-map Hough weekly
 
@@ -1341,7 +1341,7 @@ pyebsdindex and compiled. Runtime: < 3 s after warm-up.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
-| all V10 arms | exact / bitwise (not MTP) | |
+| all V10 arms | exact / bitwise (not MTP) | Stage A arms confirmed 2026-10-05: `-k TestPolicyOracles` 10 passed, 0 failed (the [B] arms land with Stage B) |
 
 ### V11 -- Performance (`tests/test_signals/test_util/test_nlpar.py`, `TestPerformance`; `benchmarks/`) -- Stage B, recorded never gated
 
@@ -2211,6 +2211,271 @@ function body is still `raise NotImplementedError`.
    tests/test_signals/test_util/test_nlpar.py -n 0
    --junit-xml=<file>`. V3 and the Automated section are to be
    amended at the next spec touch.
+
+### 7. 2026-10-05 (Stage A implementation gate, measurement agent)
+
+Machine: as entry 1. `uv run --no-sync python -c "import platform,
+os; print(platform.processor(), os.cpu_count(), platform.platform())"`
+prints `Intel64 Family 6 Model 186 Stepping 2, GenuineIntel 20
+Windows-11-10.0.26200-SP0`; `.venv` Python 3.13.12, numpy 2.4.6,
+numba 0.65.1 (20 threads), dask 2026.3.0, scipy 1.17.1, pyebsdindex
+0.3.10.1, `nickel_ebsd_large` cached. Branch `feat-NLPAR` at
+`ca13e63c` plus the uncommitted Stage A implementation in `_nlpar.py`
+and `ebsd.py` (written by the implementers of this gate, not touched
+here). Files written by this agent: the placeholder values, each with
+a dated "Pinned 2026-10-05" comment, in `conftest.py`, `tests/
+test_signals/test_util/test_nlpar.py` and `tests/test_signals/
+test_ebsd_nlpar.py`; the pin columns of the V0-V5, V7 and V10 tables;
+this entry. No assertion was changed.
+
+1. **Recipes.** Suite command: `uv run --no-sync pytest tests/
+   test_signals/test_util/test_nlpar.py tests/test_signals/
+   test_ebsd_nlpar.py -n 0 -q -p no:cacheprovider --tb=short`
+   (subsets with `-k`). Probes are scratchpad scripts run with `uv run
+   --no-sync python`; they load the root `conftest.py` and both test
+   modules through `importlib.util.spec_from_file_location` and run
+   each test body verbatim on its fixture. `probe_pins.py`: every MTP
+   quantity by the recipe of its test; run 3 times, the JSON output
+   byte-identical over the three runs (every quantity is
+   deterministic). `probe_bands.py`: the four iid-noise statistics at
+   seeds 0-19 of `identical_plus_gaussian((12, 12), (32, 32),
+   sigma=8.0)`, plus the values the named mutants give on seed 0,
+   computed from our kernel's raw `d2`/`n2`/`valid`, plus the
+   compiled `sigma_numba` `dout` moments on the same map.
+   `probe_two_grain.py`: the two-grain statistics at `two_grain(seed=
+   1..20)` (the test uses seed 1). `probe_warmup.py`: the
+   `pyebsdindex_kernels` fixture recipe verbatim with the numba cache
+   present, and the same first calls on fresh `numba.jit(nopython=
+   True, cache=False, fastmath=False, parallel=True)` dispatchers of
+   the kernels' `py_func` (a cold compile that reads and writes no
+   cache), 3 fresh processes each; then the oracle wall times on
+   `nickel_ebsd_large`, 3 repeats each, at 20 and at 1 numba thread.
+   `probe_extra.py`: the recorded structural quantities of the V1, V5
+   and V7 tables.
+2. **Suite runs.** Before pinning: 735 collected, 31 failed, 704
+   passed, 0 skipped, 97.20 s. 29 of the 31 failures were the unfilled
+   placeholders, each reporting its measured value: `EXP_KERNEL_ULP`
+   (8: four `py_func` arms, four closed-form arms), `BORDER_BAND_
+   MIN_DIFF` (1), `REFERENCE_MAX_ABS_GREY` (13: eleven reference arms,
+   two small-map arms), `NOISE_SIGMA_RATIO_BAND`, `D_MEAN_BAND` (read
+   before `D_STD_BAND` in the same test), `UNIT_WEIGHT_FRACTION_BAND`,
+   `NOISE_REDUCTION_TOL` (1 each), `TWO_GRAIN_CONTRAST_MIN` (2),
+   `TWO_GRAIN_BOUNDARY_RESIDUAL_TOL` (1). The other 2 are the test
+   defect of item 6 (c). Subsets (implementation unchanged, before or
+   after pinning): `-k sigma_parity` 18 passed; `-k average_parity`
+   392 passed (68.3 s); `-k parity` 410 passed; after pinning `-k
+   TestKernels` 179 passed, `-k TestIdentities` 36 passed, `-k
+   TestPolicyOracles` 10 passed. After pinning, the full suite: 735
+   collected, **2 failed, 733 passed**, 0 skipped, 15 warnings, 95.87 s and
+   96.34 s (two runs, the second after the last comment edit); the 2 failures are those of item 6 (c). `ruff format --check`
+   and `ruff check` pass on `conftest.py` and both test modules; the
+   clean-replay grep of the added lines (spec paths and file names,
+   bare D/V/M/S numbers, "ledger", "parked") finds nothing, and they
+   are ASCII.
+3. **Pins** (all measured 2026-10-05 on this machine):
+
+   | constant | file | measured | convention | pinned |
+   |---|---|---|---|---|
+   | `EXP_KERNEL_ULP` | `conftest.py` | 0 ulp in all 8 test arms; 0 of 2e5 (`py_func`) and 2e6 (closed form) random d in [-5, 60] per (lam, dthresh), lam {0.5, 0.7, 1.0, 2.5}, dthresh {0, 0.5} | exact ulp count | **0** (was `None`) |
+   | `SIGMA_PARITY_ULP` | `test_nlpar.py` | 0 (18 of 18 sigma parity tests bitwise) | exact ulp count | **0** (unchanged) |
+   | `AVERAGE_PARITY_ULP` | `test_nlpar.py` | 0 (392 of 392 averaging parity tests bitwise) | exact ulp count | **0** (unchanged) |
+   | `BORDER_BAND_MIN_DIFF` | `test_nlpar.py` | 7.2599640 grey levels, all four worst-pixel readings equal | half the measured minimum | **3.63** (was `None`) |
+   | `PYEBSDINDEX_JIT_WARMUP_S` | `test_nlpar.py` | cold compile 7.39 / 7.40 / 7.40 s (`sigma_numba` 4.08 / 4.06 / 4.07 s, `nlpar_nb` 3.31 / 3.34 / 3.33 s); fixture recipe with the cache present 0.078 / 0.088 / 0.082 s | recorded, never asserted; the cold compile, the value on a fresh numba cache | **7.4** (was the seed 7.2) |
+   | `REFERENCE_MAX_ABS_GREY` | `test_ebsd_nlpar.py` | 6.908735e-5 at worst (arm `sr=1-lam=0.7`); 13 readings 1.956e-5 to 6.909e-5 | ~2x the measured worst | **1.4e-4** (2.03x; was `None`) |
+   | `NOISE_SIGMA_RATIO_BAND` | `test_ebsd_nlpar.py` | 0.973023 (seed 0); seeds 0-19 0.968515-0.977615 | band rule (item 4) | **(0.963, 0.983)** |
+   | `D_MEAN_BAND` | `test_ebsd_nlpar.py` | 1.204942; seeds 0-19 1.136725-1.326970 | band rule | **(1.01, 1.40)** |
+   | `D_STD_BAND` | `test_ebsd_nlpar.py` | 0.826649; seeds 0-19 0.754319-0.888046 | band rule | **(0.69, 0.97)** |
+   | `UNIT_WEIGHT_FRACTION_BAND` | `test_ebsd_nlpar.py` | 0.096065; seeds 0-19 0.060475-0.099537 | band rule | **(0.057, 0.136)** |
+   | `NOISE_REDUCTION_TOL` | `test_ebsd_nlpar.py` | 0.038760 (variance 2.0614 vs 1.9845 expected); seeds 0-19 0.0102-0.0681 | ~2x the measured value | **0.08** (2.06x) |
+   | `TWO_GRAIN_CONTRAST_MIN` | `test_ebsd_nlpar.py` | 0.998419 (lam 0.7), 0.997765 (lam 2.5); seeds 1-20 0.9910-1.0070; Gaussian arm 0.4015 | ~2x the measured loss `1 - x` (0.002235) | **0.995** (2.24x) |
+   | `TWO_GRAIN_BOUNDARY_RESIDUAL_TOL` | `test_ebsd_nlpar.py` | 1.322799 (rms 1.9324 boundary / 1.4609 interior); seeds 1-20 1.2463-1.3467 | ~2x the measured excess `x - 1` (0.3228) | **1.65** (2.01x) |
+
+4. **Margin conventions applied.** (i) Error tolerances whose ideal
+   is 0 (`REFERENCE_MAX_ABS_GREY`, `NOISE_REDUCTION_TOL`): ~2x the
+   measured worst. (ii) Ratios whose ideal is 1 (`TWO_GRAIN_
+   CONTRAST_MIN`, `TWO_GRAIN_BOUNDARY_RESIDUAL_TOL`): ~2x the measured
+   deviation from 1. A 2x on the ratio itself would be vacuous (a floor
+   of 0.5, a ceiling of 2.6); `pytest.approx(measured, rel=0.05)`
+   would give 0.948 and 1.389. (iii) The four iid-noise bands: each
+   statistic is one draw of a finite-sample quantity on a seeded
+   fixture, so the band is centred on the measured seed-0 value with a
+   half-width equal to the full range of the statistic over seeds 0-19
+   (twice its half-range, the "~2x on bands"), rounded outward.
+   `pytest.approx(measured, rel=0.05)` was rejected for `NOISE_SIGMA_
+   RATIO_BAND` because (0.924, 1.022) contains the S5 values that the
+   plan's mutant table says this test kills. Every band excludes its
+   named mutants (`probe_bands.py`, seed 0): S5 (mean / median of the
+   eight estimates) ratio 1.0009 / 1.0002; M1 d mean 46.46; M3 d mean
+   / std 1.704 / 1.169; M4 d mean / std 6.50 / 4.45; M2 d mean / std
+   163.4 / 6.96; M6 unit fraction 0.0029, with weights above 1 (killed
+   first by the `<= 1` assertion). (iv) Exact ulp counts are pinned at
+   the measured integer and never widened. (v) `BORDER_BAND_MIN_DIFF`
+   at half the measured minimum, as V3 states.
+5. **Recorded, never gated** (the V2/V3 pin columns hold the
+   ranges): `sigma_numba` on `nickel_ebsd_large`, single thread 0.1267
+   to 0.1315 s raw and 0.1282 to 0.1285 s corrected (seed 0.12 s), 20
+   threads 0.0245 to 0.0336 s; `nlpar_nb` at sr 3, single thread 0.578
+   to 0.579 s (raw, lam 0.7), 0.493 to 0.503 s (raw, lam 2.5), 0.619
+   to 0.627 s (corrected, lam 0.7), 0.492 to 0.502 s (corrected, lam
+   2.5) (seed 0.54 s), 20 threads 0.087 to 0.196 s. The Performance
+   table rows "PyEBSDIndex JIT warm-up" and "default-suite addition
+   per worker" can take these numbers and item 6 (d); that table is
+   outside this agent's file list and is left for the main loop.
+6. **Refutations and findings** (no assertion widened):
+   (a) **Seed refuted, `D_STD_BAND`**: V4 derives "std ~1" for the
+   normalised 3x3 distances ("with exact sigma the normalised d has
+   ... std exactly 1"). Measured 0.8266 on seed 0, range 0.754-0.888
+   over seeds 0-19, which excludes 1.0. The implementation is not the
+   cause: the compiled `sigma_numba` `dout` on the same map has mean
+   1.2049418 and std 0.8266491 over the same 1012 neighbour slots, the
+   values of ours, and the sigma maps are bitwise equal. The
+   derivation assumes the exact sigma; the test uses the estimate.
+   Each 3x3 pair estimate `||p_i - p_j||^2 / (2 n_ij)` is a candidate
+   in the minimum of both i and j, so `s_i^2` and `s_j^2` are both <=
+   it and every normalised 3x3 distance is >= 0 by construction
+   (`probe_dmin.py`, seeds 0-2: minimum -1.5e-6, i.e. float32
+   rounding, 12-18 of 1012 slightly negative, 20-36 exactly 0). The
+   distribution is cut at 0, which narrows it (std 0.83). The mean
+   seed (+1.2) holds (1.2049). Pinned on the measurement; V4 and the
+   test comment "Seed: about 1.0" are to be amended at the next spec
+   touch (requirements.md is outside this agent's files).
+   (b) `REFERENCE_MAX_ABS_GREY`: the measured worst, 6.9e-5, is 14x
+   below the 1e-3 seed. V1's "can move a pixel by a few 1e-4 grey
+   levels" is high by about 5x on these fixtures. Not a refutation of
+   a decision; recorded.
+   (c) **Test defect, left red**: `TestLazyAndContracts::
+   test_stage_a_guards_raise_not_implemented[lam_none]` and
+   `[lazy_input]` assert `isinstance(_average(s, lam=1.0),
+   kp.signals.EBSD)` (`test_ebsd_nlpar.py:1143` and `:1154`), but the
+   module helper `_average` returns `s_out.data`, an `np.ndarray`
+   (`test_ebsd_nlpar.py:217-220`), so no implementation can pass that
+   line. The `lazy_output` arm of the same test checks the method's
+   return value directly and passes. At the failing-tests gate the
+   line raised `NotImplementedError` first, which hid the defect. Not a
+   placeholder; the main loop decides (the evident fix is to assert on
+   `s.average_non_local_neighbour_patterns(lam=1.0, inplace=False)`).
+   (d) Budget: the two modules take 97.2 s, 95.9 s and 96.3 s at `-n 0` with
+   the numba caches present, above the "<= ~90 s per worker" line of
+   the Automated section by about 7 %. The 392 averaging parity tests
+   alone take 68.3 s. Recorded, not a gate; the `-n 4` split is the
+   gate runner's to measure.
+   (e) `EXP_KERNEL_ULP = 0` is scoped to this machine. The kernel
+   rounds a float64 `exp` to float32, so a 1-ulp float64 difference
+   between Numba's and NumPy's `exp` reaches float32 only near a
+   rounding midpoint (none in 1.6e7 closed-form and 1.6e6 `py_func`
+   comparisons here). If an ubuntu or macOS job measures 1, that
+   platform difference is to be recorded here, not absorbed by
+   widening the pin.
+   (f) `PYEBSDINDEX_JIT_WARMUP_S`: in the suite, with the kernels'
+   numba cache present, the fixture records about 0.08 s, not the
+   cold-compile 7.4 s now in the constant. The constant keeps the
+   cold value because that is what a fresh cache (a CI runner) pays and
+   what the budget line must absorb.
+   (g) M2 as "sigma used unsquared in d" leaves `get_nlpar_sigma`
+   unchanged, so `test_sigma_recovery_median_ratio`, which the mutant
+   table names as the first M2 killer, cannot see it. The mutant dies
+   by `test_normalised_distance_moments` instead (M2 d mean 163.4,
+   outside `D_MEAN_BAND`), and by the reference agreement and V3
+   parity. For the mutants stage to confirm.
+
+### 8. 2026-10-05 (Stage A gate fixes)
+
+Machine and `.venv` as entry 7. Branch `feat-NLPAR` at `ca13e63c`
+plus the uncommitted Stage A implementation. Files written by the
+fixer: `src/kikuchipy/signals/ebsd.py` (the in-place branch of
+`average_non_local_neighbour_patterns` only), `tests/test_signals/
+test_ebsd_nlpar.py`, `tests/test_signals/test_util/test_nlpar.py`,
+this entry. `_nlpar.py` and `conftest.py` unchanged; no assertion
+weakened, no pin changed, parity still bitwise.
+
+1. **Test defect fixed (entry 7 item 6 (c))**: the `lam_none` and
+   `lazy_input` arms of `TestLazyAndContracts::test_stage_a_guards_
+   raise_not_implemented` asserted `isinstance(_average(s, lam=1.0),
+   kp.signals.EBSD)`, but `_average` returns `s_out.data`, an
+   `np.ndarray`, so no implementation could pass. Both lines now
+   assert on `s.average_non_local_neighbour_patterns(lam=1.0,
+   inplace=False)`, the fix entry 7 named. The comment of
+   `test_inplace_equals_inplace_false_on_a_multichunk_eager_signal`
+   now gives both chunkings (`((47, 8), (47, 28))` with dask 2026.3.0,
+   `((47, 8), (25, 25, 25))` with dask 2021.8.1) and no longer
+   describes a store.
+2. **In-place fallback taken (D1.5 (b))**: on the oldest matrix (dask
+   2021.8.1) the eager in-place `store(self.data)` differed from
+   `inplace=False` in 534 of 4125 patterns of `nickel_ebsd_large`
+   under the synchronous scheduler (deterministic; threads 0;
+   `average_neighbour_patterns` shows the same race, 183 patterns).
+   Every non-lazy in-place path now assigns `self.data =
+   averaged.compute()`, whatever the dtype (the `downsample`
+   precedent); the lazy `return_lazy` path is unchanged. Cost: one
+   extra map-sized output buffer at peak. **For the main loop**: D1.5
+   (b) asks for this as a dated amendment in requirements.md, and plan
+   2.12 still says `store` when the dtype is unchanged; both files are
+   outside the fixer's list.
+3. **NumPy 1.x helper fixed**: `_pair_distance` (`test_nlpar.py`)
+   compared a float32 array with a `np.float64` threshold; NumPy 1.x
+   value-based casting rounds the scalar to float32, so
+   `test_sigma_threshold_is_float64_and_average_threshold_float32`
+   (`[policy]`, `[oracle]`) failed on NumPy 1.23 only. The helper now
+   compares in float64, exact for a float32 threshold, so every
+   NumPy 2 result is unchanged.
+4. **Compiled oracle under numba 0.57**: PyEBSDIndex 0.3.9.2's
+   `nlpar_nb` (`parallel=True`) does not compile under numba 0.57.0
+   (parfor pass: "got an unexpected keyword argument 'dtype'"); it
+   compiles under 0.58.0 (probe today), 0.58.1 and 0.59.1 (gate
+   runner); `sigma_numba` compiles under 0.57.0. The CI oldest job
+   (`tests.yml:48`) pins `numba==0.57` and `pyebsdindex==0.3.9.2`, so
+   the recipe cannot move. `test_nlpar.py` now has
+   `NLPAR_NB_COMPILES = Version(version("numba")) >=
+   Version("0.58.0")`; `_oracle_average` skips its caller when it is
+   False, and the `pyebsdindex_kernels` fixture warms `nlpar_nb` only
+   when it is True, so the sigma oracle tests still run under 0.57.
+   The plan 0.3 claim that the oldest-matrix run re-checks 0.3.9.2
+   holds for `sigma_numba` only at numba 0.57; for `nlpar_nb` it is
+   covered by the numba 0.58.1 run of item 6. To be recorded in plan
+   0.3 and D10.5 by the main loop.
+5. **Coverage of `_nlpar.py` to 100 %**: pytest-cov is not in
+   `.venv` (coverage 7.16.0 is), so the measurement command was `uv
+   run --no-sync coverage run --data-file=<scratch> -m pytest
+   <the two modules> -n 0 -q -p no:cacheprovider` then `coverage
+   report --include="*_nlpar.py" -m`: 300 statements, 0 missed,
+   **100.00 %** (was 98.67 %, lines 430, 437, 763, 1152). (a) Lines
+   430 and 437 (`n2 == 0` and `dnorm <= 1e-8` of
+   `_nlpar_distances_kernel`) were reached only through the compiled
+   kernel: `test_n2_zero_pair_gets_weight_zero` and
+   `test_tiny_dnorm_branch_gives_1e6_n2` now also run the kernel's
+   `py_func` and assert it bitwise against the compiled result (V0
+   on both branches). (b) Lines 763 (`_nlpar_saturation_max` on a
+   Dask array) and 1152 (`_nlpar_as_map` rechunking split signal
+   axes) belong to the lazy route: one new test,
+   `TestDepthAndHalo::test_drivers_take_split_signal_axes_and_a_
+   dask_maximum`, on (10, 16 | 16, 16) chunked `(5, 8, 8, 4)`,
+   asserts the Dask maximum equals the in-memory one as float32 and
+   that both drivers equal the single-chunk route bitwise, the
+   averaging pass returning chunks `((5, 5), (8, 8), (16,), (16,))`.
+   The coverage command of plan section 5 (`--cov=...`) needs
+   pytest-cov (`--extra coverage` or `--with pytest-cov`); for the
+   main loop.
+6. **Runs.** Suite (`.venv`): 736 collected (735 plus item 5 (b)),
+   **736 passed**, 0 failed, 0 skipped, 99.25 s; under coverage 736
+   passed, 101.59 s. `ruff format --check` and `ruff check` pass on
+   the three edited code files; the added lines are ASCII and name no
+   spec path, file or bare requirement number. Oldest matrix: the
+   recipe as written fails to spawn `pytest` (`--isolated` installs no
+   test dependencies); with `--extra tests` added after `--python
+   3.10` it runs: numba 0.57: **338 passed, 398 skipped**
+   (`nlpar_nb` calls, item 4), 0 failed, 22.7 s; the same pins with
+   `numba==0.58.1` instead: **736 passed**, 0 skipped, 149.2 s (every
+   averaging parity arm bitwise against PyEBSDIndex 0.3.9.2, the
+   multi-chunk in-place arms equal on dask 2021.8.1). **For the main
+   loop**: the ONE recipe string of D10.5, plan 0.3 and 5 and this
+   document needs `--extra tests`.
+7. **Recorded, not NLPAR** (gate runner, 2026-10-05):
+   `test_ebsd_refinement.py::TestEBSDRefineOrientationPC::test_refine_
+   orientation_projection_center_local_nlopt` segfaults intermittently
+   alone at `-n 0` (1 of 5 runs on this branch, 3 of 10 on a develop
+   snapshot): an access violation in the numba refinement objective
+   called by nlopt on a Dask thread, not the PyEBSDIndex numba-cache
+   flake. A known flake beside that one.
 
 This section is filled at each stage's failing-tests gate
 (placeholder inventory confirmed), implementation gate

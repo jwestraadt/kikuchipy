@@ -57,6 +57,7 @@ tolerance are fixtures of the root ``conftest.py``.
 
 import ast
 import functools
+from importlib.metadata import version
 import inspect
 import math
 import textwrap
@@ -66,6 +67,7 @@ import dask
 import dask.array as da
 from dask.array.overlap import ensure_minimum_chunksize
 import numpy as np
+from packaging.version import Version
 import pytest
 
 import kikuchipy as kp
@@ -79,11 +81,16 @@ from kikuchipy.signals.util._dask import get_dask_array
 # allowed between our sigma and the sigma of the compiled
 # NLPAR.sigma_numba. Seed 0, i.e. bitwise; a non-zero pin must name the
 # platform that forces it.
+# Pinned 2026-10-05 at the measured 0: the 18 sigma parity tests (four
+# generators x mask x protection, nickel_ebsd_large raw and corrected)
+# are bitwise on a 20-core Intel Raptor Lake laptop, Windows 11.
 SIGMA_PARITY_ULP = 0
 
 # Placeholder, measured then pinned: the largest float32 ulp difference
 # allowed per pixel between our averaged patterns and the output of the
 # compiled NLPAR.nlpar_nb. Seed 0, i.e. bitwise.
+# Pinned 2026-10-05 at the measured 0: the 392 averaging parity tests,
+# nickel_ebsd_large included, are bitwise on the same machine.
 AVERAGE_PARITY_ULP = 0
 
 # Placeholder, measured then pinned: the smallest worst-pixel difference,
@@ -92,13 +99,20 @@ AVERAGE_PARITY_ULP = 0
 # of one pattern plus Gaussian noise of sigma 8 at search radius 2. None
 # until measured (seed of the order of 1 grey level); pinned at half the
 # measured minimum.
-BORDER_BAND_MIN_DIFF: float | None = None
+# Pinned 2026-10-05: measured 7.2600 grey levels, the same worst border
+# pixel for the oracle and for our route against both the clamped and
+# the zero-extended window; pinned at half, 3.63.
+BORDER_BAND_MIN_DIFF: float | None = 3.63
 
 # Placeholder, measured then pinned; recorded, never asserted: the wall
 # time in seconds of the first calls of both compiled PyEBSDIndex kernels
 # in the pyebsdindex_kernels fixture. Seed 7.2 s, the cold compile of
 # 4.0 s (sigma_numba) plus 3.2 s (nlpar_nb) measured outside pytest.
-PYEBSDINDEX_JIT_WARMUP_S = 7.2
+# Recorded 2026-10-05, three fresh processes each: a cold compile (fresh
+# dispatchers without an on-disk cache) takes 7.39-7.40 s (4.06-4.08 s
+# plus 3.31-3.34 s); with the kernels' numba cache present the fixture
+# measures 0.078-0.088 s.
+PYEBSDINDEX_JIT_WARMUP_S = 7.4
 
 # ------------------------------ Constants ----------------------------- #
 
@@ -140,6 +154,13 @@ DISTANCE_CASES = [
 requires_pyebsdindex = pytest.mark.skipif(
     dependency_version["pyebsdindex"] is None, reason="pyebsdindex is not installed"
 )
+
+# PyEBSDIndex's NLPAR.nlpar_nb (parallel=True) does not compile under
+# numba 0.57.0, whose parfor pass rejects a dtype keyword of np.arange
+# ("got an unexpected keyword argument 'dtype'"); it compiles under
+# numba 0.58.0 and later. NLPAR.sigma_numba compiles under 0.57.0, so
+# only the calls of nlpar_nb are skipped there
+NLPAR_NB_COMPILES = Version(version("numba")) >= Version("0.58.0")
 
 # ---------------------------- Generic helpers -------------------------- #
 
@@ -464,7 +485,7 @@ def _pair_distance(
     p1: np.ndarray,
     s0: np.float32,
     s1: np.float32,
-    threshold: np.float32,
+    threshold: np.float32 | np.float64,
     n_correction: int | None = None,
 ) -> tuple[np.float32, np.float32]:
     """Return the float32 normalised distance and pixel count of one
@@ -475,11 +496,18 @@ def _pair_distance(
     ``dnorm = (s1 + s0) sqrt(2 n2)``, and ``1e6 n2`` when
     ``dnorm <= 1e-8`` (so 0 when ``n2 == 0``).
 
-    ``s0`` and ``s1`` are squared sigmas. ``n_correction`` replaces the
-    per-pair ``n2`` in the correction and in ``dnorm`` by a global pixel
-    count (a deliberately wrong variant).
+    ``s0`` and ``s1`` are squared sigmas. The pixels are compared with
+    the threshold in float64, which is exact for a float32 threshold
+    and keeps a float64 one (a deliberately wrong variant) unrounded:
+    NumPy 1.x value-based casting would round a float64 scalar to
+    float32 in a comparison with a float32 array. ``n_correction``
+    replaces the per-pair ``n2`` in the correction and in ``dnorm`` by a
+    global pixel count (another deliberately wrong variant).
     """
-    both = (p0 < threshold) & (p1 < threshold)
+    threshold64 = np.float64(threshold)
+    below0 = np.asarray(p0, dtype=np.float64) < threshold64
+    below1 = np.asarray(p1, dtype=np.float64) < threshold64
+    both = below0 & below1
     diff = p0[both] - p1[both]
     d2 = _sequential_sum(diff * diff)
     n2 = np.float32(np.count_nonzero(both))
@@ -505,7 +533,7 @@ def _transcribed_distances(
     data: np.ndarray,
     sigma2: np.ndarray,
     kept: np.ndarray,
-    threshold: np.float32,
+    threshold: np.float32 | np.float64,
     radius: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the transcribed normalised distances, pixel counts and
@@ -550,7 +578,7 @@ def _transcribed_average(
     lam: float,
     dthresh: float,
     kept: np.ndarray,
-    threshold: np.float32,
+    threshold: np.float32 | np.float64,
     policy: str = "shift",
     n_correction: int | None = None,
 ) -> np.ndarray:
@@ -663,7 +691,14 @@ def _oracle_average(
     ``lam`` is passed as a Python float and ``dthresh`` as float32. The
     output is the full block, zero outside ``calclim = [cstart, rstart,
     ncolcalc, nrowcalc]``; a fresh ``calclim`` array is built per call.
+    The calling test is skipped where ``nlpar_nb`` does not compile
+    (``NLPAR_NB_COMPILES``).
     """
+    if not NLPAR_NB_COMPILES:
+        pytest.skip(
+            f"PyEBSDIndex's NLPAR.nlpar_nb does not compile under numba "
+            f"{version('numba')}"
+        )
     nrows, ncols, h, w = patterns.shape
     sr = int(search_radius)
     if min(nrows, ncols) < 2 * sr + 1:
@@ -786,7 +821,9 @@ def pyebsdindex_kernels(record_testsuite_property):
 
     The time is recorded as the test-suite property
     ``pyebsdindex_jit_warmup_s``, since a module-scoped fixture cannot
-    use the function-scoped ``record_property``.
+    use the function-scoped ``record_property``. Where ``nlpar_nb``
+    does not compile (``NLPAR_NB_COMPILES``), only ``sigma_numba`` is
+    warmed, so that the sigma oracle tests still run.
     """
     from pyebsdindex import nlpar_cpu
 
@@ -795,7 +832,8 @@ def pyebsdindex_kernels(record_testsuite_property):
     patterns = rng.uniform(20.0, 240.0, (3, 3, 4, 4)).astype(np.float32)
     tic = time.perf_counter()
     sigma, _, _ = _oracle_sigma(nlpar, patterns)
-    _ = _oracle_average(nlpar, patterns, sigma, 1, 1.0, 0.0)
+    if NLPAR_NB_COMPILES:
+        _ = _oracle_average(nlpar, patterns, sigma, 1, 1.0, 0.0)
     record_testsuite_property("pyebsdindex_jit_warmup_s", time.perf_counter() - tic)
     return nlpar
 
@@ -1850,6 +1888,52 @@ class TestDepthAndHalo:
         assert result.dtype == np.float32
         np.testing.assert_array_equal(result, expected)
 
+    def test_drivers_take_split_signal_axes_and_a_dask_maximum(
+        self, random_uniform_saturated
+    ):
+        # A lazy signal keeps its signal chunks, so the drivers can get
+        # signal axes split into several chunks: both passes rechunk
+        # them to one chunk and equal the single-chunk route bitwise.
+        # The global maximum of a chunked map is one Dask reduction,
+        # the same float32 as the maximum of the in-memory map
+        x = random_uniform_saturated((10, 16), (16, 16), one_block_only=True)
+        split = da.from_array(x, chunks=(5, 8, 8, 4))
+        single = da.from_array(x, chunks=x.shape)
+        assert split.numblocks == (2, 2, 2, 4)
+
+        max_value = _nlpar._nlpar_saturation_max(split)
+        assert type(max_value) is np.float32
+        assert max_value == _nlpar._nlpar_saturation_max(x) == 255
+
+        kept = np.arange(16 * 16, dtype=np.int64)
+        kwargs = {
+            "mask_indices": kept,
+            "max_value": max_value,
+            "saturation_protect": True,
+        }
+        average_kwargs = {
+            "lam": 1.0,
+            "dthresh": np.float32(0.0),
+            "radius": (2, 2),
+            "dtype_out": np.dtype(np.float32),
+            **kwargs,
+        }
+        with dask.config.set(scheduler="synchronous"):
+            result = _nlpar._nlpar_sigma(split, **kwargs)
+            expected = _nlpar._nlpar_sigma(single, **kwargs)
+            for name, r, e in zip(("sigma", "d2", "n2", "valid"), result, expected):
+                assert r.dtype == e.dtype, name
+                np.testing.assert_array_equal(r, e, err_msg=name)
+
+            lazy = _nlpar._nlpar_average(split, result[0], **average_kwargs)
+            assert lazy.chunks == ((5, 5), (8, 8), (16,), (16,))
+            averaged = lazy.compute()
+            expected_average = _nlpar._nlpar_average(
+                single, expected[0], **average_kwargs
+            ).compute()
+        assert averaged.dtype == np.float32
+        np.testing.assert_array_equal(averaged, expected_average)
+
     def test_sigma_chunk_returns_the_packed_core(self, random_uniform_saturated):
         # Rows chunked (3, 3) with depth 1, columns unchunked: the haloed
         # blocks [0, 4) and [2, 6) keep map rows [0, 3) and [3, 6). The
@@ -2065,10 +2149,12 @@ class TestPolicyOracles:
             )
             np.testing.assert_array_equal(transcribed.reshape(3, 3, 4, 4), expected)
 
-        # Slot 0 of every window of the 3 x 3 map is pattern (0, 0)
-        d = _nlpar._nlpar_distances_kernel(
-            data, sigma2, kept, max_value, True, 1, 1, 0, 3, 0, 3
-        )
+        # Slot 0 of every window of the 3 x 3 map is pattern (0, 0); the
+        # pure Python kernel takes the same branch, bitwise
+        kernel = _nlpar._nlpar_distances_kernel
+        args = (data, sigma2, kept, max_value, True, 1, 1, 0, 3, 0, 3)
+        d = kernel(*args)
+        np.testing.assert_array_equal(_py_func(kernel)(*args), d)
         assert np.all(np.isposinf(d[..., 0][others]))
         weights = _nlpar._nlpar_weights_kernel(d, 1.0, np.float32(0.0))
         assert np.all(weights[..., 0][others] == 0.0)
@@ -2103,13 +2189,16 @@ class TestPolicyOracles:
             d_ref[~is_self], np.float32(1e6) * n2_ref[~is_self]
         )
 
-        d = _nlpar._nlpar_distances_kernel(
-            data, sigma2, kept, max_value, True, 1, 1, 0, 3, 0, 3
-        )
-        assert d.dtype == np.float32
-        np.testing.assert_array_equal(d[~is_self], d_ref[~is_self])
-        np.testing.assert_array_equal(d[~is_self], np.float32(1e6) * n2_ref[~is_self])
-        assert np.all(np.isneginf(d[is_self]))
+        # The compiled kernel and its pure Python function alike
+        kernel = _nlpar._nlpar_distances_kernel
+        for route in (kernel, _py_func(kernel)):
+            d = route(data, sigma2, kept, max_value, True, 1, 1, 0, 3, 0, 3)
+            assert d.dtype == np.float32
+            np.testing.assert_array_equal(d[~is_self], d_ref[~is_self])
+            np.testing.assert_array_equal(
+                d[~is_self], np.float32(1e6) * n2_ref[~is_self]
+            )
+            assert np.all(np.isneginf(d[is_self]))
 
     @pytest.mark.parametrize("arm", ORACLE_ARMS)
     def test_duplicate_neighbour_is_skipped_in_sigma_but_averaged(self, arm, request):

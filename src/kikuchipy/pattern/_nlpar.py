@@ -103,8 +103,10 @@ from __future__ import annotations
 import logging
 
 import dask.array as da
+from dask.array.overlap import ensure_minimum_chunksize
 from numba import njit
 import numpy as np
+from skimage.util.dtype import dtype_range
 
 _logger = logging.getLogger(__name__)
 
@@ -167,7 +169,17 @@ def _window_bounds(center: int, radius: int, n: int, shift: bool) -> tuple[int, 
     ``min(2 radius + 1, n)`` in every case. PyEBSDIndex does not clamp
     and indexes out of bounds on an axis shorter than the window.
     """
-    raise NotImplementedError
+    if shift:
+        start = max(center - radius, 0) - max(center + radius - (n - 1), 0)
+        stop = min(center + radius, n - 1) + max(radius - center, 0) + 1
+        # Clamp to the axis, which only an axis shorter than the window
+        # needs
+        start = min(max(start, 0), n)
+        stop = min(max(stop, 0), n)
+    else:
+        start = max(center - radius, 0)
+        stop = min(center + radius, n - 1) + 1
+    return start, stop
 
 
 @njit(cache=True, nogil=True)
@@ -246,7 +258,53 @@ def _nlpar_sigma_kernel(
     ``n_kept``; and the distances are normalised afterwards by
     :func:`_nlpar_normalized_distances`, not here.
     """
-    raise NotImplementedError
+    n_rows, n_cols, _ = data.shape
+    n_kept = mask_indices.size
+
+    # A float64 threshold compared against float32 pixels
+    if saturation_protect:
+        threshold = np.float64(max_value) * np.float64(SIGMA_SATURATION_FACTOR)
+    else:
+        threshold = np.float64(max_value) + np.float64(1.0)
+
+    sigma = np.empty((n_rows, n_cols), dtype=np.float32)
+    d2_out = np.zeros((n_rows, n_cols, 9), dtype=np.float32)
+    n2_out = np.zeros((n_rows, n_cols, 9), dtype=np.float32)
+    valid = np.zeros((n_rows, n_cols, 9), dtype=np.bool_)
+    n_kept_f32 = np.float32(n_kept)
+
+    for j in range(n_rows):
+        row_start, row_stop = _window_bounds(j, 1, n_rows, False)
+        for i in range(n_cols):
+            col_start, col_stop = _window_bounds(i, 1, n_cols, False)
+            min_s2 = np.float32(1e24)
+            for jn in range(row_start, row_stop):
+                for i_n in range(col_start, col_stop):
+                    slot = (jn - j + 1) * 3 + (i_n - i + 1)
+                    valid[j, i, slot] = True
+                    if jn == j and i_n == i:
+                        n2_out[j, i, slot] = n_kept_f32
+                        continue
+                    d2 = np.float32(0.0)
+                    n2 = np.float32(0.0)
+                    for k in range(n_kept):
+                        q = mask_indices[k]
+                        d0 = data[j, i, q]
+                        d1 = data[jn, i_n, q]
+                        if d0 < threshold and d1 < threshold:
+                            diff = d0 - d1
+                            d2 += diff * diff
+                            n2 += np.float32(1.0)
+                    d2_out[j, i, slot] = d2
+                    n2_out[j, i, slot] = n2
+                    # Exact duplicates (d2 == 0) never set the minimum
+                    if d2 > np.float32(0.0):
+                        s2 = d2 / (np.float32(2.0) * n2)
+                        if s2 < min_s2:
+                            min_s2 = s2
+            sigma[j, i] = np.sqrt(min_s2)
+
+    return sigma, d2_out, n2_out, valid
 
 
 @njit(cache=True, nogil=True)
@@ -325,7 +383,61 @@ def _nlpar_distances_kernel(
 
     PyEBSDIndex's pair memo and ``diff_offset`` are not ported.
     """
-    raise NotImplementedError
+    n_rows, n_cols, _ = data.shape
+    n_kept = mask_indices.size
+    width_rows = 2 * radius_rows + 1
+    width_cols = 2 * radius_cols + 1
+
+    # A float32 threshold compared against float32 pixels
+    max32 = np.float32(max_value)
+    if saturation_protect:
+        threshold = max32 * AVERAGE_SATURATION_FACTOR
+    else:
+        threshold = max32 + np.float32(1.0)
+
+    # Slots outside an axis shorter than the window keep +inf
+    d = np.full(
+        (row_stop - row_start, col_stop - col_start, width_rows * width_cols),
+        np.inf,
+        dtype=np.float32,
+    )
+
+    for j in range(row_start, row_stop):
+        win_row_start, win_row_stop = _window_bounds(j, radius_rows, n_rows, True)
+        for i in range(col_start, col_stop):
+            win_col_start, win_col_stop = _window_bounds(i, radius_cols, n_cols, True)
+            s0 = sigma2[j, i]
+            for jn in range(win_row_start, win_row_stop):
+                for i_n in range(win_col_start, win_col_stop):
+                    slot = (jn - win_row_start) * width_cols + (i_n - win_col_start)
+                    if jn == j and i_n == i:
+                        # Weight exactly 1
+                        d[j - row_start, i - col_start, slot] = -np.inf
+                        continue
+                    s1 = sigma2[jn, i_n]
+                    d2 = np.float32(0.0)
+                    n2 = np.float32(0.0)
+                    for k in range(n_kept):
+                        q = mask_indices[k]
+                        d0 = data[j, i, q]
+                        d1 = data[jn, i_n, q]
+                        if d0 < threshold and d1 < threshold:
+                            diff = d0 - d1
+                            d2 += diff * diff
+                            n2 += np.float32(1.0)
+                    if n2 == np.float32(0.0):
+                        # No comparable pixel: weight exactly 0
+                        dist = np.float32(np.inf)
+                    else:
+                        d2 -= n2 * (s0 + s1)
+                        dnorm = (s1 + s0) * np.sqrt(np.float32(2.0) * n2)
+                        if dnorm > np.float32(1e-8):
+                            dist = d2 / dnorm
+                        else:
+                            dist = np.float32(1e6) * n2
+                    d[j - row_start, i - col_start, slot] = dist
+
+    return d
 
 
 @njit(cache=True, nogil=True)
@@ -352,7 +464,7 @@ def _nlpar_weights_kernel(d: np.ndarray, lam: float, dthresh: np.float32) -> np.
     This is the only kernel calling ``exp``, with the operand types
     fixed to reproduce PyEBSDIndex's compiled ``nlpar_nb``:
     ``lam2 = np.float64(1.0) / (lam * lam)`` in float64,
-    ``x = max(d - dthresh, np.float32(0.0))`` in float32, and
+    ``x = np.maximum(d - dthresh, np.float32(0.0))`` in float32, and
     ``w = exp(np.float64(-1.0) * np.float64(x) * lam2)`` in float64,
     stored as float32. Hence ``d = -inf`` (the self slot) gives a
     weight of exactly 1.0, ``d = +inf`` exactly 0.0, and any
@@ -361,7 +473,18 @@ def _nlpar_weights_kernel(d: np.ndarray, lam: float, dthresh: np.float32) -> np.
     The compiled kernel and its ``py_func`` may differ by a measured
     number of float32 ulps, since Numba's and NumPy's ``exp`` differ.
     """
-    raise NotImplementedError
+    n_rows, n_cols, n_slots = d.shape
+    lam64 = np.float64(lam)
+    lam2 = np.float64(1.0) / (lam64 * lam64)
+    dthresh32 = np.float32(dthresh)
+    w = np.empty((n_rows, n_cols, n_slots), dtype=np.float32)
+    for j in range(n_rows):
+        for i in range(n_cols):
+            for s in range(n_slots):
+                x = np.maximum(d[j, i, s] - dthresh32, np.float32(0.0))
+                e = np.exp(np.float64(-1.0) * np.float64(x) * lam2)
+                w[j, i, s] = np.float32(e)
+    return w
 
 
 @njit(cache=True, nogil=True)
@@ -409,7 +532,30 @@ def _nlpar_weighted_sum_kernel(
     ``shift=True``; slots outside an axis shorter than the window carry
     weight 0 and contribute nothing.
     """
-    raise NotImplementedError
+    n_rows, n_cols, n_pix = data.shape
+    n_slots = weights.shape[2]
+    width_cols = 2 * radius_cols + 1
+    out = np.zeros(
+        (row_stop - row_start, col_stop - col_start, n_pix), dtype=np.float32
+    )
+
+    for j in range(row_start, row_stop):
+        win_row_start, win_row_stop = _window_bounds(j, radius_rows, n_rows, True)
+        jj = j - row_start
+        for i in range(col_start, col_stop):
+            win_col_start, win_col_stop = _window_bounds(i, radius_cols, n_cols, True)
+            ii = i - col_start
+            total = np.float32(0.0)
+            for s in range(n_slots):
+                total += weights[jj, ii, s]
+            for jn in range(win_row_start, win_row_stop):
+                for i_n in range(win_col_start, win_col_stop):
+                    slot = (jn - win_row_start) * width_cols + (i_n - win_col_start)
+                    w = weights[jj, ii, slot] / total
+                    for q in range(n_pix):
+                        out[jj, ii, q] += data[jn, i_n, q] * w
+
+    return out
 
 
 # ---------------------- Sigma pass normalisation -------------------- #
@@ -457,7 +603,38 @@ def _nlpar_normalized_distances(
     finite tiny negative value; the result is NaN-free. Out-of-map
     slots keep ``valid=False`` and their value is never read.
     """
-    raise NotImplementedError
+    d2 = np.asarray(d2, dtype=np.float32)
+    n2 = np.asarray(n2, dtype=np.float32)
+    sigma = np.asarray(sigma, dtype=np.float32)
+    n_rows, n_cols = sigma.shape
+
+    s2 = sigma * sigma
+
+    # Squared sigma of the neighbour of every slot, zero outside the
+    # map: slot (dj + 1) * 3 + (di + 1) reads the padded map at
+    # (j + dj + 1, i + di + 1)
+    s2_padded = np.pad(s2, 1)
+    s2_neighbour = np.empty((n_rows, n_cols, 9), dtype=np.float32)
+    for slot in range(9):
+        row_shift, col_shift = divmod(slot, 3)
+        s2_neighbour[..., slot] = s2_padded[
+            row_shift : row_shift + n_rows, col_shift : col_shift + n_cols
+        ]
+    s2_ij = s2[..., None] + s2_neighbour
+
+    num = d2 - n2 * s2_ij
+
+    # Out-of-map slots and pairs without a kept pixel (n2 == 0) keep
+    # +inf, so no division by zero is evaluated
+    d = np.full(d2.shape, np.inf, dtype=np.float32)
+    has_pairs = np.asarray(valid, dtype=bool) & (n2 > 0)
+    den = s2_ij[has_pairs].astype(np.float64) * np.sqrt(
+        np.float64(2.0) * n2[has_pairs].astype(np.float64)
+    )
+    d[has_pairs] = (num[has_pairs].astype(np.float64) / den).astype(np.float32)
+    d[..., 4] = -np.inf
+
+    return d
 
 
 # -------------------------- Driver helpers -------------------------- #
@@ -491,7 +668,27 @@ def _nlpar_mask_indices(
         ``np.asarray(signal_mask, dtype=bool)``, or if it excludes
         every pixel ("excludes every pixel").
     """
-    raise NotImplementedError
+    signal_shape = tuple(int(i) for i in signal_shape)
+    if signal_mask is None:
+        n_pix = int(np.prod(signal_shape))
+        return np.arange(n_pix, dtype=np.int64)
+
+    mask_shape = tuple(np.shape(signal_mask))
+    if mask_shape != signal_shape:
+        raise ValueError(
+            f"signal_mask of shape {mask_shape} must have the signal shape "
+            f"{signal_shape}"
+        )
+    mask = np.asarray(signal_mask, dtype=bool)
+
+    # In ascending order, as the kernels accumulate over them
+    mask_indices = np.flatnonzero(~mask.ravel()).astype(np.int64)
+    if mask_indices.size == 0:
+        raise ValueError(
+            "signal_mask excludes every pixel (True means excluded), so no "
+            "pixel is left to compare patterns with"
+        )
+    return mask_indices
 
 
 def _nlpar_search_radius(
@@ -521,7 +718,24 @@ def _nlpar_search_radius(
         if ``isinstance(r, (int, np.integer))`` and
         ``not isinstance(r, bool)`` and ``r >= 0``.
     """
-    raise NotImplementedError
+    if isinstance(search_radius, tuple):
+        if len(search_radius) != nav_dim:
+            raise ValueError(
+                f"search_radius {search_radius} must have one radius per navigation "
+                f"axis ({nav_dim} axes)"
+            )
+        radius = search_radius
+    else:
+        radius = (search_radius,) * nav_dim
+
+    for r in radius:
+        is_int = isinstance(r, (int, np.integer)) and not isinstance(r, bool)
+        if not is_int or r < 0:
+            raise ValueError(
+                f"search_radius must be a non-negative int per navigation axis, "
+                f"got {search_radius!r}"
+            )
+    return tuple(int(r) for r in radius)
 
 
 def _nlpar_saturation_max(dask_array: da.Array | np.ndarray) -> np.float32:
@@ -544,7 +758,12 @@ def _nlpar_saturation_max(dask_array: da.Array | np.ndarray) -> np.float32:
     value, so the result does not depend on the chunking. PyEBSDIndex
     takes the maximum per tile instead.
     """
-    raise NotImplementedError
+    max_value = dask_array.max()
+    if isinstance(max_value, da.Array):
+        max_value = max_value.compute()
+    # Rounding to float32 is monotonic, so this is also the maximum of
+    # the map cast to float32
+    return np.float32(max_value)
 
 
 def _nlpar_finalize(
@@ -572,7 +791,12 @@ def _nlpar_finalize(
     Never a per-pattern rescale: the weights sum to 1, so the average is
     a convex combination inside the input range.
     """
-    raise NotImplementedError
+    dtype_out = np.dtype(dtype_out)
+    if np.issubdtype(dtype_out, np.integer):
+        omin, omax = dtype_range[dtype_out.type]
+        out = np.clip(np.rint(out_f32), omin, omax)
+        return out.astype(dtype_out)
+    return out_f32.astype(dtype_out)
 
 
 def _nlpar_depth(
@@ -616,10 +840,71 @@ def _nlpar_depth(
     sigma pass needs depth 1 on every chunked navigation axis and no
     rechunk.
     """
-    raise NotImplementedError
+    nav_dim = len(radius)
+    depth = {}
+    chunks_out = []
+    for axis, (c, r) in enumerate(zip(chunks[:nav_dim], radius)):
+        c = tuple(int(i) for i in c)
+        r = int(r)
+        n = sum(c)
+        if len(c) == 1:
+            depth[axis] = 0
+            chunks_out.append(c)
+        elif 2 * r + 1 >= n:
+            # Every window is the whole axis
+            depth[axis] = 0
+            chunks_out.append((n,))
+        else:
+            # The shifted window of a pattern closer than r to a map
+            # border spans 2 r + 1 points from that border
+            depth_axis = max(r, 2 * r + 1 - min(c[0], c[-1]))
+            depth[axis] = depth_axis
+            chunks_out.append(tuple(ensure_minimum_chunksize(depth_axis, c)))
+    for axis in range(nav_dim, len(chunks)):
+        depth[axis] = 0
+        chunks_out.append(tuple(int(i) for i in chunks[axis]))
+    return depth, tuple(chunks_out)
 
 
 # -------------------------- Chunk wrappers -------------------------- #
+
+
+def _nlpar_core_bounds(
+    nav_shape: tuple[int, int], depth: tuple[int, int], block_info: dict
+) -> tuple[int, int, int, int]:
+    """Return the kept region of a haloed block in block coordinates.
+
+    Parameters
+    ----------
+    nav_shape
+        Navigation shape of the haloed block (n_rows, n_cols).
+    depth
+        Halo depth of the two navigation axes.
+    block_info
+        Dask's block information of the block.
+
+    Returns
+    -------
+    row_start, row_stop, col_start, col_stop
+        Half-open bounds of the block minus its halos (PyEBSDIndex's
+        ``calclim``).
+
+    Notes
+    -----
+    A block carries a halo of ``depth`` on each side facing another
+    chunk, read from ``block_info[0]["chunk-location"]`` against
+    ``block_info[0]["num-chunks"]``; the first and the last chunk along
+    an axis carry none on their outer side, the map border.
+    """
+    location = block_info[0]["chunk-location"]
+    num_chunks = block_info[0]["num-chunks"]
+    bounds = []
+    for axis in range(2):
+        halo = int(depth[axis])
+        before = halo if location[axis] > 0 else 0
+        after = halo if location[axis] < num_chunks[axis] - 1 else 0
+        bounds.extend([before, int(nav_shape[axis]) - after])
+    return bounds[0], bounds[1], bounds[2], bounds[3]
 
 
 def _nlpar_sigma_chunk(
@@ -673,7 +958,35 @@ def _nlpar_sigma_chunk(
     not used. :func:`_nlpar_sigma_kernel` runs on the whole block and
     only the core (the block minus its halos) is returned.
     """
-    raise NotImplementedError
+    assert block_info is not None, "block_info is required"
+    n_rows, n_cols = patterns.shape[:2]
+    n_pix = int(np.prod(patterns.shape[2:]))
+    row_start, row_stop, col_start, col_stop = _nlpar_core_bounds(
+        (n_rows, n_cols), depth, block_info
+    )
+
+    data = np.ascontiguousarray(patterns, dtype=np.float32).reshape(
+        n_rows, n_cols, n_pix
+    )
+    sigma, d2, n2, valid = _nlpar_sigma_kernel(
+        data,
+        np.ascontiguousarray(mask_indices, dtype=np.int64),
+        np.float32(max_value),
+        bool(saturation_protect),
+    )
+
+    # With a halo of at least one point on every side facing another
+    # chunk, the clipped 3 x 3 window of every core pattern lies inside
+    # the block and is clipped only at the map borders
+    core = (slice(row_start, row_stop), slice(col_start, col_stop))
+    packed = np.zeros(
+        (row_stop - row_start, col_stop - col_start, 4, 9), dtype=np.float32
+    )
+    packed[..., 0, :] = d2[core]
+    packed[..., 1, :] = n2[core]
+    packed[..., 2, :] = valid[core]
+    packed[..., 3, 0] = sigma[core]
+    return packed
 
 
 def _nlpar_unpack_sigma_pass(
@@ -696,7 +1009,12 @@ def _nlpar_unpack_sigma_pass(
     valid
         Bool of shape (n_rows, n_cols, 9), ``packed[..., 2, :] > 0.5``.
     """
-    raise NotImplementedError
+    packed = np.asarray(packed, dtype=np.float32)
+    sigma = np.ascontiguousarray(packed[..., 3, 0])
+    d2 = np.ascontiguousarray(packed[..., 0, :])
+    n2 = np.ascontiguousarray(packed[..., 1, :])
+    valid = packed[..., 2, :] > 0.5
+    return sigma, d2, n2, valid
 
 
 def _nlpar_average_chunk(
@@ -765,10 +1083,74 @@ def _nlpar_average_chunk(
     and :func:`_nlpar_finalize` run in turn. Only the core is computed
     and returned; nothing is zero-filled or trimmed afterwards.
     """
-    raise NotImplementedError
+    assert block_info is not None, "block_info is required"
+    n_rows, n_cols = patterns.shape[:2]
+    sig_shape = patterns.shape[2:]
+    n_pix = int(np.prod(sig_shape))
+    row_start, row_stop, col_start, col_stop = _nlpar_core_bounds(
+        (n_rows, n_cols), depth, block_info
+    )
+    radius_rows, radius_cols = int(radius[0]), int(radius[1])
+
+    data = np.ascontiguousarray(patterns, dtype=np.float32).reshape(
+        n_rows, n_cols, n_pix
+    )
+    sigma = np.asarray(sigma_block, dtype=np.float32).reshape(n_rows, n_cols)
+    sigma2 = np.ascontiguousarray(sigma * sigma, dtype=np.float32)
+
+    d = _nlpar_distances_kernel(
+        data,
+        sigma2,
+        np.ascontiguousarray(mask_indices, dtype=np.int64),
+        np.float32(max_value),
+        bool(saturation_protect),
+        radius_rows,
+        radius_cols,
+        row_start,
+        row_stop,
+        col_start,
+        col_stop,
+    )
+    weights = _nlpar_weights_kernel(d, float(lam), np.float32(dthresh))
+    out = _nlpar_weighted_sum_kernel(
+        data,
+        weights,
+        radius_rows,
+        radius_cols,
+        row_start,
+        row_stop,
+        col_start,
+        col_stop,
+    )
+    out = _nlpar_finalize(out, dtype_out)
+    return out.reshape((row_stop - row_start, col_stop - col_start) + sig_shape)
 
 
 # ------------------------------ Drivers ----------------------------- #
+
+
+def _nlpar_as_map(dask_array: da.Array) -> da.Array:
+    """Return a map of patterns with two navigation axes and each signal
+    axis in one chunk.
+
+    Parameters
+    ----------
+    dask_array
+        Map of shape (n_rows, n_cols, h, w), or a 1-D scan of shape
+        (n, h, w).
+
+    Returns
+    -------
+    x
+        Map of shape (n_rows, n_cols, h, w); a 1-D scan becomes the
+        single row (1, n, h, w) with its navigation chunks kept.
+    """
+    x = dask_array
+    if x.ndim == 3:
+        x = x[None]
+    if any(len(c) > 1 for c in x.chunks[2:]):
+        x = x.rechunk(x.chunks[:2] + tuple((s,) for s in x.shape[2:]))
+    return x
 
 
 def _nlpar_sigma(
@@ -783,9 +1165,10 @@ def _nlpar_sigma(
     Parameters
     ----------
     dask_array
-        Map of shape (n_rows, n_cols, h, w), of any real data type,
-        with the signal axes in one chunk. A 1-D scan is passed as a
-        single row.
+        Map of shape (n_rows, n_cols, h, w), of any real data type. A
+        1-D scan, of shape (n, h, w), is processed as the single row
+        (1, n, h, w). A signal axis split into several chunks is
+        rechunked to one chunk.
     mask_indices
         Flat indices of the kept pixels, int64 in ascending order.
     max_value
@@ -796,11 +1179,12 @@ def _nlpar_sigma(
     Returns
     -------
     sigma
-        Float32 of shape (n_rows, n_cols).
+        Float32 of shape (n_rows, n_cols), (1, n) for a 1-D scan.
     d2, n2
-        Float32 of shape (n_rows, n_cols, 9).
+        Float32 of shape (n_rows, n_cols, 9), (1, n, 9) for a 1-D
+        scan.
     valid
-        Bool of shape (n_rows, n_cols, 9).
+        Bool of shape (n_rows, n_cols, 9), (1, n, 9) for a 1-D scan.
 
     Notes
     -----
@@ -818,7 +1202,28 @@ def _nlpar_sigma(
     chunking. The normalised distances follow from
     :func:`_nlpar_normalized_distances` on these arrays.
     """
-    raise NotImplementedError
+    x = _nlpar_as_map(dask_array)
+    nav_chunks = x.chunks[:2]
+
+    depth = {axis: (1 if len(c) > 1 else 0) for axis, c in enumerate(nav_chunks)}
+    depth.update({2: 0, 3: 0})
+    if any(depth.values()):
+        overlapped = da.overlap.overlap(x, depth=depth, boundary="none")
+    else:
+        overlapped = x
+
+    packed = da.map_blocks(
+        _nlpar_sigma_chunk,
+        overlapped,
+        mask_indices=np.ascontiguousarray(mask_indices, dtype=np.int64),
+        max_value=np.float32(max_value),
+        saturation_protect=bool(saturation_protect),
+        depth=(depth[0], depth[1]),
+        chunks=nav_chunks + ((4,), (9,)),
+        dtype=np.float32,
+        meta=np.empty((0, 0, 4, 9), dtype=np.float32),
+    )
+    return _nlpar_unpack_sigma_pass(packed.compute())
 
 
 def _nlpar_average(
@@ -827,7 +1232,7 @@ def _nlpar_average(
     *,
     lam: float,
     dthresh: np.float32,
-    radius: tuple[int, int],
+    radius: tuple[int, ...],
     mask_indices: np.ndarray,
     max_value: np.float32,
     saturation_protect: bool,
@@ -839,18 +1244,22 @@ def _nlpar_average(
     Parameters
     ----------
     dask_array
-        Map of shape (n_rows, n_cols, h, w), of any real data type,
-        with the signal axes in one chunk. A 1-D scan is passed as a
-        single row with radius 0 along the rows.
+        Map of shape (n_rows, n_cols, h, w), of any real data type. A
+        1-D scan, of shape (n, h, w), is processed as the single row
+        (1, n, h, w) with radius 0 along the rows and returned in its
+        own shape. A signal axis split into several chunks is
+        rechunked to one chunk.
     sigma
         Noise level of every pattern, float32 of shape
-        (n_rows, n_cols), every element finite and > 0.
+        (n_rows, n_cols), (n,) or (1, n) for a 1-D scan, every element
+        finite and > 0.
     lam
         Weight decay lambda as float64, > 0.
     dthresh
         Distance threshold as float32, >= 0.
     radius
-        Search radius of the two navigation axes.
+        Search radius of the two navigation axes; for a 1-D scan,
+        ``(r,)`` or ``(0, r)``, only the last entry being used.
     mask_indices
         Flat indices of the kept pixels, int64 in ascending order.
     max_value
@@ -878,4 +1287,44 @@ def _nlpar_average(
     ``meta``. The result does not depend on the chunking, the
     scheduler or the number of threads.
     """
-    raise NotImplementedError
+    one_dimensional = dask_array.ndim == 3
+    x = _nlpar_as_map(dask_array)
+    sigma = np.ascontiguousarray(sigma, dtype=np.float32).reshape(x.shape[:2])
+    if one_dimensional:
+        radius = (0, int(radius[-1]))
+    radius = (int(radius[0]), int(radius[1]))
+    dtype_out = np.dtype(dtype_out)
+
+    # The explicit rechunk precedes the overlap, so that no chunk is
+    # thinner than its halo and the chunk wrapper's core sizes are the
+    # post-rechunk chunks
+    depth, chunks_out = _nlpar_depth(x.chunks, radius)
+    x = x.rechunk(chunks_out)
+    nav_chunks = chunks_out[:2]
+    sigma_dask = da.from_array(sigma[..., None, None], chunks=nav_chunks + ((1,), (1,)))
+    if any(depth.values()):
+        patterns_ov = da.overlap.overlap(x, depth=depth, boundary="none")
+        sigma_ov = da.overlap.overlap(sigma_dask, depth=depth, boundary="none")
+    else:
+        patterns_ov = x
+        sigma_ov = sigma_dask
+
+    averaged = da.map_blocks(
+        _nlpar_average_chunk,
+        patterns_ov,
+        sigma_ov,
+        lam=float(lam),
+        dthresh=np.float32(dthresh),
+        radius=radius,
+        mask_indices=np.ascontiguousarray(mask_indices, dtype=np.int64),
+        max_value=np.float32(max_value),
+        saturation_protect=bool(saturation_protect),
+        depth=(depth[0], depth[1]),
+        dtype_out=dtype_out,
+        chunks=chunks_out,
+        dtype=dtype_out,
+        meta=np.empty((0,) * x.ndim, dtype=dtype_out),
+    )
+    if one_dimensional:
+        averaged = averaged[0]
+    return averaged

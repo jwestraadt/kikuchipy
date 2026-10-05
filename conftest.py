@@ -1093,7 +1093,14 @@ def bruker_h5ebsd_nonrectangular_roi_file(tmpdir) -> Generator[Path, None, None]
 # drafting seed, not a pin). None until measured; a test reading it
 # through the exp_kernel_ulp fixture must then fail loudly with
 # "unfilled MEASURED-THEN-PINNED placeholder".
-EXP_KERNEL_ULP: int | None = None
+# Pinned 2026-10-05 at the measured ulp count, 0: compiled vs pure
+# Python and kernel vs closed form on every test input, and on 2e5
+# (pure Python) and 2e6 (closed form) random distances in [-5, 60]
+# per (lam, dthresh) for lam in {0.5, 0.7, 1.0, 2.5}
+# and dthresh in {0, 0.5} (the kernel rounds a float64 exp to
+# float32). Measured on a 20-core Intel Raptor Lake laptop, Windows 11,
+# numba 0.65.1, numpy 2.4.6.
+EXP_KERNEL_ULP: int | None = 0
 
 
 def _nlpar_ramp(sig_shape: tuple[int, int]) -> np.ndarray:

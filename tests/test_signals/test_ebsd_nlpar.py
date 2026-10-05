@@ -70,43 +70,72 @@ from kikuchipy.signals.util._dask import get_dask_array
 # nlpar_reference. Seed 1e-3 grey levels (float32 weights with 1e-6 to
 # 1e-5 relative error applied to values spread over 20-240), pinned at
 # ~2x the measured value.
-REFERENCE_MAX_ABS_GREY: float | None = None
+# Pinned 2026-10-05: measured 6.91e-5 at worst over the eleven arms of
+# the reference agreement and the two small-map arms (sr=1, lam=0.7);
+# pinned at ~2x, 1.4e-4.
+REFERENCE_MAX_ABS_GREY: float | None = 1.4e-4
 
 # Band (low, high) of the median over the interior of the ratio of the
 # estimated to the true noise level on the iid-noise map at N = 1024
 # pixels. Seed (0.969, 0.978): the minimum over eight correlated
 # estimates of sigma^2, each with relative spread sqrt(2 / N), sits 1.0
 # to 1.4 of that spread below the mean.
-NOISE_SIGMA_RATIO_BAND: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.97302 (seed 0). The four iid-noise bands
+# are the measured value plus or minus the full range of the statistic
+# over seeds 0-19 (twice its half-range), rounded outward; here range
+# 0.96852-0.97762, band (0.963, 0.983). The mean or the median of the
+# eight estimates instead of the minimum gives 1.0009 or 1.0002.
+NOISE_SIGMA_RATIO_BAND: tuple[float, float] | None = (0.963, 0.983)
 
 # Band (low, high) of the mean of the normalised 3 x 3 distances on the
 # iid-noise map at N = 1024. Seed: about +1.2 (a 5 % low sigma^2 bias
 # shifts the mean by about 0.05 sqrt(N / 2)).
-D_MEAN_BAND: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 1.2049 (seed 0), seeds 0-19 range
+# 1.1367-1.3270, band (1.01, 1.40). A sqrt(n2) denominator gives 1.704,
+# the flipped correction sign 46.5.
+D_MEAN_BAND: tuple[float, float] | None = (1.01, 1.40)
 
 # Band (low, high) of the standard deviation of the normalised 3 x 3
 # distances on the iid-noise map at N = 1024. Seed: about 1.0.
-D_STD_BAND: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.8266 (seed 0), equal to the standard
+# deviation of the compiled PyEBSDIndex sigma_numba distances on the
+# same map. Below the seed: each 3 x 3 pair estimate enters the minimum
+# of both of its points, so every 3 x 3 distance is >= 0 (down to
+# -1.5e-6 in float32) and the distribution is cut at 0. Seeds 0-19
+# range 0.7543-0.8880, band (0.69, 0.97). A sqrt(n2) denominator
+# gives 1.169, a d2 / n2 normalisation 4.45.
+D_STD_BAND: tuple[float, float] | None = (0.69, 0.97)
 
 # Band (low, high) of the fraction of neighbour weights exactly 1.0
 # (normalised distance <= 0) on the iid-noise map. Seed: about 0.1.
-UNIT_WEIGHT_FRACTION_BAND: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.09606 (seed 0), seeds 0-19 range
+# 0.06047-0.09954, band (0.057, 0.136).
+UNIT_WEIGHT_FRACTION_BAND: tuple[float, float] | None = (0.057, 0.136)
 
 # Largest relative difference between the measured residual noise
 # variance of the output and sigma_true^2 times the mean over patterns
 # of the sum of squared normalised weights. Seed: about 0.05
 # (finite-sample class at 144 patterns x 1024 pixels).
-NOISE_REDUCTION_TOL: float | None = None
+# Pinned 2026-10-05: measured 0.0388 (variance 2.061 vs 1.984 expected;
+# seeds 0-19 range 0.010-0.068); pinned at ~2x, 0.08.
+NOISE_REDUCTION_TOL: float | None = 0.08
 
 # Smallest fraction of the boundary-column contrast of the two-grain
 # map retained after NLPAR. Seed 0.995.
-TWO_GRAIN_CONTRAST_MIN: float | None = None
+# Pinned 2026-10-05: measured 0.99842 (lam 0.7) and 0.99776 (lam 2.5),
+# a loss of 0.0022 at worst (seeds 1-20 range 0.991-1.007, no
+# systematic loss); pinned at ~2x the loss, 0.995. The Gaussian window
+# retains 0.401.
+TWO_GRAIN_CONTRAST_MIN: float | None = 0.995
 
 # Largest ratio of the residual rms on the two boundary columns of the
 # two-grain map to the residual rms on the interior columns. Seed: about
 # 1.0-1.3 (boundary patterns have fewer same-grain neighbours in their
 # window and average less).
-TWO_GRAIN_BOUNDARY_RESIDUAL_TOL: float | None = None
+# Pinned 2026-10-05: measured 1.3228 (rms 1.932 on the boundary columns
+# vs 1.461 inside; seeds 1-20 range 1.246-1.347); pinned at ~2x the
+# excess over 1, 1.65.
+TWO_GRAIN_BOUNDARY_RESIDUAL_TOL: float | None = 1.65
 
 # --------------------------- Small fixtures ------------------------- #
 
@@ -1111,7 +1140,8 @@ class TestLazyAndContracts:
 
         if guard == "lam_none":
             # The guard is specific to lam=None
-            assert isinstance(_average(s, lam=1.0), kp.signals.EBSD)
+            s_out = s.average_non_local_neighbour_patterns(lam=1.0, inplace=False)
+            assert isinstance(s_out, kp.signals.EBSD)
             with pytest.raises(
                 ValueError, match="search_radius must be a non-negative"
             ):
@@ -1122,7 +1152,8 @@ class TestLazyAndContracts:
                 s.average_non_local_neighbour_patterns()
         elif guard == "lazy_input":
             # The guard is specific to a lazy input
-            assert isinstance(_average(s, lam=1.0), kp.signals.EBSD)
+            s_out = s.average_non_local_neighbour_patterns(lam=1.0, inplace=False)
+            assert isinstance(s_out, kp.signals.EBSD)
             s_lazy = s.as_lazy()
             with pytest.raises(
                 ValueError, match="search_radius must be a non-negative"
@@ -1342,8 +1373,10 @@ class TestLazyAndContracts:
         s = kp.data.nickel_ebsd_large(allow_download=True)
         data = s.data.copy()
         # The in-memory signal is processed in several navigation chunks
-        # (((47, 8), (47, 28)) with dask 2026.3.0), whose halos read the
-        # buffer an in-place store writes into
+        # (((47, 8), (47, 28)) with dask 2026.3.0, ((47, 8), (25, 25, 25))
+        # with dask 2021.8.1), whose halos read the signal's own buffer,
+        # so an in-place result must not be written into that buffer
+        # while the graph runs
         chunks = get_dask_array(signal=s, chunk_bytes=8e6, rechunk=True).chunks
         assert max(len(chunks[0]), len(chunks[1])) > 1
 
