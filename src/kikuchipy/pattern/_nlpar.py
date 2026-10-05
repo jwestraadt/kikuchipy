@@ -46,7 +46,7 @@
 # The US Naval Research Laboratory Date: 22 May 2024
 # #####################################################################
 
-# Changes by the kikuchipy developers, 2026-10-04:
+# Changes by the kikuchipy developers, 2026-10-05:
 # - Rewritten as Numba kernels over in-memory NumPy chunks with
 #   cache=True, nogil=True and no parallel.
 # - Per-axis search radius.
@@ -205,7 +205,8 @@ def _nlpar_sigma_kernel(
     saturation_protect
         Whether a pixel pair is kept only if both values are below
         ``SIGMA_SATURATION_FACTOR`` times ``max_value``. If False, the
-        threshold is ``max_value + 1`` and no pair is excluded.
+        threshold is ``max_value + 1`` in float64, which excludes no
+        pair while ``max_value < 2**53``.
 
     Returns
     -------
@@ -341,8 +342,12 @@ def _nlpar_distances_kernel(
     saturation_protect
         Whether a pixel pair is kept only if both values are below
         ``AVERAGE_SATURATION_FACTOR`` times ``max_value``. If False,
-        the threshold is ``max_value + np.float32(1.0)`` and no pair is
-        excluded.
+        the threshold is ``max_value + np.float32(1.0)`` in float32,
+        which excludes no pair while ``max_value < 2**24``. From
+        ``2**24`` on the sum rounds to ``max_value``, so the pixels
+        equal to the maximum drop out of these distances, as in
+        PyEBSDIndex, while the float64 threshold of
+        :func:`_nlpar_sigma_kernel` still keeps them.
     radius_rows, radius_cols
         Search radius along the rows and the columns.
     row_start, row_stop, col_start, col_stop
@@ -525,7 +530,7 @@ def _nlpar_weighted_sum_kernel(
     -----
     Per kept pattern the weights are summed sequentially in float32 in
     slot order, starting from ``np.float32(0.0)``, every weight is
-    divided by the sum, and ``out[q] += data[jn, in, q] * w`` is
+    divided by the sum, and ``out[q] += data[jn, i_n, q] * w`` is
     accumulated in float32 in slot order over ALL ``n_pix`` pixels: the
     signal mask affects the distances only, as in PyEBSDIndex. The
     window bounds are recomputed with :func:`_window_bounds` and
@@ -579,7 +584,9 @@ def _nlpar_normalized_distances(
     sigma
         Noise level of every pattern, float32 of shape
         (n_rows, n_cols), from the sigma pass or given by the user;
-        every element finite and > 0.
+        every element finite and > 0, with ``sigma * sigma > 0`` and
+        ``2 n_kept sigma^2`` finite in float32, as the method checks
+        for a given sigma.
 
     Returns
     -------
@@ -600,8 +607,13 @@ def _nlpar_normalized_distances(
 
     Conventions: the self slot is ``-inf`` (weight exactly 1); a slot
     with ``n2 == 0`` is ``+inf`` (weight 0), where PyEBSDIndex keeps a
-    finite tiny negative value; the result is NaN-free. Out-of-map
-    slots keep ``valid=False`` and their value is never read.
+    finite tiny negative value. For a sigma as stated above ``s2_ij``
+    and ``n2 * s2_ij`` are finite and ``den > 0`` wherever ``n2 > 0``,
+    so the result is NaN-free. A sigma outside that range gives NaN
+    here or in :func:`_nlpar_distances_kernel`: 0 / 0 at a duplicate
+    neighbour when the square underflows to 0, ``-inf / inf`` when a
+    sum or a product of squares overflows. Out-of-map slots keep
+    ``valid=False`` and their value is never read.
     """
     d2 = np.asarray(d2, dtype=np.float32)
     n2 = np.asarray(n2, dtype=np.float32)
@@ -790,11 +802,24 @@ def _nlpar_finalize(
     :mod:`skimage.util.dtype`, then the cast. Floating types: a cast.
     Never a per-pattern rescale: the weights sum to 1, so the average is
     a convex combination inside the input range.
+
+    The rounding and the clip run in float64, where the float32 values
+    and their ``rint`` are exact, so 8- and 16-bit outputs are those of
+    a float32 route bitwise. In float32 the upper bound of a 32-bit
+    type is not representable (``2**32 - 1`` rounds up to ``2**32``),
+    and the cast of the clipped value would wrap around. The lower
+    bound, 0 or a negative power of two, is exact in float64; the upper
+    bound of a 64-bit type is not, and is replaced by the largest
+    float64 below it.
     """
     dtype_out = np.dtype(dtype_out)
     if np.issubdtype(dtype_out, np.integer):
         omin, omax = dtype_range[dtype_out.type]
-        out = np.clip(np.rint(out_f32), omin, omax)
+        # Python compares an int with a float exactly
+        high = float(omax)
+        if high > omax:
+            high = float(np.nextafter(high, -np.inf))
+        out = np.clip(np.rint(out_f32.astype(np.float64)), float(omin), high)
         return out.astype(dtype_out)
     return out_f32.astype(dtype_out)
 

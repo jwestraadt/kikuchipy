@@ -31,14 +31,14 @@ Oracles used here, none of which is PyEBSDIndex:
 * seeded synthetic maps whose statistics are derived (iid noise, two
   grains), from the generators of the root ``conftest.py``.
 
-Tolerances that are measured on the finished implementation and then
-pinned are module constants set to None until measured; a test reading
-one fails with "unfilled MEASURED-THEN-PINNED placeholder" and reports
-the measured value. Every such test computes its result first, so that
-while the methods are stubs it fails on the stub.
+Tolerances that were measured on the finished implementation and then
+pinned are module constants, each with a dated record of the
+measurement. Every test reading one computes its result first and
+reports the measured value if it fails; a constant left at None, as a
+placeholder of a later stage would be, fails with "unfilled
+MEASURED-THEN-PINNED placeholder".
 """
 
-import functools
 import warnings
 
 import dask
@@ -58,12 +58,12 @@ from kikuchipy.pattern._nlpar import (
 import kikuchipy.signals.ebsd as ebsd_module
 from kikuchipy.signals.util._dask import get_dask_array
 
-# ----------------- MEASURED-THEN-PINNED placeholders ---------------- #
-# Each constant below is a placeholder, measured then pinned: None
-# until the implementation gate measures it, records date, machine and
-# recipe, and pins it with pytest.approx(measured, rel=0.05) or the ~2x
-# margin convention. The seeds quoted are drafting seeds (measured
-# 2026-09-11 or derived 2026-10-04), not pins.
+# ------------------- Measured, then pinned tolerances ---------------- #
+# Each constant below was measured at the implementation gate, recorded
+# with date, machine and recipe, and pinned with the ~2x margin
+# convention or as a band around the measured value. The seeds quoted
+# are drafting seeds (measured 2026-09-11 or derived 2026-10-04), not
+# pins.
 
 # Largest absolute difference, in grey levels on a 0-255 scale, between
 # the float32 output of the method and the float64 reference
@@ -73,7 +73,7 @@ from kikuchipy.signals.util._dask import get_dask_array
 # Pinned 2026-10-05: measured 6.91e-5 at worst over the eleven arms of
 # the reference agreement and the two small-map arms (sr=1, lam=0.7);
 # pinned at ~2x, 1.4e-4.
-REFERENCE_MAX_ABS_GREY: float | None = 1.4e-4
+REFERENCE_MAX_ABS_GREY: float = 1.4e-4
 
 # Band (low, high) of the median over the interior of the ratio of the
 # estimated to the true noise level on the iid-noise map at N = 1024
@@ -85,7 +85,7 @@ REFERENCE_MAX_ABS_GREY: float | None = 1.4e-4
 # over seeds 0-19 (twice its half-range), rounded outward; here range
 # 0.96852-0.97762, band (0.963, 0.983). The mean or the median of the
 # eight estimates instead of the minimum gives 1.0009 or 1.0002.
-NOISE_SIGMA_RATIO_BAND: tuple[float, float] | None = (0.963, 0.983)
+NOISE_SIGMA_RATIO_BAND: tuple[float, float] = (0.963, 0.983)
 
 # Band (low, high) of the mean of the normalised 3 x 3 distances on the
 # iid-noise map at N = 1024. Seed: about +1.2 (a 5 % low sigma^2 bias
@@ -93,24 +93,27 @@ NOISE_SIGMA_RATIO_BAND: tuple[float, float] | None = (0.963, 0.983)
 # Pinned 2026-10-05: measured 1.2049 (seed 0), seeds 0-19 range
 # 1.1367-1.3270, band (1.01, 1.40). A sqrt(n2) denominator gives 1.704,
 # the flipped correction sign 46.5.
-D_MEAN_BAND: tuple[float, float] | None = (1.01, 1.40)
+D_MEAN_BAND: tuple[float, float] = (1.01, 1.40)
 
 # Band (low, high) of the standard deviation of the normalised 3 x 3
-# distances on the iid-noise map at N = 1024. Seed: about 1.0.
-# Pinned 2026-10-05: measured 0.8266 (seed 0), equal to the standard
-# deviation of the compiled PyEBSDIndex sigma_numba distances on the
-# same map. Below the seed: each 3 x 3 pair estimate enters the minimum
-# of both of its points, so every 3 x 3 distance is >= 0 (down to
-# -1.5e-6 in float32) and the distribution is cut at 0. Seeds 0-19
-# range 0.7543-0.8880, band (0.69, 0.97). A sqrt(n2) denominator
-# gives 1.169, a d2 / n2 normalisation 4.45.
-D_STD_BAND: tuple[float, float] | None = (0.69, 0.97)
+# distances on the iid-noise map at N = 1024. Seed (2026-09-11, derived
+# again 2026-10-04): about 1.0, the standard deviation with the exact
+# sigma; refuted 2026-10-05.
+# Pinned 2026-10-05: measured 0.83 (0.8266 at seed 0; 0.754-0.888 over
+# seeds 0-19), identical to the standard deviation of the compiled
+# PyEBSDIndex sigma_numba distances on the same map. The test uses the
+# estimated sigma: each 3 x 3 pair estimate enters the minimum of both
+# of its points, so every 3 x 3 distance is >= 0 (down to -1.5e-6 in
+# float32) and the distribution is cut at 0, which narrows it. Band
+# (0.69, 0.97). A sqrt(n2) denominator gives 1.169, a d2 / n2
+# normalisation 4.45.
+D_STD_BAND: tuple[float, float] = (0.69, 0.97)
 
 # Band (low, high) of the fraction of neighbour weights exactly 1.0
 # (normalised distance <= 0) on the iid-noise map. Seed: about 0.1.
 # Pinned 2026-10-05: measured 0.09606 (seed 0), seeds 0-19 range
 # 0.06047-0.09954, band (0.057, 0.136).
-UNIT_WEIGHT_FRACTION_BAND: tuple[float, float] | None = (0.057, 0.136)
+UNIT_WEIGHT_FRACTION_BAND: tuple[float, float] = (0.057, 0.136)
 
 # Largest relative difference between the measured residual noise
 # variance of the output and sigma_true^2 times the mean over patterns
@@ -118,7 +121,7 @@ UNIT_WEIGHT_FRACTION_BAND: tuple[float, float] | None = (0.057, 0.136)
 # (finite-sample class at 144 patterns x 1024 pixels).
 # Pinned 2026-10-05: measured 0.0388 (variance 2.061 vs 1.984 expected;
 # seeds 0-19 range 0.010-0.068); pinned at ~2x, 0.08.
-NOISE_REDUCTION_TOL: float | None = 0.08
+NOISE_REDUCTION_TOL: float = 0.08
 
 # Smallest fraction of the boundary-column contrast of the two-grain
 # map retained after NLPAR. Seed 0.995.
@@ -126,7 +129,7 @@ NOISE_REDUCTION_TOL: float | None = 0.08
 # a loss of 0.0022 at worst (seeds 1-20 range 0.991-1.007, no
 # systematic loss); pinned at ~2x the loss, 0.995. The Gaussian window
 # retains 0.401.
-TWO_GRAIN_CONTRAST_MIN: float | None = 0.995
+TWO_GRAIN_CONTRAST_MIN: float = 0.995
 
 # Largest ratio of the residual rms on the two boundary columns of the
 # two-grain map to the residual rms on the interior columns. Seed: about
@@ -135,7 +138,7 @@ TWO_GRAIN_CONTRAST_MIN: float | None = 0.995
 # Pinned 2026-10-05: measured 1.3228 (rms 1.932 on the boundary columns
 # vs 1.461 inside; seeds 1-20 range 1.246-1.347); pinned at ~2x the
 # excess over 1, 1.65.
-TWO_GRAIN_BOUNDARY_RESIDUAL_TOL: float | None = 1.65
+TWO_GRAIN_BOUNDARY_RESIDUAL_TOL: float = 1.65
 
 # --------------------------- Small fixtures ------------------------- #
 
@@ -194,23 +197,17 @@ def _random_map(random_uniform_saturated, nav_shape: tuple[int, ...] = NAV_SHAPE
     return random_uniform_saturated(nav_shape, SIG_SHAPE, frac=0.0, seed=1)
 
 
-def _circle_mask(sig_shape: tuple[int, int]) -> np.ndarray:
-    """Return a boolean mask that is True outside the circle inscribed
-    in the signal shape (kikuchipy polarity, True = excluded).
-    """
-    h, w = sig_shape
-    rr, cc = np.ogrid[:h, :w]
-    radius = min(h, w) / 2
-    return (rr - (h - 1) / 2) ** 2 + (cc - (w - 1) / 2) ** 2 > radius**2
-
-
-def _resolve(kwargs: dict, sig_shape: tuple[int, int]) -> dict:
+def _resolve(kwargs: dict, sig_shape: tuple[int, int], circle_mask) -> dict:
     """Return a copy of method keyword arguments with the mask name
-    "circle" replaced by the inscribed-circle mask.
+    "circle" replaced by the boolean inscribed-circle mask of the
+    ``circle_mask`` fixture, and "circle_int" by the same mask as int64
+    0/1.
     """
     kwargs = dict(kwargs)
-    if isinstance(kwargs.get("signal_mask"), str):
-        kwargs["signal_mask"] = _circle_mask(sig_shape)
+    name = kwargs.get("signal_mask")
+    if isinstance(name, str):
+        mask = circle_mask(sig_shape)
+        kwargs["signal_mask"] = mask.astype(np.int64) if name == "circle_int" else mask
     return kwargs
 
 
@@ -218,26 +215,6 @@ def _average(s, **kwargs) -> np.ndarray:
     """Return the data of the NLPAR-averaged copy of a signal."""
     s_out = s.average_non_local_neighbour_patterns(inplace=False, **kwargs)
     return s_out.data
-
-
-def _counting_spy(monkeypatch, module, name: str) -> list:
-    """Replace ``module.name`` by a wrapper that records every call and
-    delegates to the original, and return the list of recorded calls.
-
-    ``functools.wraps`` keeps the original signature visible to
-    :func:`inspect.signature`, so Dask still passes ``block_info`` to a
-    wrapped chunk function.
-    """
-    original = getattr(module, name)
-    calls = []
-
-    @functools.wraps(original)
-    def spy(*args, **kwargs):
-        calls.append(kwargs.get("block_info"))
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(module, name, spy)
-    return calls
 
 
 def _whole_map_sigma_pass(data: np.ndarray, saturation_protect: bool = True):
@@ -776,7 +753,7 @@ class TestIdentities:
 
     @pytest.mark.parametrize("fixture_kind, kwargs, differs_from", REFERENCE_ARMS)
     def test_reference_agrees_with_the_method_on_random_maps(
-        self, random_uniform_saturated, fixture_kind, kwargs, differs_from
+        self, random_uniform_saturated, circle_mask, fixture_kind, kwargs, differs_from
     ):
         if fixture_kind == "random":
             data = _random_map(random_uniform_saturated)
@@ -787,12 +764,12 @@ class TestIdentities:
             data = _random_map(random_uniform_saturated, nav_shape=(7,))
         sig_shape = data.shape[-2:]
         s = kp.signals.EBSD(data)
-        method_kwargs = _resolve(kwargs, sig_shape)
+        method_kwargs = _resolve(kwargs, sig_shape, circle_mask)
 
         out_f32 = _average(s, dtype_out="float32", **method_kwargs)
         out_int = _average(s, **method_kwargs)
         others = [
-            _average(s, dtype_out="float32", **_resolve(other, sig_shape))
+            _average(s, dtype_out="float32", **_resolve(other, sig_shape, circle_mask))
             for other in differs_from
         ]
         ref = nlpar_reference(
@@ -1025,15 +1002,21 @@ class TestTwoGrain:
 
 # ------------------------- Contracts (eager) ------------------------ #
 
-_INT_MASK = _circle_mask(SIG_SHAPE).astype(np.int64)
-_BOOL_MASK = _circle_mask(SIG_SHAPE)
 _NAN_SIGMA = np.ones(NAV_SHAPE, dtype=np.float32)
 _NAN_SIGMA[1, 2] = np.nan
+# One element whose float32 square is finite but whose 2 n sigma^2 (n =
+# 36 kept pixels) is not
+_HUGE_SIGMA = np.ones(NAV_SHAPE, dtype=np.float32)
+_HUGE_SIGMA[2, 3] = 1e19
+
+# Fragment of the message of the float32 range check of a given sigma
+SIGMA_RANGE_MESSAGE = "sigma must be > 0 with sigma"
 
 # (method, keyword arguments, expected): expected is the fragment of
 # the ValueError message, or keyword arguments of an accepted run that
 # must give the same output bitwise. The methods "average_0d" and
-# "sigma_0d" run on a signal without navigation axes.
+# "sigma_0d" run on a signal without navigation axes. The mask names
+# "circle" and "circle_int" are resolved by _resolve.
 VALIDATION_ARMS = [
     ("average", {"search_radius": -1}, "search_radius must be a non-negative int"),
     ("average", {"search_radius": 1.5}, "search_radius must be a non-negative int"),
@@ -1042,10 +1025,21 @@ VALIDATION_ARMS = [
     ("average", {"search_radius": np.int64(2)}, {"search_radius": 2}),
     ("average", {"lam": 0.0}, "lam must be > 0"),
     ("average", {"lam": -1}, "lam must be > 0"),
+    ("average", {"lam": np.inf}, "lam must be > 0"),
     ("average", {"dthresh": -0.1}, "dthresh must be >= 0"),
+    ("average", {"dthresh": np.nan}, "dthresh must be >= 0"),
+    ("average", {"dthresh": np.inf}, "dthresh must be >= 0"),
+    ("average", {"target_weight": 0.0}, "0 < target_weight < 1"),
+    ("average", {"target_weight": 1.0}, "0 < target_weight < 1"),
+    ("average", {"target_weight": True}, "0 < target_weight < 1"),
     ("average", {"sigma": 0.0}, "sigma must be > 0"),
     ("average", {"sigma": -1.0}, "sigma must be > 0"),
     ("average", {"sigma": True}, "sigma must be > 0"),
+    ("average", {"sigma": 1e39}, "sigma must be > 0"),
+    ("average", {"sigma": 1e19}, SIGMA_RANGE_MESSAGE),
+    ("average", {"sigma": 1e-30}, SIGMA_RANGE_MESSAGE),
+    ("average", {"sigma": _HUGE_SIGMA}, SIGMA_RANGE_MESSAGE),
+    ("average", {"sigma": np.array(8.0)}, {"sigma": 8.0}),
     ("average", {"sigma": np.zeros(NAV_SHAPE, dtype=np.float32)}, "sigma must be > 0"),
     ("average", {"sigma": _NAN_SIGMA}, "sigma must be > 0"),
     ("average", {"sigma": np.ones((2, 2))}, "navigation shape"),
@@ -1055,19 +1049,20 @@ VALIDATION_ARMS = [
         {"dtype_out": complex},
         "dtype_out must be an integer or floating dtype",
     ),
+    ("average", {"dtype_out": "foo"}, "dtype_out must be an integer or floating dtype"),
     ("average", {"signal_mask": np.ones((2, 2), dtype=bool)}, "signal shape"),
     (
         "average",
         {"signal_mask": np.ones(SIG_SHAPE, dtype=bool)},
         "excludes every pixel",
     ),
-    ("average", {"signal_mask": _INT_MASK}, {"signal_mask": _BOOL_MASK}),
+    ("average", {"signal_mask": "circle_int"}, {"signal_mask": "circle"}),
     ("average_0d", {}, "nothing to average"),
     ("average_0d", {"search_radius": 3}, "nothing to average"),
     ("sigma_0d", {}, "nothing to average"),
     ("sigma", {"signal_mask": np.ones((2, 2), dtype=bool)}, "signal shape"),
     ("sigma", {"signal_mask": np.ones(SIG_SHAPE, dtype=bool)}, "excludes every pixel"),
-    ("sigma", {"signal_mask": _INT_MASK}, {"signal_mask": _BOOL_MASK}),
+    ("sigma", {"signal_mask": "circle_int"}, {"signal_mask": "circle"}),
 ]
 
 
@@ -1094,13 +1089,16 @@ class TestLazyAndContracts:
 
     @pytest.mark.parametrize("method, kwargs, expected", VALIDATION_ARMS)
     def test_argument_validation(
-        self, random_uniform_saturated, method, kwargs, expected
+        self, random_uniform_saturated, circle_mask, method, kwargs, expected
     ):
         data = _random_map(random_uniform_saturated)
         if method.endswith("_0d"):
             data = data[0, 0]
             method = method.removesuffix("_0d")
         s = kp.signals.EBSD(data.copy())
+        kwargs = _resolve(kwargs, SIG_SHAPE, circle_mask)
+        if isinstance(expected, dict):
+            expected = _resolve(expected, SIG_SHAPE, circle_mask)
 
         def call(**kw):
             kw = dict(kw)
@@ -1368,7 +1366,7 @@ class TestLazyAndContracts:
 
     @pytest.mark.parametrize("scheduler", ["synchronous", "threads"])
     def test_inplace_equals_inplace_false_on_a_multichunk_eager_signal(
-        self, monkeypatch, scheduler
+        self, counting_spy, scheduler
     ):
         s = kp.data.nickel_ebsd_large(allow_download=True)
         data = s.data.copy()
@@ -1384,8 +1382,8 @@ class TestLazyAndContracts:
         # call per block of these chunks and one averaging wrapper call
         # per block of the averaging-pass chunks. An eager route around
         # the drivers gives the same values, so the calls are counted
-        sigma_calls = _counting_spy(monkeypatch, nlpar_module, "_nlpar_sigma_chunk")
-        average_calls = _counting_spy(monkeypatch, nlpar_module, "_nlpar_average_chunk")
+        sigma_calls = counting_spy(nlpar_module, "_nlpar_sigma_chunk")
+        average_calls = counting_spy(nlpar_module, "_nlpar_average_chunk")
         kwargs = {"search_radius": 3, "lam": 2.5}
         with dask.config.set(scheduler=scheduler):
             s_out = s.average_non_local_neighbour_patterns(inplace=False, **kwargs)
@@ -1443,11 +1441,26 @@ class TestLazyAndContracts:
 
         monkeypatch.setattr(ebsd_module, "ProgressBar", RecordingProgressBar)
         monkeypatch.setattr(hs.preferences.General, "show_progressbar", preference)
+
+        # The final computation of the inplace=False signal: HyperSpy
+        # would otherwise draw its own bar (following the preference, so
+        # even with show_progressbar=False)
+        compute_bars = []
+        original_compute = kp.signals.LazyEBSD.compute
+
+        def recording_compute(self, *args, **kwargs):
+            compute_bars.append(kwargs.get("show_progressbar"))
+            return original_compute(self, *args, **kwargs)
+
+        monkeypatch.setattr(kp.signals.LazyEBSD, "compute", recording_compute)
+
         s = kp.signals.EBSD(_random_map(random_uniform_saturated))
         if method == "average":
             _average(s, lam=1.0, show_progressbar=show_progressbar)
+            assert compute_bars == [False]
         else:
             s.get_nlpar_sigma(show_progressbar=show_progressbar)
+            assert compute_bars == []
 
         if registered:
             _assert_balanced_registration(events)
@@ -1493,6 +1506,55 @@ class TestLazyAndContracts:
         out_1d = _average(s_1d, sigma=np.full(7, 8.0, np.float32), **kwargs)
         assert out_1d.shape == s_1d.data.shape
 
+        # A given sigma must keep the float32 distances finite: sigma^2
+        # > 0 and 2 n sigma^2 finite, n being the number of kept pixels
+        # (36 here, a bound between 1e18 and 1e19), else every pattern
+        # comes back NaN. The bound follows the mask
+        out_large = _average(s, sigma=1e18, **kwargs)
+        assert np.all(np.isfinite(out_large))
+        with pytest.raises(ValueError, match=SIGMA_RANGE_MESSAGE):
+            _average(s, sigma=1e19, **kwargs)
+        one_pixel = np.ones(SIG_SHAPE, dtype=bool)
+        one_pixel[2, 3] = False
+        out_one_pixel = _average(s, sigma=1e19, signal_mask=one_pixel, **kwargs)
+        assert np.all(np.isfinite(out_one_pixel))
+        with pytest.raises(ValueError, match=SIGMA_RANGE_MESSAGE):
+            _average(s, sigma=1e-30, signal_mask=one_pixel, **kwargs)
+
+    @pytest.mark.parametrize("dtype", [np.uint32, np.int32])
+    def test_integer_output_keeps_the_maximum_of_32_bit_types(self, dtype):
+        # A map at the maximum of the type, except one pattern at 1000.
+        # With protection on, every pixel at the global maximum is
+        # excluded, so every non-self weight is 0 and the output equals
+        # the input. The float32 average of the maximum is 2**32 (2**31
+        # for int32), beyond the type: rounded and clipped in float32 it
+        # stays there, and the cast wraps it around (to 0, or to the
+        # minimum of int32)
+        top = np.iinfo(dtype).max
+        data = np.full(NAV_SHAPE + (3, 3), top, dtype=dtype)
+        data[0, 0] = 1000
+        s = kp.signals.EBSD(data.copy())
+        out = _average(s, search_radius=1, lam=0.7)
+        assert out.dtype == dtype
+        assert np.array_equal(out, data)
+
+    def test_integer_output_clips_64_bit_types_inside_their_range(self):
+        # Values beyond both 64-bit ranges, unchanged by the averaging as
+        # above: the maxima round up to 2**64 and 2**63 in float64, so
+        # the clip bounds are the largest float64 below them
+        data = np.full(NAV_SHAPE + (3, 3), 1e20, dtype=np.float32)
+        data[0, 0] = 1000
+        data[0, 0, 0, 0] = -1e20
+        s = kp.signals.EBSD(data.copy())
+        limits = {np.uint64: (0, 2**64 - 2048), np.int64: (-(2**63), 2**63 - 1024)}
+        for dtype, (low, high) in limits.items():
+            out = _average(s, search_radius=1, lam=0.7, dtype_out=dtype)
+            assert out.dtype == dtype
+            assert out[0, 0, 0, 0] == low
+            assert np.all(out[0, 0].ravel()[1:] == 1000)
+            assert np.all(out[0, 1:] == high)
+            assert np.all(out[1:] == high)
+
 
 class TestSigmaMethod:
     """Contracts of :meth:`~kikuchipy.signals.EBSD.get_nlpar_sigma`."""
@@ -1518,11 +1580,11 @@ class TestSigmaMethod:
         ids=["default", "circle-unprotected"],
     )
     def test_equals_the_pass_one_of_the_method(
-        self, random_uniform_saturated, sigma_kwargs
+        self, random_uniform_saturated, circle_mask, sigma_kwargs
     ):
         data = random_uniform_saturated(NAV_SHAPE, SIG_SHAPE)
         s = kp.signals.EBSD(data)
-        sigma_kwargs = _resolve(sigma_kwargs, SIG_SHAPE)
+        sigma_kwargs = _resolve(sigma_kwargs, SIG_SHAPE, circle_mask)
         kwargs = {"lam": 1.0, "dtype_out": "float32", **sigma_kwargs}
         sigma = s.get_nlpar_sigma(**sigma_kwargs)
         out_given = _average(s, sigma=sigma, **kwargs)
@@ -1538,12 +1600,12 @@ class TestSigmaMethod:
         out_none_1d = _average(s_1d, sigma=None, **kwargs)
         assert np.array_equal(out_given_1d, out_none_1d)
 
-    def test_forwards_mask_and_protection(self, random_uniform_saturated):
+    def test_forwards_mask_and_protection(self, random_uniform_saturated, circle_mask):
         # 5 % of the pixels of every pattern at 255, the map maximum
         data = random_uniform_saturated(NAV_SHAPE, SIG_SHAPE)
         s = kp.signals.EBSD(data)
         sigma = s.get_nlpar_sigma()
-        sigma_mask = s.get_nlpar_sigma(signal_mask=_circle_mask(SIG_SHAPE))
+        sigma_mask = s.get_nlpar_sigma(signal_mask=circle_mask(SIG_SHAPE))
         sigma_unprotected = s.get_nlpar_sigma(saturation_protect=False)
         assert not np.array_equal(sigma_mask, sigma)
         assert not np.array_equal(sigma_unprotected, sigma)

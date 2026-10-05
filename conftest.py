@@ -44,6 +44,7 @@ if _XDIST_WORKER and "NUMBA_CACHE_DIR" not in os.environ:
     )
 
 from contextlib import contextmanager
+import functools
 from io import TextIOWrapper
 from numbers import Number
 import time
@@ -1077,22 +1078,21 @@ def bruker_h5ebsd_nonrectangular_roi_file(tmpdir) -> Generator[Path, None, None]
 
 
 # ------------------------------- NLPAR ------------------------------ #
-# Synthetic maps of patterns shared by the NLPAR kernel tests and the
-# NLPAR EBSD method tests. Test modules cannot import from each other or
-# from this file (pytest runs with --import-mode=importlib and tests/
-# has no __init__.py), so every generator is a plain function exposed
-# by a fixture of the same name without the leading underscore, which
-# returns the callable. Every generator is deterministic: it draws from
-# its own seeded numpy.random.Generator only.
+# Synthetic maps of patterns and test helpers shared by the NLPAR kernel
+# tests and the NLPAR EBSD method tests. Test modules cannot import from
+# each other or from this file (pytest runs with --import-mode=importlib
+# and tests/ has no __init__.py), so every generator or helper is a
+# plain function exposed by a fixture of the same name without the
+# leading underscore, which returns the callable. Every generator is
+# deterministic: it draws from its own seeded numpy.random.Generator
+# only.
 
-# MEASURED-THEN-PINNED: the largest difference, in float32 ulps,
+# Measured, then pinned: the largest difference, in float32 ulps,
 # allowed between the compiled NLPAR weights kernel (the only NLPAR
 # kernel calling exp) and its pure Python function, and between that
 # kernel and the closed-form weight exp(-max(d - dthresh, 0) / lam^2).
-# Numba's exp and NumPy's are expected to differ by at most 1 ulp (a
-# drafting seed, not a pin). None until measured; a test reading it
-# through the exp_kernel_ulp fixture must then fail loudly with
-# "unfilled MEASURED-THEN-PINNED placeholder".
+# The drafting seed was 1 ulp (Numba's exp and NumPy's were expected to
+# differ by at most that).
 # Pinned 2026-10-05 at the measured ulp count, 0: compiled vs pure
 # Python and kernel vs closed form on every test input, and on 2e5
 # (pure Python) and 2e6 (closed form) random distances in [-5, 60]
@@ -1100,7 +1100,18 @@ def bruker_h5ebsd_nonrectangular_roi_file(tmpdir) -> Generator[Path, None, None]
 # and dthresh in {0, 0.5} (the kernel rounds a float64 exp to
 # float32). Measured on a 20-core Intel Raptor Lake laptop, Windows 11,
 # numba 0.65.1, numpy 2.4.6.
-EXP_KERNEL_ULP: int | None = 0
+EXP_KERNEL_ULP: int = 0
+
+
+def _circle_mask(sig_shape: tuple[int, int]) -> np.ndarray:
+    """Return a boolean mask of the signal shape which is True outside
+    the circle inscribed in it (kikuchipy polarity: True means
+    excluded).
+    """
+    h, w = sig_shape
+    rows, cols = np.ogrid[:h, :w]
+    r2 = (rows - (h - 1) / 2) ** 2 + (cols - (w - 1) / 2) ** 2
+    return r2 > (min(h, w) / 2) ** 2
 
 
 def _nlpar_ramp(sig_shape: tuple[int, int]) -> np.ndarray:
@@ -1387,9 +1398,45 @@ def exact_duplicates() -> Callable:
 
 
 @pytest.fixture
-def exp_kernel_ulp() -> int | None:
-    """Return the measured-then-pinned float32 ulp tolerance of the
-    NLPAR weights kernel, ``EXP_KERNEL_ULP``, or None while it is
-    unfilled.
+def exp_kernel_ulp() -> int:
+    """Return the measured, then pinned float32 ulp tolerance of the
+    NLPAR weights kernel, ``EXP_KERNEL_ULP``.
     """
     return EXP_KERNEL_ULP
+
+
+@pytest.fixture
+def circle_mask() -> Callable:
+    """Return the helper :func:`_circle_mask` of the inscribed-circle
+    signal mask (True outside the circle).
+    """
+    return _circle_mask
+
+
+@pytest.fixture
+def counting_spy(monkeypatch) -> Callable:
+    """Return a function ``spy(module, name)`` that replaces
+    ``module.name`` by a wrapper recording every call and delegating to
+    the original, and returns the list of recorded calls.
+
+    Each call records its ``block_info`` keyword (None if absent).
+    ``functools.wraps`` keeps the original signature visible to
+    :func:`inspect.signature`, so Dask still passes ``block_info`` to a
+    wrapped chunk function. The NLPAR drivers look the chunk wrappers
+    up as module globals at call time, so the spy sees every block. The
+    replacement is undone at teardown.
+    """
+
+    def spy(module, name: str) -> list:
+        original = getattr(module, name)
+        calls = []
+
+        @functools.wraps(original)
+        def wrapper(*args, **kwargs):
+            calls.append(kwargs.get("block_info"))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, wrapper)
+        return calls
+
+    return spy

@@ -51,12 +51,12 @@ passed to ``nlpar_nb`` is at least ``2 sr + 1`` long, since it indexes
 out of bounds otherwise, and every call gets a fresh ``calclim``
 array, since the kernel writes into its default argument.
 
-The synthetic map generators and the shared ``exp_kernel_ulp``
-tolerance are fixtures of the root ``conftest.py``.
+The synthetic map generators, the shared ``exp_kernel_ulp`` tolerance,
+the inscribed-circle signal mask ``circle_mask`` and the call-counting
+``counting_spy`` are fixtures of the root ``conftest.py``.
 """
 
 import ast
-import functools
 from importlib.metadata import version
 import inspect
 import math
@@ -77,37 +77,38 @@ from kikuchipy.signals.util._dask import get_dask_array
 
 # ------------------------- Measured-then-pinned ------------------------ #
 
-# Placeholder, measured then pinned: the largest float32 ulp difference
-# allowed between our sigma and the sigma of the compiled
-# NLPAR.sigma_numba. Seed 0, i.e. bitwise; a non-zero pin must name the
+# Measured, then pinned: the largest float32 ulp difference allowed
+# between our sigma and the sigma of the compiled NLPAR.sigma_numba. The
+# drafting seed was 0, i.e. bitwise; a non-zero pin must name the
 # platform that forces it.
 # Pinned 2026-10-05 at the measured 0: the 18 sigma parity tests (four
 # generators x mask x protection, nickel_ebsd_large raw and corrected)
 # are bitwise on a 20-core Intel Raptor Lake laptop, Windows 11.
 SIGMA_PARITY_ULP = 0
 
-# Placeholder, measured then pinned: the largest float32 ulp difference
-# allowed per pixel between our averaged patterns and the output of the
-# compiled NLPAR.nlpar_nb. Seed 0, i.e. bitwise.
+# Measured, then pinned: the largest float32 ulp difference allowed per
+# pixel between our averaged patterns and the output of the compiled
+# NLPAR.nlpar_nb. The drafting seed was 0, i.e. bitwise.
 # Pinned 2026-10-05 at the measured 0: the 392 averaging parity tests,
 # nickel_ebsd_large included, are bitwise on the same machine.
 AVERAGE_PARITY_ULP = 0
 
-# Placeholder, measured then pinned: the smallest worst-pixel difference,
-# in grey levels, between the shifted-inward search window and a clamped
-# or a zero-extended window on the border band of a (7, 8 | 12, 12) map
-# of one pattern plus Gaussian noise of sigma 8 at search radius 2. None
-# until measured (seed of the order of 1 grey level); pinned at half the
+# Measured, then pinned: the smallest worst-pixel difference, in grey
+# levels, between the shifted-inward search window and a clamped or a
+# zero-extended window on the border band of a (7, 8 | 12, 12) map of
+# one pattern plus Gaussian noise of sigma 8 at search radius 2. The
+# drafting seed was of the order of 1 grey level; the pin is half the
 # measured minimum.
 # Pinned 2026-10-05: measured 7.2600 grey levels, the same worst border
 # pixel for the oracle and for our route against both the clamped and
 # the zero-extended window; pinned at half, 3.63.
-BORDER_BAND_MIN_DIFF: float | None = 3.63
+BORDER_BAND_MIN_DIFF: float = 3.63
 
-# Placeholder, measured then pinned; recorded, never asserted: the wall
-# time in seconds of the first calls of both compiled PyEBSDIndex kernels
-# in the pyebsdindex_kernels fixture. Seed 7.2 s, the cold compile of
-# 4.0 s (sigma_numba) plus 3.2 s (nlpar_nb) measured outside pytest.
+# Recorded, never asserted, and not read by any test (documentation of
+# the measurement only): the wall time in seconds of the first calls of
+# both compiled PyEBSDIndex kernels in the pyebsdindex_kernels fixture.
+# The drafting seed was 7.2 s, the cold compile of 4.0 s (sigma_numba)
+# plus 3.2 s (nlpar_nb) measured outside pytest.
 # Recorded 2026-10-05, three fresh processes each: a cold compile (fresh
 # dispatchers without an on-disk cache) takes 7.39-7.40 s (4.06-4.08 s
 # plus 3.31-3.34 s); with the kernels' numba cache present the fixture
@@ -224,16 +225,6 @@ def _assert_average_parity(ours: np.ndarray, expected: np.ndarray) -> None:
     assert np.count_nonzero(diff >= 2) == 0
 
 
-def _circle_mask(sig_shape: tuple[int, int]) -> np.ndarray:
-    """Return a mask which is True outside the circle inscribed in the
-    signal shape (kikuchipy polarity: True means excluded).
-    """
-    h, w = sig_shape
-    rows, cols = np.ogrid[:h, :w]
-    r2 = (rows - (h - 1) / 2) ** 2 + (cols - (w - 1) / 2) ** 2
-    return r2 > (min(h, w) / 2) ** 2
-
-
 def _kept_indices(
     signal_mask: np.ndarray | None, sig_shape: tuple[int, int]
 ) -> np.ndarray:
@@ -287,27 +278,6 @@ def _hand_built_map(
     base = np.linspace(40.0, 180.0, n_pix, dtype=np.float32)
     noisy = base + rng.normal(0.0, noise, nav_shape + (n_pix,))
     return noisy.astype(np.float32)
-
-
-def _counting_spy(monkeypatch, module, name: str) -> list:
-    """Replace ``module.name`` by a wrapper that records every call and
-    delegates to the original, and return the list of recorded calls.
-
-    ``functools.wraps`` keeps the original signature visible to
-    :func:`inspect.signature`, so Dask still passes ``block_info`` to a
-    wrapped chunk function. The drivers look the chunk wrappers up as
-    module globals at call time, so the spy sees every block.
-    """
-    original = getattr(module, name)
-    calls = []
-
-    @functools.wraps(original)
-    def spy(*args, **kwargs):
-        calls.append(kwargs.get("block_info"))
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(module, name, spy)
-    return calls
 
 
 def _record_overlap_chunks(monkeypatch) -> list:
@@ -821,7 +791,10 @@ def pyebsdindex_kernels(record_testsuite_property):
 
     The time is recorded as the test-suite property
     ``pyebsdindex_jit_warmup_s``, since a module-scoped fixture cannot
-    use the function-scoped ``record_property``. Where ``nlpar_nb``
+    use the function-scoped ``record_property``. That property is
+    written only into a junit-xml report of a run without xdist
+    (``-n 0 --junit-xml=<file>``); on xdist workers, as in CI, it is
+    recorded nowhere. Where ``nlpar_nb``
     does not compile (``NLPAR_NB_COMPILES``), only ``sigma_numba`` is
     warmed, so that the sigma oracle tests still run.
     """
@@ -1188,8 +1161,7 @@ class TestKernels:
 )
 class TestSigmaOracle:
     @staticmethod
-    def _check_sigma_parity(nlpar, patterns, masked, protect):
-        signal_mask = _circle_mask(patterns.shape[2:]) if masked else None
+    def _check_sigma_parity(nlpar, patterns, signal_mask, protect):
         oracle = _oracle_sigma(nlpar, patterns, signal_mask, protect)
         n_kept = _kept_indices(signal_mask, patterns.shape[2:]).size
         sigma, d, n2, valid = _ours_sigma_pass(patterns, signal_mask, protect)
@@ -1197,31 +1169,40 @@ class TestSigmaOracle:
 
     @pytest.mark.parametrize("masked, protect", SIGMA_ARMS)
     def test_sigma_parity_compiled_identical_plus_gaussian(
-        self, pyebsdindex_kernels, identical_plus_gaussian, masked, protect
+        self, pyebsdindex_kernels, identical_plus_gaussian, circle_mask, masked, protect
     ):
         patterns = identical_plus_gaussian(ORACLE_NAV, ORACLE_SIG, dtype=np.uint8)
-        self._check_sigma_parity(pyebsdindex_kernels, patterns, masked, protect)
+        mask = circle_mask(ORACLE_SIG) if masked else None
+        self._check_sigma_parity(pyebsdindex_kernels, patterns, mask, protect)
 
     @pytest.mark.parametrize("masked, protect", SIGMA_ARMS)
     def test_sigma_parity_compiled_two_grain(
-        self, pyebsdindex_kernels, two_grain, masked, protect
+        self, pyebsdindex_kernels, two_grain, circle_mask, masked, protect
     ):
         patterns = two_grain(ORACLE_NAV, ORACLE_SIG)
-        self._check_sigma_parity(pyebsdindex_kernels, patterns, masked, protect)
+        mask = circle_mask(ORACLE_SIG) if masked else None
+        self._check_sigma_parity(pyebsdindex_kernels, patterns, mask, protect)
 
     @pytest.mark.parametrize("masked, protect", SIGMA_ARMS)
     def test_sigma_parity_compiled_random_uniform_saturated(
-        self, pyebsdindex_kernels, random_uniform_saturated, masked, protect
+        self,
+        pyebsdindex_kernels,
+        random_uniform_saturated,
+        circle_mask,
+        masked,
+        protect,
     ):
         patterns = random_uniform_saturated(ORACLE_NAV, ORACLE_SIG)
-        self._check_sigma_parity(pyebsdindex_kernels, patterns, masked, protect)
+        mask = circle_mask(ORACLE_SIG) if masked else None
+        self._check_sigma_parity(pyebsdindex_kernels, patterns, mask, protect)
 
     @pytest.mark.parametrize("masked, protect", SIGMA_ARMS)
     def test_sigma_parity_compiled_exact_duplicates(
-        self, pyebsdindex_kernels, exact_duplicates, masked, protect
+        self, pyebsdindex_kernels, exact_duplicates, circle_mask, masked, protect
     ):
         patterns = exact_duplicates(ORACLE_NAV, ORACLE_SIG)
-        self._check_sigma_parity(pyebsdindex_kernels, patterns, masked, protect)
+        mask = circle_mask(ORACLE_SIG) if masked else None
+        self._check_sigma_parity(pyebsdindex_kernels, patterns, mask, protect)
 
     @pytest.mark.parametrize("variant", ["raw", "corrected"])
     def test_sigma_parity_compiled_nickel_ebsd_large(
@@ -1370,10 +1351,10 @@ class TestSigmaOracle:
         np.testing.assert_array_equal(sigma_off, ref_off)
 
     def test_sigma_mask_is_forwarded(
-        self, pyebsdindex_kernels, identical_plus_gaussian
+        self, pyebsdindex_kernels, identical_plus_gaussian, circle_mask
     ):
         patterns = identical_plus_gaussian(ORACLE_NAV, ORACLE_SIG, dtype=np.uint8)
-        mask = _circle_mask(ORACLE_SIG)
+        mask = circle_mask(ORACLE_SIG)
         sigma_o_full = _oracle_sigma(pyebsdindex_kernels, patterns)[0]
         sigma_o_masked = _oracle_sigma(pyebsdindex_kernels, patterns, mask)[0]
         assert not np.array_equal(sigma_o_masked, sigma_o_full)
@@ -1398,9 +1379,8 @@ class TestAveragingOracle:
 
     @staticmethod
     def _check_average_parity(
-        nlpar, patterns, sr, lam, dthresh, protect, masked, injection
+        nlpar, patterns, sr, lam, dthresh, protect, signal_mask, injection
     ):
-        signal_mask = _circle_mask(patterns.shape[2:]) if masked else None
         sigma_o, _, _ = _oracle_sigma(nlpar, patterns, signal_mask, protect)
         expected = _oracle_average(
             nlpar, patterns, sigma_o, sr, lam, dthresh, signal_mask, protect
@@ -1428,10 +1408,12 @@ class TestAveragingOracle:
         protect,
         masked,
         injection,
+        circle_mask,
     ):
         patterns = identical_plus_gaussian(ORACLE_NAV, ORACLE_SIG, dtype=np.uint8)
+        mask = circle_mask(ORACLE_SIG) if masked else None
         self._check_average_parity(
-            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, masked, injection
+            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, mask, injection
         )
 
     @requires_pyebsdindex
@@ -1448,10 +1430,12 @@ class TestAveragingOracle:
         protect,
         masked,
         injection,
+        circle_mask,
     ):
         patterns = two_grain(ORACLE_NAV, ORACLE_SIG)
+        mask = circle_mask(ORACLE_SIG) if masked else None
         self._check_average_parity(
-            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, masked, injection
+            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, mask, injection
         )
 
     @requires_pyebsdindex
@@ -1468,10 +1452,12 @@ class TestAveragingOracle:
         protect,
         masked,
         injection,
+        circle_mask,
     ):
         patterns = random_uniform_saturated(ORACLE_NAV, ORACLE_SIG)
+        mask = circle_mask(ORACLE_SIG) if masked else None
         self._check_average_parity(
-            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, masked, injection
+            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, mask, injection
         )
 
     @requires_pyebsdindex
@@ -1488,10 +1474,12 @@ class TestAveragingOracle:
         protect,
         masked,
         injection,
+        circle_mask,
     ):
         patterns = exact_duplicates(ORACLE_NAV, ORACLE_SIG)
+        mask = circle_mask(ORACLE_SIG) if masked else None
         self._check_average_parity(
-            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, masked, injection
+            pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, mask, injection
         )
 
     @requires_pyebsdindex
@@ -1763,7 +1751,7 @@ class TestAveragingOracle:
 class TestDepthAndHalo:
     @pytest.mark.parametrize("nav_chunks", DRIVER_CHUNKINGS, ids=str)
     def test_pass_one_driver_on_multichunk_dask_array_equals_the_kernel(
-        self, monkeypatch, random_uniform_saturated, nav_chunks
+        self, counting_spy, random_uniform_saturated, nav_chunks
     ):
         # Saturated pixels in the first (5, 8) block only, so a
         # per-chunk maximum differs from the global one
@@ -1778,7 +1766,7 @@ class TestDepthAndHalo:
         # One wrapper call per block of the unchanged chunks: the route
         # is overlap + map_blocks, not one kernel call on the computed
         # array, which would give the same values
-        calls = _counting_spy(monkeypatch, _nlpar, "_nlpar_sigma_chunk")
+        calls = counting_spy(_nlpar, "_nlpar_sigma_chunk")
         with dask.config.set(scheduler="synchronous"):
             result = _nlpar._nlpar_sigma(
                 multi, mask_indices=kept, max_value=max_value, saturation_protect=True
@@ -1791,7 +1779,7 @@ class TestDepthAndHalo:
 
     @pytest.mark.parametrize("nav_chunks", DRIVER_CHUNKINGS, ids=str)
     def test_pass_two_driver_on_multichunk_dask_array_equals_single_chunk(
-        self, monkeypatch, random_uniform_saturated, nav_chunks
+        self, monkeypatch, counting_spy, random_uniform_saturated, nav_chunks
     ):
         # At sr 3 on the (3, 3, 4) rows the depth is max(3, 7 - 3) = 4
         # and the rows are rechunked to (6, 4); on the (1, 1) chunking
@@ -1805,7 +1793,7 @@ class TestDepthAndHalo:
         max_value = np.float32(x.max())
         sigma = _sigma_reference(_as_pixels(x), kept, max_value, True)
         overlap_chunks = _record_overlap_chunks(monkeypatch)
-        calls = _counting_spy(monkeypatch, _nlpar, "_nlpar_average_chunk")
+        calls = counting_spy(_nlpar, "_nlpar_average_chunk")
         for sr in (1, 3):
             kwargs = {
                 "lam": 1.0,
@@ -2402,6 +2390,23 @@ class TestPolicyOracles:
             data, sigma2, kept, max_value, False, 1, 1, 0, 3, 0, 3
         )
         np.testing.assert_array_equal(d_off[~is_self], d_off_ref[~is_self])
+
+        # Protection off with a float32 maximum of 2**24 or more: max + 1
+        # rounds to max in float32, so the distances drop the pixel at
+        # the maximum, as PyEBSDIndex's float32 threshold does, while the
+        # float64 threshold of the sigma pass keeps it
+        big_max = np.float32(2**25)
+        big = data.copy()
+        big[1, 1, 5] = big_max
+        assert _average_threshold(big_max, False) == big_max
+        _, _, n2_big, _ = _nlpar._nlpar_sigma_kernel(big, kept, big_max, False)
+        assert np.all(n2_big[neighbour] == 16)
+        d_drop, n2_drop, _ = _transcribed_distances(big, sigma2, kept, big_max, (1, 1))
+        assert set(np.unique(n2_drop[~is_self])) == {15.0, 16.0}
+        d_big = _nlpar._nlpar_distances_kernel(
+            big, sigma2, kept, big_max, False, 1, 1, 0, 3, 0, 3
+        )
+        np.testing.assert_array_equal(d_big[~is_self], d_drop[~is_self])
 
     @pytest.mark.parametrize("arm", ORACLE_ARMS)
     def test_sigma_threshold_is_float64_and_average_threshold_float32(

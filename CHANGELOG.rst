@@ -18,6 +18,19 @@ Unreleased
 
 Added
 -----
+- Non-local pattern averaging (NLPAR) of EBSD patterns after Brewick, Wright and
+  Rowenhorst (2019): ``EBSD.average_non_local_neighbour_patterns()`` replaces every
+  pattern by a weighted mean of the patterns in a search window around it, each
+  neighbour weighted by its similarity in units of the estimated noise level, so that
+  noise is reduced within grains while grain boundaries stay sharp; and
+  ``EBSD.get_nlpar_sigma()`` returns that noise level per pattern for inspection and
+  reuse. The kernels are derived from PyEBSDIndex's NLPAR (public domain); the US Naval
+  Research Laboratory (David Rowenhorst) is gratefully acknowledged as the original
+  source of the NLPAR implementation. For now the weight decay ``lam`` must be given
+  and the signal must be in memory: ``lam=None``, lazy signals, ``lazy_output=True``
+  and ``EBSD.get_nlpar_lambda()`` raise ``NotImplementedError`` until the lambda
+  optimisation and the lazy path are added.
+  (`#17 <https://github.com/jwestraadt/kikuchipy/pull/17>`_)
 - Optional CuPy GPU backend for spherical indexing: the new ``backend`` parameter of
   ``kikuchipy.indexing.SphericalIndexer`` and ``EBSD.spherical_indexing()`` accepts
   ``"cpu"`` (the default, unchanged and bitwise-identical to before) or ``"gpu"``,

@@ -202,9 +202,9 @@ Everything above applies on `feat-NLPAR` too, with these additions and scopings.
 - **Fan-out after the merge.** (1) `hrebsd-dic` receives NLPAR by `git merge --no-ff develop`; every expected conflict is an append (CHANGELOG, `doc/tutorials/index.rst`, `run_nbval.sh`, `tutorials_sanitize.cfg`, `bibliography.bib`, the ends of the three constitution files, the `ebsd.py` import block), resolved by keeping both sides, HREBSD first. (2) A new branch `feat-spherical-indexing-nlpar` off `feat-spherical-indexing` (6723aaf0, untouched) receives the merge sha by the staging replay (`C:\Users\westraadt.1\Repos\_staging\pick.ps1`, then `gate.ps1`, in a worktree with `PYTHONPATH=<worktree>\src` and the `kikuchipy.__file__` guard) as two clean commits, feature and tutorial, with `Staged-from: jwestraadt/kikuchipy#17 (<merge sha>)` trailers; `specs/` stripped; no PR; the equivalence gate compares the `+`/`-` lines of `git diff M^1 M -- . ':!specs'` with the replay diff.
 - **dtype policy (NLPAR-scoped, like the HREBSD scoping).** The float64 rule under "Numerics" is EMSphInx-scoped. NLPAR kernels accumulate in float32 by design, for bitwise parity with PyEBSDIndex's `nlpar_nb`/`sigma_numba`; float32 literals are cast explicitly, no `**` is applied to a float32 operand (squares are products) and every intermediate the compiled oracle holds in float64 carries an explicit `np.float64` cast, so `.py_func` parity holds under NumPy 1.23 and NumPy 2 alike; the `exp` kernel's `.py_func` parity is measured then pinned (seed 1 float32 ulp), every other kernel bitwise. Output dtype = input dtype by default through `np.rint` + clip to the dtype range (a convex combination never leaves the input range; no per-pattern min-max rescale, unlike `average_neighbour_patterns`); `dtype_out="float32"` returns the raw average.
 - **PyEBSDIndex licensing and the derivation notice.** `pyebsdindex/nlpar_cpu.py` is a public-domain work of the US Naval Research Laboratory; derivative works must carry a change notice and acknowledge NRL. `src/kikuchipy/pattern/_nlpar.py` carries kikuchipy's GPL header plus a delimited third-party block (the `_master_pattern.py:20-57` layout) naming the derived functions, the change list and the date; `EBSD.average_non_local_neighbour_patterns` Notes and the CHANGELOG acknowledge PyEBSDIndex and NRL; the method cites `:cite:`brewick2019nlpar`` (`doc/user/bibliography.bib:11`). EMsoftOO `mod_NLPAR.f90` (BSD-3) is an equation cross-check only; no code is ported from it.
-- **PyEBSDIndex is optional.** Nothing under `src/` imports `pyebsdindex` for NLPAR, and there is no runtime fallback: sigma and lambda come from the fork's own kernels. Oracle tests are `@pytest.mark.skipif(dependency_version["pyebsdindex"] is None, ...)` (the `tests/test_signals/test_ebsd_hough_indexing.py:35-37` pattern), import `pyebsdindex.nlpar_cpu` inside the test and call the COMPILED `NLPAR.sigma_numba` / `NLPAR.nlpar_nb` dispatchers behind a module-scoped warm-up fixture (their `.py_func` is NOT bitwise with the compiled kernels: NumPy and numba promote `float32 ** int32` and `2.0 * float32` oppositely, measured 2026-10-04; cold compile ~7 s), with a fresh `calclim` array per call and every navigation axis >= `2 sr + 1`, `-n 0` first because the compile writes the shared numba cache; the small synthetic maps and `nickel_ebsd_large` (cached download) run in the default suite, the file-based end-to-end oracle `@pytest.mark.weekly`. The float64 NumPy transcription oracle keeps the minimum-requirement CI job (no pyebsdindex) meaningful. The `pyproject.toml:79` floor `pyebsdindex >= 0.3.9.2, != 0.3.10` is unchanged; 0.3.9.2's two kernels are identical to 0.3.10.1's per the 2026-09-11 reading, re-checked by the oldest-matrix run at `pyebsdindex==0.3.9.2`, so no version gate beyond the floor.
-- **Oldest-matrix recipe (local, once per stage, recorded):** `uv run --isolated --python 3.10 --with "numpy==1.23.0" --with "numba==0.57" --with "orix==0.12.1" --with "pyebsdindex==0.3.9.2" --with "dask==2021.8.1" --with "scikit-image==0.21.0" pytest tests/test_signals -k nlpar` (the dask pin is mandatory: the lazy path relies on `dask.array.overlap.ensure_minimum_chunksize`, whose presence in 2021.8.1 was verified against the tag on 2026-10-04 and this run confirms). No post-0.57 numba features in the kernels.
-- **Numba-cache flake rule.** `pyebsdindex` redirects `NUMBA_CACHE_DIR` to a shared `~/.pyebsdindex/numbacache` on import, defeating per-worker isolation under xdist. Run `-n 0` first, then `-n 4`; a red test under `-n 4` is re-run alone before it counts as a failure.
+- **PyEBSDIndex is optional.** Nothing under `src/` imports `pyebsdindex` for NLPAR, and there is no runtime fallback: sigma and lambda come from the fork's own kernels. Oracle tests are `@pytest.mark.skipif(dependency_version["pyebsdindex"] is None, ...)` (the `tests/test_signals/test_ebsd_hough_indexing.py:35-37` pattern), import `pyebsdindex.nlpar_cpu` inside the test and call the COMPILED `NLPAR.sigma_numba` / `NLPAR.nlpar_nb` dispatchers behind a module-scoped warm-up fixture (their `.py_func` is NOT bitwise with the compiled kernels: NumPy and numba promote `float32 ** int32` and `2.0 * float32` oppositely, measured 2026-10-04; cold compile ~7 s), with a fresh `calclim` array per call and every navigation axis >= `2 sr + 1`, `-n 0` first because the compile writes the shared numba cache; the small synthetic maps and `nickel_ebsd_large` (cached download) run in the default suite, the file-based end-to-end oracle `@pytest.mark.weekly`. The float64 NumPy transcription oracle keeps the minimum-requirement CI job (no pyebsdindex) meaningful. The `pyproject.toml:79` floor `pyebsdindex >= 0.3.9.2, != 0.3.10` is unchanged; 0.3.9.2's two kernels are identical to 0.3.10.1's per the 2026-09-11 reading and every parity arm passes bitwise against `pyebsdindex==0.3.9.2`, so no pyebsdindex version gate beyond the floor (amended 2026-10-05). The one gate is a numba-version gate on the ORACLE side only (amended 2026-10-05): 0.3.9.2's `NLPAR.nlpar_nb` (`parallel=True`) does not compile under numba 0.57.0 and compiles from 0.58.0 on, while `sigma_numba` and the fork's own kernels compile under 0.57, so every test that calls `nlpar_nb` skips when `NLPAR_NB_COMPILES` (`numba >= 0.58.0`, in `test_nlpar.py`) is False and the warm-up fixture then compiles `sigma_numba` only (amended 2026-10-05). The CI oldest job (`numba==0.57`) exercises the sigma oracle and every non-oracle test; the full averaging parity against 0.3.9.2 is recorded from the local numba 0.58.1 run of the next bullet (amended 2026-10-05).
+- **Oldest-matrix recipe (local, once per stage, recorded):** `uv run --isolated --python 3.10 --extra tests --with "numpy==1.23.0" --with "numba==0.57" --with "orix==0.12.1" --with "pyebsdindex==0.3.9.2" --with "dask==2021.8.1" --with "scikit-image==0.21.0" pytest tests/test_signals -k nlpar -n 0 -q -p no:cacheprovider` (the dask pin is mandatory: the lazy path relies on `dask.array.overlap.ensure_minimum_chunksize`, whose presence in 2021.8.1 was verified against the tag on 2026-10-04 and this run confirms). No post-0.57 numba features in the kernels. `--extra tests` added 2026-10-05: `--isolated` omits the tests extra. One recorded local run per stage of the same recipe with `--with "numba==0.58.1"` in place of `--with "numba==0.57"` is part of the oldest-matrix gate from now on: it runs the averaging-oracle arms against `pyebsdindex==0.3.9.2` that the numba 0.57 run skips (amended 2026-10-05).
+- **Numba-cache flake rule.** `pyebsdindex` redirects `NUMBA_CACHE_DIR` to a shared `~/.pyebsdindex/numbacache` on import, defeating per-worker isolation under xdist. Run `-n 0` first, then `-n 4`; a red test under `-n 4` is re-run alone before it counts as a failure. Two further known flakes, pre-existing and not NLPAR, never block a gate (recorded 2026-10-05): `tests/test_indexing/test_ebsd_refinement.py::TestEBSDRefineOrientationPC::test_refine_orientation_projection_center_local_nlopt` segfaults intermittently (an access violation in the numba refinement objective called by nlopt on a dask thread; 1 of 5 runs alone, 3 of 10 on a develop snapshot), and upstream `tests/test_simulations/test_kikuchi_pattern_simulator.py::TestCalculateMasterPattern::test_shape` passes only through its reruns (`flaky(reruns=5)`).
 - **Fixtures.** Test data only from `src/kikuchipy/data/**` (`nickel_ebsd_small`; `nickel_ebsd_large(allow_download=True)` in the default suite once cached, its full-map Hough indexing weekly; `si_wafer(allow_download=True)` weekly) or generated in the test with fixed seeds; the NLPAR synthetic generators are plain functions in the root `conftest.py` exposed as fixtures (pytest runs with `--import-mode=importlib` and `tests/` has no `__init__.py`, so test modules never import each other). No new data files.
 - **CHANGELOG.** Fork PR-link convention: `` (`#17 <https://github.com/jwestraadt/kikuchipy/pull/17>`_) ``, the number confirmed with `gh pr list` at PR time and rewritten if it differs.
 - **Clean-replay rule (enforced at every stage gate).** Nothing under `src/`, `tests/`, `doc/` or `examples/`, nor the root `conftest.py`, `benchmarks/` or `CHANGELOG.rst` (all carried verbatim by the clean replay, which strips `specs/` only), may name a `specs/` path, a spec file name (`requirements.md`, `plan.md`, `validation.md`, `tech-stack.md`) or a spec D/V number; comments state the fact or the measurement itself. Gate (the executable form of "`git grep -n -E "specs/|requirements\.md|plan\.md|validation\.md|tech-stack\.md" develop..` finds nothing new in those paths"): `git diff develop...HEAD -- src tests doc examples benchmarks conftest.py CHANGELOG.rst | grep -E "^\+" | grep -n -E "specs/|requirements\.md|plan\.md|validation\.md|tech-stack\.md| [DV][0-9]"` prints nothing (the ` [DV][0-9]` alternative catches a bare D/V number; a hit is a spec reference to rewrite as the fact itself). The same grep on the replay diff is the clean branch's equivalence gate (section 1). This avoids the `rewrite_specs_refs.py` pass the spherical staging needed.
@@ -594,22 +594,30 @@ build modules, in implementation order:
     and re-chunks the other to the 8 MB limit, requirements D8.1, and
     `inplace=True` restores `old_chunks` afterwards); `ProgressBar`
     register/unregister;
-    `inplace` + eager input: `averaged.store(self.data, compute=True)`
-    when `np.dtype(dtype_out) == self.data.dtype`, else `self.data =
-    averaged.compute()` (the `downsample` precedent for a dtype change
-    in place, `ebsd.py:1195-1223`; `da.store` into the old buffer would
-    cast silently); `inplace` + lazy input + `return_lazy` -> `self.data
+    `inplace` + eager input: `self.data = averaged.compute()` whatever
+    the dtype (the `downsample` precedent for a dtype change in place,
+    `ebsd.py:1195-1223`; amended 2026-10-05, requirements D1.5 (b):
+    drafted as `averaged.store(self.data, compute=True)` when
+    `np.dtype(dtype_out) == self.data.dtype`, but on dask 2021.8.1 that
+    store differed from `inplace=False` in 534 of 4125
+    `nickel_ebsd_large` patterns under the synchronous scheduler, so
+    the fallback below was taken; one extra map-sized buffer at peak;
+    `da.store` into the old buffer would also cast silently on a dtype
+    change); `inplace` + lazy input + `return_lazy` -> `self.data
     = averaged.rechunk(old_chunks)` whatever the dtype; `inplace` + lazy
     input + `lazy_output=False` (Stage B) -> `self.data =
     averaged.compute()`, the signal becomes eager (requirements D1.5
     (a); never `store` into a dask target); else `LazyEBSD(averaged,
     **self._get_custom_attributes())` and `compute()` unless lazy;
-    `gc.collect()`. The multi-chunk eager in-place `store` is pinned
+    `gc.collect()`. The multi-chunk eager in-place path is pinned
     bitwise against `inplace=False` on `nickel_ebsd_large` (V7, D1.5
     (b); a synchronous and a threaded arm; the identical
     `average_neighbour_patterns` mechanism measured bitwise under both
-    on 2026-10-04); if it ever differs, every eager in-place path assigns
-    `self.data = averaged.compute()`. `sigma`: `None` -> pass 1; float -> constant map;
+    on 2026-10-04 with dask 2026.3.0); the recorded fallback "if it
+    ever differs, every eager in-place path assigns `self.data =
+    averaged.compute()`" is in force since 2026-10-05 (dask 2021.8.1
+    differs, 534 patterns; `average_neighbour_patterns` 183; amended
+    2026-10-05). `sigma`: `None` -> pass 1; float -> constant map;
     array -> shape must equal the navigation shape (rc), else
     `ValueError`. `dtype_out`: `None` -> input dtype through `np.rint` +
     clip; any other integer or floating dtype through module 7 (bool,
@@ -701,9 +709,9 @@ Stage A gates: failing tests committed (commit 2) -> implementation +
 measured pins (V0-V5 and the V7/V10 [A] arms; V11 is Stage B) ->
 adversarial review (section 5 workflow) -> bug injection (section 6
 Stage A mutants) -> fixes -> `-n 0`, `-n 4` with red tests re-run
-alone, coverage 100 % of `_nlpar.py` (`uv run pytest
-tests/test_signals -k nlpar --cov=kikuchipy.pattern._nlpar
---cov-report=term-missing`, output recorded), full suite (`uv run pytest
+alone, coverage 100 % of `_nlpar.py` (the `coverage run` /
+`coverage report` pair of section 5, output recorded; amended
+2026-10-05: pytest-cov is not in `.venv`), full suite (`uv run pytest
 tests -n 4`), `SKIP=licenseheaders uvx pre-commit run --files <changed
 files, never specs/>`, oldest-matrix recipe, clean-replay grep,
 never-sweep check (`git diff --name-only` lists none of the three
@@ -996,14 +1004,42 @@ Gate commands (Git Bash; venv is uv-managed):
 ```
 uv run pytest tests/test_signals -k nlpar -n 0
 uv run pytest tests/test_signals -k nlpar -n 4        # red tests re-run alone
-uv run pytest tests/test_signals -k nlpar --cov=kikuchipy.pattern._nlpar --cov-report=term-missing
+uv run --no-sync coverage run -m pytest tests/test_signals/test_util/test_nlpar.py tests/test_signals/test_ebsd_nlpar.py -n 0 -q -p no:cacheprovider
+uv run --no-sync coverage report -m --include="src/kikuchipy/pattern/_nlpar.py"
 uv run pytest tests -n 4                               # full suite
 SKIP=licenseheaders uvx pre-commit run --files <explicit changed files, never specs/>
-uv run --isolated --python 3.10 --with "numpy==1.23.0" --with "numba==0.57" --with "orix==0.12.1" --with "pyebsdindex==0.3.9.2" --with "dask==2021.8.1" --with "scikit-image==0.21.0" pytest tests/test_signals -k nlpar
+uv run --isolated --python 3.10 --extra tests --with "numpy==1.23.0" --with "numba==0.57" --with "orix==0.12.1" --with "pyebsdindex==0.3.9.2" --with "dask==2021.8.1" --with "scikit-image==0.21.0" pytest tests/test_signals -k nlpar -n 0 -q -p no:cacheprovider
+uv run --isolated --python 3.10 --extra tests --with "numpy==1.23.0" --with "numba==0.58.1" --with "orix==0.12.1" --with "pyebsdindex==0.3.9.2" --with "dask==2021.8.1" --with "scikit-image==0.21.0" pytest tests/test_signals -k nlpar -n 0 -q -p no:cacheprovider   # averaging-oracle arms vs 0.3.9.2
 git diff develop...HEAD -- src tests doc examples benchmarks conftest.py CHANGELOG.rst | grep -E "^\+" | grep -n -E "specs/|requirements\.md|plan\.md|validation\.md|tech-stack\.md| [DV][0-9]"   # must print nothing
 uv run pytest --weekly tests/test_signals -k nlpar     # weekly, local
 uv run sphinx-build -b html doc doc/_build/html        # Stage C
 ```
+
+Amendments of 2026-10-05 (Stage A implementation gate, validation.md
+ledger entries 7 and 8):
+
+- Coverage: pytest-cov is not installed in `.venv` (coverage 7.16.0
+  is), so the drafted pytest-cov command fails with "unrecognized
+  arguments"; the `coverage run` / `coverage report` pair above
+  replaces it (set `COVERAGE_FILE` to a scratch path to keep a
+  `.coverage` file out of the tree).
+- Oldest matrix: `--extra tests` added 2026-10-05: `--isolated` omits
+  the tests extra. The numba 0.58.1 line is part of the oldest-matrix
+  gate from now on (one recorded run per stage): PyEBSDIndex 0.3.9.2's
+  `nlpar_nb` does not compile under numba 0.57, so the first line (the
+  CI oldest pins) runs the sigma oracle and every non-oracle test and
+  skips every `nlpar_nb` call, and the second line records the full
+  averaging parity against 0.3.9.2 (Stage A: 338 passed, 398 skipped
+  at numba 0.57; 736 passed, 0 skipped at numba 0.58.1).
+- Known flakes beside the numba-cache flake rule (section 0.3; a red
+  test under `-n 4` is re-run alone before it counts): two more,
+  pre-existing and not NLPAR, never block a gate.
+  `tests/test_indexing/test_ebsd_refinement.py::TestEBSDRefineOrientationPC::test_refine_orientation_projection_center_local_nlopt`
+  segfaults intermittently (an access violation in the numba
+  refinement objective called by nlopt on a dask thread; 1 of 5 runs
+  alone, 3 of 10 on a develop snapshot); upstream
+  `tests/test_simulations/test_kikuchi_pattern_simulator.py::TestCalculateMasterPattern::test_shape`
+  passes only through its reruns (`flaky(reruns=5)`).
 
 ## 6. Adversarial review and mutation list
 
@@ -1228,7 +1264,8 @@ Between workflows the tree is checked clean apart from the untracked
   clean on the explicit file list; coverage 100 % of `_nlpar.py` with the
   command output recorded; `-n 0` then `-n 4` green (red tests re-run
   alone, flakes attributed); full suite green (`uv run pytest tests -n
-  4`, recorded); oldest-matrix recipe recorded; clean-replay grep empty;
+  4`, recorded); oldest-matrix recipe recorded (both numba lines of
+  section 5, amended 2026-10-05); clean-replay grep empty;
   never-sweep check clean; signed commits pushed together; roadmap
   stage boxes ticked.
 - Every MTP placeholder in `validation.md` replaced by a dated measured
@@ -1433,3 +1470,58 @@ resolutions the row names the one taken.
 | E3-R3-5 | minor | validation.md | applied | V7 `test_argument_validation`: Stage A for `average_non_local_neighbour_patterns` and `get_nlpar_sigma`; every `get_nlpar_lambda` arm [B] |
 | E3-R3-6 | minor | plan.md | applied | plan 2.12 `dtype_out: str \| np.dtype \| type \| None = None`; plan 2.7 `omin, omax = dtype_range[np.dtype(dtype_out).type]` |
 | E3-R3-7 | minor | validation.md | applied | V7 header: chunkings name the navigation axes, signal axes one chunk (`chunks=c + (-1, -1)`); both driver-test bullets write `da.from_array(x, chunks=c + (-1, -1))` |
+
+## 11. Stage A code-review disposition table (2026-10-05, fixer)
+
+The Stage A code review of `d2b73acd` (fidelity and conventions
+reviewers, two sceptics) left 12 findings, all minor; 3 more were
+refuted by both sceptics (list below). The fixer verified each
+finding before applying it (re-run of the reviewer's
+`scratchpad/fidelity/probe4.py`, its own probes under
+`scratchpad/fixer_stagea/`; validation.md ledger entry 10) and
+edited only its file list: `_nlpar.py`, the three NLPAR methods of
+`ebsd.py`, the NLPAR part of `conftest.py` (plus one `import
+functools` line in its import block, needed by the moved spy), the
+two test modules, `CHANGELOG.rst`, this section, and validation.md
+(V4 and V7 dated amendments, ledger entry 10). requirements.md is
+outside that list, so every requirements sentence a finding asks
+for is proposed here for the main loop, in the "what changed"
+column. 11 applied, 1 declined. Final run: the two modules at `-n 0`
+751 passed (736 + 15 new), `-n 4` 751 passed, `_nlpar.py` coverage
+100.00 % (303 statements), ruff and the clean-replay grep clean.
+
+| id | severity | file | disposition (applied / declined: reason) | what changed |
+|---|---|---|---|---|
+| F-FID-1 | minor | ebsd.py | applied (code, docstrings, tests); the D1.6 sentence and the plan module 3 note for the main loop | Method: after `_nlpar_mask_indices`, every element of a given sigma must satisfy, in float32, `sigma * sigma > 0` and `np.float32(2 * n_kept) * sigma^2` finite, else `ValueError` "sigma must be > 0 with sigma^2 > 0 and 2 n sigma^2 finite in float32 in every element, n = <n_kept> ..."; the `sigma` parameter states the bound ("about 3e-23 < sigma < 2e17" for 60 x 60 patterns, measured: 2.7e-23 and 2.17e17 pass, 2.6e-23 and 2.18e17 fail). `_nlpar_normalized_distances` docstring states that precondition; its "NaN-free" is now true for every sigma the method lets through (0 / 0 and `-inf / inf` named for the rest), so plan module 3's "den > 0 wherever n2 > 0 ... NaN-free" holds as written once D1.6 carries the check. Tests: `test_argument_validation` arms `sigma=1e19`, `1e-30`, an array with one `1e19` element (fragment "sigma must be > 0 with sigma"); `test_sigma_argument_contract`: 1e18 accepted with finite output, 1e19 rejected, 1e19 accepted with a one-pixel mask (the bound follows `n_kept`; an `n_pix` mutant dies), 1e-30 rejected. Proposed D1.6 addition: "A given `sigma` must also satisfy, element-wise in float32, `sigma * sigma > 0` and `np.float32(2 * n_kept) * (sigma * sigma)` finite, `n_kept` being the pixels left by `signal_mask` ("sigma must be > 0 with sigma"); this check runs after the mask conversion, still within step (2) (amended 2026-10-05, Stage A code review F-FID-1)." Stage B: the same check in `get_nlpar_lambda` |
+| F-FID-2 | minor | _nlpar.py | applied | `_nlpar_finalize`: `np.clip(np.rint(out_f32.astype(np.float64)), float(omin), high)`, `high = float(omax)` moved down with `np.nextafter(high, -np.inf)` when it exceeds `omax` (uint64 `2**64 - 2048`, int64 `2**63 - 1024`); Notes say why; 8- and 16-bit outputs bitwise unchanged (`test_dtype_round_trip`, the parity tests). New `TestLazyAndContracts::test_integer_output_keeps_the_maximum_of_32_bit_types[uint32, int32]` (a map at the type maximum returned bitwise) and `test_integer_output_clips_64_bit_types_inside_their_range`; both fail on the pre-fix float32 route and the 64-bit arm on a route without `nextafter` (ledger entry 10 item 1 (d)) |
+| F-FID-3 | minor | requirements.md | applied to the docstring; the D7.3 and D12.6 item 12 sentences for the main loop | Re-measured (ledger entry 10 item 1 (b)): 4-5 ulp at lam 0.37, 0.7, 0.9, 1.3 with float32-representable lam, 0 at 0.5 and 1.0 (exact squares), 0 after `rint`. Docstring item 12 now reads: "``lam`` reaches the kernel as float64; PyEBSDIndex's driver passes it as float32 (``nlpar_cpu.py:297``), so its kernel also squares it in float32, and the two differ by a few float32 ulps (up to 5 measured, none after rounding to integers) even for a ``lam`` exactly representable in float32, unless its square is too." Proposed D12.6 item 12 and D7.3: the same sentence, replacing "so for a given `lam` the two agree up to that rounding" and "equals ours only for `lam = float(np.float32(lam))` up to that rounding" (amended 2026-10-05) |
+| F-FID-4 | minor | requirements.md | applied to both kernel docstrings and as a test pin; the D3.5 sentence for the main loop | Code unchanged (parity kept). `_nlpar_distances_kernel`: the float32 `max_value + 1` excludes nothing only while `max_value < 2**24`; from `2**24` on the pixels at the maximum drop out of these distances, as in PyEBSDIndex, while the sigma kernel keeps them; `_nlpar_sigma_kernel`: the float64 `max_value + 1` excludes nothing while `max_value < 2**53`. Pin: `TestPolicyOracles::test_uint16_two_threshold_arm` gains a protection-off arm with the maximum at `2**25` (sigma kernel keeps 16 pixels per neighbour slot; distances equal the transcription with the threshold at the maximum, kept counts {15, 16}). Proposed D3.5 addition: "`saturation_protect=False` excludes nothing while the maximum is below `2**24` in the averaging kernel (float32) and `2**53` in the sigma kernel (float64); from `2**24` on the pixels equal to the maximum drop out of the search-window distances while the sigma pass keeps them, so the two passes use different kept sets there, as in PyEBSDIndex (:866-867); recorded, parity kept (amended 2026-10-05)" |
+| F-FID-5 | minor | requirements.md | declined here: its only file is requirements.md, outside the fixer's list; no code or docstring needs a change (the code, D2.5 and plan module 4 already say `-inf`) | Proposed quirk-catalogue text: replace "the `-1e6` self slot" with "the self weight forced to exactly 1 (PyEBSDIndex: distance `-1e6`; ours: `-inf`, the same weight)" |
+| F-FID-6 | minor | _nlpar.py | applied (with C-CONV-4) | NRL change notice: "Changes by the kikuchipy developers, 2026-10-05:", the date of `ca13e63c` and `d2b73acd`; to be re-checked at the Stage A commit |
+| C-CONV-2 | minor | test_ebsd_nlpar.py | applied, with the optional 0-d sigma | `VALIDATION_ARMS` gains 12 arms: `target_weight` 0.0, 1.0 and True; `lam=np.inf`; `dthresh` nan and inf; `sigma=1e39`; the three F-FID-1 range arms; `sigma=np.array(8.0)` accepted and equal to `sigma=8.0` (the method now takes a 0-d array as a scalar, `.item()`); `dtype_out="foo"`. validation.md V7 `test_argument_validation` amended (dated): the method's own `target_weight` arms are [A]; only the `get_nlpar_lambda` arms stay [B] |
+| C-CONV-3 | minor | ebsd.py | applied (the code change, not the parity line); the D1.5 sentence for the main loop | `s_out.compute(show_progressbar=False)`: the Dask bar registered by the method covers that computation, so `show_progressbar=False` now draws no bar and `True` one per pass instead of a third HyperSpy bar. `test_show_progressbar_registers_and_unregisters` records the keyword reaching `LazyEBSD.compute`: `[False]` in all four arms of the method (`[None]` before the fix), `[]` for `get_nlpar_sigma`. Proposed D1.5 text: "progress bar as at `ebsd.py:1096-1101`, minus HyperSpy's second bar: the `inplace=False` result is computed with `show_progressbar=False` (amended 2026-10-05, a knowing departure from the precedent)" |
+| C-CONV-4 | minor | _nlpar.py | applied (the date); the split of the list deferred to Stage B | Date as F-FID-6. The lambda-objective line stays, since D10.4(c) prescribes the list; at the Stage B implementation commit the notice is re-dated or split ("2026-10-05:" for the engine items, the Stage B date for the lambda objective) |
+| C-CONV-5 | minor | ebsd.py | applied | (a) `get_nlpar_lambda` Raises adds "NotImplementedError / Always, for now: the lambda optimisation is not implemented yet." (removed with the guard in Stage B); (b) `data[jn, i_n, q]` in the weighted-sum Notes; (c) method Notes: "An in-memory signal is read once more for the global maximum, and ``inplace=True`` holds one extra copy of the averaged map while it is computed." numpydoc validation clean on the three methods |
+| C-CONV-6 | minor | test_ebsd_nlpar.py | applied; the D1.9 sentence for the main loop | Root `conftest.py`: `_circle_mask` with the fixture `circle_mask`, and the fixture `counting_spy(monkeypatch)` returning `spy(module, name) -> list`; both modules' copies deleted; the oracle parity helpers take the mask from their callers; the module-level masks of `VALIDATION_ARMS` became the names "circle" and "circle_int", resolved by `_resolve`. `_require_pin` and `_require_placeholder` left as they are (not part of the fix). Proposed D1.9 addition: "two test helpers, the inscribed-circle mask `circle_mask` and the call-counting `counting_spy`, are shared the same way (amended 2026-10-05)" |
+| C-CONV-7 | minor | conftest.py | applied | `EXP_KERNEL_ULP: int = 0` with the comment in past tense and the fixture typed `-> int`; the test_ebsd_nlpar module docstring and constants header rewritten; `\| None` dropped from the eight pinned constants of test_ebsd_nlpar and from `BORDER_BAND_MIN_DIFF`; placeholder comments of test_nlpar in past tense; the `_require_*` guards kept for Stage B; `PYEBSDINDEX_JIT_WARMUP_S` commented as documentation only (no test reads it); the warm-up fixture docstring says the test-suite property is written only by a non-xdist run with `--junit-xml` |
+
+Also done (task items, not findings): the CHANGELOG "Added" bullet
+(the conventions reviewer's draft, plus `lazy_output=True` among the
+`NotImplementedError` paths as the C-CONV-1 sceptics noted, `#17`
+link, PyEBSDIndex and NRL acknowledgement); validation.md V4 (dated
+amendment: the `D_STD_BAND` std seed of 2026-09-11, ~1, refuted; the
+measured std is 0.83, 0.754-0.888 over 20 seeds, identical to the
+compiled `sigma_numba` `dout`) and the matching comment in
+`test_ebsd_nlpar.py`.
+
+Refuted by both sceptics (not applied):
+
+- C-CONV-1 (CHANGELOG bullet missing at the pre-review checkpoint):
+  the plan schedules the bullet after the review (section 2 Stage A
+  gates, section 8 commit 3); it was written now as a task item.
+- C-CONV-8 (default-suite addition above the ~90 s per worker):
+  recorded, not a gate (D13.5; ledger entry 7 item 6 (d)).
+- C-CONV-9 (`inplace=False` drops the axes calibration and shares
+  `detector`, `xmap`, `static_background` by reference): the return
+  construction D1.5 and D8.9 prescribe, identical to
+  `average_neighbour_patterns`.

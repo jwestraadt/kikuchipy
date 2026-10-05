@@ -1186,7 +1186,11 @@ class EBSD(KikuchipySignal2D):
             of :meth:`get_nlpar_sigma` with the same ``signal_mask``
             and ``saturation_protect`` is used. A float gives a constant
             map, and an array of the navigation shape is used as is
-            (cast to float32). Every value must be finite and > 0.
+            (cast to float32). Every value must be finite and > 0, with
+            ``sigma**2 > 0`` and ``2 n sigma**2`` finite in float32,
+            ``n`` being the number of pixels not excluded by
+            ``signal_mask`` (for 60 x 60 patterns, about 3e-23 <
+            sigma < 2e17).
         signal_mask
             Boolean array of the signal shape with ``True`` for pixels
             to exclude from the distances (and sigma), e.g. outside a
@@ -1262,9 +1266,11 @@ class EBSD(KikuchipySignal2D):
 
         Patterns are processed in float32 in navigation chunks of
         about 8 MB. A lazy signal is read three times (the global
-        maximum, the sigma map and the averaging), an in-memory signal
-        costs nothing extra. The Dask configuration of the session
-        (scheduler and number of workers) applies.
+        maximum, the sigma map and the averaging). An in-memory signal
+        is read once more for the global maximum, and ``inplace=True``
+        holds one extra copy of the averaged map while it is computed.
+        The Dask configuration of the session (scheduler and number of
+        workers) applies.
 
         Keywords of upstream pull request `#824
         <https://github.com/pyxem/kikuchipy/pull/824>`__: its
@@ -1307,9 +1313,12 @@ class EBSD(KikuchipySignal2D):
             dependence on PyEBSDIndex's writer.
         11. ``lam`` defaults to ``None`` (optimised; PyEBSDIndex 0.7,
             #824 0.9).
-        12. ``lam`` reaches the kernel as float64 (PyEBSDIndex's driver
-            rounds it to float32 first, ``nlpar_cpu.py:297``), so for
-            a given ``lam`` the two agree up to that rounding.
+        12. ``lam`` reaches the kernel as float64; PyEBSDIndex's driver
+            passes it as float32 (``nlpar_cpu.py:297``), so its kernel
+            also squares it in float32, and the two differ by a few
+            float32 ulps (up to 5 measured, none after rounding to
+            integers) even for a ``lam`` exactly representable in
+            float32, unless its square is too.
 
         The NLPAR kernels are derived from PyEBSDIndex
         (``pyebsdindex/nlpar_cpu.py``, public domain); the US Naval
@@ -1359,6 +1368,9 @@ class EBSD(KikuchipySignal2D):
             )
 
         if sigma is not None:
+            if isinstance(sigma, np.ndarray) and sigma.ndim == 0:
+                # A 0-d array is a scalar
+                sigma = sigma.item()
             if isinstance(sigma, (bool, np.bool_)):
                 raise ValueError(f"sigma must be > 0 and finite, got {sigma!r}")
             if isinstance(sigma, numbers.Real):
@@ -1402,6 +1414,21 @@ class EBSD(KikuchipySignal2D):
 
         mask_indices = _nlpar_mask_indices(signal_mask, self._signal_shape_rc)
         saturation_protect = bool(saturation_protect)
+
+        if sigma is not None:
+            # The distances scale n sigma^2 (n kept pixels at most) and
+            # divide by sigma^2 in float32: a square that underflows to
+            # 0 or a product that overflows gives NaN patterns
+            n_kept = mask_indices.size
+            with np.errstate(over="ignore", under="ignore"):
+                sigma2 = sigma * sigma
+                bound = np.float32(2 * n_kept) * sigma2
+            if not (np.all(sigma2 > 0) and np.all(np.isfinite(bound))):
+                raise ValueError(
+                    "sigma must be > 0 with sigma^2 > 0 and 2 n sigma^2 finite in "
+                    f"float32 in every element, n = {n_kept} being the number of "
+                    "pixels not excluded by signal_mask"
+                )
 
         if all(r == 0 for r in radius):
             # Do nothing if the window is the pattern itself
@@ -1471,7 +1498,10 @@ class EBSD(KikuchipySignal2D):
             else:
                 s_out = LazyEBSD(averaged_patterns, **self._get_custom_attributes())
                 if not return_lazy:
-                    s_out.compute()
+                    # The progress bar registered above, if any, covers
+                    # this computation; HyperSpy's own bar would be a
+                    # second one, or one despite show_progressbar=False
+                    s_out.compute(show_progressbar=False)
         finally:
             if register_pbar:
                 pbar.unregister()
@@ -1627,6 +1657,9 @@ class EBSD(KikuchipySignal2D):
         ValueError
             If the signal has no navigation axes, or if an argument is
             invalid.
+        NotImplementedError
+            Always, for now: the lambda optimisation is not implemented
+            yet.
 
         Warns
         -----

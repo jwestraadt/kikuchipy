@@ -5,6 +5,9 @@ folded (three critics per round; disposition tables in `plan.md`
 section 10; amendments dated 2026-10-04 in place; round-2 and round-3
 measurements in validation.md ledger entries 3 and 4), awaiting the
 user's approval of `plan.md`.
+Status (2026-10-05): Stage A implemented (`ca13e63c`, `d2b73acd` and
+the code-review fixes) and code-reviewed (plan.md section 11); the
+amendments dated 2026-10-05 fold in validation.md ledger entries 7-10.
 Branch `feat-NLPAR` off fork `develop` @ `18d59c07`
 (= `origin/develop`; `upstream/develop` is at `31666938`, 24 commits
 ahead, merge parked). Spec folder `specs/2026-10-04-nlpar/`, one
@@ -235,14 +238,27 @@ build follows, amendable at a gate with a ledger entry.
    (`ebsd.py:1018-1019`, `:1095-1122`): `lazy_output=True` with
    `inplace=True` raises `ValueError`; `return_lazy = lazy_output or
    (lazy_output is None and self._lazy)`; `inplace=True` returns
-   `None` and replaces the data (eager input: `store(self.data,
-   compute=True)` when `dtype_out` equals the data dtype, else
-   `self.data = result.compute()` as `downsample` changes the dtype in
-   place, `ebsd.py:1195-1223`; lazy input with `lazy_output` `None` or
+   `None` and replaces the data (eager input: `self.data =
+   result.compute()` whatever the dtype, as `downsample` changes the
+   dtype in place, `ebsd.py:1195-1223` (amended 2026-10-05, (b)
+   below; drafted as `store(self.data, compute=True)` when `dtype_out`
+   equals the data dtype); lazy input with `lazy_output` `None` or
    `True`: `self.data = result.rechunk(old_chunks)`); `inplace=False`
    returns `EBSD` or `LazyEBSD` with `**self._get_custom_attributes()`
    (`ebsd.py:1111`), computed when not lazy; progress bar as at
-   `ebsd.py:1096-1101`. Two cases decided 2026-10-04 (spec review
+   `ebsd.py:1096-1101`, minus HyperSpy's second bar (amended
+   2026-10-05, Stage A code review C-CONV-3, a knowing departure from
+   the precedent): the `inplace=False` result is computed with
+   `s_out.compute(show_progressbar=False)`, because the Dask bar the
+   method registers already covers that computation, so
+   `show_progressbar=False` draws no bar and `True` one per pass. As
+   drafted (superseded 2026-10-05) the result was computed with
+   `s_out.compute()`, whose `show_progressbar=None` lets HyperSpy draw
+   a second bar, or one despite `show_progressbar=False`. Pin: V7
+   `test_show_progressbar_registers_and_unregisters` (the keyword
+   reaching `LazyEBSD.compute` is `[False]` in all four arms of the
+   method, `[]` for `get_nlpar_sigma`; validation.md ledger entry 10
+   item 3). Two cases decided 2026-10-04 (spec review
    C2-F14/C2-F15) that the `average_neighbour_patterns` precedent
    leaves open: (a) a LAZY input with `lazy_output=False` and
    `inplace=True` computes to NumPy and assigns, `self.data =
@@ -250,7 +266,8 @@ build follows, amendable at a gate with a ledger entry.
    `compute()` does; `store` into a dask-array target is never
    attempted); pin: the [B] arm of V7
    `test_inplace_lazy_output_contract` (`isinstance(s.data,
-   np.ndarray)`, bitwise equal to the eager run). (b) Eager in-place
+   np.ndarray)`, bitwise equal to the eager run). (b) As drafted
+   (superseded 2026-10-05, end of this item), eager in-place
    with an unchanged dtype stores into `self.data` while the graph's
    chunks are views of that same buffer (`da.from_array`,
    `_dask.py:159`); on a multi-chunk in-memory signal a halo read
@@ -270,7 +287,21 @@ build follows, amendable at a gate with a ledger entry.
    one threaded arm, bitwise against `inplace=False`). Fallback if it
    ever differs: eager in-place assigns `self.data = result.compute()`
    for every dtype (the `downsample` precedent), recorded as a dated
-   amendment here.
+   amendment here. **Fallback taken (amended 2026-10-05)**: on the
+   oldest matrix (dask 2021.8.1, where `nickel_ebsd_large` is chunked
+   `((47, 8), (25, 25, 25))`) the eager in-place `store(self.data)`
+   differed from `inplace=False` in 534 of 4125 patterns under the
+   synchronous scheduler (deterministic), and the identical mechanism
+   in `average_neighbour_patterns` differs there too (183 patterns;
+   validation.md ledger entry 8 item 2). Every non-lazy in-place path
+   therefore assigns `self.data = result.compute()` whatever the
+   dtype, at the cost of one extra map-sized output buffer at peak
+   (stated in the method Notes since the Stage A code review,
+   C-CONV-5 (c), and in D8.7; amended 2026-10-05); the `return_lazy`
+   path is unchanged, and `store` is never used
+   (amended 2026-10-05). The V7 test above keeps both arms, now
+   pinning the assignment path; it passes on dask 2026.3.0 and
+   2021.8.1 (ledger entry 8 item 6; amended 2026-10-05).
 6. **Argument validation** (amended 2026-10-04 with the message
    fragments the tests match, spec review E1-F12/C1-F11/E1-F23):
    `search_radius` is an `int >= 0` or a tuple of them with one entry
@@ -302,6 +333,38 @@ build follows, amendable at a gate with a ledger entry.
    with `np.asarray(signal_mask, dtype=bool)` after the shape check
    (integer 0/1 masks are accepted, as in `dictionary_indexing`); a
    mask excluding every pixel raises ("excludes every pixel", D9.1).
+   Amended 2026-10-05 (Stage A code review C-CONV-2, the 12 new arms
+   of V7 `test_argument_validation`): `lam` must also be finite and
+   `dthresh` finite in float32 (`<= np.finfo(np.float32).max`), and
+   neither may be a `bool` (`lam=np.inf`, `dthresh` NaN or inf raise;
+   the messages "lam must be > 0 and finite" and "dthresh must be >= 0
+   and finite" keep the fragments above); `target_weight` rejects a
+   `bool` (`True` raises with the "0 < target_weight < 1" fragment); a
+   scalar `sigma` is cast to float32 and must be finite there too
+   (`sigma=1e39` raises); a 0-d array `sigma` counts as a scalar
+   (taken with `.item()`, so `sigma=np.array(8.0)` equals
+   `sigma=8.0`); a `dtype_out` NumPy cannot parse (`"foo"`) raises the
+   `dtype_out` message. A given `sigma` must also satisfy,
+   element-wise in float32, `sigma * sigma > 0` and `np.float32(2 *
+   n_kept) * (sigma * sigma)` finite, `n_kept` being the number of
+   pixels left by `signal_mask` ("sigma must be > 0 with sigma"); this
+   check runs after the mask conversion, still within step (2)
+   (amended 2026-10-05, Stage A code review F-FID-1). For 60 x 60
+   patterns without a mask (`n_kept = 3600`) the accepted range is
+   about 3e-23 < sigma < 2e17, as the `sigma` parameter documents
+   (measured: 2.7e-23 and 2.17e17 pass, 2.6e-23 and 2.18e17 fail;
+   validation.md ledger entry 10 item 1 (c)); the upper bound follows
+   `n_kept`, so `sigma=1e19` is accepted with a mask keeping one
+   pixel. Before the check such a sigma was accepted silently, and a
+   square that underflows to 0 or a product that overflows gives NaN
+   distances (0 / 0, `-inf / inf`); with it the NaN-free statement of
+   `_nlpar_normalized_distances` holds for every sigma the method lets
+   through. Stage B applies the same check in `get_nlpar_lambda`
+   (amended 2026-10-05). Pinned by V7 `test_argument_validation`
+   (`sigma` 1e19, 1e-30 and an array with one 1e19 element) and
+   `test_sigma_argument_contract` (1e18 accepted with finite output,
+   1e19 rejected, 1e19 accepted with a one-pixel mask, 1e-30
+   rejected).
    The same fragments apply in `get_nlpar_sigma` and
    `get_nlpar_lambda` where the keyword exists. Check order in the
    method: (1) `lazy_output and inplace` -> `ValueError` (D1.5 text);
@@ -337,7 +400,9 @@ build follows, amendable at a gate with a ledger entry.
    lives in `pattern/`, but its tests keep the parked plan's location
    so that the single root `tests/test_signals -k nlpar` of every
    gate command, the coverage command and the oldest-matrix recipe
-   (D10.5) collects both modules, and so that the approved session
+   (D10.5) collects both modules (the coverage command names the two
+   modules directly since 2026-10-05, plan.md section 5; amended
+   2026-10-05), and so that the approved session
    plan's verification grep (which names this path) holds. The
    drafted alternative `tests/test_pattern/test_nlpar.py` is
    withdrawn. validation.md is the naming authority for test classes
@@ -358,7 +423,15 @@ build follows, amendable at a gate with a ledger entry.
    once in the root `conftest.py` beside the generators and exposed
    by the fixture `exp_kernel_ulp` (decided 2026-10-04, spec review
    F3-R3-3); every other placeholder lives in the one module that
-   asserts it. Pins: V0
+   asserts it. `EXP_KERNEL_ULP` was pinned at 0 at the Stage A gate
+   and is an `int` constant since (D7.4; amended 2026-10-05). Two test
+   helpers, the inscribed-circle mask `circle_mask` (the fixture
+   returning the helper `_circle_mask`, True outside the circle) and
+   the call-counting `counting_spy` (a fixture on `monkeypatch`
+   returning `spy(module, name) -> list`), are shared the same way:
+   plain code in the root `conftest.py` exposed by fixtures, the
+   copies in both modules deleted (amended 2026-10-05, Stage A code
+   review C-CONV-6). Pins: V0
    (`KERNEL_NAMES` lists every `@njit` kernel of `_nlpar` via the
    `_njit_kernel_names` helper, `test_spherical_euler.py:72-85`), V7
    (inplace/lazy_output/radius/sigma-argument/0-D/1-D contracts).
@@ -448,7 +521,11 @@ build follows, amendable at a gate with a ledger entry.
    constant sigma map (PyEBSDIndex accepts a scalar too, :379-382); an
    array of the navigation shape is used as is (cast to float32);
    another shape raises `ValueError`. `sigma=1e-6` is the V1 identity
-   probe (self weight 1, every neighbour underflows to 0).
+   probe (self weight 1, every neighbour underflows to 0). Amended
+   2026-10-05 (Stage A code review C-CONV-2 and F-FID-1): a 0-d array
+   is not "another shape" but a scalar, and every given sigma also
+   passes the float32 range check of D1.6 (`sigma * sigma > 0` and
+   `2 n_kept sigma^2` finite; `1e-6` lies inside it).
 7. Alternatives rejected: #824's fallback `np.std` of each pattern
    (intensity spread, not noise; also unreachable code, Context);
    EMsoftOO's integer-truncated sigma (Context); a per-pattern sigma
@@ -476,7 +553,10 @@ build follows, amendable at a gate with a ledger entry.
    the averaged pattern is `p_i' = sum_j w_ij p_j / sum_j w_ij` over
    the search window (`nlpar_nb` :921-934). The self weight is forced
    to 1 (PyEBSDIndex sets the self distance to `-1e6`, :892-893, so
-   that `max(-1e6 - dthresh, 0) = 0`). `dthresh` default `0.0`
+   that `max(-1e6 - dthresh, 0) = 0`); ours stores `-inf` in the self
+   slot of both the sigma-pass distances (D2.5) and the averaging
+   distances, the same weight, exactly 1 (amended 2026-10-05, Stage A
+   code review F-FID-5). `dthresh` default `0.0`
    (PyEBSDIndex default, :51): distances below `dthresh` count as
    zero, raising the weights of near-identical neighbours.
 3. **Duplicate guard `d2 > 0`** in the sigma minimum (D2.3), replacing
@@ -505,7 +585,23 @@ build follows, amendable at a gate with a ledger entry.
    kernel threshold `max_value * np.float32(0.999)` in float32
    (:865-869); `saturation_protect=False` sets `np.float64(max_value)
    + np.float64(1.0)` and `max_value + np.float32(1.0)` respectively,
-   excluding nothing (:764-765, :866-867). The two factors are the
+   excluding nothing (:764-765, :866-867). Amended 2026-10-05 (Stage
+   A code review F-FID-4; validation.md ledger entry 10 item 1 (a)):
+   `saturation_protect=False` excludes nothing while the maximum is
+   below `2**24` in the averaging kernel (float32) and `2**53` in the
+   sigma kernel (float64). From `2**24` on, `max_value +
+   np.float32(1.0)` rounds back to `max_value` (measured:
+   `float32(2**25) + float32(1) == float32(2**25)`), so the pixels
+   equal to the maximum drop out of the search-window distances while
+   the sigma pass keeps them, and the two passes use different kept
+   sets there. PyEBSDIndex's `mxval += np.float32(1.0)` (:866-867)
+   does the same, so this is recorded as parity, not a defect: the
+   code keeps it and both kernel docstrings state the bound. Pin: the
+   protection-off arm of V10 `test_uint16_two_threshold_arm` with the
+   maximum at `2**25` (the sigma kernel keeps 16 pixels on every
+   neighbour slot; the distances equal the transcription with the
+   threshold at the maximum, kept counts {15, 16}). The two factors
+   are the
    module constants `SIGMA_SATURATION_FACTOR = 0.9961` (a Python
    float, it meets a float64 operand) and `AVERAGE_SATURATION_FACTOR =
    np.float32(0.999)`, read by the kernels and pinned by V10
@@ -708,7 +804,25 @@ build follows, amendable at a gate with a ledger entry.
    range from `skimage.util.dtype.dtype_range` (imported at
    `ebsd.py:44`), then the cast. Float inputs: the float32 average
    cast to the input float dtype (a float64 input is accumulated in
-   float32 and cast up; documented precision note, D7.2).
+   float32 and cast up; documented precision note, D7.2). Amended
+   2026-10-05 (Stage A code review F-FID-2; validation.md ledger entry
+   10 items 1 (a), 1 (d) and 2): for every integer output, from the
+   input dtype or from `dtype_out` (D6.2), the `rint` and the clip run
+   in float64, `np.clip(np.rint(out_f32.astype(np.float64)),
+   float(omin), high)` with `omin, omax` from `dtype_range` and `high
+   = float(omax)`, moved down with `np.nextafter(high, -np.inf)` when
+   it exceeds `omax`; that happens for the 64-bit types only, whose
+   maxima are not float64 numbers (uint64 `2**64 - 2048`, int64 `2**63
+   - 1024`). Every float32 value and its `rint` are exact in float64,
+   so 8- and 16-bit outputs are bitwise those of a float32 route;
+   32-bit outputs keep their maxima, and 64-bit outputs are clipped
+   inside their range instead of overflowing. The float32 route of the
+   first implementation (superseded 2026-10-05; the sentence above
+   leaves the precision open) did not: `2**32 - 1` rounds up to
+   `2**32` in float32 and the cast of the clipped value wraps,
+   measured: a uint32 map at 4294967295 came back as 0 and an int32
+   map at its maximum as `-2**31`, with only an "invalid value
+   encountered in cast" warning.
 2. **`dtype_out="float32"`** (or `np.float32`) returns the raw
    average. `dtype_out` must be an integer or floating dtype
    (`np.issubdtype(dt, np.integer) or np.issubdtype(dt,
@@ -734,7 +848,12 @@ build follows, amendable at a gate with a ledger entry.
    on: parity is asserted on the float32 kernel output (V3), and the
    integer round trip is pinned separately.
    Pins: V7 uint8/uint16/float32/float64 round trip with `rint`
-   (bitwise against `np.rint(float32_result).clip(...)`); V3 "zero
+   (bitwise against `np.rint(float32_result).clip(...)`); V7
+   `test_integer_output_keeps_the_maximum_of_32_bit_types` (uint32,
+   int32: a map at the type maximum returned bitwise) and
+   `test_integer_output_clips_64_bit_types_inside_their_range`
+   (uint64, int64: `2**64 - 2048` and `2**63 - 1024` at the top), both
+   failing on the float32 route (amended 2026-10-05); V3 "zero
    pixels differ by >= 2 grey levels" after rounding against the
    oracle's float32 output rounded the same way; the plan.md mutant
    "floor for rint" dies by the round-trip test.
@@ -796,17 +915,38 @@ build follows, amendable at a gate with a ledger entry.
    / (lam * lam)`, `w = max(d - dthresh, np.float32(0.0))` in float32,
    `exp(np.float64(-1.0) * np.float64(w) * lam2)` in float64, stored
    float32. The oracle is called with the same Python-float `lam` and
-   `np.float32(dthresh)`. PyEBSDIndex's DRIVER rounds `lam` to float32
-   before its kernel (:297), so for a given `lam` its driver equals
-   ours only for `lam = float(np.float32(lam))` up to that rounding
-   (recorded difference, D12.6 item 12). Pin: V0 AST walk (no
+   `np.float32(dthresh)`. As drafted (superseded 2026-10-05):
+   "PyEBSDIndex's DRIVER rounds `lam` to float32 before its kernel
+   (:297), so for a given `lam` its driver equals ours only for `lam =
+   float(np.float32(lam))` up to that rounding (recorded difference,
+   D12.6 item 12)." Amended 2026-10-05 (Stage A code review F-FID-3;
+   validation.md ledger entry 10 item 1 (b)): PyEBSDIndex's driver
+   passes `lam` to `nlpar_nb` as float32 (:297), so its kernel also
+   squares it in float32 (`lam2 = 1.0 / lam**2`, :847), where ours
+   squares the float64 `lam` (`lam * lam`); the two differ by a few
+   float32 ulps even for a `lam` exactly representable in float32,
+   unless its square is too. Measured with the compiled `nlpar_nb`
+   given `np.float32(lam)` against the same kernel given
+   `float(np.float32(lam))` on a (9, 10 | 8, 8) integer-valued float32
+   map at search radius 3: `lam` 0.7, 0.9, 1.3 and 0.37 differ in 422,
+   1184, 1622 and 762 of 5760 values (at most 5, 5, 5 and 4 ulp),
+   `lam` 0.5 and 1.0 (exact squares) in none, and no value differs
+   after `rint`. The kernel-level parity tests call the compiled
+   oracle with the same Python-float `lam` (above), so they stay
+   bitwise (recorded difference, D12.6 item 12). Pin: V0 AST walk (no
    `ast.Pow` inside an `njit` function of `_nlpar.py`).
 4. **`py_func` parity**: bitwise for every kernel except
    `_nlpar_weights_kernel`, whose parity is MTP with seed 1 float32
    ulp (numba's `exp` and NumPy's differ by up to 1 ulp; parked plan
    2026-09-11; unverified today), measured and pinned at the Stage A
    gate as `EXP_KERNEL_ULP` (0 or 1; the placeholder is shared with
-   V1 through the root `conftest.py`, D1.9). Pin: V0.
+   V1 through the root `conftest.py`, D1.9). Measured at the Stage A
+   gate (amended 2026-10-05; validation.md ledger entry 7 items 3 and
+   6 (e)): 0 ulp in all eight test arms and in 1.6e7 closed-form and
+   1.6e6 `py_func` random comparisons, so `EXP_KERNEL_ULP = 0`; the
+   pin is scoped to the measuring machine, and a platform that
+   measures 1 ulp is recorded in the ledger, never absorbed by
+   widening the pin. Pin: V0.
 5. **PyEBSDIndex parity level** (amended 2026-10-04, spec review
    E1-F1): expected bitwise on float32 output against the COMPILED
    oracle dispatchers for `sigma` and the normalised 3 x 3 distances
@@ -973,8 +1113,13 @@ build follows, amendable at a gate with a ledger entry.
 7. **Cost, recorded**: a lazy input is read three times (global
    maximum, pass 1, pass 2; `get_nlpar_sigma` reads twice,
    `get_nlpar_lambda` twice); in-memory inputs pay nothing
-   noticeable. The docstring says so. Estimated runtimes: parked plan
-   seeds in D13.3.
+   noticeable. The docstring says so. The in-memory clause is
+   superseded 2026-10-05 (Stage A code review C-CONV-5 (c); the D1.5
+   (b) fallback): an in-memory input is read once more for the global
+   maximum, and the eager `inplace=True` path holds one extra
+   map-sized copy of the averaged map while it is computed; the method
+   Notes say so in one sentence (amended 2026-10-05). Estimated
+   runtimes: parked plan seeds in D13.3.
 8. **No scheduler manipulation inside the method**: #824 sets
    `num_workers=2` and `scheduler="threads"` by default (diff lines
    632-643); here the user's `dask.config` applies, as everywhere
@@ -1045,9 +1190,36 @@ build follows, amendable at a gate with a ledger entry.
    float32 layout, `col + ncols * row` pattern index, int64 kept
    indices, a FRESH `calclim` array per call, every navigation axis
    `>= 2 sr + 1`) is written once in validation.md's Automated
-   section. Both kernels are identical in 0.3.9.2 and 0.3.10.1
-   (parked plan, 2026-09-11; (unverified today)), so no version gate
-   beyond the floor; the oldest-matrix recipe runs them at 0.3.9.2.
+   section. Warm-up record (amended 2026-10-05; validation.md ledger
+   entries 7 items 3 and 6 (f) and 10 item 2): the fixture writes the
+   JIT time as the test-suite property `pyebsdindex_jit_warmup_s`,
+   which reaches a report only in a run without xdist with
+   `--junit-xml` (on xdist workers, as in CI, it is recorded nowhere);
+   with the kernels' numba cache present it measures about 0.08 s,
+   and the cold compile (7.39-7.40 s: `sigma_numba` 4.06-4.08 s plus
+   `nlpar_nb` 3.31-3.34 s) is documented by the constant
+   `PYEBSDINDEX_JIT_WARMUP_S = 7.4`, which no test reads. Both kernels
+   are identical in 0.3.9.2 and 0.3.10.1
+   (parked plan, 2026-09-11), and every parity arm passes bitwise
+   against 0.3.9.2 (`sigma_numba` at numba 0.57, `nlpar_nb` at numba
+   0.58.1; validation.md ledger entry 8 item 6), so no pyebsdindex
+   version gate beyond the floor (amended 2026-10-05). The one gate is
+   a numba-version gate on the ORACLE side only (amended 2026-10-05):
+   PyEBSDIndex 0.3.9.2's `NLPAR.nlpar_nb` (`parallel=True`) does not
+   compile under numba 0.57.0 (parfor pass, the `dtype` keyword of
+   `np.arange`) and compiles under 0.58.0, 0.58.1 and 0.59.1, while
+   `sigma_numba` and our own kernels compile under 0.57.0 (ledger
+   entries 7 and 8, amended 2026-10-05). `test_nlpar.py` carries
+   `NLPAR_NB_COMPILES = Version(version("numba")) >=
+   Version("0.58.0")`; when it is False every test that calls
+   `nlpar_nb` skips with the reason "PyEBSDIndex's NLPAR.nlpar_nb does
+   not compile under numba 0.57.0" and the `pyebsdindex_kernels`
+   fixture does not compile `nlpar_nb`, while the sigma-oracle tests
+   still run (amended 2026-10-05). The CI oldest job (`tests.yml:48`,
+   `numba==0.57` with `pyebsdindex==0.3.9.2`) therefore exercises the
+   sigma oracle and every non-oracle test, and the full averaging
+   parity against 0.3.9.2 is recorded from the numba 0.58.1 run of
+   D10.5 (amended 2026-10-05).
 3. **Numba-cache flake rule** (recorded): importing `pyebsdindex`
    redirects `NUMBA_CACHE_DIR` to a shared `~/.pyebsdindex/numbacache`
    (`pyebsdindex/band_detect.py:60-62`, `gnomonic_correction.py:
@@ -1083,6 +1255,14 @@ build follows, amendable at a gate with a ledger entry.
    and all file I/O removed; integer output rounded to nearest; (d)
    "The US Naval Research Laboratory (David Rowenhorst) is gratefully
    acknowledged as the original source of the NLPAR implementation."
+   Date in (c) (amended 2026-10-05, Stage A code review F-FID-6 and
+   C-CONV-4): "Changes by the kikuchipy developers, 2026-10-05:", the
+   implementation date (the Stage A commits `ca13e63c` and
+   `d2b73acd`), re-checked at the Stage A commit. The lambda-objective
+   line of the list describes Stage B code; it stays listed because
+   (c) prescribes the full list, and at the Stage B implementation
+   commit the notice is re-dated or split ("2026-10-05:" for the
+   engine items, the Stage B date for the lambda objective).
    The method docstring Notes and the CHANGELOG bullet repeat the
    acknowledgement in one sentence. EMsoftOO `mod_NLPAR.f90` (BSD-3,
    header lines 1-12 of the local clone) is named in the module
@@ -1095,14 +1275,30 @@ build follows, amendable at a gate with a ledger entry.
    kernels. One recorded local run per stage with the ONE recipe
    string used in all three spec documents and in the tech-stack
    amendment (unified 2026-10-04, spec review F1-F6/C1-F5/E1-F21):
-   `uv run --isolated --python 3.10 --with "numpy==1.23.0" --with
-   "numba==0.57" --with "orix==0.12.1" --with "pyebsdindex==0.3.9.2"
-   --with "dask==2021.8.1" --with "scikit-image==0.21.0" pytest
-   tests/test_signals -k nlpar` (the parked plan's recipe plus the
+   `uv run --isolated --python 3.10 --extra tests --with
+   "numpy==1.23.0" --with "numba==0.57" --with "orix==0.12.1" --with
+   "pyebsdindex==0.3.9.2" --with "dask==2021.8.1" --with
+   "scikit-image==0.21.0" pytest tests/test_signals -k nlpar -n 0 -q
+   -p no:cacheprovider` (the parked plan's recipe plus the
    dask pin that makes D8.4's `ensure_minimum_chunksize` import
    checkable locally and the scikit-image pin of the CI oldest line,
-   `tests.yml:48`; the test root of D1.9).
-   Pins: V2/V3 (skip cleanly without pyebsdindex; the NumPy
+   `tests.yml:48`; the test root of D1.9). `--extra tests` added
+   2026-10-05: `--isolated` omits the tests extra (without it the run
+   fails with "Failed to spawn: pytest"); the trailing `-n 0 -q -p
+   no:cacheprovider` is the gate runner's measured invocation, xdist
+   now coming with the extra (amended 2026-10-05). From 2026-10-05 the
+   oldest-matrix gate is two recorded local runs per stage (amended
+   2026-10-05): the recipe above (numba 0.57: the sigma oracle and
+   every non-oracle test; measured at the Stage A gate: 338 passed,
+   398 skipped, 0 failed) and the same recipe with `--with
+   "numba==0.58.1"` in place of `--with "numba==0.57"` (every
+   averaging-oracle arm bitwise against PyEBSDIndex 0.3.9.2; measured
+   736 passed, 0 skipped), because `nlpar_nb` does not compile under
+   numba 0.57 (D10.2) and the CI oldest job keeps its `numba==0.57`
+   pin.
+   Pins: V2/V3 (skip cleanly without pyebsdindex; V3 and every other
+   `nlpar_nb` call also skip cleanly under numba < 0.58.0, amended
+   2026-10-05; the NumPy
    transcription oracles of V1/V4/V5/V10 keep the minimum-requirement
    job meaningful), V0.
 
@@ -1229,10 +1425,17 @@ build follows, amendable at a gate with a ledger entry.
    runtime (#824 needs it for sigma and lambda); (10) integer output
    rounded to nearest and clipped, no dependence on PyEBSDIndex's
    writer; (11) `lam` defaults to `None` (optimised; PyEBSDIndex 0.7,
-   #824 0.9); (12) `lam` reaches the kernel as float64 (PyEBSDIndex's
-   driver rounds it to float32 first, `nlpar_cpu.py:297`), so for a
-   given `lam` the two agree up to that rounding (added 2026-10-04,
-   spec review E1-F8). Twelve items; the module-level change notice
+   #824 0.9); (12) as drafted (superseded 2026-10-05): "`lam` reaches
+   the kernel as float64 (PyEBSDIndex's driver rounds it to float32
+   first, `nlpar_cpu.py:297`), so for a given `lam` the two agree up to
+   that rounding" (added 2026-10-04, spec review E1-F8); amended
+   2026-10-05 (Stage A code review F-FID-3, D7.3) to the docstring's
+   wording: "`lam` reaches the kernel as float64; PyEBSDIndex's driver
+   passes it as float32 (`nlpar_cpu.py:297`), so its kernel also
+   squares it in float32, and the two differ by a few float32 ulps (up
+   to 5 measured, none after rounding to integers) even for a `lam`
+   exactly representable in float32, unless its square is too."
+   Twelve items; the module-level change notice
    (D10.4) additionally names `diff_offset`, `backsub` and
    `stem_scale`.
    Pins: Stage C validation matrix (clean-kernel execute, nbval,
@@ -1273,7 +1476,13 @@ build follows, amendable at a gate with a ledger entry.
    numbered, dated, with the recipe and the machine; every amendment
    to this file is dated in place (the HREBSD precedent). Budget:
    default-suite additions <= ~90 s per worker including the
-   PyEBSDIndex warm-up fixture; weekly <= 5 min.
+   PyEBSDIndex warm-up fixture; weekly <= 5 min. Measured at Stage A
+   (amended 2026-10-05; validation.md ledger entries 7 item 6 (d), 8
+   item 6 and 10 item 4): the two NLPAR modules take 93.9 to 99.3 s at
+   `-n 0` (one worker, numba caches present), about 4 to 10 % above
+   the line, and 47.0 s at `-n 4`; recorded, not a gate (the Stage A
+   code review's C-CONV-8 was refuted on that ground, plan.md section
+   11).
 6. **Spec-review measurements (2026-10-04, critics and fixer,
    read-only Python; ledger entry 2 in validation.md)**: PyEBSDIndex
    `sigma_numba` compiled vs `.py_func` on a (7, 7 | 8, 8) float32
@@ -1348,7 +1557,11 @@ build follows, amendable at a gate with a ledger entry.
    (55, 75 | 60, 60) uint8 signal equals `inplace=False` bitwise
    under the synchronous scheduler and threads with 1, 2 and 20
    workers, 0 differing patterns; a toy `map_overlap` + `store` into
-   its own source likewise (D1.5 (b)). Compiled `sigma_numba` /
+   its own source likewise (D1.5 (b)). (Those readings are with dask
+   2026.3.0; on dask 2021.8.1 `average_neighbour_patterns(inplace=
+   True)` on `nickel_ebsd_large` differs from `inplace=False` in 183
+   patterns, so the D1.5 (b) fallback was taken; amended
+   2026-10-05.) Compiled `sigma_numba` /
    `nlpar_nb` on a constant (4, 5 | 6, 6) map at 100: protection on,
    `nout` of every neighbour slot stays at the `1e-12` seed (no kept
    pair) and sigma is `1e12` everywhere; protection off, `nout = 36`
@@ -1382,6 +1595,14 @@ plain text:
     `sqrt(2 N) (sigma_i^2 + sigma_j^2)` (Gaussian noise, large `N`),
     so `d_ij ~ 0 +- 1` within a grain and grows linearly with the
     squared contrast across a boundary (two-grain seed: `d ~ 159`).
+    That is the distribution with the TRUE sigma (amended 2026-10-05;
+    validation.md V4 and ledger entry 7 item 6 (a)): with the estimate
+    (1) every 3 x 3 distance is >= 0 up to float32 rounding (each pair
+    estimate is a candidate in the minimum of both patterns), so on
+    iid noise (N 1024) the measured 3 x 3 moments are mean 1.20 and
+    std 0.83 (0.754-0.888 over 20 seeds), the values of the compiled
+    `sigma_numba` `dout` on the same map; the drafting seed "std ~1"
+    is refuted for the estimated sigma.
 (3) Weights: `w_ij = exp( -max(d_ij - dthresh, 0) / lambda^2 )`,
     `w_ii = 1`, `p_i' = sum_j w_ij p_j / sum_j w_ij`.
 
@@ -1395,11 +1616,17 @@ intensity scale as the input (convex combination; D6).
 Ported for parity (by construction; the line cites sit in D2, D3 and
 D5): the clipped 3 x 3 sigma window, the `1e24 -> 1e12` fallback and
 the normalised `dout` (:752-818); the shifted
-`(2 sr + 1)^2` window, the `-1e6` self slot, float32 `d2`/`n2`, the
+`(2 sr + 1)^2` window, the self weight forced to exactly 1
+(PyEBSDIndex: distance `-1e6`; ours: `-inf`, in the self slot of both
+the sigma-pass and the averaging distances, the same weight; amended
+2026-10-05, Stage A code review F-FID-5, drafted as "the `-1e6` self
+slot"), float32 `d2`/`n2`, the
 `dnorm <= 1e-8` branch, `max(d - dthresh, 0)`, `exp(-w / lam^2)`,
 normalise-then-accumulate and the two saturation constants
 (:820-936); the `loptfunc` metric, Nelder-Mead call and stride
-(:94-184).
+(:94-184). Also ported for parity (added 2026-10-05, D3.5): the
+float32 protection-off threshold `max_value + np.float32(1.0)`
+(:866-867), which excludes the pixels at the maximum from `2**24` on.
 
 NOT ported (recorded, each with its D-number):
 - Window indices out of bounds when an axis is shorter than `2 sr + 1`
