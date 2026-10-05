@@ -122,3 +122,45 @@ of done ends at "PR opened"; "PR merged" is tracked here.
 - [x] performance go/no-go: PASS -- 940.7 pat/s best-of-3 refined at bw 68 vs the pinned 236.0 pat/s idle-CPU floor (3.99x, inside the review-corrected 850-1500 band); bw 88 measured 465 pat/s, below its recorded expectation band, explanation recorded
 - [x] adversarial review + fixes (incl. the device mutation list) -- 20 findings dispositioned; 4 surviving mutants killed by strengthened tests, kills verified by re-injection
 - [x] signed commits; PR #15 opened into fork `develop`
+
+---
+
+# Feature path: NLPAR (branch `feat-NLPAR`; spec `2026-10-04-nlpar`)
+
+Not a Phase 13: NLPAR is not in the EMSphInx dependency chain above.
+Base is fork `develop` (18d59c07); one fork PR `feat-NLPAR -> develop`
+(expected jwestraadt/kikuchipy#17, confirmed with `gh pr list` at PR
+time), merged only on the user's go with ubuntu/windows CI green
+(the go was given in advance on 2026-10-04, so the merge proceeds
+when CI is green; macOS known red: the ebsdsim step and the pre-existing pseudo-symmetry
+`23 == 22` test). A box ticks only when the work is committed on
+`feat-NLPAR` (`git log`). Gate list per code stage: spec recorded ->
+failing tests committed -> implementation -> adversarial review + bug
+injection + fixes -> pre-commit clean -> CHANGELOG entry -> pushed.
+Stage C is documentation: it skips the failing-tests gate and keeps the
+CHANGELOG gate (it ships a tutorial).
+
+## Stage A -- engine
+- [ ] `src/kikuchipy/pattern/_nlpar.py`: five `@njit(cache=True, nogil=True)` kernels (`_window_bounds`, `_nlpar_sigma_kernel`, `_nlpar_distances_kernel`, `_nlpar_weights_kernel`, `_nlpar_weighted_sum_kernel`; no `parallel`, no `fastmath`), chunk wrappers reading `block_info`, the NLPAR depth helper, the eager two-pass driver; NRL change notice in the module header
+- [ ] `EBSD.average_non_local_neighbour_patterns()` (eager signals; `lam=None`, lazy input and `lazy_output=True` raise `NotImplementedError` until Stage B) and `EBSD.get_nlpar_sigma()` directly after `average_neighbour_patterns` in `signals/ebsd.py`, then `EBSD.get_nlpar_lambda()` as a stub raising `NotImplementedError` until Stage B (the fifth guard)
+- [ ] Tests: `tests/test_signals/test_util/test_nlpar.py` (kernel discipline + `.py_func`, PyEBSDIndex kernel oracles skipif incl. the compiled parity arms on `nickel_ebsd_large` [download], depth/`calclim`, the two pyebsdindex-free multi-chunk driver tests, policy oracles), `tests/test_signals/test_ebsd_nlpar.py` (float64 NumPy reference, identities, iid-noise, two-grain, method contracts incl. the multi-chunk in-place arm on `nickel_ebsd_large`) and the four synthetic generators as fixtures in the root `conftest.py`; every tolerance measured then pinned in `validation.md`
+- [ ] Adversarial review (fidelity vs the paper, both PyEBSDIndex kernels and EMsoftOO `mod_NLPAR.f90`; conventions/integration) + bug injection (M1-M22 and S1-S8, plan section 6, Stage A rows) + fixes; coverage 100 % of `_nlpar.py` recorded
+- [ ] Gates: `-n 0` then `-n 4` (red tests re-run alone), full suite, `SKIP=licenseheaders` pre-commit on explicit files, oldest-matrix recipe, clean-replay grep; CHANGELOG "Added" bullet with the fork PR link; signed commits pushed (the failing-tests commit never alone)
+
+## Stage B -- optimisation and scale
+- [ ] `EBSD.get_nlpar_lambda()` and `lam=None` (phantom-free Nelder-Mead on the pass-1 distances, `target_weight` 0.34, bounds [1e-3, 10], result logged, bound hit warned); lazy input and `lazy_output` through the two `overlap` + `map_blocks` passes (core-only chunk wrappers) with the depth helper and the minimum-chunksize rechunk
+- [ ] Pins: eager == lazy bitwise through the method over single, regular, irregular tiny-edge and thinner-than-depth ROW chunkings (a lazy input's column chunking is collapsed by `get_dask_array`'s `_reduce_chunks`; column and both-axes chunkings are pinned at driver level in Stage A) and the explicit (26, 26, 3) last-chunk rows on `nickel_ebsd_large`; issue-230 chunking; 1-D scan == (1, n); scheduler/thread invariance; `nickel_ebsd_large` in the default suite (`allow_download=True`, cached: full-map ADP/IQ gain, the phantom-ratio arm, Hough indexing on the `inav[::5, ::5]` 165-pattern subset; lambda seeds 2026-09-11: 1.1164 / 2.5246 with phantoms, 1.1387 / 2.5787 phantom-free) with the full-map Hough and `si_wafer` weekly; performance baselines recorded, never gated
+- [ ] Adversarial review + bug injection (lambda and lazy mutants) + fixes; coverage 100 % of `_nlpar.py` re-recorded
+- [ ] Gates as Stage A; CHANGELOG bullet extended for `lam=None`; signed commits pushed
+
+## Stage C -- tutorial
+- [ ] `doc/tutorials/nlpar.ipynb` (formulas + acknowledgement; synthetic two-grain demo with sigma map and boundary preservation vs Gaussian `average_neighbour_patterns`; `nickel_ebsd_large` sigma map, lambda-vs-target curve, before/after patterns, IQ/ADP maps, Hough indexing before/after; `si_wafer` numbers quoted from the ledger; parameter guidance; differences from PyEBSDIndex and from upstream #824); `hybrid_indexing.ipynb` untouched, linked
+- [ ] Registration: `doc/tutorials/index.rst` after `pattern_processing`, `NOTEBOOKS` entry in `run_nbval.sh`, `tutorials_sanitize.cfg` regexes as needed, stored outputs if > ~2 min on the RTD builder; gallery example `examples/pattern_processing/nlpar.py`
+- [ ] Validation matrix + failure-mode review (clean-kernel execute, nbval, html render inspection, linkcheck, name/spell pass) + fixes; `sphinx-build -b html` exit 0
+- [ ] CHANGELOG tutorial bullet; signed commit pushed; the three spec documents re-submitted to review (definition of done)
+
+## Fan-out (plan section 1; after the merge)
+- [ ] Fork PR `feat-NLPAR -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #17); roadmap tick commit "Tick NLPAR boxes in roadmap (jwestraadt/kikuchipy#17)"
+- [ ] PR merged on the user's go (merge commit; ubuntu/windows CI green); merge sha M recorded here
+- [ ] `hrebsd-dic`: `git merge --no-ff develop`, append-type conflicts resolved HREBSD first then NLPAR; `-k "nlpar or hrebsd"` then the full suite green; nbval on `nlpar.ipynb`; pushed; still never merged into `develop`
+- [ ] `feat-spherical-indexing-nlpar`: clean replay of M with `pick.ps1`/`gate.ps1` as two commits ("Add non-local pattern averaging (NLPAR)", "Add NLPAR tutorial"; `Staged-from:` trailers), equivalence gate and `specs/` grep clean, worktree suite == baseline + NLPAR tests; pushed, no PR; `feat-spherical-indexing` stays at 6723aaf0

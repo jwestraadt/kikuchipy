@@ -1,13 +1,17 @@
 # PARKED PLAN: `feat-NLPAR` -- non-local pattern averaging (NLPAR) in the kikuchipy fork
 
-**Status (2026-09-11):** designed, NOT approved, NOT started. Johan parked
-it at the approval gate ("save this plan in specs, for implementation
-later"). Saved untracked under `specs/_research/` (ignored by the staging
-branch's `.gitignore`). Nothing below was executed: no `feat-NLPAR` branch,
-no commits, no spec folder. To resume: re-verify the base sha
-(`feat-spherical-indexing` @ `6723aaf0`, upstream `31666938`) and the
-installed PyEBSDIndex version, then start at "Step 0: branch mechanics";
-Step 1 still needs Johan's approval of the spec `plan.md`.
+**Status (2026-10-04):** SUPERSEDED by `specs/2026-10-04-nlpar/`
+(`requirements.md`, `plan.md`, `validation.md`), which carries this
+design into execution with three changes decided by Johan on
+2026-10-04: the base is fork `develop` (18d59c07), not
+`feat-spherical-indexing`, so "Decisions by Johan" item 1 below is
+superseded (one fork PR `feat-NLPAR -> develop`, then a merge into
+`hrebsd-dic` and a clean replay onto `feat-spherical-indexing-nlpar`;
+Step 0 drops out because `develop` tracks `specs/`); the API follows
+upstream pyxem/kikuchipy#824 (`src/kikuchipy/pattern/_nlpar.py`,
+`EBSD.average_non_local_neighbour_patterns`, with `get_nlpar_sigma`
+and `get_nlpar_lambda` as below); and the spec folder is re-dated.
+The body below stays as the design record and is not edited.
 
 ## Context
 
