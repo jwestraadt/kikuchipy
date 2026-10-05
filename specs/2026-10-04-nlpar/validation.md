@@ -1977,6 +1977,241 @@ section 10, round 3.
    deletions; `ebsd.py:1081` `dtype_range[dtype_out.type]`. Fills:
    ledger entry 1 item 1, requirements Scope, V9, plan 1, 2.7, 2.12.
 
+### 5. 2026-10-04 (Stage A failing-tests gate)
+
+Machine: as entry 1; numpy 2.4.6, numba 0.65.1, dask 2026.3.0,
+pyebsdindex 0.3.10.1; branch `feat-NLPAR` at `99cf7fa0` plus the
+uncommitted Stage A files. Writers, then one critic (9 findings),
+then this fixer (round 1). No implementation logic was written; every
+new function body is `raise NotImplementedError`.
+
+1. **Files written** (Stage A failing-tests step):
+   `src/kikuchipy/pattern/_nlpar.py` (GPL header verbatim from
+   `chunk.py:1-16`, the delimited NRL block, the dated change notice;
+   five `@njit(cache=True, nogil=True)` kernel stubs, the NumPy
+   normalisation, the driver helpers, both chunk wrappers, the unpack
+   helper and both drivers, all stubs); `src/kikuchipy/signals/
+   ebsd.py` (`average_non_local_neighbour_patterns`,
+   `get_nlpar_sigma`, `get_nlpar_lambda`, after
+   `average_neighbour_patterns` and before `downsample`, stubs);
+   `conftest.py` (appended: the four generators, their same-named
+   fixtures, `EXP_KERNEL_ULP` and `exp_kernel_ulp`);
+   `tests/test_signals/test_util/test_nlpar.py`;
+   `tests/test_signals/test_ebsd_nlpar.py`. This fixer round changed
+   only the two test modules and this ledger.
+2. **Gate run** (`uv run --no-sync pytest tests/test_signals/
+   test_util/test_nlpar.py tests/test_signals/test_ebsd_nlpar.py -n 0
+   -q -p no:cacheprovider`, plus `-rfEs --tb=line` for the tally):
+   731 collected, 0 collection errors, 723 failed, every one with
+   `NotImplementedError` (723 of 723 `E` lines, tallied with `grep
+   "^E   " | sort | uniq -c`), 8 passed, 0 skipped (PyEBSDIndex
+   installed, `nickel_ebsd_large` cached), 6.7 s to 51.9 s wall over
+   three runs (not a measurement of the gate budget). The 8 passing
+   tests need no implementation: `TestKernels::
+   test_kernel_names_lists_every_njit_kernel_of_the_module`, the five
+   `test_kernels_are_compiled_with_cache_and_nogil` arms,
+   `TestKernels::test_nlpar_code_never_names_pyebsdindex`, and
+   `TestLazyAndContracts::test_stage_a_guards_raise_not_implemented[
+   get_nlpar_lambda]` (the Stage A stub is the contract). Before this
+   round: 709 collected, 701 failed (all `NotImplementedError`), 8
+   passed.
+3. **Placeholder inventory confirmed** (the 13 Stage A names of the
+   inventory above, each found at module level): root `conftest.py`
+   `EXP_KERNEL_ULP = None`; `test_nlpar.py` `SIGMA_PARITY_ULP = 0`
+   and `AVERAGE_PARITY_ULP = 0` (seed 0 = bitwise, the expected pin),
+   `BORDER_BAND_MIN_DIFF = None` (was the live seed 1.0, T1-F5),
+   `PYEBSDINDEX_JIT_WARMUP_S = 7.2` (recorded, never asserted);
+   `test_ebsd_nlpar.py` `REFERENCE_MAX_ABS_GREY`,
+   `NOISE_SIGMA_RATIO_BAND`, `D_MEAN_BAND`, `D_STD_BAND`,
+   `UNIT_WEIGHT_FRACTION_BAND`, `NOISE_REDUCTION_TOL`,
+   `TWO_GRAIN_CONTRAST_MIN`, `TWO_GRAIN_BOUNDARY_RESIDUAL_TOL`, all
+   `None`. Every placeholder is read after the stub call of its test,
+   so each test fails on the stub now and reports the measured value
+   once the implementation lands.
+4. **Dask `overlap` rechunks by itself** (T1-F2; read-only probe,
+   dask 2026.3.0): `inspect.signature(dask.array.overlap.overlap)` is
+   `(x, depth, boundary, *, allow_rechunk=True)`. `overlap` of a
+   (10, 16 | 2, 2) array chunked `(1, 1, 2, 2)` at depth 6 on both
+   navigation axes gives overlapped navigation chunks `((10,), (12,
+   16))`, identical to an explicit rechunk to `((10,), (6, 10))`
+   followed by `overlap`; a (5, 16) array with rows `(2, 3)` at row
+   depth 0 keeps `(2, 3)`. So the V7 sentence "`overlap` refuses a
+   depth larger than a chunk" and the premise of the plan section 6
+   S4 row are false on this dask: a driver that skips its explicit
+   `x.rechunk(chunks_out)` gives the same values on every
+   `DRIVER_CHUNKINGS` arm. S4 now dies on this dask by (a) the
+   `overlap` recorder added to `TestDepthAndHalo::
+   test_pass_two_driver_on_multichunk_dask_array_equals_single_chunk`
+   (every array reaching `dask.array.overlap.overlap` must already
+   have the post-rechunk navigation chunks), which keeps the two
+   named killers `[(1, 1)]` and `[((3, 3, 4), (7, 7, 2))]` valid, and
+   (b) the new `TestDepthAndHalo::
+   test_pass_two_driver_rechunks_an_axis_no_longer_than_the_window[
+   rows_5_2_3_r2]` and `[rows_3_1_2_r3]` (an axis that the
+   single-chunk rule collapses, where the values differ too). The V7
+   text and the S4 row are to be amended at the next spec touch (this
+   round may write the ledger only).
+5. **Critic findings: 9** (0 blocker, 2 major, 7 minor); 9 applied,
+   0 declined.
+
+   | id | severity | disposition |
+   |---|---|---|
+   | T1-F1 | major | applied: counting spies (`functools.wraps`, so Dask still passes `block_info`) on `_nlpar_sigma_chunk` in the pass-1 driver test (calls == navigation blocks) and on `_nlpar_average_chunk` in the pass-2 driver test (calls == blocks of the post-rechunk chunks), `lazy.chunks == chunks_out` from a test-local transcription of the depth rule (`_ref_depth_chunks`, not `_nlpar_depth`), and both spies in `test_inplace_equals_inplace_false_on_a_multichunk_eager_signal` (per run: sigma calls == blocks of the `get_dask_array` chunks, averaging calls == blocks of `_nlpar_depth(chunks, (3, 3))[1]`, asserted > 1). `max(lazy.numblocks[:2]) > 1` is asserted at sr 1 only: `((1, 9), (2, 14))` at sr 3 rechunks to one block on both axes (rows `(10,)`, columns `(16,)`) |
+   | T1-F2 | major | applied: item 4 (new arm with an axis no longer than `2 r + 1`, plus the `overlap` recorder in both pass-2 driver tests) |
+   | T1-F3 | minor | applied with a derived bound in place of the mean check: the in-place uint8 output equals `np.clip(np.rint(expected_f32), 0, 255).astype(np.uint8)`, and every output pixel lies within the smallest and largest input value of that pixel over the map (radius 3 on (4, 5): the window is the whole map and the weights sum to 1). A 0.5-grey-level mean check is not derivable here: 20 independent random patterns have means spread by ~10.6 grey levels and the weights are not uniform |
+   | T1-F4 | minor | applied (ledger only, as the finding asks): M2 dies by `TestIdentities::test_reference_agrees_with_the_method_on_random_maps`, `TestNoiseOracle::test_normalised_distance_moments` and the V3 parity arms, not by `TestNoiseOracle::test_sigma_recovery_median_ratio`, which sees only the sigma estimate (it kills a missing-sqrt variant); the plan section 6 M2 row is to be corrected at the next spec touch |
+   | T1-F5 | minor | applied: `BORDER_BAND_MIN_DIFF: float \| None = None`, read through `_require_placeholder` after our route ran, the measured minimum in the failure message |
+   | T1-F6 | minor | applied: the distances-kernel `py_func` test is parametrised over `protect` in (True, False) and `masked` in (False, True), 6 -> 24 arms |
+   | T1-F7 | minor | applied: new `TestDepthAndHalo::test_sigma_chunk_returns_the_packed_core` (two hand-built haloed blocks of a (6, 5 \| 4, 4) map, rows `(3, 3)` at depth 1: packed planes against the whole-map kernel bitwise, slots 1-8 of plane 3 zero, the `_nlpar_unpack_sigma_pass` round trip with `valid` bool, `block_info=None` -> `AssertionError`), and the `("sigma_0d", {}, "nothing to average")` arm of `VALIDATION_ARMS` |
+   | T1-F8 | minor | applied: the class-level skipif of `TestAveragingOracle` is replaced by `@requires_pyebsdindex` on its eight oracle tests; `test_small_map_padding_slots_are_inf` keeps its class and name and now runs without PyEBSDIndex |
+   | T1-F9 | minor | applied: the test-suite header (`# Copyright 2019-2026 the kikuchipy developers`, framed by `#` lines) in `test_nlpar.py`; `_nlpar.py` keeps the verbatim `chunk.py` header |
+
+6. **Spec ambiguities resolved** (defaults chosen):
+   (a) `get_nlpar_sigma` on a signal without navigation axes: the
+   0-D fragment is frozen only for the averaging method
+   ("`navigation_dimension == 0` raises `ValueError` ("nothing to
+   average")"), while "The same fragments apply in `get_nlpar_sigma`
+   and `get_nlpar_lambda` where the keyword exists" and the method's
+   Raises section reads "If the signal has no navigation axes".
+   Default: `get_nlpar_sigma` raises `ValueError` matching "nothing to
+   average".
+   (b) The `overlap` recorder and the spies need the drivers to call
+   `da.overlap.overlap(...)` through the module attribute and to pass
+   the chunk wrappers to `da.map_blocks` as `_nlpar` module globals
+   looked up at call time, as plan module 11 writes them; a `from
+   dask.array.overlap import overlap` import would bypass the recorder
+   and fail "overlap was not called". `overlap` is required only when
+   the post-rechunk chunks have more than one navigation block, so a
+   one-block shortcut stays allowed.
+   (c) Expected averaging-pass chunks: `test_nlpar.py` derives them
+   from its own transcription of the depth rule; the method test in
+   `test_ebsd_nlpar.py` takes them from `_nlpar_depth`, pinned by
+   `test_depth_helper`, since test modules never import each other.
+
+### 6. 2026-10-04 (Stage A failing-tests gate, round 2)
+
+Machine: as entry 1; numpy 2.4.6, numba 0.65.1, dask 2026.3.0,
+pyebsdindex 0.3.10.1; branch `feat-NLPAR` at `99cf7fa0` plus the
+uncommitted Stage A files (the last gate run finished just after local
+midnight, on 2026-10-05). A second critic (9 findings), then this
+fixer (round 2). No implementation logic was written; every new
+function body is still `raise NotImplementedError`.
+
+1. **Files written** (this round): `tests/test_signals/
+   test_ebsd_nlpar.py`, `tests/test_signals/test_util/test_nlpar.py`
+   and this ledger. `src/kikuchipy/pattern/_nlpar.py`, the three
+   methods in `src/kikuchipy/signals/ebsd.py` and the appended part of
+   `conftest.py` are unchanged since entry 5.
+2. **Gate run** (`uv run --no-sync pytest tests/test_signals/
+   test_util/test_nlpar.py tests/test_signals/test_ebsd_nlpar.py -n 0
+   -q -p no:cacheprovider`, plus `-rfEs --tb=line` for the tally):
+   735 collected, 0 collection errors, 727 failed, every one with
+   `NotImplementedError` (727 of 727 `E` lines, tallied with `grep
+   "^E   " | sort | uniq -c`), 8 passed (the 8 of entry 5, item 2), 0
+   skipped (PyEBSDIndex installed, `nickel_ebsd_large` cached), 15
+   warnings (from the `nickel_ebsd_large` loads, as before), 7.1 s and
+   58.0 s wall over two runs (not a measurement of the gate budget).
+   Before this round: 731 collected, 723 failed, 8 passed. The four
+   new items are `TestIdentities::test_power_of_two_scaling_is_exact[
+   -16]`, `TestLazyAndContracts::test_dtype_round_trip[
+   float32-shifted]` and `TestPolicyOracles::
+   test_sigma_threshold_is_float64_and_average_threshold_float32[
+   policy]` and `[oracle]`. `ruff format --check` and `ruff check`
+   pass on both test modules. The clean-replay grep (spec paths, spec
+   file names, bare D/V numbers, "parked", em-dashes) finds nothing in
+   `_nlpar.py`, `conftest.py` or the two test modules.
+3. **Placeholder inventory**: unchanged from entry 5, item 3 (the 13
+   Stage A names). `TestKernels::
+   test_nlpar_weights_kernel_py_func_equals_the_compiled_kernel` now
+   puts its measured compiled vs `py_func` ulp distance in the
+   `EXP_KERNEL_ULP` failure message (T2-F7). Every placeholder read
+   now reports its measured value, as entry 5, item 3 says.
+4. **Read-only probes of this round** (scratchpad scripts run with `uv
+   run --no-sync python`, loading the test-local references of
+   `test_nlpar.py` and the generators of the root `conftest.py`
+   through `importlib`; no kernel of ours runs, they are stubs):
+   (a) T2-F4: on `identical_plus_gaussian((5, 6), (32, 32), sigma=
+   8.0)` the float32 sigma reference with the `d2 > 0` guard scales
+   bitwise at 2^-16, 2^-8, 2^-4 and 2^4. The reference with
+   PyEBSDIndex's `d2 >= 1e-3` guard equals it at 2^-8, 2^-4 and 2^4
+   and differs at 2^-16. Largest horizontal-neighbour d2: 2.17 at
+   2^-8, 3.31e-5 at 2^-16. Smallest `2 sigma_min^2 sqrt(2048)`: 0.08
+   at 2^-8, 1.22e-6 at 2^-16. Smallest scaled pixel at 2^-16: 1.63e-4
+   (every value a normal float32). So the V1 sentence "with
+   PyEBSDIndex's absolute `d2 >= 1e-3` the 2^-8 arm degrades to a box
+   filter" is false. It is the new 2^-16 arm that degrades, to the
+   1e12 fallback sigma. V1 is to be amended at the next spec touch.
+   (b) T2-F5: 8523 of the integer maxima M from 100 to 65535 round
+   both float32 products below the float64 ones. For 0.9961 that
+   means `float32(M x float32(0.9961)) < M x 0.9961` and `< M x
+   float64(float32(0.9961))`; 0.999 is the same. The first such M
+   are 109, 110, 121, 130 and 132; the test uses 242. The planted
+   (3, 3 | 4, 4) map: seed 51, values in [20, 200], pixel 0 at
+   `float32(242 x 0.9961)`, pixel 1 at `float32(242 x 0.999)`, 242
+   at pixel 5 of (1, 1). On it the compiled `sigma_numba` gives a
+   sigma bitwise equal to the float64-threshold reference and
+   `nout[0, 0, :4] = [16, 15, 15, 14]` (pixel 0 counted). The compiled
+   `nlpar_nb` output is bitwise equal to the transcription with the
+   float32 averaging threshold. It differs from the float64-threshold
+   transcription by up to 7.10 grey levels.
+5. **Critic findings: 9** (0 blocker, 3 major, 6 minor); 9 applied,
+   0 declined.
+
+   | id | severity | disposition |
+   |---|---|---|
+   | T2-F1 | major | applied: `test_dtype_round_trip` gains the `float32-shifted` arm, `two_grain(...) * 1.6 - 80`, which maps the base range [40, 230] to [-16, 288]. On every arm the `dtype_out=np.uint8` and `np.int8` outputs are asserted bitwise against `np.clip(np.rint(out_f32), lo, hi)` with the bounds of the output type. The shifted arm asserts that `rint` goes below 0 and above 255 and that the clip differs from a wrapping cast; there the existing `uint16` clip now binds at 0 too. Explicit ids keep `uint8`, `uint16`, `float32` and `float64` |
+   | T2-F2 | major | applied: `TestSigmaMethod::test_equals_the_pass_one_of_the_method` (both arms) feeds the `(7,)` `get_nlpar_sigma` map of a 7-point scan back through `sigma=`, and the output is bitwise equal to the `sigma=None` run. `test_sigma_argument_contract` adds a flattened `(20,)` array on the (4, 5) map and `(1, 7)` on the 7-point scan, both "navigation shape", and accepts a `(7,)` array on the scan |
+   | T2-F3 | major | applied: in `test_search_radius_zero_warns_and_is_a_no_op` (both radius arms), `lam=-1`, a (2, 2) `signal_mask` and `dtype_out=bool` with a zero radius raise their `ValueError` ("lam must be > 0", "signal shape", "dtype_out must be an integer or floating dtype"), with no "no averaging" warning and the data unchanged |
+   | T2-F4 | minor | applied: exponent -16 added to `test_power_of_two_scaling_is_exact`, with a test-power check that every neighbour d2 of the scaled sigma pass lies in (0, 1e-3), and the comment rewritten with the measured magnitudes of item 4 (a). The V1 claim is to be corrected at the next spec touch |
+   | T2-F5 | minor | applied: new `TestPolicyOracles::test_sigma_threshold_is_float64_and_average_threshold_float32` (`[policy]` and `[oracle]`) on the M = 242 map of item 4 (b). Our sigma kernel, compiled and `py_func`, keeps pixel 0 (n2 15, or 14 for the pairs with (1, 1)) and equals the float64-threshold reference. Our distances kernel, compiled and `py_func`, equals the float32-threshold transcription; with a float64 threshold n2 is one higher and every distance differs. The oracle arm pins `sigma_numba` (sigma, `nout`, full sigma-pass parity) and `nlpar_nb` (bitwise equal to the float32-threshold transcription; our method within `AVERAGE_PARITY_ULP`) |
+   | T2-F6 | minor | applied (ledger only, as the finding asks): item 6 (e) |
+   | T2-F7 | minor | applied: the test asserts float32 and equal shapes, computes the largest int32-view distance between the compiled and the `py_func` weights, and puts it in the `EXP_KERNEL_ULP` failure message |
+   | T2-F8 | minor | applied (ledger only, as the finding asks): item 6 (d) |
+   | T2-F9 | minor | applied: the `test_ebsd_nlpar.py` header comment now reads "drafting seeds (measured 2026-09-11 or derived 2026-10-04), not pins" |
+
+6. **Spec ambiguities resolved** (defaults chosen):
+   (a) `dtype_out=np.int8` on a float input (T2-F1). D6.2 says
+   "integer targets get `rint` and a clip to that dtype's range", and
+   `skimage.util.dtype.dtype_range` holds `(-128, 127)` for `np.int8`
+   and `(-1, 1)` for every float type. Default: the int8 arm expects
+   `np.clip(np.rint(out_f32), -128, 127)`, the range of the output
+   type. This also kills a clip to the float input's `(-1, 1)`.
+   (b) The sigma array of a 1-D scan (T2-F2). D1.6 asks for "an
+   array of the navigation shape" and D2.6 says "another shape raises
+   `ValueError`", while plan module 11 processes a 1-D scan as `(1,
+   n)`. Default: the navigation shape is the signal's own, `(n,)`.
+   `(1, n)`, and a flattened `(row * col,)` array on a 2-D map, raise
+   "navigation shape" (never reshaped), and the `(n,)` map that
+   `get_nlpar_sigma` returns is accepted bitwise.
+   (c) Where the radius-0 return sits (T2-F3). D1.6 sets the "Check
+   order in the method: (1) `lazy_output and inplace` -> `ValueError`
+   ...; (2) this validation, 0-D first; (3) all radii 0 -> warn and
+   return `None`". Default: a zero radius with an otherwise invalid
+   argument raises that argument's `ValueError` and emits no "no
+   averaging" warning. The precedent `average_neighbour_patterns`
+   (`ebsd.py:1018-1034`) warns first.
+   (d) The method's `target_weight` validation (T2-F8). V7 tags the
+   `target_weight` arms [B] as "a `get_nlpar_lambda`-only keyword".
+   But D1.3 gives `average_non_local_neighbour_patterns` a
+   `target_weight` keyword, and D1.6 lists "`0 < target_weight < 1`"
+   in its step-2 validation. Default: Stage A follows the [B] tag and
+   writes no [B] arm, so Stage A does not test the method's
+   `target_weight` validation. The implementation still validates it
+   as D1.6 says. At the next spec touch V7 retags
+   `("average", {"target_weight": 0.0}, "0 < target_weight < 1")` and
+   the `1.0` arm (with `lam=1.0` given) as [A].
+   (e) The JIT warm-up record (T2-F6). The `pyebsdindex_kernels`
+   fixture records `pyebsdindex_jit_warmup_s` with
+   `record_testsuite_property`, not the `record_property` that V3 and
+   the Automated section name. `record_property` is function-scoped,
+   so a module-scoped fixture cannot request it (pytest
+   `ScopeMismatch`). `record_testsuite_property` writes only into a
+   junit-xml report and does nothing on xdist workers. So the value
+   is captured only by `uv run --no-sync pytest
+   tests/test_signals/test_util/test_nlpar.py -n 0
+   --junit-xml=<file>`. V3 and the Automated section are to be
+   amended at the next spec touch.
+
 This section is filled at each stage's failing-tests gate
 (placeholder inventory confirmed), implementation gate
 (measurements + pins with recipes and machine) and review gate

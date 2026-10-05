@@ -1074,3 +1074,315 @@ def bruker_h5ebsd_nonrectangular_roi_file(tmpdir) -> Generator[Path, None, None]
     path = tmpdir / "patterns_roi_nonrectangular.h5"
     create_dummy_bruker_h5ebsd_nonrectangular_roi_file(path)
     yield path
+
+
+# ------------------------------- NLPAR ------------------------------ #
+# Synthetic maps of patterns shared by the NLPAR kernel tests and the
+# NLPAR EBSD method tests. Test modules cannot import from each other or
+# from this file (pytest runs with --import-mode=importlib and tests/
+# has no __init__.py), so every generator is a plain function exposed
+# by a fixture of the same name without the leading underscore, which
+# returns the callable. Every generator is deterministic: it draws from
+# its own seeded numpy.random.Generator only.
+
+# MEASURED-THEN-PINNED: the largest difference, in float32 ulps,
+# allowed between the compiled NLPAR weights kernel (the only NLPAR
+# kernel calling exp) and its pure Python function, and between that
+# kernel and the closed-form weight exp(-max(d - dthresh, 0) / lam^2).
+# Numba's exp and NumPy's are expected to differ by at most 1 ulp (a
+# drafting seed, not a pin). None until measured; a test reading it
+# through the exp_kernel_ulp fixture must then fail loudly with
+# "unfilled MEASURED-THEN-PINNED placeholder".
+EXP_KERNEL_ULP: int | None = None
+
+
+def _nlpar_ramp(sig_shape: tuple[int, int]) -> np.ndarray:
+    """Return the noise-free base pattern of the NLPAR generators: a
+    smooth float32 ramp from 40 to 200 of the signal shape.
+    """
+    h, w = sig_shape
+    return np.linspace(40.0, 200.0, h * w, dtype=np.float32).reshape(h, w)
+
+
+def _nlpar_cast(x: np.ndarray, dtype: type | np.dtype | str) -> np.ndarray:
+    """Return float32 data in a data type, rounded to nearest and
+    clipped to the range of an integer data type.
+    """
+    dtype = np.dtype(dtype)
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        return np.clip(np.rint(x), info.min, info.max).astype(dtype)
+    return x.astype(dtype)
+
+
+def _identical_plus_gaussian(
+    nav_shape: tuple[int, ...],
+    sig_shape: tuple[int, int],
+    sigma: float = 8.0,
+    dtype: type | np.dtype | str = np.float32,
+    seed: int = 0,
+    sigma_right: float | None = None,
+) -> np.ndarray:
+    """Return a map of one smooth pattern plus independent Gaussian
+    noise.
+
+    Parameters
+    ----------
+    nav_shape
+        Navigation shape, e.g. (12, 12) or (7,).
+    sig_shape
+        Signal shape (h, w).
+    sigma
+        Standard deviation of the noise.
+    dtype
+        Data type of the map. Integer types are rounded to nearest and
+        clipped to their range (uint8: ``np.clip(np.rint(x), 0, 255)``).
+    seed
+        Seed of :func:`numpy.random.default_rng`.
+    sigma_right
+        If given, the standard deviation of the noise on the right
+        half of the columns, ``[w // 2, w)``, of every pattern.
+
+    Returns
+    -------
+    data
+        Array of shape ``nav_shape + sig_shape``.
+
+    Notes
+    -----
+    The base is ``np.linspace(40.0, 200.0, h * w, dtype=np.float32)``
+    reshaped to (h, w), the same for every pattern. The noise is
+    ``default_rng(seed).normal(0, scale, nav_shape + sig_shape)`` cast
+    to float32, with ``scale`` the scalar ``sigma`` or, with
+    ``sigma_right``, the per-column scale. The left half of the columns
+    is therefore the same with and without ``sigma_right``.
+    """
+    nav_shape = tuple(nav_shape)
+    sig_shape = tuple(sig_shape)
+    if sigma_right is None:
+        scale = sigma
+    else:
+        w = sig_shape[1]
+        scale = np.full(w, sigma, dtype=np.float64)
+        scale[w // 2 :] = sigma_right
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, scale, nav_shape + sig_shape).astype(np.float32)
+    data = _nlpar_ramp(sig_shape) + noise
+    return _nlpar_cast(data, dtype)
+
+
+def _two_grain(
+    nav_shape: tuple[int, int] = (10, 16),
+    sig_shape: tuple[int, int] = (32, 32),
+    delta: float = 30.0,
+    sigma: float = 8.0,
+    dtype: type | np.dtype | str = np.float32,
+    seed: int = 1,
+) -> np.ndarray:
+    """Return a map of two grains separated by a vertical boundary,
+    plus independent Gaussian noise.
+
+    Parameters
+    ----------
+    nav_shape
+        Navigation shape (rows, columns).
+    sig_shape
+        Signal shape (h, w).
+    delta
+        Intensity added to every pixel of the grain B pattern.
+    sigma
+        Standard deviation of the noise.
+    dtype
+        Data type of the map, as in :func:`_identical_plus_gaussian`.
+    seed
+        Seed of :func:`numpy.random.default_rng`.
+
+    Returns
+    -------
+    data
+        Array of shape ``nav_shape + sig_shape``.
+
+    Notes
+    -----
+    Grain A, the left ``n_cols // 2`` navigation columns, has the ramp
+    base of :func:`_identical_plus_gaussian`; grain B, the remaining
+    columns ``[n_cols // 2, n_cols)``, has that base plus
+    ``np.float32(delta)`` (in float32). The noise is
+    ``default_rng(seed).normal(0, sigma, nav_shape + sig_shape)`` cast
+    to float32 and added to the grain's base.
+    """
+    nav_shape = tuple(nav_shape)
+    sig_shape = tuple(sig_shape)
+    base = _nlpar_ramp(sig_shape)
+    bases = np.broadcast_to(base, nav_shape + sig_shape).copy()
+    bases[:, nav_shape[1] // 2 :] = base + np.float32(delta)
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, sigma, nav_shape + sig_shape).astype(np.float32)
+    data = bases + noise
+    return _nlpar_cast(data, dtype)
+
+
+def _random_uniform_saturated(
+    nav_shape: tuple[int, ...],
+    sig_shape: tuple[int, int],
+    frac: float = 0.05,
+    seed: int = 2,
+    one_block_only: bool = False,
+) -> np.ndarray:
+    """Return a uint8 map of uniform random patterns with a fraction of
+    saturated pixels.
+
+    Parameters
+    ----------
+    nav_shape
+        Navigation shape, e.g. (4, 5), (10, 16) or (7,).
+    sig_shape
+        Signal shape (h, w).
+    frac
+        Fraction of the pixels of a pattern set to 255. The number per
+        pattern is ``round(frac * h * w)``, which must be less than
+        ``h * w``. 0 plants none.
+    seed
+        Seed of :func:`numpy.random.default_rng`.
+    one_block_only
+        Whether to plant the saturated pixels only in the patterns of
+        the first (5, 8) navigation block (the first 5 patterns of a 1D
+        scan), leaving every other pattern unsaturated.
+
+    Returns
+    -------
+    data
+        Array of shape ``nav_shape + sig_shape`` and data type uint8.
+
+    Raises
+    ------
+    ValueError
+        If ``frac`` would saturate every pixel of a pattern.
+
+    Notes
+    -----
+    The patterns are ``rng.integers(20, 240, nav_shape + sig_shape,
+    dtype=np.uint8)``, so every unsaturated value is in [20, 239]. The
+    saturated positions of every pattern are the first
+    ``round(frac * h * w)`` indices of a stable argsort of
+    ``rng.random(nav_shape + (h * w,))``, drawn after the patterns, so
+    they are distinct within a pattern and the unsaturated values do
+    not depend on ``frac`` or ``one_block_only``.
+    """
+    nav_shape = tuple(nav_shape)
+    sig_shape = tuple(sig_shape)
+    n_pixels = int(np.prod(sig_shape))
+    n_saturated = round(frac * n_pixels)
+    if not 0 <= n_saturated < n_pixels:
+        raise ValueError(
+            f"frac={frac} gives {n_saturated} saturated pixels of {n_pixels} per "
+            "pattern; at least one pixel must stay unsaturated"
+        )
+    rng = np.random.default_rng(seed)
+    data = rng.integers(20, 240, nav_shape + sig_shape, dtype=np.uint8)
+    if n_saturated == 0:
+        return data
+    keys = rng.random(nav_shape + (n_pixels,))
+    positions = np.argsort(keys, axis=-1, kind="stable")[..., :n_saturated]
+    saturated = data.reshape(nav_shape + (n_pixels,)).copy()
+    np.put_along_axis(saturated, positions, np.uint8(255), axis=-1)
+    saturated = saturated.reshape(data.shape)
+    if one_block_only:
+        block = tuple(slice(0, size) for size in (5, 8)[: len(nav_shape)])
+        data[block] = saturated[block]
+        return data
+    return saturated
+
+
+def _exact_duplicates(
+    nav_shape: tuple[int, int],
+    sig_shape: tuple[int, int],
+    seed: int = 3,
+    block: bool = False,
+) -> np.ndarray:
+    """Return a uint8 map of uniform random patterns in which some
+    patterns are exact copies of a neighbour.
+
+    Parameters
+    ----------
+    nav_shape
+        Navigation shape (rows, columns), at least (6, 6).
+    sig_shape
+        Signal shape (h, w).
+    seed
+        Seed of :func:`numpy.random.default_rng`.
+    block
+        Whether to also copy pattern (3, 4) into its eight 3 x 3
+        neighbours, so that (3, 4) has no neighbour with a non-zero
+        distance while each of those neighbours still has neighbours
+        outside the block.
+
+    Returns
+    -------
+    data
+        Array of shape ``nav_shape + sig_shape`` and data type uint8.
+
+    Raises
+    ------
+    ValueError
+        If the navigation shape is not 2D or smaller than (6, 6).
+
+    Notes
+    -----
+    The patterns are ``rng.integers(20, 240, nav_shape + sig_shape,
+    dtype=np.uint8)``, without saturated pixels. Then pattern (1, 1) is
+    copied to (1, 2), (3, 4) to (4, 4) and (5, 2) to (5, 3), in that
+    order, before the optional block copy.
+    """
+    nav_shape = tuple(nav_shape)
+    sig_shape = tuple(sig_shape)
+    if len(nav_shape) != 2 or nav_shape[0] < 6 or nav_shape[1] < 6:
+        raise ValueError(f"nav_shape {nav_shape} must be 2D and at least (6, 6)")
+    rng = np.random.default_rng(seed)
+    data = rng.integers(20, 240, nav_shape + sig_shape, dtype=np.uint8)
+    for source, target in [((1, 1), (1, 2)), ((3, 4), (4, 4)), ((5, 2), (5, 3))]:
+        data[target] = data[source]
+    if block:
+        for row in (2, 3, 4):
+            for col in (3, 4, 5):
+                data[row, col] = data[3, 4]
+    return data
+
+
+@pytest.fixture
+def identical_plus_gaussian() -> Callable:
+    """Return the generator :func:`_identical_plus_gaussian` of maps of
+    one smooth pattern plus Gaussian noise.
+    """
+    return _identical_plus_gaussian
+
+
+@pytest.fixture
+def two_grain() -> Callable:
+    """Return the generator :func:`_two_grain` of two-grain maps."""
+    return _two_grain
+
+
+@pytest.fixture
+def random_uniform_saturated() -> Callable:
+    """Return the generator :func:`_random_uniform_saturated` of uint8
+    random maps with saturated pixels.
+    """
+    return _random_uniform_saturated
+
+
+@pytest.fixture
+def exact_duplicates() -> Callable:
+    """Return the generator :func:`_exact_duplicates` of uint8 random
+    maps with exactly duplicated patterns.
+    """
+    return _exact_duplicates
+
+
+@pytest.fixture
+def exp_kernel_ulp() -> int | None:
+    """Return the measured-then-pinned float32 ulp tolerance of the
+    NLPAR weights kernel, ``EXP_KERNEL_ULP``, or None while it is
+    unfilled.
+    """
+    return EXP_KERNEL_ULP
