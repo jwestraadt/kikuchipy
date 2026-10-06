@@ -182,7 +182,14 @@ V1 `(4, 5 | 6, 6)`; V0 and V10 shapes as stated there.
 
 Budget: default-suite additions <= ~90 s per worker including the
 PyEBSDIndex JIT fixture (recorded at the Stage A implementation
-gate), weekly additions <= 5 min.
+gate), weekly additions <= 5 min. Amended 2026-10-06 (ledger entry
+20, CI budget): the exhaustive arms (the V3 parity product, most Ni
+oracle arms, the V6 stride and Ni lambda pins, four of seven V7 lazy
+chunkings, all of V8 and V11, and the other arms listed in entry 20)
+are `@pytest.mark.weekly`; the default suite keeps an orthogonal
+subset and a named killer for every mutant row. The gating lines of
+V1 to V11 below are read with that list; where they say "default
+suite" for a moved arm, the arm now runs weekly only.
 
 **MTP placeholder inventory (drafted; the failing-tests gate of each
 stage confirms the names in the test modules).** Stage A, shared
@@ -638,6 +645,16 @@ end to end). Runtime: small maps < 5 s after warm-up; Ni compiled
   measured value (`PYEBSDINDEX_JIT_WARMUP_S`, recorded never gated;
   cold compile 4.0 s + 3.2 s measured 2026-10-04 outside pytest) so
   the default-suite budget line can be checked.
+- Gating amended 2026-10-06 (ledger entry 20, CI budget): of the 96
+  `AVERAGE_ARMS` per small generator the default suite runs 3
+  (`AVERAGE_DEFAULT_ARMS`: `sr1_lam0.7_dthresh0_protect_nomask_
+  injected`, `sr2_lam2.5_dthresh0.5_noprotect_automask_end_to_end`,
+  `sr3_lam0.7_dthresh0.5_protect_automask_end_to_end`; every sr, both
+  lam, both dthresh, protection and mask on and off, both injections)
+  and the other 93 are weekly; the Ni averaging parity keeps
+  `[raw-end_to_end-2.5]` (7 of 8 weekly) and the V2 Ni sigma parity
+  keeps `[raw]` (`[corrected]` weekly). The 392-arm bitwise result in
+  the table below is the full (`--weekly`) set.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
@@ -876,6 +893,8 @@ on the constructed fields; Ni end to end ~2 s per target.
   strided one all `c = 2`) the two calls are `!=` (a mutant that
   always strides, or never does, dies in one of the two arms;
   `stride = 1 if sigma.size < 1e6 else 2`, `nlpar_cpu.py:164`). [D5]
+  Weekly only (amended 2026-10-06, ledger entry 20): the rule needs a
+  field of at least 1e6 points, so no cheaper default arm exists.
 - `test_objective_equals_test_local_loptfunc_on_pyebsdindex_dout`
   [skipif pyebsdindex]: PyEBSDIndex's `dout`/`nout` from the compiled
   `sigma_numba` on `identical_plus_gaussian((7, 8), (12, 12))`; our
@@ -907,7 +926,11 @@ on the constructed fields; Ni end to end ~2 s per target.
   `LAMBDA_NI_RAW` and `LAMBDA_NI_CORRECTED` (MTP; seeds 1.1387 and
   2.5787 phantom-free), `lam=None` in the averaging method uses the
   same value (bitwise equal output to `lam=<that value>`) and logs it
-  at INFO through `logging` (caplog pin). [D1/D5]
+  at INFO through `logging` (caplog pin). [D1/D5] Weekly only
+  (amended 2026-10-06, ledger entry 20): `LAMBDA_NI_RAW` and
+  `LAMBDA_NI_CORRECTED` are gated by `--weekly`; the oracle test
+  `test_phantom_deviation_is_measured_and_pinned` keeps `[raw]` in the
+  default suite (`[corrected]` weekly).
 - `test_lam_none_logs_the_optimised_lambda` (default, no download):
   on `identical_plus_gaussian((12, 12), (32, 32))`, `caplog.at_level(
   logging.INFO, logger="kikuchipy.pattern._nlpar")` captures exactly
@@ -1095,6 +1118,16 @@ default; Ni arms [download]. Runtime:
   both-axes coverage is the two [A] driver tests above (requirements
   D8.1, D8.6; spec review F3-R3-1/C3-R3-F2). The integer output is
   then bitwise equal too (same float32 input to `rint`). [D8]
+  Gating amended 2026-10-06 (ledger entry 20, CI budget): the default
+  suite runs single, `((3, 3, 4), (7, 7, 2))` and `(1, 1)`
+  (`LAZY_DEFAULT_CHUNKINGS`; these carry the M11, S1, S4 and S8 [B]
+  kills, re-verified in entry 20); `(5, 8)`, `((1, 9), (2, 14))`,
+  `(2, 3)` and `(4, 4)` are weekly. In the same change the Ni
+  last-chunk test keeps sr=3 (sr=4 weekly), the issue-230 test keeps
+  the zeros variant (noisy weekly), `test_dtype_round_trip` keeps
+  uint8 and float32-shifted, `test_map_smaller_than_the_window` keeps
+  the `nav_shape0` pair, and `test_scheduler_and_thread_invariance` is
+  weekly; the full list is in entry 20.
 - [B] `test_lazy_equals_eager_nickel_ebsd_large_last_chunk_26_26_3`
   [download]: `LazyEBSD` rechunked EXPLICITLY to `{0: (26, 26, 3),
   1: (75,)}` at sr=3 and sr=4, lazy == eager bitwise; through the
@@ -1244,6 +1277,10 @@ The main loop may revert this to a code finding. The full map runs in the defaul
 (estimated 0.2-0.4 s with dask threads; the ADP and IQ maps are
 cheap); the Hough before/after runs on the slicing subset
 `s.inav[::5, ::5]` in the default suite and on the full map weekly.
+Amended 2026-10-06 (ledger entry 20, CI budget): every `TestRealData`
+test is now `@pytest.mark.weekly`, so the ADP, IQ and Hough pins
+below (and the sigma-map record) are gated by `--weekly` only; where
+this section says "default suite", read "weekly".
 The subset has data shape `(11, 15, 60, 60)` (165 patterns,
 navigation (11, 15) rows x cols; hyperspy repr `(15, 11|60, 60)`),
 carries the detector, the static background and an `xmap` of
@@ -1406,6 +1443,9 @@ pyebsdindex and compiled. Runtime: < 3 s after warm-up.
   new) with the same two routes at sr in {1, 3}. [D13]
 - Numbers are copied into the Performance table below with date,
   machine and recipe.
+- Amended 2026-10-06 (ledger entry 20, CI budget): `TestPerformance`
+  is `@pytest.mark.weekly` as a whole; it asserts nothing, so no gate
+  moves.
 
 | quantity | seed (2026-09-11) | pin (date, machine, recipe) |
 |---|---|---|
@@ -1420,7 +1460,15 @@ pyebsdindex and compiled. Runtime: < 3 s after warm-up.
   (allow_download=True)` as the spherical suites already do
   (`tests/test_indexing/test_spherical_emsphinx_regression.py:672`,
   tech-stack.md:50); cached by pooch after the first run. Full-map
-  Hough `@pytest.mark.weekly`.
+  Hough `@pytest.mark.weekly`. Amended 2026-10-06 (ledger entry 20):
+  all of V8 is weekly now; the default suite still loads
+  `nickel_ebsd_large` for the one Ni arm per oracle class and the V7
+  last-chunk sr=3 arm.
+- [weekly, 2026-10-06, ledger entry 20, CI budget] The exhaustive and
+  slow arms listed in entry 20 (V1 identity sweeps, V3/V2 parity
+  product and Ni arms, V4 lambda sweep, V5 `[2.5]`, V6 stride and Ni
+  lambda, V7 chunkings, dtypes, radii and scheduler invariance, V8,
+  V11) run with `--weekly` (weekly.yml).
 - [download, weekly] V9 `si_wafer` (above): skips with the
   `allow_download=True` instruction when uncached; never downloads
   by itself.
@@ -1535,6 +1583,9 @@ naming authority for plan.md section 6 (requirements D1.9).
 
 Stage A unless marked (B); `reference agreement` = V1
 `TestIdentities::test_reference_agrees_with_the_method_on_random_maps`.
+Amended 2026-10-06 (ledger entry 20): where a killer below is a
+parametrised test, some of its arms are now weekly; the default-suite
+arm that kills each row is named in entry 20's re-verification table.
 
 | mutant | killer |
 |---|---|
@@ -1579,6 +1630,7 @@ Stage A unless marked (B); `reference agreement` = V1
 | `si_wafer` lazy end to end | V9, weekly | (5-10 s estimate) |
 | PyEBSDIndex JIT warm-up, both kernels | `pyebsdindex_kernels` fixture `record_property` | (unmeasured) |
 | default-suite addition per worker | `uv run pytest tests/test_signals -k nlpar -n 0 --durations=0` | (budget <= ~90 s) |
+| CI-style two-module run (amended 2026-10-06, ledger entry 20) | `uv run --no-sync --with pytest-cov pytest <both modules> -n 4 -q -p no:cacheprovider --cov=kikuchipy --cov-branch --cov-report=` | 69.0 s before the CI-budget trim, 22.0-25.8 s after (397 passed, 424 weekly-skipped) |
 
 ## Manual
 
@@ -3309,3 +3361,173 @@ spherical_indexing.ipynb and hybrid_indexing.ipynb). With `nbsphinx_execute = "a
 Docs therefore does not execute the notebook; nbval keeps the stored outputs honest.
 
 Verdict: green. Stage C closes pending PR #17.
+
+### 20. 2026-10-06 (CI budget: default suite trimmed)
+
+Trimmer, re-verifier and closer, Opus 5.5; Windows 11, 20-core workstation (the entry 7
+machine), `.venv`, Git Bash. Test modules only; no code change.
+
+Evidence (CI timeout). The fork CI test jobs have `timeout-minutes: 15`
+(`.github/workflows/tests.yml`) and run `pytest --cov=kikuchipy --cov-branch -n 4 --reruns 2`.
+On develop the jobs took 8.5 min (ubuntu py3.13) to 14.1 min (windows py3.13). With the full
+NLPAR arm set, ubuntu py3.13, the oldest job, the wheel job and windows py3.13 hit 15 min and were
+cancelled (runs 37401324276 and 37413330161). CI runners have 2 to 4 cores and cold-compile numba
+on every run, so the about 213 worker-s of NLPAR tests cost several CI minutes.
+
+Recipe (CI-style): `uv run --no-sync --with pytest-cov pytest
+tests/test_signals/test_util/test_nlpar.py tests/test_signals/test_ebsd_nlpar.py -n 4 -q -p
+no:cacheprovider --cov=kikuchipy --cov-branch --cov-report=`.
+
+- Before (HEAD 3b3e36f9): "816 passed, 5 skipped, 54 warnings in 69.03s" (a second run 68.06 s;
+  69.6 s in the orchestrator's measurement). Summed setup + call + teardown 212.8 worker-s; the
+  four small averaging-parity generators alone took 89 s (4 x 96 arms).
+- After: "397 passed, 424 skipped" (the 424 are weekly). Trimmer: 22.03, 22.18 and 22.28 s back
+  to back (24.5 to 25.5 s under other machine load); re-verifier: 25.41, 25.88 and 26.72 s;
+  closer: 25.77 and 25.74 s. Summed durations about 43 worker-s. Fixed overhead measured with a
+  one-test selection over both modules: 9.09 s (about 7.4 s 4-worker startup, about 2.2 s
+  coverage combine), leaving about 11 to 16 s for tests.
+- Target: the <= 20 s target set for this change is NOT met (22 to 26 s measured; D13.5 records
+  this as measured, not a gate). The remaining default cost is mostly arms kept on purpose (lazy
+  chunkings single, `((3, 3, 4), (7, 7, 2))` and `(1, 1)`: 5.7 worker-s; the 1-D eager+lazy pair
+  2.7; the two dtype arms 2.2; Ni last-chunk sr=3 1.65; one Ni arm per oracle class about 2.5).
+  Further candidates, none a named mutant killer, each the only default coverage of its contract
+  (about 6.7 worker-s together, left in): `TestLambdaMethod::test_lambda_forwards_dthresh_sigma_
+  and_protection` 1.7 s, `TestLazyAndContracts::test_sigma_argument_contract` 1.5 s,
+  `test_inplace_lazy_output_contract` (eager+lazy) 1.4 s, `test_inplace_equals_inplace_false_on_
+  a_multichunk_eager_signal[threads]` (D1.5 fallback) 1.3 s, `TestSigmaMethod::test_equals_the_
+  pass_one_of_the_method[default]` 0.75 s.
+- Full set: `uv run --no-sync pytest <both modules> -n 0 -q -p no:cacheprovider --weekly`:
+  trimmer "821 passed, 63 warnings in 181.14s"; closer "821 passed, 63 warnings in 198.44s" (3 min 27 s real). Same 821 node ids as
+  before (816 + 5); `-m "not weekly"` collects 397 of 821. Re-verifier at `-n 4 --weekly` (no
+  coverage): 821 passed in 95.53 s. Weekly additions stay within the 5 min line.
+- ruff check and ruff format --check clean; both modules LF and ASCII; clean-replay grep on
+  `git diff -- tests` clean (no print, no non-ASCII, no Optional/Union hints, no skip/xfail
+  added); no assertion or pin value changed; no git write command used.
+
+Arms moved to `@pytest.mark.weekly` (the default-suite arm kept in brackets):
+
+`test_nlpar.py`:
+- `TestAveragingOracle::test_average_parity_compiled_{identical_plus_gaussian,two_grain,
+  random_uniform_saturated,exact_duplicates}`: 93 of 96 `AVERAGE_ARMS` per generator (372
+  arms); kept via `AVERAGE_DEFAULT_ARMS`: `sr1_lam0.7_dthresh0_protect_nomask_injected`,
+  `sr2_lam2.5_dthresh0.5_noprotect_automask_end_to_end`,
+  `sr3_lam0.7_dthresh0.5_protect_automask_end_to_end` (every sr, both lam, both dthresh,
+  protection and mask on and off, both injections).
+- `TestAveragingOracle::test_average_parity_compiled_nickel_ebsd_large`: 7 of 8 (kept
+  `[raw-end_to_end-2.5]`; ids unchanged, the stacked parametrize became one explicit list).
+- `TestSigmaOracle::test_sigma_parity_compiled_nickel_ebsd_large[corrected]` (kept `[raw]`).
+- `TestLambdaOracle::test_stride_above_1e6_points`, whole test (needs >= 1e6 points; no
+  cheaper arm exists).
+- `TestLambdaOracle::test_phantom_deviation_is_measured_and_pinned[corrected]` (kept `[raw]`).
+- `TestPerformance`, whole class (asserts nothing).
+
+`test_ebsd_nlpar.py`:
+- `TestIdentities::test_reference_agrees_with_the_method_on_random_maps`: `[sr=1-lam=2.5]`,
+  `[sr=2-lam=0.7]`, `[saturation_protect=False]`, `[1d-sr=2]` (7 arms stay, `[sr=2-lam=2.5]`
+  among them).
+- `TestIdentities::test_constant_map_is_an_identity`: 4 of 8 (kept the orthogonal half
+  `1-9-False-uint8`, `1-9-True-float32`, `3-20-False-float32`, `3-20-True-uint8`).
+- `TestIdentities::test_injected_tiny_sigma_is_an_identity`: `[1-2.5]`, `[3-0.7]`, `[3-2.5]`
+  (kept `[1-0.7]`).
+- `TestIdentities::test_huge_lambda_is_the_shifted_window_box_mean[search_radius2-20]` (kept
+  `[1-9]` and the `(1, 2)` arm).
+- `TestIdentities::test_power_of_two_scaling_is_exact`: `[-8]`, `[-4]`, `[4]` (kept `[-16]`).
+- `TestNoiseOracle::test_noise_reduction_is_monotone_in_lambda` (a lambda sweep).
+- `TestTwoGrain::test_contrast_is_retained[2.5]`.
+- `TestLambdaMethod::test_get_nlpar_lambda_on_nickel_ebsd_large` (`LAMBDA_NI_*` weekly only).
+- `TestLazyAndContracts::test_lazy_equals_eager_chunking`: `[(5, 8)]`, `[((1, 9), (2, 14))]`,
+  `[(2, 3)]`, `[(4, 4)]` (kept single, `((3, 3, 4), (7, 7, 2))`, `(1, 1)` via
+  `LAZY_DEFAULT_CHUNKINGS`).
+- `TestLazyAndContracts::test_map_smaller_than_the_window`: both `nav_shape1` arms (kept
+  `nav_shape0-eager`, `nav_shape0-lazy`).
+- `TestLazyAndContracts::test_dtype_round_trip`: `[uint16]`, `[float32]`, `[float64]` (kept
+  `[uint8]`, `[float32-shifted]`).
+- `TestLazyAndContracts::test_lazy_equals_eager_nickel_ebsd_large_last_chunk_26_26_3[4]` (kept
+  `[3]`).
+- `TestLazyAndContracts::test_issue_230_irregular_chunks[noisy]` (kept `[zeros]`).
+- `TestLazyAndContracts::test_scheduler_and_thread_invariance`.
+- `TestLazyAndContracts::test_inplace_equals_inplace_false_on_a_multichunk_eager_signal[
+  synchronous]` (kept `[threads]`).
+- `TestSigmaMethod::test_equals_the_pass_one_of_the_method[circle-unprotected]` (kept
+  `[default]`).
+- `TestRealData`, every test (`test_adp_improves`, `test_iq_improves`,
+  `test_hough_quality_before_and_after`, `test_sigma_map_is_plausible`;
+  `test_hough_quality_full_map` was already weekly). The V8 ADP/IQ/Hough pins are weekly only.
+
+Non-mark change: the module fixture `nickel_large_patterns` returns a dict subclass that builds
+`"corrected"` on first access from the same loaded signal with the same background corrections,
+so a worker that runs only raw arms skips the correction; values identical (the `--weekly` run
+passes). Now gated weekly only: the V8 real-data pins, `LAMBDA_NI_RAW` and
+`LAMBDA_NI_CORRECTED`, the 1e6-point stride rule, scheduler and thread invariance.
+
+Mutant re-verification (plan.md section 6, M1-M22 and S1-S8, with the split arms of entries 11
+and 16; 49 mutants). Recipe: each mutant injected alone into `src/kikuchipy/pattern/_nlpar.py`
+(LF) or the NLPAR methods of `src/kikuchipy/signals/ebsd.py` (CRLF kept) by a script requiring
+each replacement string to match exactly once; pass 1 the default suite (`-n 4 -x`, no
+`--weekly`), 15 to 28 s per mutant; pass 2 only the named default killer arms, without `-x`.
+After every mutant both files were restored from byte backups and md5-checked against entry 16
+(`_nlpar.py` 3e108ad4c6714ef71922edcfa078670e, `ebsd.py` f3f51b680752882861cfc697d60e2c7f), all
+matched. Scripts and logs: scratchpad `cibudget/reverify` (outside the repo). Every row is
+killed by the default suite; no weekly mark had to be removed and the re-verifier did not edit
+the test modules.
+
+| mutant | default-suite killer (targeted, pass 2) | result |
+|---|---|---|
+| M1a | `reference_agrees[sr=1-lam=0.7]` | killed |
+| M1b | `TestNoiseOracle::test_normalised_distance_moments` | killed |
+| M2a | `test_average_parity_compiled_two_grain[sr1_lam0.7_dthresh0_protect_nomask_injected]`; `reference_agrees[sr=1-lam=0.7]` | killed |
+| M3a | `reference_agrees[sr=1-lam=0.7]` | killed |
+| M3b | `test_normalised_distance_moments` | killed |
+| M4a | `reference_agrees[sr=1-lam=0.7]` | killed |
+| M4b | `test_normalised_distance_moments` | killed |
+| M5 | `test_injected_tiny_sigma_is_an_identity[1-0.7]` | killed |
+| M6 | `test_weight_formula_on_injected_distances[0.0-0.7]` (also `test_dthresh_is_consistent_between_kernel_and_objective`) | killed |
+| M7 | `test_weight_formula_on_injected_distances[0.0-0.7]` (also `test_closed_form_lambda_on_constructed_distances`) | killed |
+| M8 | `test_border_band_differs_from_clamp_and_zero_extend`; `huge_lambda[1-9]`; `reference_agrees[sr=1-lam=0.7]` | killed |
+| M9 | the same three | killed |
+| M10 (A and B) | `test_depth_helper[rows_26_26_3_r3]`; `pass_two[((3, 3, 4), (7, 7, 2))]`; Ni `last_chunk_26_26_3[3]` (kills [B] alone) | killed |
+| M11a (A and B a) | `test_saturation_max_is_global[wrapper]` and `[lazy]`; `pass_two[((3, 3, 4), (7, 7, 2))]`; `lazy_equals_eager_chunking[((3, 3, 4), (7, 7, 2))]` and `[(1, 1)]` | killed |
+| M11b (A and B b) | `pass_one[((3, 3, 4), (7, 7, 2))]`; `saturation_max_is_global[lazy]`; `lazy_equals_eager_chunking[((3, 3, 4), (7, 7, 2))]` and `[(1, 1)]` | killed |
+| M12 | `test_saturation_arm_separates_per_pair_n2_from_global_n`; `reference_agrees[saturation_protect=True]` | killed |
+| M13 | `test_dtype_round_trip[uint8]`; `reference_agrees[sr=1-lam=0.7]` | killed |
+| M14 | `test_dtype_round_trip[uint8]` (also `test_inplace_with_dtype_out_changes_the_data_dtype`, `test_constant_map_is_an_identity`) | killed |
+| M15 | `TestNoiseOracle::test_mask_polarity_separates` | killed |
+| M16a | `reference_agrees[signal_mask=circle]` | killed |
+| M16b | `TestSigmaOracle::test_sigma_mask_is_forwarded`; `TestSigmaMethod::test_forwards_mask_and_protection` | killed |
+| M17 (weight 1) | `test_phantom_free_objective_excludes_missing_neighbours`; `test_phantom_deviation_is_measured_and_pinned[raw]` | killed |
+| M17 (line deleted) | `test_phantom_free_objective_excludes_missing_neighbours` | killed |
+| M18 | `test_dthresh_is_consistent_between_kernel_and_objective[1.0]` | killed |
+| M19 median | `test_mixed_c_field_distinguishes_mean_from_median` | killed |
+| M19 three fits | `TestLambdaMethod::test_target_weight_is_forwarded_through_lam_none` | killed |
+| M20 | `test_sigma_window_is_clipped_not_shifted`; `reference_agrees[sr=1-lam=0.7]` | killed |
+| M21 | `test_kernels_are_compiled_with_cache_and_nogil[_nlpar_weights_kernel]` | killed |
+| M22a | `test_average_parity_compiled_two_grain[sr1_lam0.7_dthresh0_protect_nomask_injected]` (oracle-only, as before) | killed |
+| M22b | `test_average_parity_compiled_identical_plus_gaussian[sr1_lam0.7_dthresh0_protect_nomask_injected]` (oracle-only) | killed |
+| S1a (A and B a) | `test_calclim_from_block_info`; `pass_two[(5, 8)]`; `lazy_equals_eager_chunking[((3, 3, 4), (7, 7, 2))]` and `[(1, 1)]` | killed |
+| S1b (A and B b) | `pass_one[(5, 8)]`; `lazy_equals_eager_chunking[((3, 3, 4), (7, 7, 2))]` and `[(1, 1)]` | killed |
+| S2 | `test_map_smaller_than_the_window[nav_shape0-eager]`; `test_small_map_padding_slots_are_inf` (both arms) | killed |
+| S3a | `reference_agrees[(1, 2)]` and `[(2, 1)]` | killed |
+| S3b (A) / S3 (B a) | `one_dimensional[eager]` and `[lazy]` | killed |
+| S3 (B b, lazy-only misroute) | `one_dimensional[lazy]` | killed |
+| S3 (B c, 1-D as column) | `one_dimensional[lazy]` | killed |
+| S4 (A) / S4 (B a) | `pass_two[(1, 1)]` and `[((3, 3, 4), (7, 7, 2))]`; `test_issue_230_irregular_chunks[zeros]`; `lazy_equals_eager_chunking[(1, 1)]` | killed |
+| S4 (B b) | `pass_two` (5 chunkings); `test_pass_two_driver_rechunks_an_axis_no_longer_than_the_window` (both); `test_map_smaller_than_the_window[nav_shape0-lazy]` | killed |
+| S5 | `sigma_parity_compiled_identical_plus_gaussian[nomask_protect]`; `test_sigma_recovery_median_ratio`; `cross_boundary[0.7]` | killed |
+| S6 | `test_sigma_fallback_and_duplicates`; `test_duplicate_neighbour_is_skipped_in_sigma_but_averaged[policy]` | killed |
+| S7a | `test_uint16_two_threshold_arm`; `test_sigma_fallback_value_is_1e12`; `test_sigma_saturation_threshold_constant[uint16]` | killed |
+| S7b | `test_uint16_two_threshold_arm`; `test_sigma_fallback_value_is_1e12` | killed |
+| S8a (A and B -1) | `test_depth_helper[rows_26_26_3_r3]`; `pass_two[(5, 8)]`; `lazy_equals_eager_chunking[((3, 3, 4), (7, 7, 2))]` and `[(1, 1)]` | killed |
+| S8b (A and B +1) | `test_depth_helper` (7 arms); `pass_two[((3, 3, 4), (7, 7, 2))]` and `[(1, 1)]`; Ni `last_chunk_26_26_3[3]` | killed |
+
+Short names: `reference_agrees` = `TestIdentities::test_reference_agrees_with_the_method_on_
+random_maps`; `pass_one` and `pass_two` = the `TestDepthAndHalo` multichunk driver tests;
+`lazy_equals_eager_chunking`, `one_dimensional` (`test_one_dimensional_navigation_equals_a_one_
+row_map`) and Ni `last_chunk_26_26_3` = the `TestLazyAndContracts` tests of V7; `huge_lambda` =
+`test_huge_lambda_is_the_shifted_window_box_mean`; `cross_boundary` =
+`TestTwoGrain::test_cross_boundary_weights_are_exactly_zero`. The oracle-only M22a/b and the
+pyebsdindex-dependent killers need pyebsdindex installed, as before. Untouched and fully
+default: `TestKernels`, `TestDepthAndHalo`, `TestPolicyOracles`, the small `TestSigmaOracle`
+arms, `TestLambdaOracle` except the stride test and `phantom[corrected]`,
+`test_argument_validation` and the progress-bar arms.
+
+Verdict: green on the gates (CI-style run 397 passed, `--weekly` run 821 passed, ruff clean, clean-replay grep clean, every mutant row killed by the default suite). Open: the 20 s wall target is missed (22 to 26 s); the further candidates above are the orchestrator's call.

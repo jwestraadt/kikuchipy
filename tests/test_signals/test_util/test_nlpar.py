@@ -1011,16 +1011,34 @@ def pyebsdindex_kernels(record_testsuite_property):
     return nlpar
 
 
+class _NickelLargePatterns(dict):
+    """The raw and the background-corrected uint8 patterns of
+    ``nickel_ebsd_large``, (55, 75 | 60, 60), the corrected ones made
+    on first access, so that a worker running only raw arms skips the
+    background correction.
+    """
+
+    def __init__(self, s: kp.signals.EBSD):
+        super().__init__(raw=s.data.copy())
+        self._signal = s
+
+    def __missing__(self, key: str) -> np.ndarray:
+        if key != "corrected":
+            raise KeyError(key)
+        s = self._signal
+        s.remove_static_background(show_progressbar=False)
+        s.remove_dynamic_background(show_progressbar=False)
+        self[key] = s.data.copy()
+        return self[key]
+
+
 @pytest.fixture(scope="module")
 def nickel_large_patterns() -> dict[str, np.ndarray]:
     """Return the raw and the background-corrected uint8 patterns of
     ``nickel_ebsd_large``, (55, 75 | 60, 60).
     """
     s = kp.data.nickel_ebsd_large(allow_download=True)
-    raw = s.data.copy()
-    s.remove_static_background(show_progressbar=False)
-    s.remove_dynamic_background(show_progressbar=False)
-    return {"raw": raw, "corrected": s.data.copy()}
+    return _NickelLargePatterns(s)
 
 
 # ------------------------------ Parameters ----------------------------- #
@@ -1040,6 +1058,17 @@ SIGMA_ARMS = [
     for protect in (True, False)
 ]
 
+# The default suite runs an orthogonal subset of the averaging parity
+# arms: every search radius, both lambdas, both thresholds, protection
+# and mask on and off and both injections at least once. The first arm
+# is the M22a/M22b killer of the Stage A bug injection (validation.md
+# ledger entry 11). The full product runs weekly
+AVERAGE_DEFAULT_ARMS = {
+    (1, 0.7, 0.0, True, False, "injected"),
+    (2, 2.5, 0.5, False, True, "end_to_end"),
+    (3, 0.7, 0.5, True, True, "end_to_end"),
+}
+
 AVERAGE_ARMS = [
     pytest.param(
         sr,
@@ -1051,6 +1080,11 @@ AVERAGE_ARMS = [
         id=(
             f"sr{sr}_lam{lam}_dthresh{dthresh:g}_{_protect_id(protect)}"
             f"_{_mask_id(masked)}_{injection}"
+        ),
+        marks=(
+            ()
+            if (sr, lam, dthresh, protect, masked, injection) in AVERAGE_DEFAULT_ARMS
+            else pytest.mark.weekly
         ),
     )
     for sr in (1, 2, 3)
@@ -1404,7 +1438,9 @@ class TestSigmaOracle:
         mask = circle_mask(ORACLE_SIG) if masked else None
         self._check_sigma_parity(pyebsdindex_kernels, patterns, mask, protect)
 
-    @pytest.mark.parametrize("variant", ["raw", "corrected"])
+    @pytest.mark.parametrize(
+        "variant", ["raw", pytest.param("corrected", marks=pytest.mark.weekly)]
+    )
     def test_sigma_parity_compiled_nickel_ebsd_large(
         self, pyebsdindex_kernels, nickel_large_patterns, variant, record_property
     ):
@@ -1682,10 +1718,27 @@ class TestAveragingOracle:
             pyebsdindex_kernels, patterns, sr, lam, dthresh, protect, mask, injection
         )
 
+    # One arm in the default suite, the other seven weekly
     @requires_pyebsdindex
-    @pytest.mark.parametrize("lam", [0.7, 2.5])
-    @pytest.mark.parametrize("injection", ["injected", "end_to_end"])
-    @pytest.mark.parametrize("variant", ["raw", "corrected"])
+    @pytest.mark.parametrize(
+        "variant, injection, lam",
+        [
+            pytest.param(
+                variant,
+                injection,
+                lam,
+                id=f"{variant}-{injection}-{lam}",
+                marks=(
+                    ()
+                    if (variant, injection, lam) == ("raw", "end_to_end", 2.5)
+                    else pytest.mark.weekly
+                ),
+            )
+            for variant in ("raw", "corrected")
+            for injection in ("injected", "end_to_end")
+            for lam in (0.7, 2.5)
+        ],
+    )
     def test_average_parity_compiled_nickel_ebsd_large(
         self,
         pyebsdindex_kernels,
@@ -2184,6 +2237,9 @@ class TestLambdaOracle:
             assert messages == []
             assert abs(lam - 1.0) < 1e-6
 
+    # Weekly: the rule needs a field of 1e6 points, so no cheaper arm
+    # pins it
+    @pytest.mark.weekly
     def test_stride_above_1e6_points(self):
         # c = 12 on the points of even row and even column, c = 2
         # elsewhere: the strided grid d[::2, ::2] is all c = 12, the full
@@ -2257,7 +2313,9 @@ class TestLambdaOracle:
         assert _nlpar._nlpar_optimize_lambda(d, mask, tw, dthresh) == expected
 
     @requires_pyebsdindex
-    @pytest.mark.parametrize("variant", ["raw", "corrected"])
+    @pytest.mark.parametrize(
+        "variant", ["raw", pytest.param("corrected", marks=pytest.mark.weekly)]
+    )
     def test_phantom_deviation_is_measured_and_pinned(
         self, pyebsdindex_kernels, nickel_large_patterns, variant, record_property
     ):
@@ -3160,9 +3218,10 @@ class TestPolicyOracles:
             np.testing.assert_array_equal(sigma, np.full((3, 3), np.float32(1e12)))
 
 
+@pytest.mark.weekly
 class TestPerformance:
     # Recorded baselines, never asserted: the numbers are read from a
-    # junit-xml report of a run without xdist
+    # junit-xml report of a run without xdist (weekly: nothing to gate)
 
     @staticmethod
     def _best_of(func, n_repeats: int = 3) -> float:

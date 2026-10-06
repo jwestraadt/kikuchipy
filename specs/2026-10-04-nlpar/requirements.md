@@ -1482,7 +1482,18 @@ build follows, amendable at a gate with a ledger entry.
    `-n 0` (one worker, numba caches present), about 4 to 10 % above
    the line, and 47.0 s at `-n 4`; recorded, not a gate (the Stage A
    code review's C-CONV-8 was refuted on that ground, plan.md section
-   11).
+   11). Amended 2026-10-06 (validation.md ledger entry 20, CI budget):
+   the fork CI test jobs (`timeout-minutes: 15`, `--cov --cov-branch
+   -n 4`) were cancelled at 15 min with the full NLPAR arm set, so the
+   exhaustive arms are now `@pytest.mark.weekly` (run by weekly.yml
+   with `--weekly`): 424 of 821 NLPAR tests are weekly, the default
+   suite keeps an orthogonal representative subset plus at least one
+   named killer for every plan.md section 6 mutant row (re-verified,
+   entry 20). The CI-style two-module command (`-n 4 --cov=kikuchipy
+   --cov-branch`) went from about 69 s to about 22-26 s on the entry 7
+   machine; the 20 s target set for this change is not met (about 9 s
+   is fixed worker startup and coverage combine). Weekly additions
+   stay within the 5 min line (821 tests in about 181 s at `-n 0`).
 6. **Spec-review measurements (2026-10-04, critics and fixer,
    read-only Python; ledger entry 2 in validation.md)**: PyEBSDIndex
    `sigma_numba` compiled vs `.py_func` on a (7, 7 | 8, 8) float32

@@ -630,11 +630,26 @@ def clamped_box_mean(
 # Arms of the reference agreement: (fixture, method keyword arguments,
 # keyword arguments of runs whose output must differ). The default arm
 # is search_radius=1, lam=0.7 with dthresh 0, no mask and protection on.
+# The default suite keeps the killer arms of the bug injections
+# (validation.md ledger entries 11 and 16) and both lambdas; the others
+# run weekly
 _DEFAULT_ARM = {"search_radius": 1, "lam": 0.7}
 REFERENCE_ARMS = [
     pytest.param("random", {"search_radius": 1, "lam": 0.7}, [], id="sr=1-lam=0.7"),
-    pytest.param("random", {"search_radius": 1, "lam": 2.5}, [], id="sr=1-lam=2.5"),
-    pytest.param("random", {"search_radius": 2, "lam": 0.7}, [], id="sr=2-lam=0.7"),
+    pytest.param(
+        "random",
+        {"search_radius": 1, "lam": 2.5},
+        [],
+        id="sr=1-lam=2.5",
+        marks=pytest.mark.weekly,
+    ),
+    pytest.param(
+        "random",
+        {"search_radius": 2, "lam": 0.7},
+        [],
+        id="sr=2-lam=0.7",
+        marks=pytest.mark.weekly,
+    ),
     pytest.param("random", {"search_radius": 2, "lam": 2.5}, [], id="sr=2-lam=2.5"),
     pytest.param(
         "random",
@@ -659,6 +674,7 @@ REFERENCE_ARMS = [
         {"search_radius": 1, "lam": 0.7, "saturation_protect": False},
         [{"search_radius": 1, "lam": 0.7, "saturation_protect": True}],
         id="saturation_protect=False",
+        marks=pytest.mark.weekly,
     ),
     pytest.param(
         "random",
@@ -672,7 +688,13 @@ REFERENCE_ARMS = [
         [_DEFAULT_ARM, {"search_radius": (1, 2), "lam": 0.7}],
         id="(2, 1)",
     ),
-    pytest.param("scan_1d", {"search_radius": 2, "lam": 0.7}, [], id="1d-sr=2"),
+    pytest.param(
+        "scan_1d",
+        {"search_radius": 2, "lam": 0.7},
+        [],
+        id="1d-sr=2",
+        marks=pytest.mark.weekly,
+    ),
 ]
 
 
@@ -681,9 +703,29 @@ class TestIdentities:
     exactly or computed by the float64 reference.
     """
 
-    @pytest.mark.parametrize("dtype", [np.uint8, np.float32])
-    @pytest.mark.parametrize("saturation_protect", [False, True])
-    @pytest.mark.parametrize("search_radius, n_window", [(1, 9), (3, 20)])
+    # An orthogonal half of the product in the default suite, the other
+    # half weekly
+    @pytest.mark.parametrize(
+        "search_radius, n_window, saturation_protect, dtype",
+        [
+            pytest.param(
+                search_radius,
+                n_window,
+                saturation_protect,
+                dtype,
+                id=f"{search_radius}-{n_window}-{saturation_protect}-{dtype.__name__}",
+                marks=(
+                    ()
+                    if (search_radius == 1)
+                    == (saturation_protect == (dtype is np.float32))
+                    else pytest.mark.weekly
+                ),
+            )
+            for search_radius, n_window in [(1, 9), (3, 20)]
+            for saturation_protect in (False, True)
+            for dtype in (np.uint8, np.float32)
+        ],
+    )
     def test_constant_map_is_an_identity(
         self, search_radius, n_window, saturation_protect, dtype
     ):
@@ -783,8 +825,15 @@ class TestIdentities:
         assert not np.array_equal(out, data)
         assert np.array_equal(s.data, data)
 
-    @pytest.mark.parametrize("lam", [0.7, 2.5])
-    @pytest.mark.parametrize("search_radius", [1, 3])
+    @pytest.mark.parametrize(
+        "search_radius, lam",
+        [
+            pytest.param(1, 0.7, id="1-0.7"),
+            pytest.param(1, 2.5, id="1-2.5", marks=pytest.mark.weekly),
+            pytest.param(3, 0.7, id="3-0.7", marks=pytest.mark.weekly),
+            pytest.param(3, 2.5, id="3-2.5", marks=pytest.mark.weekly),
+        ],
+    )
     def test_injected_tiny_sigma_is_an_identity(
         self, random_uniform_saturated, search_radius, lam
     ):
@@ -806,7 +855,10 @@ class TestIdentities:
         assert out_from_f32.dtype == np.float32
         assert np.array_equal(out_from_f32, data.astype(np.float32))
 
-    @pytest.mark.parametrize("search_radius, n_window", [(1, 9), ((1, 2), 15), (2, 20)])
+    @pytest.mark.parametrize(
+        "search_radius, n_window",
+        [(1, 9), ((1, 2), 15), pytest.param(2, 20, marks=pytest.mark.weekly)],
+    )
     def test_huge_lambda_is_the_shifted_window_box_mean(
         self, random_uniform_saturated, search_radius, n_window
     ):
@@ -837,7 +889,15 @@ class TestIdentities:
         bound = n_window * np.spacing(ref.astype(np.float32))
         assert np.all(np.abs(out.astype(np.float64) - ref) <= bound)
 
-    @pytest.mark.parametrize("exponent", [-16, -8, -4, 4])
+    @pytest.mark.parametrize(
+        "exponent",
+        [
+            -16,
+            pytest.param(-8, marks=pytest.mark.weekly),
+            pytest.param(-4, marks=pytest.mark.weekly),
+            pytest.param(4, marks=pytest.mark.weekly),
+        ],
+    )
     def test_power_of_two_scaling_is_exact(self, identical_plus_gaussian, exponent):
         # IEEE scaling by a power of two is exact through squares, sums,
         # ratios, square roots and the global saturation maximum, as
@@ -1033,6 +1093,9 @@ class TestNoiseOracle:
         relative = abs(measured / expected - 1)
         _assert_at_most(relative, NOISE_REDUCTION_TOL, "NOISE_REDUCTION_TOL")
 
+    # Weekly: a lambda sweep; test_noise_reduction_matches_the_weights
+    # pins the reduction in the default suite
+    @pytest.mark.weekly
     def test_noise_reduction_is_monotone_in_lambda(self, identical_plus_gaussian):
         data = _noise_map(identical_plus_gaussian)
         s = kp.signals.EBSD(data)
@@ -1120,7 +1183,7 @@ class TestTwoGrain:
             assert np.any(w_i[same] > 0.0)
         assert n_cross > 0
 
-    @pytest.mark.parametrize("lam", [0.7, 2.5])
+    @pytest.mark.parametrize("lam", [0.7, pytest.param(2.5, marks=pytest.mark.weekly)])
     def test_contrast_is_retained(self, two_grain, lam):
         data = two_grain()
         s = kp.signals.EBSD(data)
@@ -1235,6 +1298,9 @@ class TestLambdaMethod:
     :meth:`~kikuchipy.signals.EBSD.average_non_local_neighbour_patterns`.
     """
 
+    # Weekly: the optimiser on the whole map and three target weights;
+    # the default suite pins the lambda rule on small maps
+    @pytest.mark.weekly
     def test_get_nlpar_lambda_on_nickel_ebsd_large(self, caplog, record_property):
         signals = {
             "raw": kp.data.nickel_ebsd_large(allow_download=True),
@@ -1546,6 +1612,10 @@ LAZY_CHUNKINGS = [
     ("(2, 3)", (2, 3), (2,) * 5),
     ("(4, 4)", (4, 4), (4, 4, 2)),
 ]
+# The chunkings of the default suite: one chunk, the tiny-edge rows and
+# the rows thinner than the depth (the killers of M11, S1, S4 and S8,
+# validation.md ledger entry 16); the others run weekly
+LAZY_DEFAULT_CHUNKINGS = ("single", "((3, 3, 4), (7, 7, 2))", "(1, 1)")
 
 
 class TestLazyAndContracts:
@@ -1585,7 +1655,9 @@ class TestLazyAndContracts:
         assert np.array_equal(s.data, data)
 
     @pytest.mark.parametrize("route", ["eager", "lazy"])
-    @pytest.mark.parametrize("nav_shape", [(2, 2), (3, 5)])
+    @pytest.mark.parametrize(
+        "nav_shape", [(2, 2), pytest.param((3, 5), marks=pytest.mark.weekly)]
+    )
     def test_map_smaller_than_the_window(
         self, random_uniform_saturated, nav_shape, route
     ):
@@ -1672,13 +1744,12 @@ class TestLazyAndContracts:
     @pytest.mark.parametrize(
         "dtype, shifted",
         [
-            (np.uint8, False),
-            (np.uint16, False),
-            (np.float32, False),
-            (np.float64, False),
-            (np.float32, True),
+            pytest.param(np.uint8, False, id="uint8"),
+            pytest.param(np.uint16, False, id="uint16", marks=pytest.mark.weekly),
+            pytest.param(np.float32, False, id="float32", marks=pytest.mark.weekly),
+            pytest.param(np.float64, False, id="float64", marks=pytest.mark.weekly),
+            pytest.param(np.float32, True, id="float32-shifted"),
         ],
-        ids=["uint8", "uint16", "float32", "float64", "float32-shifted"],
     )
     def test_dtype_round_trip(self, two_grain, dtype, shifted):
         data = two_grain(nav_shape=(6, 8), sig_shape=(16, 16), dtype=dtype)
@@ -1875,8 +1946,16 @@ class TestLazyAndContracts:
 
     @pytest.mark.parametrize(
         "nav_chunks, processed_rows",
-        [chunking[1:] for chunking in LAZY_CHUNKINGS],
-        ids=[chunking[0] for chunking in LAZY_CHUNKINGS],
+        [
+            pytest.param(
+                *chunking[1:],
+                id=chunking[0],
+                marks=(
+                    () if chunking[0] in LAZY_DEFAULT_CHUNKINGS else pytest.mark.weekly
+                ),
+            )
+            for chunking in LAZY_CHUNKINGS
+        ],
     )
     def test_lazy_equals_eager_chunking(
         self, counting_spy, random_uniform_saturated, nav_chunks, processed_rows
@@ -1933,7 +2012,9 @@ class TestLazyAndContracts:
         )
         assert np.array_equal(s_lazy.data.compute(), x)
 
-    @pytest.mark.parametrize("search_radius", [3, 4])
+    @pytest.mark.parametrize(
+        "search_radius", [3, pytest.param(4, marks=pytest.mark.weekly)]
+    )
     def test_lazy_equals_eager_nickel_ebsd_large_last_chunk_26_26_3(
         self, search_radius
     ):
@@ -1968,7 +2049,9 @@ class TestLazyAndContracts:
         assert np.array_equal(out_as_lazy, expected)
         assert np.array_equal(s.data, data)
 
-    @pytest.mark.parametrize("variant", ["zeros", "noisy"])
+    @pytest.mark.parametrize(
+        "variant", ["zeros", pytest.param("noisy", marks=pytest.mark.weekly)]
+    )
     def test_issue_230_irregular_chunks(self, variant):
         # The chunking of the lazy regression test of
         # average_neighbour_patterns (pyxem/kikuchipy#230): rows thinner
@@ -1995,6 +2078,9 @@ class TestLazyAndContracts:
         if variant == "noisy":
             assert not np.array_equal(out, data)
 
+    # Weekly: the default suite compares lazy and eager under the default
+    # scheduler in test_lazy_equals_eager_chunking
+    @pytest.mark.weekly
     def test_scheduler_and_thread_invariance(self, random_uniform_saturated):
         x = random_uniform_saturated((10, 16), (16, 16), one_block_only=True)
         s = kp.signals.EBSD(x.copy())
@@ -2017,7 +2103,9 @@ class TestLazyAndContracts:
             assert np.array_equal(out, expected), config
             assert np.array_equal(out_eager, expected), config
 
-    @pytest.mark.parametrize("scheduler", ["synchronous", "threads"])
+    @pytest.mark.parametrize(
+        "scheduler", [pytest.param("synchronous", marks=pytest.mark.weekly), "threads"]
+    )
     def test_inplace_equals_inplace_false_on_a_multichunk_eager_signal(
         self, counting_spy, scheduler
     ):
@@ -2264,8 +2352,14 @@ class TestSigmaMethod:
 
     @pytest.mark.parametrize(
         "sigma_kwargs",
-        [{}, {"signal_mask": "circle", "saturation_protect": False}],
-        ids=["default", "circle-unprotected"],
+        [
+            pytest.param({}, id="default"),
+            pytest.param(
+                {"signal_mask": "circle", "saturation_protect": False},
+                id="circle-unprotected",
+                marks=pytest.mark.weekly,
+            ),
+        ],
     )
     def test_equals_the_pass_one_of_the_method(
         self, random_uniform_saturated, circle_mask, sigma_kwargs
@@ -2339,9 +2433,13 @@ class TestRealData:
     """NLPAR improves the background-corrected ``nickel_ebsd_large`` by
     the map metrics and by Hough indexing quality, at search radius 3.
     Hough gains are pinned at 0.5 x the measured gain where the metric
-    improves, and as "not worse" otherwise.
+    improves, and as "not worse" otherwise. Every test here runs
+    weekly (a second or more each on the whole map); the default suite
+    reaches ``nickel_ebsd_large`` through the oracle parity arms and the
+    lazy last-chunk test.
     """
 
+    @pytest.mark.weekly
     def test_adp_improves(self, record_property):
         s = _nickel_corrected()
         kwargs = {"inplace": False, "show_progressbar": False}
@@ -2361,6 +2459,7 @@ class TestRealData:
         _assert_in_band(adp["auto"], ADP_AFTER_AUTO, "ADP_AFTER_AUTO")
         _assert_in_band(adp["07"], ADP_AFTER_07, "ADP_AFTER_07")
 
+    @pytest.mark.weekly
     def test_iq_improves(self, record_property):
         s = _nickel_corrected()
         s_auto = s.average_non_local_neighbour_patterns(
@@ -2375,6 +2474,7 @@ class TestRealData:
         _assert_in_band(iq_before, IQ_BEFORE, "IQ_BEFORE")
         _assert_in_band(iq_after, IQ_AFTER_AUTO, "IQ_AFTER_AUTO")
 
+    @pytest.mark.weekly
     @requires_pyebsdindex
     def test_hough_quality_before_and_after(self, record_property):
         s = _nickel_corrected()
@@ -2433,6 +2533,7 @@ class TestRealData:
         assert np.all(np.isfinite(list(after.values())))
         assert np.isfinite(miso_after)
 
+    @pytest.mark.weekly
     def test_sigma_map_is_plausible(self, record_property):
         s_raw = kp.data.nickel_ebsd_large(allow_download=True)
         s_corrected = _nickel_corrected()
