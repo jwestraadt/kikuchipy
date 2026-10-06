@@ -23,6 +23,7 @@ import copy
 import datetime
 import gc
 import logging
+import numbers
 import os
 from pathlib import Path
 from time import sleep, time
@@ -78,6 +79,18 @@ from kikuchipy.indexing.similarity_metrics._normalized_dot_product import (
 )
 from kikuchipy.indexing.similarity_metrics._similarity_metric import SimilarityMetric
 from kikuchipy.io._io import _save
+from kikuchipy.pattern._nlpar import (
+    _nlpar_average,
+    _nlpar_check_dthresh,
+    _nlpar_check_sigma,
+    _nlpar_check_sigma_range,
+    _nlpar_check_target_weight,
+    _nlpar_lambda,
+    _nlpar_mask_indices,
+    _nlpar_saturation_max,
+    _nlpar_search_radius,
+    _nlpar_sigma,
+)
 from kikuchipy.pattern._pattern import (
     _downsample2d,
     _dynamic_background_frequency_space_setup,
@@ -1120,6 +1133,555 @@ class EBSD(KikuchipySignal2D):
 
         if s_out:
             return s_out
+
+    def average_non_local_neighbour_patterns(
+        self,
+        search_radius: int | tuple[int, ...] = 3,
+        lam: float | None = None,
+        dthresh: float = 0.0,
+        target_weight: float = 0.34,
+        sigma: float | np.ndarray | None = None,
+        signal_mask: np.ndarray | None = None,
+        saturation_protect: bool = True,
+        dtype_out: str | np.dtype | type | None = None,
+        show_progressbar: bool | None = None,
+        inplace: bool = True,
+        lazy_output: bool | None = None,
+    ) -> EBSD | LazyEBSD | None:
+        """Average patterns with their non-local neighbours within a
+        search window, weighted by pattern similarity (NLPAR).
+
+        Non-local pattern averaging :cite:`brewick2019nlpar` replaces
+        every pattern by a weighted mean of the patterns in a
+        rectangular search window around it, where the weight of a
+        neighbour decays with its distance to the pattern in units of
+        their noise level. Patterns across a grain boundary are
+        dissimilar and get (almost) no weight, so boundaries stay sharp
+        while noise is reduced within grains.
+
+        Parameters
+        ----------
+        search_radius
+            Radius of the search window in scan points. An int applies
+            to every navigation axis; a tuple gives one radius per
+            navigation axis in (row, column) order. The window has
+            ``2 * radius + 1`` points per axis. A pattern closer than
+            the radius to a map border keeps a full window by shifting
+            it inward, and an axis shorter than the window is searched
+            in full. If the radius is 0 along every axis, a warning is
+            raised and nothing is done. Default is 3.
+        lam
+            Weight decay lambda, > 0. Larger values give neighbours
+            more weight and average more strongly. If not given, it is
+            optimised with :meth:`get_nlpar_lambda` such that every
+            pattern keeps about ``target_weight`` of the weight in its
+            3 x 3 neighbourhood, using the same ``dthresh``, ``sigma``,
+            ``signal_mask`` and ``saturation_protect``.
+        dthresh
+            Distance threshold, >= 0. Normalised distances below it
+            count as zero, i.e. ``max(d - dthresh, 0)`` enters the
+            weights. Default is 0.
+        target_weight
+            Weight a pattern should keep for itself in its 3 x 3
+            neighbourhood when ``lam`` is optimised, between 0 and 1
+            (exclusive). Only used if ``lam`` is not given. Default is
+            0.34.
+        sigma
+            Noise level of every pattern. If not given, the sigma map
+            of :meth:`get_nlpar_sigma` with the same ``signal_mask``
+            and ``saturation_protect`` is used. A float gives a constant
+            map, and an array of the navigation shape is used as is
+            (cast to float32). Every value must be finite and > 0, with
+            ``sigma**2 > 0`` and ``2 n sigma**2`` finite in float32,
+            ``n`` being the number of pixels not excluded by
+            ``signal_mask`` (for 60 x 60 patterns, about 3e-23 <
+            sigma < 2e17).
+        signal_mask
+            Boolean array of the signal shape with ``True`` for pixels
+            to exclude from the distances (and sigma), e.g. outside a
+            circular detector. Integer 0/1 arrays are accepted. Every
+            pixel is averaged regardless. If not given, all pixels are
+            used.
+        saturation_protect
+            Whether to exclude a pixel pair from the distances if
+            either value is at or above a fraction of the maximum of
+            the whole map (0.9961 in the sigma estimate, 0.999 in the
+            search window). Default is ``True``.
+        dtype_out
+            Integer or floating data type of the averaged patterns. If
+            not given, the data type of the current signal is used.
+            Averages are rounded to the nearest integer and clipped to
+            the range of an integer data type, and never rescaled.
+        show_progressbar
+            Whether to show a progressbar. If not given, the value of
+            :obj:`hyperspy.api.preferences.General.show_progressbar`
+            is used.
+        inplace
+            Whether to operate on the current signal or return a new
+            one. Default is ``True``.
+        lazy_output
+            Whether the returned signal is lazy. If not given this
+            follows from the current signal. Can only be ``True`` if
+            ``inplace=False``.
+
+        Returns
+        -------
+        s_out
+            Averaged signal, returned if ``inplace=False``. Whether it
+            is lazy is determined from ``lazy_output``.
+
+        Raises
+        ------
+        ValueError
+            If ``lazy_output=True`` and ``inplace=True``, if the signal
+            has no navigation axes, or if an argument is invalid.
+
+        Warns
+        -----
+        UserWarning
+            If the search radius is 0 along every navigation axis, in
+            which case no averaging is performed, or if ``lam`` is
+            optimised and lies within 1 % of either bound of the search
+            interval [1e-3, 10] (see :meth:`get_nlpar_lambda`).
+
+        See Also
+        --------
+        average_neighbour_patterns, get_nlpar_sigma, get_nlpar_lambda
+
+        Notes
+        -----
+        With ``p_ik`` the intensity of pixel ``k`` of pattern ``i`` and
+        ``n_ij`` the number of pixels compared between patterns ``i``
+        and ``j`` (unmasked and, with ``saturation_protect=True``, both
+        below the saturation threshold), the noise level, the
+        normalised distance and the weight are::
+
+            sigma_i^2 = min_j sum_k (p_ik - p_jk)^2 / (2 n_ij)
+            d_ij = [sum_k (p_ik - p_jk)^2 - n_ij (sigma_i^2 + sigma_j^2)]
+                   / [(sigma_i^2 + sigma_j^2) sqrt(2 n_ij)]
+            w_ij = exp(-max(d_ij - dthresh, 0) / lam^2),  w_ii = 1
+
+        and the averaged pattern is ``p_i' = sum_j w_ij p_j / sum_j
+        w_ij`` over the search window. Sigma is the minimum over the
+        neighbours ``j`` with a non-zero distance in the 3 x 3
+        neighbourhood of ``i``, clipped at the map borders; if there is
+        none, sigma is 1e12. A pair without comparable pixels gets
+        weight 0.
+
+        Patterns are processed in float32 in navigation chunks of
+        about 8 MB. A lazy signal is read three times (the global
+        maximum, the sigma pass unless both ``lam`` and ``sigma`` are
+        given, and the averaging). With a lazy output, the progressbar
+        covers only the global maximum and the sigma pass (and the
+        lambda fit), which are computed here. An in-memory signal
+        is read once more for the global maximum, and ``inplace=True``
+        holds one extra copy of the averaged map while it is computed.
+        The Dask configuration of the session (scheduler and number of
+        workers) applies.
+
+        Keywords of upstream pull request `#824
+        <https://github.com/pyxem/kikuchipy/pull/824>`__: its
+        ``window_shape`` is ``(2 * r_y + 1, 2 * r_x + 1)`` of
+        ``search_radius = (r_y, r_x)`` here and its ``lamda`` is
+        ``lam``; ``lam=None`` optimises lambda as its ``lamda=None``
+        does through PyEBSDIndex; its ``window`` (a boolean search
+        mask, circular by default) and ``dask_config_kwargs`` have no
+        counterpart, and ``dthresh``, ``target_weight``,
+        ``saturation_protect`` and ``dtype_out`` have none in #824.
+        PyEBSDIndex's ``searchradius``, ``lam``, ``dthresh`` and
+        ``saturation_protect`` map one to one, and its ``mask`` (1 =
+        use) is ``~signal_mask``.
+
+        **Differences from PyEBSDIndex and from upstream PR #824.**
+
+        1. Output not rescaled per pattern (PyEBSDIndex
+           ``rescale=False``; #824 rescales).
+        2. Border windows shift inward (as PyEBSDIndex; #824 replicates
+           edge patterns) and axes shorter than the window are
+           handled.
+        3. ``dthresh`` enters the averaging weights and the lambda
+           objective in the same form (PyEBSDIndex uses two forms;
+           #824 uses it in the fit only).
+        4. The lambda objective excludes out-of-map neighbours
+           (PyEBSDIndex counts them as weight 1; about +2 % on lambda
+           for a 55 x 75 map at target 0.34).
+        5. Duplicate guard ``d2 > 0`` (PyEBSDIndex ``>= 1e-3``).
+        6. Pairs without comparable pixels get weight 0 (PyEBSDIndex
+           1).
+        7. The saturation threshold uses the global maximum
+           (PyEBSDIndex per tile).
+        8. The search window is the full square and the mask affects
+           distances only, every pixel is averaged (as PyEBSDIndex;
+           #824 uses a boolean window, "circular" by default, and
+           averages unmasked pixels only).
+        9. Own kernels, PyEBSDIndex not needed at runtime (#824 needs
+           it for sigma and lambda).
+        10. Integer output rounded to nearest and clipped, no
+            dependence on PyEBSDIndex's writer.
+        11. ``lam`` defaults to ``None`` (optimised; PyEBSDIndex 0.7,
+            #824 0.9).
+        12. ``lam`` reaches the kernel as float64; PyEBSDIndex's driver
+            passes it as float32 (``nlpar_cpu.py:297``), so its kernel
+            also squares it in float32, and the two differ by a few
+            float32 ulps (up to 5 measured, none after rounding to
+            integers) even for a ``lam`` exactly representable in
+            float32, unless its square is too.
+
+        The NLPAR kernels are derived from PyEBSDIndex
+        (``pyebsdindex/nlpar_cpu.py``, public domain); the US Naval
+        Research Laboratory (David Rowenhorst) is gratefully
+        acknowledged as the original source of the NLPAR
+        implementation.
+        """
+        if lazy_output and inplace:
+            raise ValueError("'lazy_output=True' requires 'inplace=False'")
+
+        # Every argument is validated before the no-op of a zero radius,
+        # the missing navigation axes first
+        nav_shape = self._navigation_shape_rc
+        if len(nav_shape) == 0:
+            raise ValueError(
+                "The signal has no navigation axes: a single pattern has no "
+                "neighbours, so there is nothing to average"
+            )
+        radius = _nlpar_search_radius(search_radius, len(nav_shape))
+
+        if lam is not None:
+            if (
+                isinstance(lam, (bool, np.bool_))
+                or not isinstance(lam, numbers.Real)
+                or not 0 < lam < np.inf
+            ):
+                raise ValueError(f"lam must be > 0 and finite, got {lam!r}")
+            lam = float(lam)
+
+        dthresh = _nlpar_check_dthresh(dthresh)
+        target_weight = _nlpar_check_target_weight(target_weight)
+        sigma = _nlpar_check_sigma(sigma, nav_shape)
+
+        if dtype_out is None:
+            dtype_out = self.data.dtype
+        try:
+            dtype_out = np.dtype(dtype_out)
+        except TypeError as error:
+            raise ValueError(
+                f"dtype_out must be an integer or floating dtype, got {dtype_out!r}"
+            ) from error
+        if not (
+            np.issubdtype(dtype_out, np.integer)
+            or np.issubdtype(dtype_out, np.floating)
+        ):
+            raise ValueError(
+                f"dtype_out must be an integer or floating dtype, got {dtype_out}"
+            )
+
+        mask_indices = _nlpar_mask_indices(signal_mask, self._signal_shape_rc)
+        saturation_protect = bool(saturation_protect)
+
+        if sigma is not None:
+            _nlpar_check_sigma_range(sigma, mask_indices.size)
+
+        if all(r == 0 for r in radius):
+            # Do nothing if the window is the pattern itself
+            warnings.warn(
+                f"A search radius of {search_radius} was passed, no averaging is "
+                "therefore performed"
+            )
+            return None
+
+        # Create dask array of signal patterns and do processing on this
+        if self._lazy:
+            old_chunks = self.data.chunks
+        dask_array = get_dask_array(signal=self, chunk_bytes=8e6, rechunk=True)
+
+        return_lazy = lazy_output or (lazy_output is None and self._lazy)
+        # Registered whatever the output: the global maximum, the sigma
+        # pass and the lambda fit are computed here even when the
+        # averaging is returned lazily
+        register_pbar = show_progressbar or (
+            show_progressbar is None and hs.preferences.General.show_progressbar
+        )
+        if register_pbar:
+            pbar = ProgressBar()
+            pbar.register()
+
+        try:
+            # One global maximum feeds the saturation thresholds of both
+            # passes, so the result does not depend on the chunking
+            max_value = _nlpar_saturation_max(self.data)
+            if lam is None:
+                # One sigma pass, shared by the lambda fit and the
+                # averaging
+                lam, sigma = _nlpar_lambda(
+                    dask_array,
+                    sigma,
+                    mask_indices=mask_indices,
+                    max_value=max_value,
+                    saturation_protect=saturation_protect,
+                    target_weight=target_weight,
+                    dthresh=dthresh,
+                )
+            elif sigma is None:
+                sigma = _nlpar_sigma(
+                    dask_array,
+                    mask_indices=mask_indices,
+                    max_value=max_value,
+                    saturation_protect=saturation_protect,
+                )[0]
+            averaged_patterns = _nlpar_average(
+                dask_array,
+                sigma,
+                lam=lam,
+                dthresh=dthresh,
+                radius=radius,
+                mask_indices=mask_indices,
+                max_value=max_value,
+                saturation_protect=saturation_protect,
+                dtype_out=dtype_out,
+            )
+
+            if inplace:
+                if return_lazy:
+                    self.data = averaged_patterns.rechunk(old_chunks)
+                else:
+                    # Computed into new memory, then assigned, whatever
+                    # the data type: never stored into the current
+                    # buffer, which the halos of neighbouring chunks
+                    # read while the graph runs (with dask 2021.8.1 and
+                    # the synchronous scheduler, a store into it differed
+                    # from inplace=False in 534 of 4125 patterns of a
+                    # multi-chunk in-memory map)
+                    self.data = averaged_patterns.compute()
+                s_out = None
+            else:
+                s_out = LazyEBSD(averaged_patterns, **self._get_custom_attributes())
+                if not return_lazy:
+                    # The progress bar registered above, if any, covers
+                    # this computation; HyperSpy's own bar would be a
+                    # second one, or one despite show_progressbar=False
+                    s_out.compute(show_progressbar=False)
+        finally:
+            if register_pbar:
+                pbar.unregister()
+
+        # Don't sink
+        gc.collect()
+
+        return s_out
+
+    def get_nlpar_sigma(
+        self,
+        signal_mask: np.ndarray | None = None,
+        saturation_protect: bool = True,
+        show_progressbar: bool | None = None,
+    ) -> np.ndarray:
+        """Return the noise level of every pattern as estimated by
+        non-local pattern averaging (NLPAR).
+
+        Parameters
+        ----------
+        signal_mask
+            Boolean array of the signal shape with ``True`` for pixels
+            to exclude from the estimate. Integer 0/1 arrays are
+            accepted. If not given, all pixels are used.
+        saturation_protect
+            Whether to exclude a pixel pair if either value is at or
+            above 0.9961 times the maximum of the whole map. Default
+            is ``True``.
+        show_progressbar
+            Whether to show a progressbar. If not given, the value of
+            :obj:`hyperspy.api.preferences.General.show_progressbar`
+            is used.
+
+        Returns
+        -------
+        sigma
+            Noise level of every pattern as float32, of the navigation
+            shape (row, column), or ``(n,)`` for a 1D scan of ``n``
+            patterns.
+
+        Raises
+        ------
+        ValueError
+            If the signal has no navigation axes, or if an argument is
+            invalid.
+
+        See Also
+        --------
+        average_non_local_neighbour_patterns, get_nlpar_lambda
+
+        Notes
+        -----
+        The noise level of pattern ``i`` is estimated from its
+        neighbours ``j`` in the 3 x 3 neighbourhood, clipped at the map
+        borders, as :cite:`brewick2019nlpar`::
+
+            sigma_i^2 = min_j sum_k (p_ik - p_jk)^2 / (2 n_ij)
+
+        where ``n_ij`` is the number of compared pixels ``k`` and only
+        neighbours with a non-zero distance enter the minimum. A
+        pattern without such a neighbour gets a sigma of 1e12.
+
+        This is the same pass that
+        :meth:`average_non_local_neighbour_patterns` runs with
+        ``sigma=None``, so the returned map can be inspected and passed
+        back through its ``sigma`` parameter without recomputation. A
+        lazy signal is read twice (the global maximum and the
+        estimate).
+        """
+        nav_shape = self._navigation_shape_rc
+        if len(nav_shape) == 0:
+            raise ValueError(
+                "The signal has no navigation axes: a single pattern has no "
+                "neighbours, so there is nothing to average"
+            )
+        mask_indices = _nlpar_mask_indices(signal_mask, self._signal_shape_rc)
+
+        dask_array = get_dask_array(signal=self, chunk_bytes=8e6, rechunk=True)
+
+        register_pbar = show_progressbar or (
+            show_progressbar is None and hs.preferences.General.show_progressbar
+        )
+        if register_pbar:
+            pbar = ProgressBar()
+            pbar.register()
+
+        try:
+            max_value = _nlpar_saturation_max(self.data)
+            sigma = _nlpar_sigma(
+                dask_array,
+                mask_indices=mask_indices,
+                max_value=max_value,
+                saturation_protect=bool(saturation_protect),
+            )[0]
+        finally:
+            if register_pbar:
+                pbar.unregister()
+
+        # A 1D scan is processed as one row
+        return sigma.reshape(nav_shape)
+
+    def get_nlpar_lambda(
+        self,
+        target_weight: float = 0.34,
+        dthresh: float = 0.0,
+        sigma: float | np.ndarray | None = None,
+        signal_mask: np.ndarray | None = None,
+        saturation_protect: bool = True,
+        show_progressbar: bool | None = None,
+    ) -> float:
+        """Return the weight decay lambda of non-local pattern
+        averaging (NLPAR) for which every pattern keeps, on average, a
+        target weight in its 3 x 3 neighbourhood.
+
+        Parameters
+        ----------
+        target_weight
+            Weight a pattern should keep for itself in its 3 x 3
+            neighbourhood, between 0 and 1 (exclusive). Default is
+            0.34.
+        dthresh
+            Distance threshold, >= 0, in the same form as in
+            :meth:`average_non_local_neighbour_patterns`. Default is 0.
+        sigma
+            Noise level of every pattern. If not given, the sigma map
+            of :meth:`get_nlpar_sigma` with the same ``signal_mask`` and
+            ``saturation_protect`` is used. A float gives a constant
+            map, and an array of the navigation shape is used as is
+            (cast to float32). Every value must be finite and > 0, with
+            ``sigma**2 > 0`` and ``2 n sigma**2`` finite in float32,
+            ``n`` being the number of pixels not excluded by
+            ``signal_mask``.
+        signal_mask
+            Boolean array of the signal shape with ``True`` for pixels
+            to exclude from the distances (and sigma). Integer 0/1
+            arrays are accepted. If not given, all pixels are used.
+        saturation_protect
+            Whether to exclude saturated pixel pairs from the
+            distances. Default is ``True``.
+        show_progressbar
+            Whether to show a progressbar. If not given, the value of
+            :obj:`hyperspy.api.preferences.General.show_progressbar`
+            is used.
+
+        Returns
+        -------
+        lam
+            Optimised lambda.
+
+        Raises
+        ------
+        ValueError
+            If the signal has no navigation axes, or if an argument is
+            invalid.
+
+        Warns
+        -----
+        UserWarning
+            If the optimised lambda lies within 1 % of either bound of
+            the search interval [1e-3, 10], in which case the target
+            weight is not supported by the data.
+
+        See Also
+        --------
+        average_non_local_neighbour_patterns, get_nlpar_sigma
+
+        Notes
+        -----
+        With ``d_ij`` the normalised distances of every pattern ``i``
+        to its in-map neighbours ``j`` in the clipped 3 x 3
+        neighbourhood, lambda minimises the mean over the patterns of
+        ``|target_weight - 1 / S_i|``, where ``S_i = 1 + sum_j
+        exp(-max(d_ij - dthresh, 0) / lam^2)`` and ``1 / S_i`` is the
+        weight pattern ``i`` keeps for itself. The minimisation is a
+        bounded Nelder-Mead search from 1.0 in [1e-3, 10], as in
+        PyEBSDIndex, with every second scan point in both directions
+        for maps of one million points or more. The fitted value is
+        logged at the INFO level.
+
+        The distances are those of the sigma pass of
+        :meth:`get_nlpar_sigma`, which runs also when ``sigma`` is
+        given. A lazy signal is read twice (the global maximum and the
+        sigma pass).
+        """
+        nav_shape = self._navigation_shape_rc
+        if len(nav_shape) == 0:
+            raise ValueError(
+                "The signal has no navigation axes: a single pattern has no "
+                "neighbours, so there is nothing to average"
+            )
+        target_weight = _nlpar_check_target_weight(target_weight)
+        dthresh = _nlpar_check_dthresh(dthresh)
+        sigma = _nlpar_check_sigma(sigma, nav_shape)
+        mask_indices = _nlpar_mask_indices(signal_mask, self._signal_shape_rc)
+        if sigma is not None:
+            _nlpar_check_sigma_range(sigma, mask_indices.size)
+
+        dask_array = get_dask_array(signal=self, chunk_bytes=8e6, rechunk=True)
+
+        register_pbar = show_progressbar or (
+            show_progressbar is None and hs.preferences.General.show_progressbar
+        )
+        if register_pbar:
+            pbar = ProgressBar()
+            pbar.register()
+
+        try:
+            max_value = _nlpar_saturation_max(self.data)
+            lam = _nlpar_lambda(
+                dask_array,
+                sigma,
+                mask_indices=mask_indices,
+                max_value=max_value,
+                saturation_protect=bool(saturation_protect),
+                target_weight=target_weight,
+                dthresh=dthresh,
+            )[0]
+        finally:
+            if register_pbar:
+                pbar.unregister()
+
+        return lam
 
     def downsample(
         self,
