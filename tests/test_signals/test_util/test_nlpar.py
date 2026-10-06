@@ -1061,8 +1061,8 @@ SIGMA_ARMS = [
 # The default suite runs an orthogonal subset of the averaging parity
 # arms: every search radius, both lambdas, both thresholds, protection
 # and mask on and off and both injections at least once. The first arm
-# is the M22a/M22b killer of the Stage A bug injection (validation.md
-# ledger entry 11). The full product runs weekly
+# also catches float64 accumulation in the distance and weighted-sum
+# kernels. The full product runs weekly
 AVERAGE_DEFAULT_ARMS = {
     (1, 0.7, 0.0, True, False, "injected"),
     (2, 2.5, 0.5, False, True, "end_to_end"),

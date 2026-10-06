@@ -630,9 +630,8 @@ def clamped_box_mean(
 # Arms of the reference agreement: (fixture, method keyword arguments,
 # keyword arguments of runs whose output must differ). The default arm
 # is search_radius=1, lam=0.7 with dthresh 0, no mask and protection on.
-# The default suite keeps the killer arms of the bug injections
-# (validation.md ledger entries 11 and 16) and both lambdas; the others
-# run weekly
+# The default suite keeps both lambdas and the arms most sensitive to
+# errors in the weight formula; the others run weekly
 _DEFAULT_ARM = {"search_radius": 1, "lam": 0.7}
 REFERENCE_ARMS = [
     pytest.param("random", {"search_radius": 1, "lam": 0.7}, [], id="sr=1-lam=0.7"),
@@ -1613,8 +1612,9 @@ LAZY_CHUNKINGS = [
     ("(4, 4)", (4, 4), (4, 4, 2)),
 ]
 # The chunkings of the default suite: one chunk, the tiny-edge rows and
-# the rows thinner than the depth (the killers of M11, S1, S4 and S8,
-# validation.md ledger entry 16); the others run weekly
+# the rows thinner than the depth (these catch a per-chunk saturation
+# maximum, a halo returned with the core, a skipped minimum-chunksize
+# rechunk and a depth off by one); the others run weekly
 LAZY_DEFAULT_CHUNKINGS = ("single", "((3, 3, 4), (7, 7, 2))", "(1, 1)")
 
 
