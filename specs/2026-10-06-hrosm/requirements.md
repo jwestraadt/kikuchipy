@@ -633,6 +633,27 @@ references; local Ni6).
    R log Phi` (`0 log 0 = 0`); stop when `i >= 2` and `|Q_i - Q_{i-1}| <
    0.01` (`:922-929`); best init = largest finite `L`, first on ties; final
    `mu` per D5.6 (left side).
+   **Antipodal symmetry of correct-mode VMF (amended 2026-10-06, Stage A
+   failing-tests gate; Johan's decision, AskUserQuestion "Fix it in
+   correct mode").** A quaternion and its negative are the same
+   orientation, but the VMF density is not antipodally symmetric, and the
+   inputs are stored with q0 >= 0, so a grain whose pixels sit in
+   different sign variants (about 58 % of samples after scrambling by
+   random cubic operators; also real grains near fundamental-zone
+   boundaries) cannot be aligned by the |G| operators alone: measured 4.2
+   deg error (kappa_hat 57 vs 800 sampled) where Watson on the same
+   samples gives 0.29 deg. Correct-mode VMF therefore runs over the
+   doubled set `G+- = {S_j} u {-S_j}` (`2|G|` components, `S_j` in the
+   order of `G`, then their negatives in the same order): the E-step,
+   M-step (`v_nj = conj(s) x_n` for every `s` in `G+-`) and `L = sum_n
+   logsumexp_j(...) - log(2|G|)` all use `G+-`. Watson is antipodally
+   symmetric (`f(t) = t^2`) and keeps `G`; `mean` aligns signs already
+   (D5.2); compat VMF keeps EMsoft's `G` (`mod_dirstats.f90:274-276`,
+   `Pmdims = qsym%getQnumber()`), so the defect stays reproducible behind
+   `emsoft_compatible=True`. Tests: left-scrambled VMF recovery over all
+   24 cubic operators plus explicit random sign flips (V8); the compat
+   right-sided arms keep the sign-safe operator subset
+   (`VMF_MIN_VARIANT_SCALAR`), because the compat defect is real there.
 5. **Compat EM (K5-K7)**, literal transcription in EMsoft operator order:
    E-step centres `mu * S_j` (`:1002`), M-step `x_n * conj(S_j)` (`:1051,
    1068`) (K5, right side); `getQandL` (`:1125-1174`) uses `S_j * mu` (left,
@@ -642,10 +663,15 @@ references; local Ni6).
    in the binary and 0.0 here (recorded deviation, K6); `Mu` not sign-fixed
    between iterations (`:918`); best init `maxloc(L_All)` = first maximum,
    NaN ignored, index 1 if all NaN (`:934`); final K7 (`:949-961`). At
-   realistic `kappa ~ 1e4` the transcription reproduces the parked
-   analysis without a separate idealisation: VMF `C` underflows, `exp(kappa
-   t)` overflows, `Q` is NaN/Inf, all `n_iter` iterations run, the first
-   init wins. Watson (amended 2026-10-06, spec review round 2): once `Phi`
+   realistic `kappa ~ 1e4` (amended 2026-10-06, Stage A failing-tests
+   gate: the parked "all `n_iter` iterations run, the first init wins" is
+   refuted by the transcription): VMF `C` underflows and `exp(kappa t)`
+   overflows; an init whose iteration-2 `Phi` underflows keeps the previous
+   `Q` and exits at `i = 2`, the others have a non-finite `Q` and run all
+   `n_iter`; the chosen init is `maxloc(L_All)` (an infinite `L` can win).
+   Measured on unscrambled samples (seeds 80-82): iterations (2, 40, 40),
+   best init 1; per-init iterations and the chosen init are pinned from
+   the transcription (V9), not frozen as a rule. Watson (amended 2026-10-06, spec review round 2): once `Phi`
    underflows for far variants, `getQandL` keeps the previous `Q` and
    `L`, i.e. `EMforDS_`'s `Qi`, `Li`, declared once (`:836`) and so
    carried across iterations AND inits; an init whose iteration-2 `Phi`

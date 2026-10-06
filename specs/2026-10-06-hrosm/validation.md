@@ -336,7 +336,9 @@ CI; < 3 s.
 - `test_constant_pair_angle_field[shape]`, shapes `(4, 5)`, `(6, 3)`,
   `phi = 0.3`: every pixel equals `phi` except `(0, 0)` = `phi + s`
   and `(0, W - 1)` = `phi + s / 2`, `s` the correct-mode angle of
-  pixel `(0, W - 1)` to the identity (deg); `rtol=3e-7`.
+  pixel `(0, W - 1)` to the identity (deg); `rtol=CONSTANT_PAIR_RTOL`
+  (3e-5; amended 2026-10-06, Stage A failing-tests gate: measured
+  deviation up to 1.48e-5 for float32 Euler input, so 3e-7 cannot hold).
 - `test_vertical_pair_is_credited_one_column_right`: constant-pair
   field `(5, 5)`, pixel `(2, 1)` additionally rotated by 3 deg about
   z; the set of pixels whose compat KAM changes (vs the unperturbed
@@ -348,7 +350,7 @@ CI; < 3 s.
   30)` and `(40, 50, 60)` deg have the same pair angles but different
   `s`: pixel `(0, 0)` differs between them by `s2 - s1` and `(0, 4)`
   by `(s2 - s1) / 2`; every other pixel equals `phi` in both (`rtol=
-  3e-7`). (A transformed map is never compared bitwise: rotating the
+  CONSTANT_PAIR_RTOL`, 3e-5, amended as above). (A transformed map is never compared bitwise: rotating the
   inputs changes pair angles at the ulp level.)
 - `test_degrees_output_rounds_through_float32_radians`: with the same
   input, `kam_deg == np.float32(np.float64(kam_rad) * (180 / np.pi))`
@@ -749,6 +751,22 @@ the recovered mean to `mu`. `mu` = Euler `(37, 51, 113)` deg.
   (round 2): this grid rule gives these shapes on orix 0.12.1 (numpy
   1.23.0) and 0.14.2.
 
+**Amendment (2026-10-06, Stage A failing-tests gate; requirements D5.4
+"Antipodal symmetry of correct-mode VMF", Johan's decision).**
+Correct-mode VMF runs over `G+-` (2|G| operators), so the correct-mode
+VMF arms (`test_recovers_left_scrambled_variants[vmf-*]`, the
+right-vs-left arm for vmf) scramble with ALL 24 cubic operators again
+and additionally negate each sample with probability 1/2 before the
+q0 >= 0 normalisation; the sign-safe operator subset
+(`VMF_MIN_VARIANT_SCALAR = 0.2`, `_operator_indices`) introduced at the
+failing-tests gate is kept ONLY for the compat VMF arms (V9,
+`test_compat_model_is_right_sided[vmf]`), where EMsoft's |G|-component
+VMF is reproduced on purpose. New default-suite arm
+`test_vmf_treats_q_and_minus_q_as_one_orientation`: the same
+`alpha100-n300` VMF samples with and without random sign flips give the
+same `mu` (up to sign, angle <= 1e-8 rad) and the same `kappa_hat`
+(relative 1e-8); it kills S21 (plan section 6).
+
 ### V9 -- Compat EM quirks (`test_hrosm_averaging.py`, `TestCompatEM`) -- Stage A
 
 Pins D5.4-D5.7, K5-K7, D5.10, R5. The tests read `EMResult`, the
@@ -826,6 +844,17 @@ run `n_em=3` (`n_iter=40`), the `n_em=25` arms are weekly. CI; < 3 s.
   (`C = -3.675754132818690967`, `C2 = 4.1746562059854348688`, `C2W =
   5.4243952068443172530`) on both sides of `kappa = 30` (VMF) and 20
   (Watson) within 1e-12 relative.
+
+**Amendment (2026-10-06, Stage A failing-tests gate; requirements D5.5
+as amended).** The realistic-kappa VMF arm is
+`test_vmf_at_realistic_kappa_runs_every_iteration_once_q_is_not_finite`:
+it asserts the transcription's per-init iteration counts and chosen
+init (measured on unscrambled samples, seeds 80-82: (2, 40, 40), best
+init 1), not the parked "every init runs `n_iter`, init 0 wins". The
+compat right-sided VMF arm scrambles with the sign-safe operator subset
+(`VMF_MIN_VARIANT_SCALAR`), because compat VMF keeps EMsoft's |G|
+operators and cannot align sign-flipped samples (the failing-tests
+critic's T2: even the transcription misses the bands otherwise).
 
 ### V10 -- Compat OSM (`test_hrosm_osm.py`, `TestCompatOSM`; `test_hrosm_emsoft_regression.py`, `TestCompatOSMOnEMsoftFiles`) -- Stage A
 
@@ -1470,7 +1499,7 @@ test_ebsd_hrosm.py`.
 | M29 | the reader applies `np.deg2rad` to `EulerAngles`, `RefinedEulerAngles`, `newEuler` | `reg::TestEMsoftFileReader::test_euler_datasets_are_returned_in_radians` (the shipped `.npz` files do not pass through the reader; the local V2/V12 arms reinforce) | the returned arrays are the stored ones divided by 57.3 |
 | M30 | ball not re-centred per grain (`ball_g = ball_identity`) | `sig::TestContracts::test_each_grain_is_matched_against_its_own_ball`; `sig::TestSubgrainContrast::test_subgrain_step_is_recovered` | every grain's rotations lie near the identity, not its average |
 
-Supplementary mutants (`plan.md` section 6, S1-S20):
+Supplementary mutants (`plan.md` section 6, S1-S21):
 
 | S | mutant | default-suite killer(s) | why it dies |
 |---|---|---|---|
@@ -1494,6 +1523,7 @@ Supplementary mutants (`plan.md` section 6, S1-S20):
 | S18 | correct-mode snap replaced by the clip to [0, 1] | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan`; `avg::TestGROD::test_correct_center_pixel_has_zero_grod` | the rotation whose self-dot rounds below 1 gives ~3e-6 deg, not 0.0 |
 | S19 | `_map_grid` from the in-data `row`/`col` (the drafted rule) | `avg::TestGrainTable::test_map_grid_spans_points_not_in_the_data`; (B) `sig::TestContracts::test_navigation_masked_dictionary_indexing_map_keeps_its_grid` | the absent-row-0 map shrinks to (2, 4); `hrosm` raises "xmap shape" |
 | S20 | `_dictionary_indexing(verbose=False)` keeps `sleep(0.2)` | `test_dictionary_indexing.py::TestDictionaryIndexing::test_verbose_false_silences_the_core_for_hrosm` | the `sleep` spy is called |
+| S21 | `_directional_statistics._em_correct` VMF: operator set `G` instead of `G+- = {S_j} u {-S_j}` (amended 2026-10-06, Stage A failing-tests gate) | `test_hrosm_averaging.py::TestRecovery::test_vmf_treats_q_and_minus_q_as_one_orientation`; `TestRecovery::test_recovers_left_scrambled_variants[vmf-alpha100-n300]` | sign-flipped samples split into two clusters: `mu` differs and `kappa_hat` collapses |
 
 Stage A mutants M1-M26 (M26 at the array function), S1, S4, S6, S8,
 S9-S12, S15-S19; Stage B M27-M30, S2, S3, S5, S7, S13, S14, S20 (rows
@@ -1889,3 +1919,192 @@ default of plan section 7 adopted (R1-R7, items 8-16, 24-27); R2
 confirmed explicitly. D20 (ball spacing, GROD reference, pre-run
 coverage warning) added by Johan after the first draft and carried
 into plan and validation by the round-1 fixer. Commit 1 follows.
+
+### 5. 2026-10-06 (Stage A failing-tests gate)
+
+Fixer, Opus 5.5; Windows 11 Enterprise 10.0.26200, the workstation of
+entry 1, `.venv` (orix 0.14.2, numpy 2.4.6), Git Bash. Inputs: the
+Stage A skeleton and tests of the three writers, the 7 findings of one
+critic (T1-T7). Each finding was re-verified before editing (recipes
+below, scratchpad emulations, nothing written outside the files
+listed).
+
+1. **Files (Stage A, to be committed):** new
+   `src/kikuchipy/indexing/_hrosm/{__init__,_averaging,
+   _directional_statistics,_emsoft_file,_emsoft_quaternions,_grains,
+   _kam,_osm,_sampling,_segmentation}.py` (stubs raising
+   `NotImplementedError`), `src/kikuchipy/data/emsoft_hrosm/
+   {__init__,create_hrosm_reference}.py`,
+   `tests/test_indexing/test_hrosm_{kam,segmentation,averaging,
+   sampling,osm,emsoft_regression}.py`; modified `conftest.py` (HROSM
+   section), `pyproject.toml` (`--ignore-glob` of the reference
+   script), `src/kikuchipy/indexing/__init__.pyi` (exports). This
+   fixer touched `test_hrosm_averaging.py`, `test_hrosm_kam.py`,
+   `test_hrosm_emsoft_regression.py` and this entry only.
+2. **Test counts** (collected by `-k hrosm`; passed / failed /
+   skipped): `test_hrosm_averaging.py` 87 (1 / 69 / 17),
+   `test_hrosm_emsoft_regression.py` 88 (25 / 51 / 12),
+   `test_hrosm_kam.py` 32 (0 / 32 / 0), `test_hrosm_osm.py` 25 (0 / 25
+   / 0), `test_hrosm_sampling.py` 33 (0 / 31 / 2),
+   `test_hrosm_segmentation.py` 30 (0 / 30 / 0). Skips: weekly arms
+   without `--weekly` and the `KIKUCHIPY_EMSOFT_DATA` /
+   `KIKUCHIPY_EMSOFT_BIN` gates. The 26 passes need no implementation:
+   the V0 module-discipline arms (headers, BSD notice, no numba, no
+   print, postponed annotations, no module global, docstrings, no LGPL
+   routine), the import safety of the reference script, the EMsoft
+   program lock and the sampler cross-check against orix. The 238
+   failures are `NotImplementedError` (191) or the not yet shipped
+   reference `.npz` files (`KeyError` from the registry,
+   `FileNotFoundError`, the file-count and file-set asserts); zero
+   collection errors.
+3. **Summary line** (`uv run --no-sync pytest tests/test_indexing -k
+   hrosm -n 0 -q -p no:cacheprovider`): `238 failed, 26 passed, 31
+   skipped, 3987 deselected, 331 warnings in 18.80s`.
+   `tests/test_indexing/test_spherical_indexer.py::TestExports`: 10
+   passed. `ruff check` and `ruff format --check` clean on the 19
+   Stage A Python files; the clean-replay grep (spec paths, spec file
+   names, spec IDs) finds nothing in the new files (two pre-existing
+   `dtype="S15"` hits in `conftest.py` are not spec IDs).
+4. **Mutant -> killer (implemented, default suite).** Every Stage A row
+   of "Mutant killers" (M1-M26, S1, S4, S6, S8-S12, S15-S19) was checked
+   against the collected node IDs: every named killer exists, none is
+   missing. M1 `kam` vertical-pair, loop-transcription; `reg` shipped DI
+   KAM. M2 `kam` first-row-last-column. M3 `kam` constant-pair. M4 `kam`
+   constant-pair, first-row-last-column. M5 `kam` degrees rounding. M6
+   `kam` two-axis gradient. M7 `kam` orix on scrambled variants. M8
+   `seg` diagonal neighbours, flood-fill transcription. M9 `seg`
+   chained criterion. M10 `seg` component without a seed. M11 `seg`
+   singletons. M12 `seg` float32 tie. M13 `seg` compat dilate (two
+   arms). M14 `seg` correct dilate. M15 `avg` compat centre; `reg`
+   centre average. M16 `smp` count/order/shells; `reg` shipped N 6 ball.
+   M17 `smp` composition; shipped ball. M18 `smp` outer shell. M19 `avg`
+   `test_recovers_left_scrambled_variants[vmf-alpha100-n300]` (see T1),
+   `[watson-alpha100-n300]`. M20 `avg` Watson antipodal, Watson
+   recovery. M21 `avg` kappa gate. M22 `avg` Watson underflow. M23
+   `avg` mean recovery. M24 `osm` not divided by n; `reg` shipped OSM.
+   M25 `osm` edge multiplier. M26 `osm` cross-grain neighbours. S1 `avg`
+   final representative, VMF recovery. S4 `smp` float32 Rodrigues. S6
+   `avg` strict warning (also `test_coverage_warning_message_contract`,
+   new). S8 `avg` one generator. S9, S10 `smp` spacing arms. S11 `avg`
+   scrambled GROD, max GROD. S12 `avg` compat centre GROD. S15 `kam`
+   duplicated orientations. S16 `kam` identical neighbours and
+   `test_dot_to_angle_snaps_within_four_eps_of_one` (new). S17 `kam`
+   absent points and phases. S18 `kam` identical neighbours, the new
+   `_dot_to_angle` arm; `avg` centre-pixel GROD. S19 `avg` map grid off
+   the data. The `reg` shipped-file killers (M1, M16, M17, M24) fail
+   now on the missing references and become live when commit 2 ships
+   them; each row also has a synthetic killer. Mutants without a
+   killer: none. Emulated (scratchpad, the correct-mode EM of D5.4 as
+   written, VMF on the restricted operators of T1, alpha 100, N 300):
+   M19 with the right side in the E-step gives an error of 51 x the
+   band (VMF) and 17 x (Watson), in the M-step 42 x and 16 x; S1 gives
+   39 x (VMF); the unmutated emulation 0.31 x.
+5. **MTP constants in the tests** (all inventory names present; pins
+   are the seeds until the Stage A implementation measures them):
+   `test_hrosm_emsoft_regression.py` `SHIPPED_KAM_NONDEGENERATE_DIFF`
+   0, `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF` 0, `SHIPPED_OSM_DIFF` 0,
+   `SHIPPED_GRAIN_ID_FROM_EULER_DIFF` 0, `CENTER_AVOR_MAX_ULP` 0,
+   `WAT_AVOR_MAX_DEG` 0.01, `WAT_KAPPA_REL` 0.01,
+   `REFERENCE_TOTAL_BYTES` 841,000; local `NI6_KAM_NONDEGENERATE_DIFF`
+   6, `NI6_KAM_MAX_ULP` 2, `NI6_DI_KAM_NONDEGENERATE_DIFF` 0,
+   `GRX810_KAM_NONDEGENERATE_DIFF` 0, `AL_KAM_NONDEGENERATE_DIFF` 16,
+   `AL_KAM_MAX_ULP` 2, `NI6_OSM_EDGE_PIXELS` 214,
+   `NI6_WAT_AVOR_MAX_DEG` 0.01, `NI6_WAT_KAPPA_REL` 0.01; bin
+   `GPU_ARRAY_POLICY`, `REGENERATION_RUNTIME_S` None (recorded, T4).
+   `test_hrosm_averaging.py` `RECOVERY_ANGLE_FACTOR` 4.0,
+   `KAPPA_RATIO_BAND_N300` 1.25, `KAPPA_RATIO_BAND_N30` 1.6,
+   `WRONG_SIDE_MAX_KAPPA_RATIO` 0.2, `WATSON_UNDERFLOW_SEED` 80.
+   `test_hrosm_sampling.py` `BALL_SPACING_DEFAULT_DEG` 0.15918,
+   `BALL_SPACING_N10_DEG` 0.31765, `BALL_SPACING_N2_DEG` 1.60130.
+   Measured test constants outside the inventory (added here):
+   `test_hrosm_kam.py` `CONSTANT_PAIR_RTOL` 3e-5 (T5),
+   `QUATMULT_ORIX_ATOL` 2 eps; `test_hrosm_emsoft_regression.py`
+   `KAM_FALLBACK_MAX_ULP` 2, `DEGENERATE_ANGLE_RAD` 1e-6;
+   `test_hrosm_sampling.py` `EMSOFT_TEXT_TOL` 6e-10. Design constant
+   (not MTP): `test_hrosm_averaging.py` `VMF_MIN_VARIANT_SCALAR` 0.2
+   (T1).
+6. **Critic dispositions:**
+   - T1 (blocker) fixed, option (b), D5.4 unchanged. Verified: the
+     correct-mode EM of D5.4 emulated on the arm's own samples gives
+     0.0728 rad (band 0.0163) and `kappa_hat / kappa` 0.071 for VMF,
+     0.0050 rad and 0.986 for Watson. The VMF density is not
+     antipodal: of the 24 variants `S_j mu` of `mu` = Euler (37, 51,
+     113) deg, 14 have a scalar part below 0.2 (12 negative), so their
+     samples change sign under `q0 >= 0` and fit no centre. The VMF
+     arms now draw their operators from the 10 indices with `scalar(S_j
+     mu) >= VMF_MIN_VARIANT_SCALAR = 0.2` (`_operator_indices`,
+     `_draw_operators`; `scalar(mu S_j)` is the same, so right
+     scrambling keeps the signs too), and the VMF recovery arm asserts
+     that no scrambled sample changes sign. Watson and `mean` arms draw
+     from all 24 with the same generator stream as before. Emulated:
+     VMF left recovery at error / band 0.18-0.31 and ratio 0.985-1.48
+     over the full alpha x N grid; right / left `kappa_hat` 0.056.
+     **Open for the main session:** V8 (`test_recovers_left_scrambled_
+     variants`, `test_right_scrambled_variants_are_not_recovered`)
+     still describes the scrambling as `j = rng.integers(24)` for every
+     method and needs the VMF operator subset written in; option (a),
+     an antipodally aware correct-mode VMF (a change to frozen D5.4),
+     was not taken here and remains Johan's call.
+   - T2 (blocker) fixed with T1: `test_compat_model_is_right_sided`
+     scrambles VMF samples with the same operator subset. Verified with
+     the test's own `_emsoft_em` (`n_em` 3): VMF error / band 0.31,
+     ratio 0.986, left / right 0.046; Watson 0.31, 0.986, 0.048 (before:
+     VMF 0.098 rad, ratio 0.039). EMsoft's linear-space VMF density
+     overflows only in `getQandL`, not in the E-step at kappa 800, so
+     the VMF arm stays asserted. **Open:** the same V9 wording
+     amendment.
+   - T3 (major) fixed in the test, spec text open. Verified with the
+     transcription (`default_rng(80)`, VMF kappa 1e4, N 50, `n_em` 3):
+     per-init iterations (2, 40, 40), final `L` (1810.6, +inf, +inf),
+     chosen init 1; init 0 keeps a finite `Q` and stops at i = 2, so
+     "every init runs `n_iter`, the first init wins" (V9, D5.5) does not
+     hold. Renamed to `test_vmf_at_realistic_kappa_runs_every_
+     iteration_once_q_is_not_finite`, asserting 40 iterations for every
+     init whose `Q` is ever non-finite and `best_init ==
+     nanargmax(L)`. **Open:** amend V9 (test name and assertion) and
+     the D5.5 sentence "all `n_iter` iterations run, the first init
+     wins" with these numbers (a refutation of a frozen decision, so
+     requirements.md gets the same dated amendment).
+   - T4 (minor) fixed: `REGENERATION_RUNTIME_S = None` defined in the
+     MTP block; the regeneration arm records the measured seconds under
+     that key.
+   - T5 (minor) fixed by record: re-measured with the test file's own
+     loop transcription on float32 Euler angles, phi 0.3 deg: largest
+     relative deviation 4.21e-6 on the (4, 5) and (6, 3) fields from
+     (10, 20, 30) deg, 1.48e-5 from (40, 50, 60) deg. V1's `rtol=3e-7`
+     cannot hold for compat KAM read from float32 Euler angles;
+     `CONSTANT_PAIR_RTOL = 3e-5` (about 2 x the measurement) is kept and
+     recorded here. The M3/M4 killers still die (their errors are of
+     order phi). **Open:** amend V1's two `rtol=3e-7` to this constant.
+   - T6 (minor) fixed: new `test_coverage_warning_message_contract`
+     calls `_coverage_warning_message` directly (14 grains with labels
+     101-114 and `n_pixels` 201-214, so no number collides: count 11,
+     `max_angle` 2.75 at equality not counted, two ties listed by
+     ascending label, the ten largest in order with their max GROD and
+     `n_pixels`, the eleventh and the three below absent, the largest
+     max GROD, the hint `max_angle >= 4.5`, the spacing value only when
+     `spacing` is given, None at equality and a message at the float32
+     neighbour below). The 12-grain warning arm counts standalone
+     occurrences (`12` at least twice: count and label; `3` at least 12
+     times: `max_angle`, label 3, ten `n_pixels`) and requires the
+     warning to equal the helper's message without spacing, replacing
+     the word check "spacing" (the hint of D20.3 may itself mention
+     the spacing).
+   - T7 (minor) fixed: new `test_dot_to_angle_snaps_within_four_eps_of_
+     one` (`kam`, `TestCorrectKAM`) feeds `_dot_to_angle` the dot
+     products 1, 1 - eps, 1 - 4 eps, 1 + 2 eps (exactly 0.0), 1 - 5 eps
+     (`2 arccos`, > 0) and 0.5, killing S16 (NaN at 1 + 2 eps) and S18
+     (clip: > 0 at 1 - eps) whatever summation order the implementation
+     uses.
+
+### 6. 2026-10-06 (VMF antipodal amendment, main loop)
+
+Johan chose (AskUserQuestion) "Fix it in correct mode": correct-mode
+VMF uses `G+- = {S_j} u {-S_j}`; compat keeps EMsoft's |G| (requirements
+D5.4 amended). D5.5's realistic-kappa VMF text amended to the
+transcription's measured behaviour ((2, 40, 40), best init 1). V1's two
+`rtol=3e-7` became `CONSTANT_PAIR_RTOL` (3e-5). V8 and V9 carry dated
+amendments; plan section 6 gains S21 (correct-mode VMF over `G` instead
+of `G+-`), killed by `test_vmf_treats_q_and_minus_q_as_one_orientation`
+and the all-24-operator left-scrambled VMF recovery arm. The open items
+of entry 5 on V8/V9/V1/D5.5 are closed by this entry.

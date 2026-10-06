@@ -48,8 +48,12 @@ _WORKER_NUMBA_CACHE_DIR = os.environ.get("NUMBA_CACHE_DIR") if _XDIST_WORKER els
 
 from contextlib import contextmanager
 import functools
+import hashlib
 from io import TextIOWrapper
+import json
 from numbers import Number
+import subprocess
+import threading
 import time
 from typing import Callable, Generator, Literal
 
@@ -62,6 +66,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from orix.crystal_map import CrystalMap, Phase, PhaseList, create_coordinate_arrays
 from orix.quaternion import Rotation
+from orix.quaternion.symmetry import Oh
 import pytest
 
 import kikuchipy as kp
@@ -1465,3 +1470,642 @@ def counting_spy(monkeypatch) -> Callable:
         return calls
 
     return spy
+
+
+# ------------------------------- HROSM ------------------------------ #
+# Synthetic crystal maps, top-match lists and EMsoft-layout files shared
+# by the HROSM tests, and the two opt-in EMsoft gates. As for NLPAR,
+# every generator is a plain function exposed by a fixture of the same
+# name without the leading underscore, which returns the callable.
+# Every generator is deterministic: it draws from its own seeded
+# numpy.random.Generator only.
+
+# Seconds to wait for the EMsoft program lock, the age of a lock file
+# assumed to belong to a killed run (taken over), and the interval at
+# which the holder refreshes the lock file's modification time. A
+# reference run holds the lock for up to half an hour, so the holder
+# keeps the file young while it runs.
+_EMSOFT_LOCK_TIMEOUT = 3600.0
+_EMSOFT_LOCK_STALE = 300.0
+_EMSOFT_LOCK_HEARTBEAT = 30.0
+_EMSOFT_LOCK_NAME = "kikuchipy-emsoft-program.lock"
+
+# The EMsoftOO programs and libraries the bin gate needs
+_EMSOFT_PROGRAMS = (
+    "EMDI.exe",
+    "EMFitOrientation.exe",
+    "EMHROSM.exe",
+    "EMgetOSM.exe",
+    "EMsampleRFZ.exe",
+)
+_EMSOFT_LIBRARIES = ("EMsoftOOLib.dll", "EMOpenCLLib.dll")
+
+# md5 sums of the EMsoft data files already checked in this session
+_EMSOFT_MD5_CACHE: dict[Path, str] = {}
+
+
+@contextmanager
+def _emsoft_program_lock(
+    path: Path | str | None = None,
+    *,
+    timeout: float | None = None,
+    stale: float | None = None,
+    heartbeat: float | None = None,
+) -> Generator[Path, None, None]:
+    """Hold a lock shared by every process running an EMsoft program.
+
+    The programs share EMsoft's temporary directory (the dictionary
+    scratch file) and one GPU, so two of them must never run at once.
+    The lock is an exclusive create of ``kikuchipy-emsoft-program.lock``
+    in the temporary directory (``path`` is only for the lock's own
+    test). While it is held, a daemon thread refreshes the file's
+    modification time every ``heartbeat`` seconds, so a lock file older
+    than ``stale`` seconds belongs to a killed holder and is taken over;
+    no process ID test is made, since probing a process on Windows
+    with ``os.kill(pid, 0)`` terminates it. The reference generation
+    script uses the same file and protocol.
+
+    ``timeout``, ``stale`` and ``heartbeat`` default to
+    ``_EMSOFT_LOCK_TIMEOUT``, ``_EMSOFT_LOCK_STALE`` and
+    ``_EMSOFT_LOCK_HEARTBEAT``, read at call time.
+    """
+    if path is None:
+        path = Path(tempfile.gettempdir()) / _EMSOFT_LOCK_NAME
+    path = Path(path)
+    timeout = _EMSOFT_LOCK_TIMEOUT if timeout is None else float(timeout)
+    stale = _EMSOFT_LOCK_STALE if stale is None else float(stale)
+    heartbeat = _EMSOFT_LOCK_HEARTBEAT if heartbeat is None else float(heartbeat)
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:  # it went away between the two calls
+                continue
+            if age > stale:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:  # still open by its holder on Windows
+                    pass
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Waited {timeout} s for the EMsoft program lock "
+                    f"{str(path)!r}. Delete it if no process is running an "
+                    "EMsoft program"
+                )
+            time.sleep(0.05)
+
+    stop = threading.Event()
+
+    def refresh() -> None:
+        while not stop.wait(heartbeat):
+            try:
+                os.utime(path)
+            except OSError:
+                pass
+
+    thread = threading.Thread(
+        target=refresh, name="kikuchipy-emsoft-lock-heartbeat", daemon=True
+    )
+    thread.start()
+    try:
+        yield path
+    finally:
+        stop.set()
+        thread.join()
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+
+
+def _emsoft_config() -> dict:
+    """Return EMsoft's configuration ``~/.config/EMsoft/
+    EMsoftConfig.json``, or an empty dict if it cannot be read.
+    """
+    fpath = Path.home() / ".config" / "EMsoft" / "EMsoftConfig.json"
+    try:
+        return json.loads(fpath.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _md5_of_file(fpath: Path) -> str:
+    """Return the md5 sum of a file, read in chunks."""
+    md5 = hashlib.md5()
+    with open(fpath, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 22), b""):
+            md5.update(chunk)
+    return md5.hexdigest()
+
+
+@pytest.fixture
+def emsoft_program_lock() -> Callable:
+    """Return the context manager :func:`_emsoft_program_lock`, for
+    tests which run EMsoft programs outside :func:`emsoft_program` (the
+    reference regeneration) and for the lock's own test.
+    """
+    return _emsoft_program_lock
+
+
+@pytest.fixture
+def emsoft_bin_dir() -> Generator[Path, None, None]:
+    """Yield the directory of the EMsoftOO programs, skipping if it is
+    not set up.
+
+    The bin gated tests need ``KIKUCHIPY_EMSOFT_BIN`` to name a
+    directory with the five programs and two libraries, EMsoft's
+    configuration file with an existing ``EMdatapathname``, and an
+    OpenCL runtime for the GPU programs.
+    """
+    value = os.environ.get("KIKUCHIPY_EMSOFT_BIN")
+    if not value:
+        pytest.skip(
+            "KIKUCHIPY_EMSOFT_BIN is not set; set it to an EMsoftOO Bin "
+            f"directory with {', '.join(_EMSOFT_PROGRAMS + _EMSOFT_LIBRARIES)} "
+            "to run this test"
+        )
+    directory = Path(value)
+    for name in _EMSOFT_PROGRAMS + _EMSOFT_LIBRARIES:
+        if not (directory / name).is_file():
+            pytest.skip(f"{name} is missing from KIKUCHIPY_EMSOFT_BIN {directory}")
+    data_path = _emsoft_config().get("EMdatapathname")
+    if not data_path or not Path(data_path).is_dir():
+        pytest.skip(
+            "EMdatapathname of ~/.config/EMsoft/EMsoftConfig.json is not set "
+            "or does not exist"
+        )
+    import ctypes.util
+
+    if ctypes.util.find_library("OpenCL") is None:
+        pytest.skip("No OpenCL runtime found; EMDI and EMHROSM need a GPU")
+    yield directory
+
+
+@pytest.fixture
+def emsoft_program(emsoft_bin_dir) -> Generator[Callable, None, None]:
+    """Yield a callable running one EMsoft program under the program
+    lock and returning its :class:`subprocess.CompletedProcess`.
+
+    ``run(name, namelist, run_dir, timeout=None)`` writes the namelist
+    text to ``<run_dir>/<name>.nml`` and runs ``<bin>/<name>.exe
+    <name>.nml`` with the working directory ``run_dir``, capturing
+    standard output and error as text. The programs prepend
+    ``EMdatapathname`` to every namelist path, so every path in the
+    namelist must start with the relative run directory.
+
+    ``run.new_run_dir()`` creates and returns a new run directory
+    ``<EMdatapathname>/kikuchipy_hrosm/<YYYYmmdd-HHMMSS>/`` as the pair
+    (absolute path, path relative to ``EMdatapathname`` with forward
+    slashes); ``run.data_root`` is ``EMdatapathname``.
+    """
+    data_root = Path(_emsoft_config()["EMdatapathname"])
+
+    def run(
+        name: str, namelist: str, run_dir: Path, timeout: float | None = None
+    ) -> subprocess.CompletedProcess:
+        run_dir = Path(run_dir)
+        nml = run_dir / f"{name}.nml"
+        nml.write_text(namelist)
+        with _emsoft_program_lock():
+            return subprocess.run(
+                [str(emsoft_bin_dir / f"{name}.exe"), nml.name],
+                cwd=run_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+
+    def new_run_dir() -> tuple[Path, str]:
+        while True:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            relative = f"kikuchipy_hrosm/{stamp}"
+            directory = data_root / "kikuchipy_hrosm" / stamp
+            try:
+                directory.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                time.sleep(1.0)
+                continue
+            return directory, relative
+
+    run.new_run_dir = new_run_dir
+    run.data_root = data_root
+    yield run
+
+
+@pytest.fixture
+def emsoft_data_file() -> Callable:
+    """Return a callable ``get(relpath, md5)`` giving the path of an
+    EMsoft data file below ``KIKUCHIPY_EMSOFT_DATA``, skipping if the
+    variable is not set or the file is missing.
+
+    The file's md5 sum is asserted to equal ``md5``; it is computed
+    once per file and session.
+    """
+
+    def get(relpath: str, md5: str) -> Path:
+        root = os.environ.get("KIKUCHIPY_EMSOFT_DATA")
+        if not root:
+            pytest.skip(
+                "KIKUCHIPY_EMSOFT_DATA is not set; set it to the EMsoft data "
+                f"root holding {relpath} to run this test"
+            )
+        fpath = (Path(root) / relpath).resolve()
+        if not fpath.is_file():
+            pytest.skip(f"{relpath} is missing from KIKUCHIPY_EMSOFT_DATA {root}")
+        if fpath not in _EMSOFT_MD5_CACHE:
+            _EMSOFT_MD5_CACHE[fpath] = _md5_of_file(fpath)
+        assert _EMSOFT_MD5_CACHE[fpath] == md5, f"{fpath} has another md5"
+        return fpath
+
+    return get
+
+
+def _hrosm_axis_angle(axis, angle_deg) -> Rotation:
+    """Return rotations about one axis by angles in degrees."""
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    half = np.deg2rad(np.atleast_1d(np.asarray(angle_deg, dtype=np.float64))) / 2
+    data = np.zeros(half.shape + (4,))
+    data[..., 0] = np.cos(half)
+    data[..., 1:] = np.sin(half)[..., None] * axis
+    return Rotation(data)
+
+
+def _hrosm_repeat(rotation: Rotation, n: int) -> Rotation:
+    """Return one rotation repeated ``n`` times."""
+    return Rotation(np.repeat(rotation.data.reshape(1, 4), n, axis=0))
+
+
+def _hrosm_crystal_map(
+    rotations: Rotation,
+    shape: tuple[int, int],
+    phase_id: np.ndarray | None = None,
+    is_in_data: np.ndarray | None = None,
+) -> CrystalMap:
+    """Return a crystal map of nickel (m-3m) of step 1 um, with a second
+    nickel phase "ni2" (ID 1) if ``phase_id`` has ones.
+    """
+    coords, n = create_coordinate_arrays(shape, step_sizes=(1, 1))
+    if phase_id is None:
+        phase_id = np.zeros(n, dtype=np.int32)
+    phase_id = np.asarray(phase_id, dtype=np.int32).ravel()
+    phases = [Phase("ni", point_group="m-3m")]
+    ids = [0]
+    if np.any(phase_id == 1):
+        phases.append(Phase("ni2", point_group="m-3m"))
+        ids.append(1)
+    if is_in_data is None:
+        is_in_data = np.ones(n, dtype=bool)
+    return CrystalMap(
+        rotations=rotations,
+        phase_id=phase_id,
+        x=coords["x"],
+        y=coords["y"],
+        phase_list=PhaseList(phases=phases, ids=ids),
+        is_in_data=is_in_data,
+        scan_unit="um",
+    )
+
+
+def _hrosm_gradient_xmap(
+    shape: tuple[int, int] = (6, 7),
+    delta_x: float = 0.4,
+    delta_y: float = 0.1,
+    euler0: tuple[float, float, float] = (10.0, 20.0, 30.0),
+    scramble_seed: int | None = None,
+    absent: tuple[int, ...] | list[int] = (),
+    phase_id: np.ndarray | None = None,
+    rotations_per_point: int = 1,
+) -> CrystalMap:
+    """Return a nickel crystal map with a constant orientation gradient.
+
+    The rotation at ``(y, x)`` is ``Rz(x * delta_x) * Rx(y * delta_y) *
+    g0``, ``g0`` from the Euler angles ``euler0``; all angles in
+    degrees. Each horizontal 4-neighbour pair is disoriented by exactly
+    ``delta_x`` and each vertical one by ``delta_y``, for angles below
+    45 degrees.
+
+    ``scramble_seed`` left-multiplies every point by a random operator
+    of m-3m's proper subgroup (``default_rng(scramble_seed)``);
+    ``absent`` (flat indices) are not in the data; ``phase_id`` (one ID
+    per point, 0 or 1, of the map shape or flat) puts the points with
+    ID 1 in a second nickel phase "ni2"; ``rotations_per_point > 1``
+    appends seeded random rotations after the first one per point.
+    """
+    shape = tuple(shape)
+    n_rows, n_cols = shape
+    n = n_rows * n_cols
+    rows, cols = np.divmod(np.arange(n), n_cols)
+    g0 = Rotation.from_euler(np.deg2rad(euler0))
+    rot = (
+        _hrosm_axis_angle((0, 0, 1), cols * delta_x)
+        * _hrosm_axis_angle((1, 0, 0), rows * delta_y)
+        * _hrosm_repeat(g0, n)
+    )
+    if scramble_seed is not None:
+        rng = np.random.default_rng(scramble_seed)
+        operators = Oh.proper_subgroup.data
+        rot = Rotation(operators[rng.integers(operators.shape[0], size=n)]) * rot
+    if rotations_per_point > 1:
+        rng_extra = np.random.default_rng(1)
+        extra = rng_extra.normal(size=(n, rotations_per_point - 1, 4))
+        extra /= np.linalg.norm(extra, axis=-1, keepdims=True)
+        rot = Rotation(np.concatenate([rot.data[:, None], extra], axis=1))
+    is_in_data = np.ones(n, dtype=bool)
+    is_in_data[list(absent)] = False
+    return _hrosm_crystal_map(rot, shape, phase_id=phase_id, is_in_data=is_in_data)
+
+
+def _hrosm_constant_pair_xmap(
+    shape: tuple[int, int] = (4, 5),
+    phi: float = 0.3,
+    euler0: tuple[float, float, float] = (10.0, 20.0, 30.0),
+) -> CrystalMap:
+    """Return a nickel crystal map with the rotation ``Rz((x + y) *
+    phi) * g0`` at ``(y, x)``, so that every 4-neighbour pair is
+    disoriented by exactly ``phi`` degrees.
+    """
+    shape = tuple(shape)
+    n_rows, n_cols = shape
+    n = n_rows * n_cols
+    rows, cols = np.divmod(np.arange(n), n_cols)
+    g0 = Rotation.from_euler(np.deg2rad(euler0))
+    rot = _hrosm_axis_angle((0, 0, 1), (cols + rows) * phi) * _hrosm_repeat(g0, n)
+    return _hrosm_crystal_map(rot, shape)
+
+
+def _hrosm_disorientation_deg(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Return the m-3m disorientation angles in degrees between every
+    quaternion of ``a`` (n, 4) and every one of ``b`` (m, 4), shape (n,
+    m), with the symmetry operators applied from the left.
+    """
+    a = a[:, None, :]
+    b_conj = b * np.array([1.0, -1.0, -1.0, -1.0])
+    b_conj = b_conj[None, :, :]
+    r = np.empty(np.broadcast_shapes(a.shape, b_conj.shape))
+    a0, a1, a2, a3 = np.moveaxis(a, -1, 0)
+    b0, b1, b2, b3 = np.moveaxis(b_conj, -1, 0)
+    r[..., 0] = a0 * b0 - a1 * b1 - a2 * b2 - a3 * b3
+    r[..., 1] = a0 * b1 + a1 * b0 + a2 * b3 - a3 * b2
+    r[..., 2] = a0 * b2 + a2 * b0 + a3 * b1 - a1 * b3
+    r[..., 3] = a0 * b3 + a3 * b0 + a1 * b2 - a2 * b1
+    operators = Oh.proper_subgroup.data
+    d = np.abs(r @ operators.T).max(axis=-1)
+    return np.rad2deg(2 * np.arccos(np.clip(d, 0, 1)))
+
+
+def _hrosm_grain_xmap(
+    shape: tuple[int, int] = (12, 16),
+    n_grains: int = 2,
+    gradient: float = 0.2,
+    boundary_angle: float = 30.0,
+) -> tuple[CrystalMap, np.ndarray]:
+    """Return a nickel crystal map of two or three grains and the true
+    labels.
+
+    Grain A (label 1) is the columns ``x < W // 2`` with ``g_A = Rz(x *
+    gradient) * g0``, ``g0`` from the Euler angles (10, 20, 30); grain
+    B (label 2) the other columns with ``R[111](boundary_angle) *
+    g_A``; with ``n_grains=3``, the rows ``y >= H // 2`` of the right
+    half are grain C (label 3) with ``R[100](45) * g_A``. Angles in
+    degrees.
+
+    Returns the map and the labels of shape (H, W) of int32. Every pair
+    of distinct grains is asserted to be disoriented by more than 20
+    degrees unless ``boundary_angle`` is below 20.
+    """
+    if n_grains not in (2, 3):
+        raise ValueError(f"n_grains {n_grains} must be 2 or 3")
+    shape = tuple(shape)
+    n_rows, n_cols = shape
+    n = n_rows * n_cols
+    rows, cols = np.divmod(np.arange(n), n_cols)
+    g0 = Rotation.from_euler(np.deg2rad((10.0, 20.0, 30.0)))
+    g_a = _hrosm_axis_angle((0, 0, 1), cols * gradient) * _hrosm_repeat(g0, n)
+    g_b = _hrosm_repeat(_hrosm_axis_angle((1, 1, 1), boundary_angle), n) * g_a
+    g_c = _hrosm_repeat(_hrosm_axis_angle((1, 0, 0), 45.0), n) * g_a
+
+    truth = np.ones(n, dtype=np.int32)
+    truth[cols >= n_cols // 2] = 2
+    if n_grains == 3:
+        truth[(cols >= n_cols // 2) & (rows >= n_rows // 2)] = 3
+    data = g_a.data.copy()
+    data[truth == 2] = g_b.data[truth == 2]
+    data[truth == 3] = g_c.data[truth == 3]
+
+    if boundary_angle >= 20:
+        for label_a in range(1, n_grains + 1):
+            for label_b in range(label_a + 1, n_grains + 1):
+                angles = _hrosm_disorientation_deg(
+                    data[truth == label_a], data[truth == label_b]
+                )
+                assert angles.min() > 20, (label_a, label_b, angles.min())
+
+    xmap = _hrosm_crystal_map(Rotation(data), shape)
+    return xmap, truth.reshape(shape)
+
+
+def _hrosm_top_lists(
+    shape: tuple[int, int], n: int = 10, pool: int = 15, seed: int = 40
+) -> np.ndarray:
+    """Return 1-based top-match lists without duplicates within a row,
+    shape (H * W, n) of int32: per point, in raster order,
+    ``rng.permutation(pool)[:n] + 1`` of one ``default_rng(seed)``.
+    """
+    n_points = int(np.prod(shape))
+    rng = np.random.default_rng(seed)
+    lists = [rng.permutation(pool)[:n] + 1 for _ in range(n_points)]
+    return np.asarray(lists, dtype=np.int32).reshape(n_points, n)
+
+
+# Namelist keys of EMsoft's dictionary indexing and EMHROSM files, and
+# the ones stored as float32 (the others as int32 or strings)
+_EMSOFT_DI_NAMELIST_KEYS = (
+    "nnk",
+    "nosm",
+    "ipf_wd",
+    "ipf_ht",
+    "ROI",
+    "numdictsingle",
+    "numexptsingle",
+    "xpc",
+    "ypc",
+    "L",
+    "delta",
+    "thetac",
+    "energymin",
+    "energymax",
+)
+_EMSOFT_HROSM_NAMELIST_KEYS = (
+    "gangle",
+    "misorang",
+    "nsamples",
+    "nosm",
+    "orav",
+    "numEM",
+    "numIter",
+    "maxRAMmem",
+    "dpfile",
+    "OSMfile",
+    "OSMtiff",
+    "IPFmap",
+)
+_EMSOFT_FLOAT_KEYS = (
+    "xpc",
+    "ypc",
+    "L",
+    "delta",
+    "thetac",
+    "energymin",
+    "energymax",
+    "gangle",
+    "misorang",
+    "maxRAMmem",
+)
+
+
+def _emsoft_strings(values) -> np.ndarray:
+    """Return strings as EMsoft stores them, variable-length ASCII."""
+    values = [values] if isinstance(values, (str, bytes)) else list(values)
+    values = [v.encode("ascii") if isinstance(v, str) else v for v in values]
+    return np.array(values, dtype=h5py.string_dtype("ascii"))
+
+
+def _emsoft_namelist_value(key: str, value) -> np.ndarray:
+    """Return a namelist value as EMsoft stores it."""
+    if isinstance(value, (str, bytes)):
+        return _emsoft_strings(value)
+    dtype = np.float32 if key in _EMSOFT_FLOAT_KEYS else np.int32
+    return np.atleast_1d(np.asarray(value, dtype=dtype))
+
+
+def _fortran_value(value) -> str:
+    """Return a value as Fortran namelist text."""
+    if isinstance(value, (bool, np.bool_)):
+        return ".TRUE." if value else ".FALSE."
+    if isinstance(value, str):
+        return f"'{value}'"
+    return " ".join(str(v) for v in np.atleast_1d(value))
+
+
+def _write_emsoft_layout_file(path: Path | str, kind: str, arrays: dict) -> Path:
+    """Write a minimal HDF5 file in the layout of EMsoft's dictionary
+    indexing (``kind="dot_product"``) or EMHROSM (``kind="hrosm"``)
+    output and return its path.
+
+    ``arrays`` holds NumPy arrays in NumPy's order (maps as (H, W),
+    Euler angles as (N, 3)), which is how h5py sees EMsoft's Fortran
+    ``(x, y)`` and ``(3, N)`` arrays, and namelist values. Recognised
+    special keys: ``"version"`` (EMsoft version string, default
+    "6_0_20260411_0"), ``"namelist_text"`` (list of lines of the
+    namelist file stored under ``NMLfiles``) and, for ``"hrosm"``,
+    ``"dilate"`` (bool, written only to the namelist text, as EMsoft
+    does).
+
+    Dot product files: namelist keys go to
+    ``NMLparameters/EMDINameList``, all other arrays to ``Scan
+    1/EBSD/Data``; ``TopMatchIndices`` and ``TopDotProductList`` are
+    padded with zero rows to a multiple of ``numexptsingle`` (default
+    the number of rows). HROSM files: namelist keys go to
+    ``NMLparameters/HROSMNameList``, all other arrays to
+    ``EMData/HROSM``, and ``NMLfiles/HROSMNML`` holds the namelist
+    text with ``dilate``. Strings are variable-length ASCII, read back
+    as object arrays of bytes; scalars are stored with shape (1,).
+    """
+    if kind not in ("dot_product", "hrosm"):
+        raise ValueError(f"kind {kind!r} must be 'dot_product' or 'hrosm'")
+    path = Path(path)
+    arrays = dict(arrays)
+    version = arrays.pop("version", "6_0_20260411_0")
+    namelist_text = arrays.pop("namelist_text", None)
+    with h5py.File(path, "w") as f:
+        if kind == "dot_product":
+            f.create_dataset("EMheader/Version", data=_emsoft_strings(version))
+            n_single = arrays.get("numexptsingle")
+            for key, value in arrays.items():
+                if key in _EMSOFT_DI_NAMELIST_KEYS:
+                    f.create_dataset(
+                        f"NMLparameters/EMDINameList/{key}",
+                        data=_emsoft_namelist_value(key, value),
+                    )
+                    continue
+                value = np.asarray(value)
+                if key in ("TopMatchIndices", "TopDotProductList"):
+                    multiple = int(n_single) if n_single is not None else len(value)
+                    n_pad = -len(value) % multiple
+                    padding = np.zeros((n_pad,) + value.shape[1:], value.dtype)
+                    value = np.concatenate([value, padding])
+                f.create_dataset(f"Scan 1/EBSD/Data/{key}", data=np.atleast_1d(value))
+            if namelist_text is not None:
+                f.create_dataset(
+                    "NMLfiles/DictionaryIndexingNML",
+                    data=_emsoft_strings(namelist_text),
+                )
+        else:
+            f.create_dataset("EMheader/HROSM/Version", data=_emsoft_strings(version))
+            dilate = bool(arrays.pop("dilate", False))
+            namelist = {}
+            for key, value in arrays.items():
+                if key in _EMSOFT_HROSM_NAMELIST_KEYS:
+                    namelist[key] = value
+                    f.create_dataset(
+                        f"NMLparameters/HROSMNameList/{key}",
+                        data=_emsoft_namelist_value(key, value),
+                    )
+                    continue
+                f.create_dataset(
+                    f"EMData/HROSM/{key}", data=np.atleast_1d(np.asarray(value))
+                )
+            if namelist_text is None:
+                namelist["dilate"] = dilate
+                namelist_text = (
+                    [" &HROSMdata", "! The line above must not be changed"]
+                    + [f" {k} = {_fortran_value(v)}," for k, v in namelist.items()]
+                    + [" /"]
+                )
+            f.create_dataset("NMLfiles/HROSMNML", data=_emsoft_strings(namelist_text))
+    return path
+
+
+@pytest.fixture
+def hrosm_gradient_xmap() -> Callable:
+    """Return the generator :func:`_hrosm_gradient_xmap` of crystal maps
+    with a constant orientation gradient.
+    """
+    return _hrosm_gradient_xmap
+
+
+@pytest.fixture
+def hrosm_constant_pair_xmap() -> Callable:
+    """Return the generator :func:`_hrosm_constant_pair_xmap` of crystal
+    maps with one disorientation angle between all neighbours.
+    """
+    return _hrosm_constant_pair_xmap
+
+
+@pytest.fixture
+def hrosm_grain_xmap() -> Callable:
+    """Return the generator :func:`_hrosm_grain_xmap` of two- and
+    three-grain crystal maps with their true labels.
+    """
+    return _hrosm_grain_xmap
+
+
+@pytest.fixture
+def hrosm_top_lists() -> Callable:
+    """Return the generator :func:`_hrosm_top_lists` of 1-based
+    top-match lists.
+    """
+    return _hrosm_top_lists
+
+
+@pytest.fixture
+def write_emsoft_layout_file() -> Callable:
+    """Return the writer :func:`_write_emsoft_layout_file` of minimal
+    EMsoft-layout dot product and HROSM files.
+    """
+    return _write_emsoft_layout_file

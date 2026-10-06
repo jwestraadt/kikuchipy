@@ -1224,6 +1224,7 @@ Round-2 mutants (added 2026-10-06, spec review round 2):
 | S18 | `_kam._dot_to_angle`: the snap replaced by the old clip `2 * np.arccos(np.clip(d, 0, 1))` | `kam` V3 (identical neighbours, the below-1 rotation: ~3e-6 deg instead of 0); `avg` V8 (correct centre pixel GROD exactly 0) |
 | S19 | `_grains._map_grid`: grid from the in-data `xmap.row.max() + 1`, `xmap.col.max() + 1` with the `xmap.size == 1` shortcut (the drafted rule) | `avg` V8 (grid spans points not in the data); (B) `sig` V16 (map from a navigation-masked `dictionary_indexing`) |
 | S20 (B) | `_dictionary_indexing(verbose=False)` keeps the `sleep(0.2)` | `test_dictionary_indexing.py` (`sleep` spy not called) |
+| S21 | `_directional_statistics._em_correct` VMF: operator set `G` instead of `G+- = {S_j} u {-S_j}` (added 2026-10-06, Stage A failing-tests gate; requirements D5.4 antipodal amendment) | `avg` V8 (`test_vmf_treats_q_and_minus_q_as_one_orientation`; all-24-operator left-scrambled VMF recovery) |
 
 Review scope beyond mutants: the fidelity reviewer re-reads
 `mod_DIsupport.f90:172-275, 358-466`, `mod_cluster.f90:134-317,
