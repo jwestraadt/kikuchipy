@@ -1728,7 +1728,9 @@ class TestDecomposition:
     def test_lazy_decomposition(self, dummy_signal):
         lazy_signal = dummy_signal.as_lazy()
         lazy_signal.change_dtype(np.float32)
-        lazy_signal.decomposition()
+        # HyperSpy >= 2.5 requires an explicit output dimension for lazy
+        # SVD with the (default) randomized solver
+        lazy_signal.decomposition(output_dimension=9)
         assert isinstance(lazy_signal, kp.signals.LazyEBSD)
 
     @pytest.mark.parametrize(
@@ -1758,13 +1760,8 @@ class TestDecomposition:
         assert isinstance(model_signal, kp.signals.EBSD)
         assert np.allclose(model_signal.data.mean(), mean_intensity, atol=1e-3)
 
-    @pytest.mark.parametrize(
-        "components, mean_intensity",
-        [(None, 132.1), (3, 122.9), ([0, 1, 3], 116.8)],
-    )
-    def test_get_decomposition_model_lazy(
-        self, dummy_signal, components, mean_intensity
-    ):
+    @pytest.mark.parametrize("components", [None, 3, [0, 1, 3]])
+    def test_get_decomposition_model_lazy(self, dummy_signal, components):
         # Decomposition
         lazy_signal = dummy_signal.as_lazy()
         lazy_signal.change_dtype(np.float32)
@@ -1781,18 +1778,39 @@ class TestDecomposition:
             lazy_signal.learning_results.loadings
         )
 
+        # Adding back a stored mean is HyperSpy's business and differs
+        # between versions (HyperSpy >= 2.5 stores the mean of its lazy
+        # PCA), so drop it to test only kikuchipy's handling of the
+        # factors and loadings
+        lr = lazy_signal.learning_results
+        lr.mean = None
+
+        # Independent reconstruction from the same learning results:
+        # cast to float32 and keep the selected components
+        factors = np.asarray(lr.factors).astype(np.float32)
+        loadings = np.asarray(lr.loadings).astype(np.float32)
+        if components is None:
+            idx = slice(None)
+        elif isinstance(components, int):
+            idx = slice(None, components)
+        else:
+            idx = components
+        expected = loadings[:, idx] @ factors[:, idx].T
+        expected = expected.reshape(lazy_signal.data.shape)
+
         # Get decomposition model
         model_signal = lazy_signal.get_decomposition_model(
             components=components, dtype_out=np.float32
         )
 
-        # Check data shape, signal class and image intensities in model
-        # signal after rescaling to 8 bit unsigned integer
+        # Check data shape, signal class and reconstructed intensities
         assert model_signal.data.shape == lazy_signal.data.shape
         assert isinstance(model_signal, kp.signals.LazyEBSD)
-        model_signal.rescale_intensity(relative=True, dtype_out=np.uint8)
-        model_mean = model_signal.data.mean().compute()
-        assert np.allclose(model_mean, mean_intensity, atol=0.1)
+        model_data = model_signal.data.compute()
+        assert np.allclose(model_data, expected, rtol=1e-5, atol=1e-4)
+
+        # Learning results are restored after the call
+        assert lazy_signal.learning_results.factors.shape[1] == factors.shape[1]
 
     @pytest.mark.parametrize("components, mean_intensity", [(None, 132.1), (3, 122.9)])
     def test_get_decomposition_model_write(
