@@ -160,7 +160,7 @@ CHANGELOG gate (it ships a tutorial).
 - [x] CHANGELOG tutorial bullet; signed commit pushed; the three spec documents re-submitted to review (definition of done)
 
 ## Fan-out (plan section 1; after the merge)
-- [ ] Fork PR `feat-NLPAR -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #17); roadmap tick commit "Tick NLPAR boxes in roadmap (jwestraadt/kikuchipy#17)"
+- [x] Fork PR `feat-NLPAR -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #17); roadmap tick commit "Tick NLPAR boxes in roadmap (jwestraadt/kikuchipy#17)" -- opened as jwestraadt/kikuchipy#17 (2026-10-06); number confirmed, CHANGELOG links unchanged
 - [ ] PR merged on the user's go (merge commit; ubuntu/windows CI green); merge sha M recorded here
 - [ ] `hrebsd-dic`: `git merge --no-ff develop`, append-type conflicts resolved HREBSD first then NLPAR; `-k "nlpar or hrebsd"` then the full suite green; nbval on `nlpar.ipynb`; pushed; still never merged into `develop`
 - [ ] `feat-spherical-indexing-nlpar`: clean replay of M with `pick.ps1`/`gate.ps1` as two commits ("Add non-local pattern averaging (NLPAR)", "Add NLPAR tutorial"; `Staged-from:` trailers), equivalence gate and `specs/` grep clean, worktree suite == baseline + NLPAR tests; pushed, no PR; `feat-spherical-indexing` stays at 6723aaf0
