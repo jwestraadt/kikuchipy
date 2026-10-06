@@ -73,3 +73,29 @@ Unlike the spherical phases, this path is built once on fork `develop`
 `hrebsd-dic` and a clean replay onto `feat-spherical-indexing-nlpar`;
 `specs/roadmap.md` carries the gates and `specs/tech-stack.md` the
 rules.
+
+## Fork feature path: HROSM (recorded 2026-10-06)
+
+The fork also carries HROSM (high angular resolution orientation
+similarity maps) as a feature path on branch `feat-HROSM`, spec
+`specs/2026-10-06-hrosm/`: a NumPy port of EMsoftOO's program EMHROSM
+(M. De Graef, 2025, BSD-3; no paper exists) that segments an indexed
+orientation map into grains on its kernel average misorientation
+(KAM), averages each grain's orientation, re-indexes each grain's
+patterns against a fine misorientation ball around that average (5 deg
+radius, 0.25 deg shells, 68,921 orientations by default) with
+kikuchipy's own `EBSDMasterPattern.get_patterns` and normalised
+cross-correlation, and builds a grain-aware orientation similarity map
+from the best matches, as `EBSD.hrosm()` plus eight public building
+blocks in `kikuchipy.indexing`, with a tutorial
+`doc/tutorials/hrosm.ipynb` and a gallery example. It is correct by
+default; `emsoft_compatible=True` reproduces the EMsoftOO develop
+binary's orientation-stage arithmetic, defects included, as twelve
+numbered switches, proven against EMsoft's own programs and files on
+this machine (gated tests and shipped references). The input map can
+come from any indexing method, spherical indexing included. Like
+NLPAR, this path is built once on fork `develop` (one PR, `feat-HROSM
+-> develop`) and fanned out by a merge into `hrebsd-dic` and a clean
+replay onto `feat-spherical-indexing-hrosm`, stacked on
+`feat-spherical-indexing-nlpar`; `specs/roadmap.md` carries the gates
+and `specs/tech-stack.md` the rules.
