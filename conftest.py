@@ -42,6 +42,9 @@ if _XDIST_WORKER and "NUMBA_CACHE_DIR" not in os.environ:
     os.environ["NUMBA_CACHE_DIR"] = str(
         Path(tempfile.gettempdir()) / "kikuchipy-numba-cache" / _XDIST_WORKER
     )
+# The directory chosen above, restored after every test by the autouse
+# fixture ``_keep_numba_cache_dir_per_worker`` below
+_WORKER_NUMBA_CACHE_DIR = os.environ.get("NUMBA_CACHE_DIR") if _XDIST_WORKER else None
 
 from contextlib import contextmanager
 import functools
@@ -123,6 +126,28 @@ if dependency_version["pyvista"] is not None:
 
     pv.OFF_SCREEN = True
     pv.global_theme.interactive = False
+
+
+@pytest.fixture(autouse=True)
+def _keep_numba_cache_dir_per_worker():
+    """Re-assert the worker's Numba cache directory after each test.
+
+    Importing several PyEBSDIndex modules (``band_detect``,
+    ``tripletvote`` and others) sets ``NUMBA_CACHE_DIR`` to one
+    directory shared by every process on the machine, which re-opens
+    the cache race the block at the top of this file closes: kernels
+    compiled later in the same worker (ours and orix's gufuncs) are then
+    written to, and loaded from, the shared directory while other
+    workers do the same. Restoring the worker's directory after each
+    test keeps later compilations in the worker's own cache.
+    """
+    yield
+    expected = _WORKER_NUMBA_CACHE_DIR
+    if expected is not None and os.environ.get("NUMBA_CACHE_DIR") != expected:
+        os.environ["NUMBA_CACHE_DIR"] = expected
+        from numba.core import config as numba_config
+
+        numba_config.reload_config()
 
 
 @pytest.fixture(autouse=False)

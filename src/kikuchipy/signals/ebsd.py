@@ -81,6 +81,11 @@ from kikuchipy.indexing.similarity_metrics._similarity_metric import SimilarityM
 from kikuchipy.io._io import _save
 from kikuchipy.pattern._nlpar import (
     _nlpar_average,
+    _nlpar_check_dthresh,
+    _nlpar_check_sigma,
+    _nlpar_check_sigma_range,
+    _nlpar_check_target_weight,
+    _nlpar_lambda,
     _nlpar_mask_indices,
     _nlpar_saturation_max,
     _nlpar_search_radius,
@@ -1230,15 +1235,14 @@ class EBSD(KikuchipySignal2D):
         ValueError
             If ``lazy_output=True`` and ``inplace=True``, if the signal
             has no navigation axes, or if an argument is invalid.
-        NotImplementedError
-            If ``lam`` is not given, if the signal is lazy or if
-            ``lazy_output=True``: these paths are not implemented yet.
 
         Warns
         -----
         UserWarning
             If the search radius is 0 along every navigation axis, in
-            which case no averaging is performed.
+            which case no averaging is performed, or if ``lam`` is
+            optimised and lies within 1 % of either bound of the search
+            interval [1e-3, 10] (see :meth:`get_nlpar_lambda`).
 
         See Also
         --------
@@ -1266,7 +1270,10 @@ class EBSD(KikuchipySignal2D):
 
         Patterns are processed in float32 in navigation chunks of
         about 8 MB. A lazy signal is read three times (the global
-        maximum, the sigma map and the averaging). An in-memory signal
+        maximum, the sigma pass unless both ``lam`` and ``sigma`` are
+        given, and the averaging). With a lazy output, the progressbar
+        covers only the global maximum and the sigma pass (and the
+        lambda fit), which are computed here. An in-memory signal
         is read once more for the global maximum, and ``inplace=True``
         holds one extra copy of the averaged map while it is computed.
         The Dask configuration of the session (scheduler and number of
@@ -1329,9 +1336,8 @@ class EBSD(KikuchipySignal2D):
         if lazy_output and inplace:
             raise ValueError("'lazy_output=True' requires 'inplace=False'")
 
-        # Every argument is validated before the no-op of a zero radius
-        # and before the guards of the paths that are not implemented
-        # yet, the missing navigation axes first
+        # Every argument is validated before the no-op of a zero radius,
+        # the missing navigation axes first
         nav_shape = self._navigation_shape_rc
         if len(nav_shape) == 0:
             raise ValueError(
@@ -1349,52 +1355,9 @@ class EBSD(KikuchipySignal2D):
                 raise ValueError(f"lam must be > 0 and finite, got {lam!r}")
             lam = float(lam)
 
-        if (
-            isinstance(dthresh, (bool, np.bool_))
-            or not isinstance(dthresh, numbers.Real)
-            or not 0 <= dthresh <= np.finfo(np.float32).max
-        ):
-            raise ValueError(f"dthresh must be >= 0 and finite, got {dthresh!r}")
-        dthresh = np.float32(dthresh)
-
-        if (
-            isinstance(target_weight, (bool, np.bool_))
-            or not isinstance(target_weight, numbers.Real)
-            or not 0 < target_weight < 1
-        ):
-            raise ValueError(
-                f"target_weight must satisfy 0 < target_weight < 1, got "
-                f"{target_weight!r}"
-            )
-
-        if sigma is not None:
-            if isinstance(sigma, np.ndarray) and sigma.ndim == 0:
-                # A 0-d array is a scalar
-                sigma = sigma.item()
-            if isinstance(sigma, (bool, np.bool_)):
-                raise ValueError(f"sigma must be > 0 and finite, got {sigma!r}")
-            if isinstance(sigma, numbers.Real):
-                with np.errstate(over="ignore"):
-                    sigma_value = np.float32(sigma)
-                if not (np.isfinite(sigma_value) and sigma_value > 0):
-                    raise ValueError(f"sigma must be > 0 and finite, got {sigma!r}")
-                sigma = np.full(nav_shape, sigma_value, dtype=np.float32)
-            else:
-                # The navigation shape exactly, (n,) for a 1D scan: an
-                # array of another shape is never reshaped
-                sigma_shape = tuple(np.shape(sigma))
-                if sigma_shape != nav_shape:
-                    raise ValueError(
-                        f"sigma of shape {sigma_shape} must be a scalar or have the "
-                        f"navigation shape {nav_shape}"
-                    )
-                with np.errstate(over="ignore", invalid="ignore"):
-                    sigma = np.array(sigma, dtype=np.float32)
-                if not (np.all(np.isfinite(sigma)) and np.all(sigma > 0)):
-                    raise ValueError(
-                        "sigma must be > 0 and finite in every element (after the "
-                        "cast to float32)"
-                    )
+        dthresh = _nlpar_check_dthresh(dthresh)
+        target_weight = _nlpar_check_target_weight(target_weight)
+        sigma = _nlpar_check_sigma(sigma, nav_shape)
 
         if dtype_out is None:
             dtype_out = self.data.dtype
@@ -1416,19 +1379,7 @@ class EBSD(KikuchipySignal2D):
         saturation_protect = bool(saturation_protect)
 
         if sigma is not None:
-            # The distances scale n sigma^2 (n kept pixels at most) and
-            # divide by sigma^2 in float32: a square that underflows to
-            # 0 or a product that overflows gives NaN patterns
-            n_kept = mask_indices.size
-            with np.errstate(over="ignore", under="ignore"):
-                sigma2 = sigma * sigma
-                bound = np.float32(2 * n_kept) * sigma2
-            if not (np.all(sigma2 > 0) and np.all(np.isfinite(bound))):
-                raise ValueError(
-                    "sigma must be > 0 with sigma^2 > 0 and 2 n sigma^2 finite in "
-                    f"float32 in every element, n = {n_kept} being the number of "
-                    "pixels not excluded by signal_mask"
-                )
+            _nlpar_check_sigma_range(sigma, mask_indices.size)
 
         if all(r == 0 for r in radius):
             # Do nothing if the window is the pattern itself
@@ -1438,22 +1389,17 @@ class EBSD(KikuchipySignal2D):
             )
             return None
 
-        if lam is None:
-            raise NotImplementedError(
-                "lambda optimisation lands in Stage B; pass lam=..."
-            )
-        if self._lazy or lazy_output:
-            raise NotImplementedError("lazy NLPAR lands in Stage B")
-
         # Create dask array of signal patterns and do processing on this
         if self._lazy:
             old_chunks = self.data.chunks
         dask_array = get_dask_array(signal=self, chunk_bytes=8e6, rechunk=True)
 
         return_lazy = lazy_output or (lazy_output is None and self._lazy)
-        register_pbar = not return_lazy and (
-            show_progressbar
-            or (show_progressbar is None and hs.preferences.General.show_progressbar)
+        # Registered whatever the output: the global maximum, the sigma
+        # pass and the lambda fit are computed here even when the
+        # averaging is returned lazily
+        register_pbar = show_progressbar or (
+            show_progressbar is None and hs.preferences.General.show_progressbar
         )
         if register_pbar:
             pbar = ProgressBar()
@@ -1463,7 +1409,19 @@ class EBSD(KikuchipySignal2D):
             # One global maximum feeds the saturation thresholds of both
             # passes, so the result does not depend on the chunking
             max_value = _nlpar_saturation_max(self.data)
-            if sigma is None:
+            if lam is None:
+                # One sigma pass, shared by the lambda fit and the
+                # averaging
+                lam, sigma = _nlpar_lambda(
+                    dask_array,
+                    sigma,
+                    mask_indices=mask_indices,
+                    max_value=max_value,
+                    saturation_protect=saturation_protect,
+                    target_weight=target_weight,
+                    dthresh=dthresh,
+                )
+            elif sigma is None:
                 sigma = _nlpar_sigma(
                     dask_array,
                     mask_indices=mask_indices,
@@ -1547,8 +1505,6 @@ class EBSD(KikuchipySignal2D):
         ValueError
             If the signal has no navigation axes, or if an argument is
             invalid.
-        NotImplementedError
-            If the signal is lazy: this path is not implemented yet.
 
         See Also
         --------
@@ -1580,9 +1536,6 @@ class EBSD(KikuchipySignal2D):
                 "neighbours, so there is nothing to average"
             )
         mask_indices = _nlpar_mask_indices(signal_mask, self._signal_shape_rc)
-
-        if self._lazy:
-            raise NotImplementedError("lazy NLPAR lands in Stage B")
 
         dask_array = get_dask_array(signal=self, chunk_bytes=8e6, rechunk=True)
 
@@ -1632,13 +1585,17 @@ class EBSD(KikuchipySignal2D):
             :meth:`average_non_local_neighbour_patterns`. Default is 0.
         sigma
             Noise level of every pattern. If not given, the sigma map
-            of :meth:`get_nlpar_sigma` is used. A float gives a constant
-            map, and an array of the navigation shape is used as is.
-            Every value must be finite and > 0.
+            of :meth:`get_nlpar_sigma` with the same ``signal_mask`` and
+            ``saturation_protect`` is used. A float gives a constant
+            map, and an array of the navigation shape is used as is
+            (cast to float32). Every value must be finite and > 0, with
+            ``sigma**2 > 0`` and ``2 n sigma**2`` finite in float32,
+            ``n`` being the number of pixels not excluded by
+            ``signal_mask``.
         signal_mask
             Boolean array of the signal shape with ``True`` for pixels
-            to exclude from the distances. If not given, all pixels are
-            used.
+            to exclude from the distances (and sigma). Integer 0/1
+            arrays are accepted. If not given, all pixels are used.
         saturation_protect
             Whether to exclude saturated pixel pairs from the
             distances. Default is ``True``.
@@ -1657,9 +1614,6 @@ class EBSD(KikuchipySignal2D):
         ValueError
             If the signal has no navigation axes, or if an argument is
             invalid.
-        NotImplementedError
-            Always, for now: the lambda optimisation is not implemented
-            yet.
 
         Warns
         -----
@@ -1684,8 +1638,50 @@ class EBSD(KikuchipySignal2D):
         PyEBSDIndex, with every second scan point in both directions
         for maps of one million points or more. The fitted value is
         logged at the INFO level.
+
+        The distances are those of the sigma pass of
+        :meth:`get_nlpar_sigma`, which runs also when ``sigma`` is
+        given. A lazy signal is read twice (the global maximum and the
+        sigma pass).
         """
-        raise NotImplementedError("lambda optimisation lands in Stage B; pass lam=...")
+        nav_shape = self._navigation_shape_rc
+        if len(nav_shape) == 0:
+            raise ValueError(
+                "The signal has no navigation axes: a single pattern has no "
+                "neighbours, so there is nothing to average"
+            )
+        target_weight = _nlpar_check_target_weight(target_weight)
+        dthresh = _nlpar_check_dthresh(dthresh)
+        sigma = _nlpar_check_sigma(sigma, nav_shape)
+        mask_indices = _nlpar_mask_indices(signal_mask, self._signal_shape_rc)
+        if sigma is not None:
+            _nlpar_check_sigma_range(sigma, mask_indices.size)
+
+        dask_array = get_dask_array(signal=self, chunk_bytes=8e6, rechunk=True)
+
+        register_pbar = show_progressbar or (
+            show_progressbar is None and hs.preferences.General.show_progressbar
+        )
+        if register_pbar:
+            pbar = ProgressBar()
+            pbar.register()
+
+        try:
+            max_value = _nlpar_saturation_max(self.data)
+            lam = _nlpar_lambda(
+                dask_array,
+                sigma,
+                mask_indices=mask_indices,
+                max_value=max_value,
+                saturation_protect=bool(saturation_protect),
+                target_weight=target_weight,
+                dthresh=dthresh,
+            )[0]
+        finally:
+            if register_pbar:
+                pbar.unregister()
+
+        return lam
 
     def downsample(
         self,

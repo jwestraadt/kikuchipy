@@ -1539,3 +1539,22 @@ Refuted by both sceptics (not applied):
   `detector`, `xmap`, `static_background` by reference): the return
   construction D1.5 and D8.9 prescribe, identical to
   `average_neighbour_patterns`.
+
+## 12. Stage B code-review disposition table (2026-10-05, fixer)
+
+The Stage B code review left six surviving findings (three major, all
+in the tests, and three minor). The fixer edited only its file list:
+`ebsd.py` (the NLPAR method), `test_ebsd_nlpar.py`, `CHANGELOG.rst`,
+this section, and validation.md (a dated V8 amendment, the V8 pin
+row, ledger entry 15). `_nlpar.py`, `test_nlpar.py` and `conftest.py`
+needed no change. 6 applied, 0 declined. Final run of the two modules
+at `-n 0`: 816 passed, 5 skipped (812 + 4 new); ruff clean.
+
+| id | severity | file | disposition (applied / declined: reason) | what changed |
+|---|---|---|---|---|
+| R1 | major | test_ebsd_nlpar.py | applied (test defect, evidence in ledger entries 14 item 6 and 15 item 1) | `test_lambda_forwards_dthresh_sigma_and_protection`: sigma scaled by 0.8 instead of 1.5 (lambda 3.2527 vs 0.8926 at the default; `lam=None` output equals the forwarded-lambda output and differs from the default-lambda output); the comment says that from x 1.1 every numerator is negative and lambda cannot move the output. Assertions unchanged |
+| R2 | major | test_ebsd_nlpar.py, validation.md V8 | applied as the reviewer's first option; flagged for the main loop, which may revert it to a code finding | V8 rule amended (dated): a metric NLPAR measurably worsens is pinned as a bounded expected loss at 2x the measured loss, rounded outward. `HOUGH_PQ_GAIN = -3.3` (measured -1.639); the comment records the loss and that fit, cm and misorientation improve. The default suite is green |
+| R3 | major | test_ebsd_nlpar.py | applied | The in-place lazy arm adds a `((1, 1, 1, 1), (5,))` input: the `inplace=False` result's chunks differ from it, the in-place result keeps it. The drop-`rechunk(old_chunks)` mutant now dies (ledger entry 15 item 3) |
+| R5 | minor | ebsd.py | applied (code, Notes, new test) | `register_pbar` no longer depends on `return_lazy`: the bar covers the eager global maximum, sigma pass and lambda fit of a lazy output. Notes say what the bar covers with a lazy output. New `test_show_progressbar_covers_the_eager_passes_of_a_lazy_output` (4 cases); the reverted-code mutant fails its 2 True cases. Proposed D1.5 sentence for the main loop: "With a lazy output the progress bar, if shown, covers the eager passes (global maximum, sigma, lambda) only (amended 2026-10-05, Stage B review R5)" |
+| R6 | minor | ebsd.py | applied | Notes: "A lazy signal is read three times (the global maximum, the sigma pass unless both ``lam`` and ``sigma`` are given, and the averaging)." |
+| R8 | minor | CHANGELOG.rst | applied | The "For now ... NotImplementedError" sentence replaced: `lam=None` optimises the weight decay for `target_weight` (default 0.34), `EBSD.get_nlpar_lambda()` returns it, lazy signals are supported (sigma and lambda eager, the averaging lazy unless `lazy_output=False`; `lazy_output=True` from an in-memory signal) |

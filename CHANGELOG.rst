@@ -26,10 +26,12 @@ Added
   ``EBSD.get_nlpar_sigma()`` returns that noise level per pattern for inspection and
   reuse. The kernels are derived from PyEBSDIndex's NLPAR (public domain); the US Naval
   Research Laboratory (David Rowenhorst) is gratefully acknowledged as the original
-  source of the NLPAR implementation. For now the weight decay ``lam`` must be given
-  and the signal must be in memory: ``lam=None``, lazy signals, ``lazy_output=True``
-  and ``EBSD.get_nlpar_lambda()`` raise ``NotImplementedError`` until the lambda
-  optimisation and the lazy path are added.
+  source of the NLPAR implementation. ``lam=None`` optimises the weight decay so that
+  every pattern keeps, on average, a target weight (``target_weight``, default 0.34)
+  in its 3 x 3 neighbourhood, and ``EBSD.get_nlpar_lambda()`` returns that optimised
+  value for inspection and reuse. Lazy signals are supported: the noise level and
+  lambda are computed eagerly, the averaging stays lazy unless ``lazy_output=False``,
+  and ``lazy_output=True`` returns a lazy signal from an in-memory one.
   (`#17 <https://github.com/jwestraadt/kikuchipy/pull/17>`_)
 - Optional CuPy GPU backend for spherical indexing: the new ``backend`` parameter of
   ``kikuchipy.indexing.SphericalIndexer`` and ``EBSD.spherical_indexing()`` accepts

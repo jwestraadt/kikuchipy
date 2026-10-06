@@ -126,19 +126,26 @@ BORDER_BAND_MIN_DIFF: float = 3.63
 # measures 0.078-0.088 s.
 PYEBSDINDEX_JIT_WARMUP_S = 7.4
 
-# Placeholder, measured then pinned: the largest relative difference
-# allowed between the optimised lambda and the closed form
-# sqrt(-c / ln((1 / tw - 1) / 8)) on the constructed fields of eight
-# neighbours at distance c. Seed 1e-3, the class in lambda that
-# Nelder-Mead's fatol of 1e-4 on the objective gives.
-LAMBDA_CLOSED_FORM_REL = 1e-3
+# The largest relative difference allowed between the optimised lambda
+# and the closed form sqrt(-c / ln((1 / tw - 1) / 8)) on the
+# constructed fields of eight neighbours at distance c. The drafting
+# seed was 1e-3, the class in lambda that Nelder-Mead's fatol of 1e-4
+# on the objective gives.
+# Pinned 2026-10-05: measured 6.87e-5 at worst (the border-masked c = 2
+# field at target weight 0.34; the nine all-valid fields 5.3e-7 to
+# 4.9e-5), identical over three runs; pinned at ~2x the worst.
+LAMBDA_CLOSED_FORM_REL = 1.4e-4
 
-# Placeholder, measured then pinned: band (low, high) of the ratio of our
-# phantom-free lambda to the lambda of PyEBSDIndex's objective (out-of-map
-# slots counted with weight 1) at target weight 0.34 on
-# nickel_ebsd_large, raw and background-corrected. Seeds 1.1387 / 1.1164
-# = 1.020 (raw) and 2.5787 / 2.5246 = 1.021 (corrected).
-LAMBDA_PHANTOM_RATIO: tuple[float, float] = (1.010, 1.030)
+# Band (low, high) of the ratio of our phantom-free lambda to the lambda
+# of PyEBSDIndex's objective (out-of-map slots counted with weight 1) at
+# target weight 0.34 on nickel_ebsd_large, raw and background-corrected.
+# Drafting seeds 1.1387 / 1.1164 = 1.020 (raw) and 2.5787 / 2.5246 =
+# 1.021 (corrected).
+# Pinned 2026-10-05: measured 1.138672 / 1.116406 = 1.019944 (raw) and
+# 2.578711 / 2.524609 = 1.021430 (corrected), identical over three runs;
+# pinned on the excess over 1, from half the smaller excess to twice the
+# larger, so a ratio of 1 (phantoms counted by ours too) stays outside.
+LAMBDA_PHANTOM_RATIO: tuple[float, float] = (1.0099, 1.043)
 
 # ------------------------------ Constants ----------------------------- #
 

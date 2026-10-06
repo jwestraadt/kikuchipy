@@ -164,37 +164,52 @@ TWO_GRAIN_BOUNDARY_RESIDUAL_TOL: float = 1.65
 # (phantom-free; 1.1164 with PyEBSDIndex's phantom-counting objective).
 # Which seed pair belongs to the raw and which to the corrected map is
 # re-measured at the gate, not assumed.
-LAMBDA_NI_RAW: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 1.138671875 (phantom-counting 1.11640625),
+# identical over three runs; the raw map holds the smaller pair. Pinned
+# as pytest.approx(measured, rel=0.05), rounded outward.
+LAMBDA_NI_RAW: tuple[float, float] | None = (1.081, 1.196)
 
 # Band (low, high) of get_nlpar_lambda() at target weight 0.34 on the
 # background-corrected nickel_ebsd_large (static, then dynamic
 # background removed with the defaults). Placeholder, measured then
 # pinned. Seed 2.5787 (phantom-free; 2.5246 with phantoms).
-LAMBDA_NI_CORRECTED: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 2.5787109375 (phantom-counting
+# 2.524609375), identical over three runs; rel=0.05, rounded outward.
+LAMBDA_NI_CORRECTED: tuple[float, float] | None = (2.449, 2.708)
 
 # Band (low, high) of the mean average neighbour dot product of the
 # background-corrected nickel_ebsd_large before NLPAR. Placeholder,
 # measured then pinned. Seed 0.600.
-ADP_BEFORE: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.600424, identical over three runs;
+# rel=0.05, rounded outward.
+ADP_BEFORE: tuple[float, float] | None = (0.5704, 0.6305)
 
 # Band (low, high) of the same mean after NLPAR with the optimised
 # lambda (lam=None, about 2.52) at search radius 3. Placeholder,
 # measured then pinned. Seed 0.904.
-ADP_AFTER_AUTO: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.905206 at lambda 2.5787, identical over
+# three runs; rel=0.05, rounded outward.
+ADP_AFTER_AUTO: tuple[float, float] | None = (0.8599, 0.9505)
 
 # Band (low, high) of the same mean after NLPAR with lam=0.7 at search
 # radius 3. Placeholder, measured then pinned. Seed 0.766.
-ADP_AFTER_07: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.765544, identical over three runs;
+# rel=0.05, rounded outward.
+ADP_AFTER_07: tuple[float, float] | None = (0.7272, 0.8039)
 
 # Band (low, high) of the mean image quality of the background-corrected
 # nickel_ebsd_large before NLPAR. Placeholder, measured then pinned.
 # Seed: unmeasured (0.184 seen while drafting these tests, 2026-10-05,
 # not a measurement of record).
-IQ_BEFORE: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.183569, identical over three runs;
+# rel=0.05, rounded outward.
+IQ_BEFORE: tuple[float, float] | None = (0.1743, 0.1928)
 
 # Band (low, high) of the same mean after NLPAR with lam=None.
 # Placeholder, measured then pinned. Seed: unmeasured.
-IQ_AFTER_AUTO: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 0.323195, identical over three runs;
+# rel=0.05, rounded outward.
+IQ_AFTER_AUTO: tuple[float, float] | None = (0.3070, 0.3394)
 
 # Smallest gains of the medians of the Hough indexing quality metrics on
 # the 165 patterns of s.inav[::5, ::5] of the corrected map, after NLPAR
@@ -203,33 +218,57 @@ IQ_AFTER_AUTO: tuple[float, float] | None = None
 # better). Placeholders, measured then pinned: 0.5 x the measured gain
 # where it is positive, 0.0 ("not worse") otherwise, recorded as such.
 # Seeds: unmeasured.
-HOUGH_PQ_GAIN: float | None = None
-HOUGH_FIT_GAIN: float | None = None
-HOUGH_NMATCH_GAIN: float | None = None
-HOUGH_CM_GAIN: float | None = None
+# Pinned 2026-10-05, each identical over three runs. Pattern quality:
+# median 80.564 before, 78.926 after, gain -1.639, a loss: NLPAR
+# lowers the median pattern quality of this subset (the full map:
+# 80.639 to 78.970) while the band fit, the cross-correlation metric
+# and the misorientation improve. The pattern quality is therefore
+# pinned as a bounded, expected loss at 2x the measured loss, rounded
+# outward (-3.3), never as "not worse". Band fit: 0.37362 to 0.31080
+# degrees, gain 0.06281, an improvement, pinned at 0.5x. Matched
+# bands: median 9 before and after, gain 0, "not worse".
+# Cross-correlation metric: 0.74990 to 0.76012, gain 0.01022, an
+# improvement, pinned at 0.5x.
+HOUGH_PQ_GAIN: float | None = -3.3
+HOUGH_FIT_GAIN: float | None = 0.0314
+HOUGH_NMATCH_GAIN: float | None = 0.0
+HOUGH_CM_GAIN: float | None = 0.0051
 
 # Largest median misorientation, in degrees, between the Hough
 # orientations after NLPAR and the orientations stored with the dataset,
 # on the same 165 patterns compared by point order. Placeholder,
 # measured then pinned (~2x); the value before NLPAR is recorded beside
 # it. Seed: unmeasured.
-HOUGH_MISO_MEDIAN_AFTER: float | None = None
+# Pinned 2026-10-05: measured 0.17785 degrees after, 0.22204 before
+# (the full map: 0.17822 after, 0.21656 before), identical over three
+# runs; pinned at ~2x the value after.
+HOUGH_MISO_MEDIAN_AFTER: float | None = 0.36
 
 # Largest coefficient of variation of the sigma map of si_wafer (a
 # single crystal, so a flat map). Placeholder, measured then pinned.
 # Seed: unmeasured.
-SI_SIGMA_CV: float | None = None
+# Pinned 2026-10-05: measured 0.60322, identical over three runs; pinned
+# at rel=0.05 above it. The bulk of the map is flat (median 1.194, 5th
+# to 75th percentile 1.136 to 1.224 grey levels, robust CV 0.040); the
+# CV comes from a tail of 73 points above 2 grey levels (up to 25.0)
+# at patterns of low mean intensity.
+SI_SIGMA_CV: float | None = 0.634
 
 # Band (low, high) of the median number of effective neighbours,
 # 1 / sum_j w_ij^2 of the normalised search-window weights, of si_wafer
 # at the optimised lambda. Placeholder, measured then pinned. Seed:
 # unmeasured.
-SI_NEFF_MEDIAN: tuple[float, float] | None = None
+# Pinned 2026-10-05: measured 4.31816 at lambda 3.42227, identical over
+# three runs; rel=0.05, rounded outward.
+SI_NEFF_MEDIAN: tuple[float, float] | None = (4.102, 4.535)
 
 # Smallest ratio of the mean image quality of si_wafer after NLPAR to
 # the one before (lam=None). Placeholder, measured then pinned. Seed:
 # unmeasured, > 1.
-SI_IQ_GAIN: float | None = None
+# Pinned 2026-10-05: measured 1.24471 (mean image quality 0.46794 before,
+# 0.58245 after), identical over three runs; an improvement, pinned at
+# 1 plus 0.5x the measured gain.
+SI_IQ_GAIN: float | None = 1.122
 
 # --------------------------- Small fixtures ------------------------- #
 
@@ -1357,8 +1396,11 @@ class TestLambdaMethod:
         # of the optimiser on its sigma-pass distances (drafting
         # measurement 2026-10-05, a NumPy transcription of the
         # objective): 0.8926 at dthresh 0, 0.6229 at dthresh 0.5, 0.8935
-        # without protection and 1.0 (the start, weights flat in
-        # lambda) with sigma x 1.5, so every keyword below moves lambda
+        # without protection and 3.2527 with sigma x 0.8, so every
+        # keyword below moves lambda. A larger sigma (x 1.1 and up)
+        # makes every numerator d^2 - n (s_i^2 + s_j^2) negative, so all
+        # weights are 1 whatever lambda is and the optimiser stays at
+        # its start (1.0): such a sigma cannot move the output.
         data = identical_plus_gaussian((12, 12), (32, 32), dtype=np.uint8)
         data[..., :2, :2] = 255
         s = kp.signals.EBSD(data.copy())
@@ -1376,7 +1418,7 @@ class TestLambdaMethod:
         # lam=None optimises with the dthresh, sigma and protection of
         # the averaging that follows, not with their defaults
         sigma = s.get_nlpar_sigma()
-        sigma_scaled = sigma * np.float32(1.5)
+        sigma_scaled = sigma * np.float32(0.8)
         lam_sigma = s.get_nlpar_lambda(sigma=sigma_scaled)
         lam_unprotected = s.get_nlpar_lambda(saturation_protect=False)
         for kwargs, lam_forwarded in [
@@ -1801,6 +1843,20 @@ class TestLazyAndContracts:
         assert s_lazy.data.chunks == old_chunks
         assert np.array_equal(s_lazy.data.compute(), expected)
 
+        # The same with an input chunking that the processing changes:
+        # one row per chunk is merged into the processing chunks, and
+        # the in-place result is put back into the input's chunks
+        fine_chunks = ((1, 1, 1, 1), (5,))
+        s_fine = _lazy_signal(data, fine_chunks)
+        old_chunks = s_fine.data.chunks
+        s_out = s_fine.average_non_local_neighbour_patterns(inplace=False, **kwargs)
+        assert s_out.data.chunks != old_chunks
+        returned = s_fine.average_non_local_neighbour_patterns(**kwargs)
+        assert returned is None
+        assert s_fine._lazy
+        assert s_fine.data.chunks == old_chunks
+        assert np.array_equal(s_fine.data.compute(), expected)
+
         # In place with lazy_output=False, the data is computed into an
         # in-memory array
         s_lazy = _lazy_signal(data, nav_chunks)
@@ -1884,17 +1940,21 @@ class TestLazyAndContracts:
         s = kp.data.nickel_ebsd_large(allow_download=True)
         data = s.data.copy()
         kwargs = {"search_radius": search_radius, "lam": 2.5, "dtype_out": "float32"}
-        # The eager route runs on the default chunking
+        # The eager route runs on the default chunking. Only the row
+        # chunks matter to the depth rule; the column chunks follow
+        # dask's auto-chunking ((47, 28) on dask 2026.3.0, (25, 25, 25)
+        # on dask 2021.8.1), so they are not asserted
         default_chunks = get_dask_array(signal=s, chunk_bytes=8e6, rechunk=True).chunks
-        assert default_chunks[:2] == ((47, 8), (47, 28))
+        assert default_chunks[0] == (47, 8)
         expected = _average(s, **kwargs)
 
-        # Explicit rows (26, 26, 3), processed as ((26, 26, 3), (40, 35)):
-        # the 3-row last chunk is thinner than the depth of the shifted
-        # window of the last rows (4 at radius 3, 6 at radius 4)
+        # Explicit rows (26, 26, 3), kept as the processed row chunks (the
+        # column chunks again follow dask's auto-chunking): the 3-row
+        # last chunk is thinner than the depth of the shifted window of
+        # the last rows (4 at radius 3, 6 at radius 4)
         s_lazy = _lazy_signal(data, ((26, 26, 3), (75,)))
         processed = get_dask_array(signal=s_lazy, chunk_bytes=8e6, rechunk=True).chunks
-        assert processed[:2] == ((26, 26, 3), (40, 35))
+        assert processed[0] == (26, 26, 3)
         _, chunks_out = nlpar_module._nlpar_depth(
             processed, (search_radius, search_radius)
         )
@@ -2059,6 +2119,41 @@ class TestLazyAndContracts:
             _assert_balanced_registration(events)
         else:
             assert events == []
+
+    @pytest.mark.parametrize("lam", [1.0, None])
+    @pytest.mark.parametrize(
+        "show_progressbar, registered", [(True, True), (False, False)]
+    )
+    def test_show_progressbar_covers_the_eager_passes_of_a_lazy_output(
+        self, monkeypatch, random_uniform_saturated, lam, show_progressbar, registered
+    ):
+        # The global maximum, the sigma pass and the lambda fit are
+        # computed inside the method even when the averaging is
+        # returned lazily, so the bar follows show_progressbar there too
+        events = []
+
+        class RecordingProgressBar:
+            def register(self):
+                events.append("register")
+
+            def unregister(self):
+                events.append("unregister")
+
+        monkeypatch.setattr(ebsd_module, "ProgressBar", RecordingProgressBar)
+        data = _random_map(random_uniform_saturated)
+        for s, kwargs in [
+            (kp.signals.EBSD(data.copy()), {"lazy_output": True}),
+            (_lazy_signal(data, (-1, -1)), {}),
+        ]:
+            events.clear()
+            s_out = s.average_non_local_neighbour_patterns(
+                lam=lam, inplace=False, show_progressbar=show_progressbar, **kwargs
+            )
+            assert isinstance(s_out, kp.signals.LazyEBSD)
+            if registered:
+                _assert_balanced_registration(events)
+            else:
+                assert events == []
 
     def test_sigma_argument_contract(self, monkeypatch, random_uniform_saturated):
         data = _random_map(random_uniform_saturated)

@@ -101,11 +101,14 @@ PyEBSDIndex's compiled kernels.
 from __future__ import annotations
 
 import logging
+import numbers
+import warnings
 
 import dask.array as da
 from dask.array.overlap import ensure_minimum_chunksize
 from numba import njit
 import numpy as np
+from scipy.optimize import minimize
 from skimage.util.dtype import dtype_range
 
 _logger = logging.getLogger(__name__)
@@ -707,7 +710,10 @@ def _nlpar_lambda_objective(
     form, instead of ``max(d, dthresh)``. The two forms coincide at
     ``dthresh = 0``. The statistic over points is the mean.
     """
-    raise NotImplementedError
+    w = np.exp(-np.maximum(d - dthresh, np.float32(0.0)) / lam**2)
+    w[~valid] = 0.0
+    s = w.sum(axis=-1)
+    return float(np.mean(np.abs(target_weight - 1.0 / s)))
 
 
 def _nlpar_optimize_lambda(
@@ -763,7 +769,38 @@ def _nlpar_optimize_lambda(
     target weight {target_weight} (objective {F:.2e})" is emitted
     through the module logger per call.
     """
-    raise NotImplementedError
+    if d.shape[0] * d.shape[1] >= 1e6:
+        d = d[::2, ::2]
+        valid = valid[::2, ::2]
+
+    result = minimize(
+        _nlpar_lambda_objective,
+        x0=np.array([1.0]),
+        args=(d, valid, dthresh, target_weight),
+        method="Nelder-Mead",
+        bounds=[(1e-3, 10.0)],
+        options={"fatol": 1e-4},
+    )
+    lam = float(result.x[0])
+    objective = float(result.fun)
+
+    which = None
+    if lam <= 1.01e-3:
+        which = "lower"
+    elif lam >= 9.9:
+        which = "upper"
+    if which is not None:
+        warnings.warn(
+            f"NLPAR lambda optimisation hit the {which} bound ({lam:.4f}); the "
+            f"target weight {target_weight} is not supported by the data",
+            UserWarning,
+        )
+
+    _logger.info(
+        f"NLPAR: optimised lambda {lam:.4f} for target weight {target_weight} "
+        f"(objective {objective:.2e})"
+    )
+    return lam
 
 
 # -------------------------- Driver helpers -------------------------- #
@@ -865,6 +902,152 @@ def _nlpar_search_radius(
                 f"got {search_radius!r}"
             )
     return tuple(int(r) for r in radius)
+
+
+def _nlpar_check_dthresh(dthresh: float) -> np.float32:
+    """Return a validated distance threshold as float32.
+
+    Parameters
+    ----------
+    dthresh
+        Distance threshold, a real number (not a bool), >= 0 and finite
+        in float32.
+
+    Returns
+    -------
+    dthresh
+        The threshold as float32.
+
+    Raises
+    ------
+    ValueError
+        If the threshold is invalid ("dthresh must be >= 0 and finite").
+    """
+    if (
+        isinstance(dthresh, (bool, np.bool_))
+        or not isinstance(dthresh, numbers.Real)
+        or not 0 <= dthresh <= np.finfo(np.float32).max
+    ):
+        raise ValueError(f"dthresh must be >= 0 and finite, got {dthresh!r}")
+    return np.float32(dthresh)
+
+
+def _nlpar_check_target_weight(target_weight: float) -> float:
+    """Return a validated target weight unchanged.
+
+    Parameters
+    ----------
+    target_weight
+        Target weight, a real number (not a bool) in (0, 1).
+
+    Returns
+    -------
+    target_weight
+        The target weight as given.
+
+    Raises
+    ------
+    ValueError
+        If the target weight is invalid ("0 < target_weight < 1").
+    """
+    if (
+        isinstance(target_weight, (bool, np.bool_))
+        or not isinstance(target_weight, numbers.Real)
+        or not 0 < target_weight < 1
+    ):
+        raise ValueError(
+            f"target_weight must satisfy 0 < target_weight < 1, got {target_weight!r}"
+        )
+    return target_weight
+
+
+def _nlpar_check_sigma(
+    sigma: float | np.ndarray | None, nav_shape: tuple[int, ...]
+) -> np.ndarray | None:
+    """Return a given noise level as a float32 map of the navigation
+    shape.
+
+    Parameters
+    ----------
+    sigma
+        A real number (not a bool), a 0-d array (taken as a scalar), an
+        array of the navigation shape, or None.
+    nav_shape
+        Navigation shape (row, column), or ``(n,)`` for a 1-D scan.
+
+    Returns
+    -------
+    sigma
+        Float32 map of the navigation shape, or None if not given.
+
+    Raises
+    ------
+    ValueError
+        If a scalar is not finite and > 0 in float32, or an array does
+        not have the navigation shape exactly ("navigation shape") or
+        has an element that is not finite and > 0 after the cast to
+        float32 ("sigma must be > 0").
+    """
+    if sigma is None:
+        return None
+    if isinstance(sigma, np.ndarray) and sigma.ndim == 0:
+        # A 0-d array is a scalar
+        sigma = sigma.item()
+    if isinstance(sigma, (bool, np.bool_)):
+        raise ValueError(f"sigma must be > 0 and finite, got {sigma!r}")
+    if isinstance(sigma, numbers.Real):
+        with np.errstate(over="ignore"):
+            sigma_value = np.float32(sigma)
+        if not (np.isfinite(sigma_value) and sigma_value > 0):
+            raise ValueError(f"sigma must be > 0 and finite, got {sigma!r}")
+        return np.full(nav_shape, sigma_value, dtype=np.float32)
+
+    # The navigation shape exactly, (n,) for a 1D scan: an array of
+    # another shape is never reshaped
+    sigma_shape = tuple(np.shape(sigma))
+    if sigma_shape != tuple(nav_shape):
+        raise ValueError(
+            f"sigma of shape {sigma_shape} must be a scalar or have the navigation "
+            f"shape {tuple(nav_shape)}"
+        )
+    with np.errstate(over="ignore", invalid="ignore"):
+        sigma = np.array(sigma, dtype=np.float32)
+    if not (np.all(np.isfinite(sigma)) and np.all(sigma > 0)):
+        raise ValueError(
+            "sigma must be > 0 and finite in every element (after the cast to float32)"
+        )
+    return sigma
+
+
+def _nlpar_check_sigma_range(sigma: np.ndarray, n_kept: int) -> None:
+    """Check that a given noise level keeps the float32 distances
+    finite.
+
+    Parameters
+    ----------
+    sigma
+        Float32 map from :func:`_nlpar_check_sigma`.
+    n_kept
+        Number of pixels not excluded by the signal mask.
+
+    Raises
+    ------
+    ValueError
+        Unless ``sigma * sigma > 0`` and ``2 n_kept sigma^2`` is finite
+        in float32 in every element ("sigma must be > 0 with sigma").
+    """
+    # The distances scale n sigma^2 (n kept pixels at most) and divide
+    # by sigma^2 in float32: a square that underflows to 0 or a product
+    # that overflows gives NaN patterns
+    with np.errstate(over="ignore", under="ignore"):
+        sigma2 = sigma * sigma
+        bound = np.float32(2 * n_kept) * sigma2
+    if not (np.all(sigma2 > 0) and np.all(np.isfinite(bound))):
+        raise ValueError(
+            "sigma must be > 0 with sigma^2 > 0 and 2 n sigma^2 finite in float32 in "
+            f"every element, n = {n_kept} being the number of pixels not excluded by "
+            "signal_mask"
+        )
 
 
 def _nlpar_saturation_max(dask_array: da.Array | np.ndarray) -> np.float32:
@@ -1470,3 +1653,64 @@ def _nlpar_average(
     if one_dimensional:
         averaged = averaged[0]
     return averaged
+
+
+def _nlpar_lambda(
+    dask_array: da.Array,
+    sigma: np.ndarray | None,
+    *,
+    mask_indices: np.ndarray,
+    max_value: np.float32,
+    saturation_protect: bool,
+    target_weight: float,
+    dthresh: np.float32,
+) -> tuple[float, np.ndarray]:
+    """Run the sigma pass and return the optimised lambda and the sigma
+    map it used.
+
+    Parameters
+    ----------
+    dask_array
+        Map of shape (n_rows, n_cols, h, w), or a 1-D scan of shape
+        (n, h, w), of any real data type.
+    sigma
+        Noise level of every pattern, float32 of the navigation shape,
+        or None to use the estimate of the sigma pass.
+    mask_indices
+        Flat indices of the kept pixels, int64 in ascending order.
+    max_value
+        Global maximum of the map as float32.
+    saturation_protect
+        Whether to exclude saturated pixel pairs.
+    target_weight
+        Normalised weight a pattern should keep for itself, in (0, 1).
+    dthresh
+        Distance threshold as float32, >= 0.
+
+    Returns
+    -------
+    lam
+        Optimised lambda from :func:`_nlpar_optimize_lambda`.
+    sigma
+        The given sigma, or the estimate of the sigma pass, float32 of
+        shape (n_rows, n_cols), (1, n) for a 1-D scan.
+
+    Notes
+    -----
+    The sigma pass runs once: its raw accumulators give the normalised
+    3 x 3 distances with the given or the estimated sigma, so the
+    averaging pass that follows can reuse the returned sigma.
+    """
+    sigma_pass, d2, n2, valid = _nlpar_sigma(
+        dask_array,
+        mask_indices=mask_indices,
+        max_value=max_value,
+        saturation_protect=saturation_protect,
+    )
+    if sigma is None:
+        sigma = sigma_pass
+    else:
+        sigma = np.asarray(sigma, dtype=np.float32).reshape(sigma_pass.shape)
+    d = _nlpar_normalized_distances(d2, n2, valid, sigma)
+    lam = _nlpar_optimize_lambda(d, valid, target_weight, dthresh)
+    return lam, sigma
