@@ -3254,3 +3254,58 @@ This section is filled at each stage's failing-tests gate
 (measurements + pins with recipes and machine) and review gate
 (re-measurements, disposition pointers), each in its own numbered,
 dated subsection.
+
+### 19. 2026-10-06 (Stage C validation matrix)
+
+Stage C fixer, Opus 5.5. Review findings F1 to F7 dispositioned: F1 (major) applied, F2 to F6
+(minor) applied, F7 (environmental) recorded below. All notebook edits were to markdown cells
+(cells 1 and 38), so the stored outputs are unchanged; the notebook was nonetheless re-executed on a
+scratch copy and re-validated with nbval.
+
+Fixes:
+- F1: CHANGELOG "Added" gains "Tutorial on non-local pattern averaging (NLPAR),
+  ``doc/tutorials/nlpar.ipynb``, and a gallery example." with the fork PR link #17, above the NLPAR
+  method bullet (the #12 / #14 precedent). PR #17 must exist before merge (the link 404s until then).
+- F3: cell 1 cites `<cite data-cite="brewick2019nlpar">Brewick et al. (2019)</cite>` instead of a
+  raw DOI link.
+- F4: the si_wafer snippet calls `get_nlpar_lambda(sigma=sigma_si)`; the 8.5 s is now attributed
+  to `average_non_local_neighbour_patterns(lam=None, inplace=False, lazy_output=False)` from scratch.
+- F5: "reads a lazy signal three times ... unless both `lam` and `sigma` are given, in which case
+  the noise estimate is skipped".
+- F6: N_eff sentence now says "For the 100 patterns at the centre of the map, the median effective
+  number of patterns averaged (..., the pattern itself included) is 4.32 of the 49 in the window".
+
+Matrix after fixes (Windows 11, 20-core workstation, `.venv`, Git Bash):
+(a) Clean-kernel execute: PASS. `uv run --no-sync --with ipykernel --with nbconvert jupyter
+    nbconvert --to notebook --execute` on a scratch copy: 16.2 s wall (kernel start included);
+    with NUMBA/OMP/MKL/OPENBLAS threads and DASK_NUM_WORKERS limited to 2: 16.6 s (warm numba
+    cache). Outputs identical to the stored ones up to the sanitised PyEBSDIndex speed lines.
+(b) nbval: PASS, 18 of 18 in 12.2 s. Working command (nbval is not installed in `.venv`):
+    `uv run --no-sync --with nbval pytest --nbval doc/tutorials/nlpar.ipynb
+    --nbval-sanitize-with doc/tutorials/tutorials_sanitize.cfg -p no:cacheprovider`.
+(c) Sphinx build: unchanged from the review run (exit 0, only the four codeautolink
+    "Could not match transformation" lines for nlpar.rst); the new citation key exists in
+    `doc/user/bibliography.bib` and uses the `<cite data-cite>` form that pattern_processing.ipynb
+    uses with `bibtex_bibfiles = ["user/bibliography.bib"]`.
+(d) External links: PASS (as in the review run; the DOI link was replaced by the citation).
+(e) Names and spelling: PASS.
+(f) Never-sweep: PASS. Only nlpar.ipynb (untracked), index.rst, run_nbval.sh, CHANGELOG.rst and
+    this ledger are touched; no other notebook modified.
+(g) Numbers: PASS, unchanged (no code cell changed).
+(h) No em-dashes, en-dashes or " -- "; notebook ASCII; no specs/ path or spec ids in the
+    notebook, example, CHANGELOG bullet, index.rst or run_nbval.sh; notebook-level metadata has no
+    `widgets` block.
+(i) Gallery example: unchanged, PASS.
+CHANGELOG gate: PASS (F1).
+
+Stored-outputs decision: KEEP the stored outputs. Warm-cache execution here is 16 to 17 s even with
+2 threads, but the Read the Docs builder starts with a cold numba cache and has to download
+`nickel_ebsd_large`: a cold-cache run here (fresh `NUMBA_CACHE_DIR`) had already spent 39 s, more
+than twice the warm run, before the kernel died (the known PyEBSDIndex numba-cache redirection to
+`~/.pyebsdindex/numbacache` mixing with the fresh directory; environmental, not a notebook defect).
+Extrapolated to ~2 vCPUs with cold JIT of the NLPAR, orix and PyEBSDIndex kernels plus the download,
+the estimate is at or above the ~2 min threshold, so outputs stay stored (as in
+spherical_indexing.ipynb and hybrid_indexing.ipynb). With `nbsphinx_execute = "auto"` Read the
+Docs therefore does not execute the notebook; nbval keeps the stored outputs honest.
+
+Verdict: green. Stage C closes pending PR #17.

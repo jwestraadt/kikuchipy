@@ -154,10 +154,10 @@ CHANGELOG gate (it ships a tutorial).
 - [x] Gates as Stage A; CHANGELOG bullet extended for `lam=None`; signed commits pushed
 
 ## Stage C -- tutorial
-- [ ] `doc/tutorials/nlpar.ipynb` (formulas + acknowledgement; synthetic two-grain demo with sigma map and boundary preservation vs Gaussian `average_neighbour_patterns`; `nickel_ebsd_large` sigma map, lambda-vs-target curve, before/after patterns, IQ/ADP maps, Hough indexing before/after; `si_wafer` numbers quoted from the ledger; parameter guidance; differences from PyEBSDIndex and from upstream #824); `hybrid_indexing.ipynb` untouched, linked
-- [ ] Registration: `doc/tutorials/index.rst` after `pattern_processing`, `NOTEBOOKS` entry in `run_nbval.sh`, `tutorials_sanitize.cfg` regexes as needed, stored outputs if > ~2 min on the RTD builder; gallery example `examples/pattern_processing/nlpar.py`
-- [ ] Validation matrix + failure-mode review (clean-kernel execute, nbval, html render inspection, linkcheck, name/spell pass) + fixes; `sphinx-build -b html` exit 0
-- [ ] CHANGELOG tutorial bullet; signed commit pushed; the three spec documents re-submitted to review (definition of done)
+- [x] `doc/tutorials/nlpar.ipynb` (formulas + acknowledgement; synthetic two-grain demo with sigma map and boundary preservation vs Gaussian `average_neighbour_patterns`; `nickel_ebsd_large` sigma map, lambda-vs-target curve, before/after patterns, IQ/ADP maps, Hough indexing before/after; `si_wafer` numbers quoted from the ledger; parameter guidance; differences from PyEBSDIndex and from upstream #824); `hybrid_indexing.ipynb` untouched, linked
+- [x] Registration: `doc/tutorials/index.rst` after `pattern_processing`, `NOTEBOOKS` entry in `run_nbval.sh`, `tutorials_sanitize.cfg` regexes as needed, stored outputs if > ~2 min on the RTD builder; gallery example `examples/pattern_processing/nlpar.py`
+- [x] Validation matrix + failure-mode review (clean-kernel execute, nbval, html render inspection, linkcheck, name/spell pass) + fixes; `sphinx-build -b html` exit 0
+- [x] CHANGELOG tutorial bullet; signed commit pushed; the three spec documents re-submitted to review (definition of done)
 
 ## Fan-out (plan section 1; after the merge)
 - [ ] Fork PR `feat-NLPAR -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #17); roadmap tick commit "Tick NLPAR boxes in roadmap (jwestraadt/kikuchipy#17)"

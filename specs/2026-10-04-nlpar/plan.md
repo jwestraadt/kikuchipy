@@ -1558,3 +1558,98 @@ at `-n 0`: 816 passed, 5 skipped (812 + 4 new); ruff clean.
 | R5 | minor | ebsd.py | applied (code, Notes, new test) | `register_pbar` no longer depends on `return_lazy`: the bar covers the eager global maximum, sigma pass and lambda fit of a lazy output. Notes say what the bar covers with a lazy output. New `test_show_progressbar_covers_the_eager_passes_of_a_lazy_output` (4 cases); the reverted-code mutant fails its 2 True cases. Proposed D1.5 sentence for the main loop: "With a lazy output the progress bar, if shown, covers the eager passes (global maximum, sigma, lambda) only (amended 2026-10-05, Stage B review R5)" |
 | R6 | minor | ebsd.py | applied | Notes: "A lazy signal is read three times (the global maximum, the sigma pass unless both ``lam`` and ``sigma`` are given, and the averaging)." |
 | R8 | minor | CHANGELOG.rst | applied | The "For now ... NotImplementedError" sentence replaced: `lam=None` optimises the weight decay for `target_weight` (default 0.34), `EBSD.get_nlpar_lambda()` returns it, lazy signals are supported (sigma and lambda eager, the averaging lazy unless `lazy_output=False`; `lazy_output=True` from an in-memory signal) |
+
+## 13. Post-implementation spec review (2026-10-06)
+
+The spec re-submission critic (plan section 5, `nlpar-stage-close`,
+Opus 5.5), read-only except for this section. Inputs: the three
+documents of this folder against `git diff develop...HEAD` (HEAD
+a15992db, Stages A and B) plus the uncommitted Stage C working tree
+(`nlpar.ipynb`, `examples/pattern_processing/nlpar.py`, `index.rst`,
+`run_nbval.sh`, `CHANGELOG.rst`, ledger entry 19). Checked by reading
+and by command:
+
+- the method and helper signatures (`ebsd.py`, `_nlpar.py`);
+- every `Test*`/`test_*` name in both test modules against the names
+  in the three documents. Every spec name exists apart from
+  `test_stage_a_guards_raise_not_implemented`, which was deleted on
+  purpose. The extra shipped names are the templated
+  `_compiled_<generator>` and `<kernel>_py_func_` tests;
+- the notebook, cell by cell, with its stored outputs;
+- `black --line-length 77 --check` on the notebook and the example
+  (both left unchanged);
+- ASCII and em-dash scans (clean);
+- the clean-replay grep on the Stage C files (clean);
+- the quoted numbers against ledger entries 7, 14, 17 and 18. All
+  match: lambdas 1.139 / 2.579; ADP 0.600 -> 0.905 and 0.766; IQ
+  0.184 -> 0.323; Hough `pq` 80.564 -> 78.926, while fit, cm and
+  misorientation improve; `si_wafer` CV 0.603, N_eff 4.32, IQ gain
+  1.245; runtimes 1.6 s / 8.5 s.
+
+The method signatures, the defaults, the twelve "Differences" items
+and the CHANGELOG bullets match the spec. Every row below is an
+amendment dated 2026-10-06. The sections above are not edited, and a
+row's amendment text is the reading in force.
+
+| # | location | what the spec says | what shipped | amendment text |
+|---|---|---|---|---|
+| 13.1 | plan 4.1.3; requirements D12.1; roadmap Stage C box 1; validation Manual (first two items) | The synthetic demo is "the V5 generator" (`two_grain`, grain B = grain A + 30), shown with "the sigma map" of the synthetic map | The notebook builds its own 10 x 16 map of 32 x 32 patterns: grain A is a ramp 40-200, grain B the same ramp reversed, with Gaussian noise 8 and seed 1. Sigma is printed as min / median / max (7.46 / 7.76 / 8.09), not plotted. Lambda comes from `get_nlpar_lambda()` (0.905), not V5's 0.7 / 2.5. Added beyond the spec: the NumPy weight map of boundary pattern (5, 7), in which the grain B weights are exactly 0; a least-squares grain-B fraction per column (NLPAR 0.01 / 1.01 against Gaussian 0.31 / 0.70 at columns 7 / 8); and the noise rms, 8.0 -> 1.7 | The tutorial's two-grain demo is a self-contained map, not the test generator. Grain B is the reversed ramp, so the boundary contrast is visible in the patterns. Its sigma is reported as printed statistics. The nickel sigma map (13.2) meets the sigma-map figure requirement. The figure shows the weight map of one boundary pattern, the noisy / NLPAR / Gaussian 5 x 5 patterns and the grain-B fraction per column |
+| 13.2 | plan 4.1.4; validation Manual (items 2 and 3) | Ni: remove the backgrounds, then plot the `get_nlpar_sigma()` map; lambda for targets 0.5 / 0.34 / 0.25, with the curve. The Manual asks for targets 0.1 to 0.9, marks at 0.34 and at the PyEBSDIndex-style value, and sigma maps of both the raw and the corrected map | Raw sigma (median 2.16) and raw lambda (1.139) are printed before background removal. The sigma map is plotted for the corrected map only (median 17.02, colour bar in grey levels). The curve covers targets 0.2, 0.25, 0.3, 0.34, 0.4, 0.5 and 0.6, with 0.25 / 0.34 / 0.5 printed (3.643 / 2.579 / 1.667) and no marks. There is an extra fixed `lam=0.7` arm (IQ 0.253, ADP 0.766) | The Ni section prints the raw sigma and lambda and plots the corrected sigma map only. The lambda curve covers 0.2-0.6, the useful range, with three values printed and no marks. The `lam=0.7` arm is part of the tutorial |
+| 13.3 | validation Manual (items 4 and 5) | Before/after patterns at three positions (interior, edge, grain boundary); Hough before/after with IPF maps and `pq`/`cm` histograms | One position, (50, 8), which is also the thumbnail cell. Hough results are a table of medians (`pq`, `fit`, `nmatch`, `cm`) plus the median misorientation to the stored orientations. The `pq` drop is explained with the full-map weekly value, 80.6 -> 79.0 | The shipped form is one before/after pattern pair and a table of medians. IPF maps and histograms are not part of the tutorial |
+| 13.4 | validation Manual (item 7) | The parameter guidance covers search radius, lambda, dthresh and saturation | The guidance bullets cover `lam`/`target_weight`, `search_radius`, `dthresh`, reuse of `sigma`/`lam`, `signal_mask` and `dtype_out`. `saturation_protect` is explained in the formulas section only | Saturation handling is documented in the formulas section. The guidance list is as shipped |
+| 13.5 | plan 4.1.8; requirements D12.6 heading | Section "Differences from PyEBSDIndex and from upstream #824" | The heading is "Differences from PyEBSDIndex and from an earlier kikuchipy proposal", with #824 linked in the first paragraph. All twelve D12.6 items are present in prose, in a different order | The tutorial heading calls #824 "an earlier kikuchipy proposal". The docstring keeps the D12.6 heading |
+| 13.6 | plan 4.3; requirements D12.1 | Execution expected well under 2 min; outputs stored only above ~2 min on the RTD builder; command `uv run --with ipykernel jupyter nbconvert ...` | Outputs are STORED (ledger entry 19). Warm execution takes 16.2 s (16.6 s with two threads). With a cold numba cache and the `nickel_ebsd_large` download, the extrapolated time on ~2 vCPUs is about 2 min or more. With `nbsphinx_execute = "auto"`, RTD does not execute the notebook. The command used was `uv run --no-sync --with ipykernel --with nbconvert jupyter nbconvert --to notebook --execute --inplace doc/tutorials/nlpar.ipynb`, after which the `metadata.widgets` block was stripped | Storing the outputs is the measured decision. The execution command is the `--no-sync --with nbconvert` form |
+| 13.7 | plan 4.6; validation Manual (nbval) | nbval runs through `./doc/tutorials/run_nbval.sh`, restricted to the new notebook | nbval is not installed in `.venv`. Ledger entry 19 ran `uv run --no-sync --with nbval pytest --nbval doc/tutorials/nlpar.ipynb --nbval-sanitize-with doc/tutorials/tutorials_sanitize.cfg -p no:cacheprovider` (18 of 18 passed). `run_nbval.sh` has the `nlpar.ipynb` entry for CI | The local nbval gate is the `uv run --no-sync --with nbval` command. `run_nbval.sh` holds the registration |
+| 13.8 | requirements D12.3 | Gallery example: "`nickel_ebsd_small` or the large dataset if cached, default parameters, a before/after figure" | As in plan 4.4: `nickel_ebsd_large(allow_download=True)`, static and dynamic background removed, pattern (50, 8) kept, `lam=None` (the default), IQ histograms and a 2 x 2 figure | D12.3 reads as plan 4.4 does: the large dataset with `allow_download=True` |
+| 13.9 | plan 4.6 and section 5 (`nlpar-stage-review`: the fixer "appends the disposition table to this file"); roadmap Stage C box 3; validation Manual and DoD ("the Manual list ticked") | Stage C review dispositions appended to plan.md; html render inspection and the linkcheck via `output.json` recorded; Manual list ticked; one end-user smoke run | The Stage C review dispositions (F1-F7) are in ledger entry 19 only; there is no plan.md table. F1 and F3-F6 are described. F2 is not described anywhere, and F7 only as the cold-cache note. The render inspection and the linkcheck are recorded only as "unchanged from the review run" and "PASS"; the run itself is not recorded. The Manual list is not ticked item by item, and there is no record of a smoke run | Before the Stage C commit, record in the ledger: F2's finding and disposition, the render-inspection and linkcheck evidence, and the Manual list ticks, with 13.1-13.4 as the accepted deviations. Ledger entry 19 stands in for a plan.md Stage C disposition table |
+| 13.10 | plan 9; validation DoD ("re-submitted to adversarial review ... fidelity + conventions critics, fixer disposition table appended to plan.md") | Two critics and a fixer table | One read-only spec re-submission critic (plan section 5, `nlpar-stage-close`) that writes the amendment rows of this section | This section is the re-submission record. It meets the definition-of-done item once the main loop folds in or accepts these rows |
+| 13.11 | plan 8 (commits 1-7) | Commit 2, then commit 3 ("Implement NLPAR Stage A ...") | Two extra commits sit between them and are already on `origin/feat-NLPAR`: d2b73acd "WIP checkpoint: NLPAR Stage A implementation (pre-review)" and cec8efc9 "WIP checkpoint: NLPAR Stage A review fixes, spec amendments (bug injection parked)". 14a023ef then closes Stage A. Commit 6 (Stage C) had not been made at this review | The history carries the two Stage A checkpoint commits from the parked-session resume. Commit 6 follows this review |
+| 13.12 | validation DoD (commit trailer) | `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` | The commits carry the session trailer (`Claude Opus 5.5`), as plan 8's 2026-10-05 amendment says | The trailer always follows the session (plan 8). The Fable string in the validation DoD is history |
+| 13.13 | plan 3.4 ("pin only measured improvements ..., 'not worse' otherwise"); validation DoD ("each labelled 'improvement' or 'not worse'") | Two pin classes for the Hough metrics | `HOUGH_PQ_GAIN = -3.3`, a bounded expected loss at 2x the measured -1.639 (V8 amended 2026-10-05, Stage B review R2). It was kept in a15992db, so the option "main loop may revert this" was not taken | The Hough pins have three classes: improvement (>= 0.5x the gain), not worse, and bounded expected loss (2x the measured loss, `pq` only). The R2 decision is final |
+| 13.14 | plan 3.3; validation V7 bullet `test_lazy_equals_eager_nickel_ebsd_large_last_chunk_26_26_3` | Processed chunks `((26, 26, 3), (40, 35))` and default chunks `((47, 8), (47, 28))` | The test asserts only the ROW chunks (`default_chunks[0] == (47, 8)`, `processed[0] == (26, 26, 3)`), because the column chunks depend on the dask version (`(25, 25, 25)` on dask 2021.8.1). The depth and bitwise assertions are unchanged (ledger entries 17 h and 18 item 1) | The column chunks quoted for this test are dask 2026.3.0 measurements, not assertions. Only the row chunks are pinned |
+| 13.15 | plan 0.3 (tech-stack "Numba-cache flake rule" and "Fixtures" bullets); plan 2.14 (root `conftest.py` contents) | The root `conftest.py` gains the four generators and `EXP_KERNEL_ULP` (and, per section 11, `circle_mask` and `counting_spy`). The cache flake is handled by running `-n 0` first and re-running red tests alone | The root `conftest.py` also records `_WORKER_NUMBA_CACHE_DIR` when a worker starts. Its autouse fixture `_keep_numba_cache_dir_per_worker` restores that directory, with `numba.core.config.reload_config()`, after any test that changed it. The full suite at `-n 4` then ran twice with 4928 passed and 0 failed (ledger entry 18 item 2) | The root `conftest.py` re-asserts each worker's numba cache directory after every test. The rule of running `-n 0` first and re-running red tests alone stays as a fallback. `specs/tech-stack.md` gets the same sentence the next time the constitution is touched |
+| 13.16 | plan section 2 module list (2.7-2.11) and 3.2 | Private helpers `_nlpar_mask_indices`, `_nlpar_search_radius`, `_nlpar_saturation_max`, `_nlpar_finalize`, `_nlpar_depth`, the two chunk wrappers, `_nlpar_unpack_sigma_pass`, `_nlpar_sigma` and `_nlpar_average`, then `_nlpar_lambda_objective` and `_nlpar_optimize_lambda` | Also shipped: `_nlpar_check_dthresh`, `_nlpar_check_target_weight`, `_nlpar_check_sigma` and `_nlpar_check_sigma_range` (the D1.6 checks; the last is F-FID-1's float32 range check); `_nlpar_core_bounds(nav_shape, depth, block_info)` (the kept region, shared by both wrappers); `_nlpar_as_map` (two navigation axes with each signal axis in one chunk, which is also the 1-D route); and `_nlpar_lambda(dask_array, sigma, *, ...) -> (lam, sigma)` (the sigma pass plus the optimiser, shared by `get_nlpar_lambda` and `lam=None`) | The module list includes these seven private helpers, with the signatures in `_nlpar.py` |
+| 13.17 | requirements D1.5 | Section 12 R5 proposed, for the main loop: "With a lazy output the progress bar, if shown, covers the eager passes (global maximum, sigma, lambda) only" | The code and Notes ship R5 (`register_pbar` no longer depends on `return_lazy`; `test_show_progressbar_covers_the_eager_passes_of_a_lazy_output`). The sentence is not in requirements.md | D1.5 carries the R5 sentence as proposed in section 12 (amended 2026-10-05, applied here by reference) |
+| 13.18 | validation V9 `test_si_wafer_sigma_cv` ("a single crystal should have a flat sigma map"); ledger entry 14 item 5 ("whether `SI_SIGMA_CV` should be a robust statistic is for the spec") | A flat sigma map is expected | The plain CV is pinned at 0.634 (measured 0.603). The bulk is flat (robust CV 0.040); 73 of 2500 low-intensity patterns above 2 grey levels set the CV. The tutorial quotes 0.603 and explains the tail | Decided: the plain CV stays the pinned statistic, as in the shipped test. The flat-map expectation holds for the bulk only, and the tutorial documents the tail |
+| 13.19 | requirements Scope (non-goal "Edits to `doc/tutorials/hybrid_indexing.ipynb`") | "the new tutorial links to it (D12.5)" | The link requirement is D12.1; D12.5 is the CHANGELOG | Read "(D12.1)" |
+
+### Roadmap Stage C boxes against the tree
+
+The roadmap rule is that a box ticks only when the work is committed
+on `feat-NLPAR`. At this review NOTHING of Stage C is committed
+(`git log develop..HEAD` ends at a15992db, and the notebook and the
+example are untracked), so no Stage C box can be ticked yet. On
+content, after commit 6:
+
+- **Box 1 (`nlpar.ipynb` contents):** can be ticked once rows
+  13.1-13.5 are accepted (the synthetic sigma map is printed as
+  statistics, not drawn as a figure). `hybrid_indexing.ipynb` is
+  untouched (no diff) and linked.
+- **Box 2 (registration, stored outputs, gallery):** can be ticked:
+  - `index.rst` lists `nlpar` after `pattern_processing`;
+  - `run_nbval.sh` has the entry in its slot;
+  - `tutorials_sanitize.cfg` is rightly untouched, because regex2
+    and regex8 cover the PyEBSDIndex speed and PyOpenCL lines;
+  - the stored outputs were decided by measurement (13.6);
+  - the gallery example is present (13.8).
+- **Box 3 (validation matrix, failure-mode review and fixes;
+  sphinx-build exit 0):** can be ticked once the records missing in
+  row 13.9 are in the ledger (F2, render inspection, linkcheck,
+  Manual ticks). Ledger entry 19 (c) records the sphinx-build exit 0.
+- **Box 4 (CHANGELOG tutorial bullet; signed commit pushed; spec
+  re-submission):** cannot be ticked:
+  - the CHANGELOG bullet is only in the working tree (wording as
+    plan 4.5, `#17` link, PR number not yet confirmed);
+  - the signed commit 6 and its push are still to come;
+  - the re-submission is this section, and it is done only when its
+    rows are accepted.
+
+### Observations outside spec drift (for the main loop)
+
+- The tutorial calls `si_wafer` "576 MB" (the uncompressed 50 x 50 x
+  480 x 480 uint8 array) next to "a larger download". The spec
+  records the download as 311 MB zipped, so "576 MB in memory, a
+  311 MB download" would be exact.
+- Ledger entry 18 ends with the Recorded-results boilerplate
+  paragraph ("This section is filled at each stage's ..."), which now
+  sits between entries 18 and 19.

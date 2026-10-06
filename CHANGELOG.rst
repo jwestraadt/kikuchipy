@@ -18,6 +18,9 @@ Unreleased
 
 Added
 -----
+- Tutorial on non-local pattern averaging (NLPAR), ``doc/tutorials/nlpar.ipynb``, and a
+  gallery example.
+  (`#17 <https://github.com/jwestraadt/kikuchipy/pull/17>`_)
 - Non-local pattern averaging (NLPAR) of EBSD patterns after Brewick, Wright and
   Rowenhorst (2019): ``EBSD.average_non_local_neighbour_patterns()`` replaces every
   pattern by a weighted mean of the patterns in a search window around it, each
