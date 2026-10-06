@@ -22,3 +22,14 @@ claims against the source).
 
 Line numbers refer to the commits above; re-verify against the files before
 relying on them in a spec.
+
+## Parked feature plans
+
+Designed but not started. Each file has a status header with the
+decisions taken and the resume steps.
+
+| File | What it is |
+|---|---|
+| `plan-nlpar-2026-09-11.md` | Non-local pattern averaging (NLPAR) on branch `feat-NLPAR` off `feat-spherical-indexing`: full CPU implementation with sigma and lambda estimation, lazy path and tutorial; PyEBSDIndex kernels as the numerical oracle. Next in line. |
+| `plan-hrosm-2026-09-28.md` | Port of EMsoftOO's EMHROSM (high angular resolution orientation similarity map): correct by default with an `emsoft_compatible` switch set, oracles, mutants and staged build. Sequenced after NLPAR. |
+| `plan-si-pcfit-grod-2026-09-28.md` | Workflow for own data, no library change: static background from an amorphous area, plane-fitted PC, spherical indexing with NCC refinement, GROD maps. |

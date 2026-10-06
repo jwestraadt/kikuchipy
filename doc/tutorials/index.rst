@@ -22,6 +22,7 @@ Fundamentals and usage
     load_save_data
     visualizing_patterns
     pattern_processing
+    nlpar
     reference_frames
 
 Feature maps

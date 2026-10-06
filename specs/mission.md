@@ -63,3 +63,25 @@ the analysis chain). Spec: `specs/2026-09-07-hrebsd-dic/`. It lives
 permanently on branch `hrebsd-dic` and is never merged into `develop` (no PR;
 user decision 2026-09-07); the spherical mission, deliverables and success
 criteria above are unaffected by it.
+
+## Fork feature path: NLPAR (recorded 2026-10-04)
+
+Beside the spherical indexing project above, the fork carries NLPAR
+(non-local pattern averaging, Brewick, Wright and Rowenhorst,
+*Ultramicroscopy* 200 (2019) 50-61, doi 10.1016/j.ultramic.2019.02.013)
+as its own feature path on branch `feat-NLPAR`, spec
+`specs/2026-10-04-nlpar/`: a numba CPU implementation of the noise
+estimate, the lambda optimisation and the weighted non-local average
+as `EBSD.average_non_local_neighbour_patterns()`,
+`EBSD.get_nlpar_sigma()` and `EBSD.get_nlpar_lambda()`, with a
+tutorial `doc/tutorials/nlpar.ipynb` and a gallery example. PyEBSDIndex's
+public-domain `nlpar_cpu.py` (US Naval Research Laboratory) is the
+numerical oracle and the derivation source, never a runtime
+dependency; the module carries the NRL change notice. The method name
+and module path follow upstream pull request pyxem/kikuchipy#824 so
+that the fork converges with upstream when an NLPAR lands there.
+Unlike the spherical phases, this path is built once on fork `develop`
+(one PR, `feat-NLPAR -> develop`) and fanned out by a merge into
+`hrebsd-dic` and a clean replay onto `feat-spherical-indexing-nlpar`;
+`specs/roadmap.md` carries the gates and `specs/tech-stack.md` the
+rules.

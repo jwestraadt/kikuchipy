@@ -40,6 +40,7 @@ declare -a NOTEBOOKS=(\
   "hrebsd_si_indent.ipynb"\
   "hybrid_indexing.ipynb"\
   "mandm2021_sunday_short_course.ipynb"\
+  "nlpar.ipynb"\
   "pattern_matching.ipynb"\
   "pc_extrapolate_plane.ipynb"\
   "pc_fit_plane.ipynb"\
