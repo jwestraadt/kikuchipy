@@ -3531,3 +3531,60 @@ arms, `TestLambdaOracle` except the stride test and `phantom[corrected]`,
 `test_argument_validation` and the progress-bar arms.
 
 Verdict: green on the gates (CI-style run 397 passed, `--weekly` run 821 passed, ruff clean, clean-replay grep clean, every mutant row killed by the default suite). Open: the 20 s wall target is missed (22 to 26 s); the further candidates above are the orchestrator's call.
+
+### 21. 2026-10-06 (tutorial: very noisy dataset)
+
+Tutorial author, reviewer and fixer, Opus 5.5; the entry 1 machine (Windows 11, 20 logical
+cores), `.venv`, Git Bash. Branch `feat-nlpar-noisy-tutorial` off develop 242bfcb4. Files:
+`doc/tutorials/nlpar.ipynb` (new section "A very noisy dataset", cells `noisy-0` to `noisy-16`),
+`CHANGELOG.rst` (NLPAR tutorial bullet extended). No library or test change.
+
+Datasets. `kp.data.ni_gain(10)` (24 dB, the noisiest of the ten gain maps) is averaged and
+scored against `kp.data.ni_gain(1)` (0 dB, same region of interest) as the reference; both
+(149, 200) maps of (60, 60) px patterns, static and dynamic background removed as in the hybrid
+indexing tutorial.
+
+PC. One PC, assumed shared by both maps: `hough_indexing_optimize_pc(pc0=[0.42, 0.22, 0.50])`
+on the 5 x 5 grid `s_0db.inav[20::40, 15::30]`, giving (0.4193, 0.2156, 0.5025) (Bruker). One
+indexer (`get_indexer` with the phase of `nickel_ebsd_master_pattern_small()`, m-3m) for the
+reference and all three 24 dB routes. Reference: indexed fraction 0.9997, median fit 0.386 deg,
+median cm 0.740.
+
+Noise and lambda. Median `get_nlpar_sigma()`: 0 dB 16.84, 24 dB 34.11; optimised lambda of the
+24 dB map 1.783 (default target weight). NLPAR route: `average_non_local_neighbour_patterns(
+lam=None)` (search radius 3, 7 x 7 window); Gaussian route: `average_neighbour_patterns(window=
+"gaussian", window_shape=(3, 3), std=1)`, as in the hybrid indexing tutorial.
+
+Scores. Symmetry-reduced misorientation (`Orientation.angle_with`, orix 0.14.2) of every 24 dB
+point to the 0 dB point at the same index. Near boundary = a 4-neighbour of a reference
+misorientation > 5 deg (0.333 of the map); interior/boundary columns are fractions < 5 deg.
+
+| route | < 2 deg | < 5 deg | median (deg) | interior | boundary |
+|---|---|---|---|---|---|
+| None | 0.014 | 0.017 | 42.211 | 0.020 | 0.010 |
+| Gaussian 3 x 3 | 0.704 | 0.707 | 0.606 | 0.867 | 0.386 |
+| NLPAR | 0.798 | 0.800 | 0.406 | 0.946 | 0.507 |
+
+Runtime. Hough indexing 697 to 813 patterns/s per run (four runs of 29,800 patterns, about
+40 s each). Full notebook under nbval: "27 passed in 168.00s (0:02:48)", 188 s wall including
+startup.
+
+Review fixes (markdown only, no code cell changed, so the stored outputs were kept): F1 two
+`\times` in cell `noisy-16` had been written as TAB + "imes" (fixed; no cell contains a TAB or
+non-ASCII character); F2 the shared PC is stated as an assumption, not as "same session"; F3
+the gain/exposure motivation softened to the general principle; F4 the mechanistic
+explanations in `noisy-16` hedged ("likely", "consistent with the higher boundary score") and
+the boundary claim based on 0.386 against 0.507 rather than on the figure. Declined: F5 (the
+re-executed outputs of the earlier sections are kept so that the stored outputs come from one
+full run, execution counts 1 to 27; the changes are sanitised by nbval).
+
+Matrix. (a) clean re-execution reproduces the stored outputs: PASS (nbval below, every cell
+compared under `tutorials_sanitize.cfg`). (b) nbval: PASS, `JUPYTER_PATH` pointed at a scratch
+`python3` kernelspec on `.venv/Scripts/python.exe` (the default `python3` kernel resolves to
+the kp-env conda env with kikuchipy 0.13.0, which has no NLPAR); recipe `uv run --no-sync
+--with nbval pytest -v -p no:cacheprovider --nbval doc/tutorials/nlpar.ipynb
+--nbval-sanitize-with doc/tutorials/tutorials_sanitize.cfg`. (c) markdown numbers match the
+printed outputs: PASS. (d) scoring: PASS. (e) honesty: PASS after F2 to F4. (f) style: PASS
+after F1 (ASCII, no TAB, no em-dashes, black at 77 unchanged, plots end with `_ = ...`,
+no `metadata.widgets`, no timestamps). (g) never-sweep: PASS (only `nlpar.ipynb`, `CHANGELOG.rst`
+and this ledger changed). (h) runtime: PASS (recorded above).
