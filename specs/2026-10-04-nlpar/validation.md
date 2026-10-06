@@ -1153,6 +1153,17 @@ default; Ni arms [download]. Runtime:
   same assignment path, amended 2026-10-05 per D1.5 (b); drafted as
   the `store` path) equals the `inplace=False` result bitwise. Extra
   M13/M14 killer. [D1/D6]
+- [A] (added 2026-10-05; the tests landed with the code review fixes
+  of ledger entry 10) `TestLazyAndContracts::test_integer_output_keeps_the_maximum_of_32_bit_types`
+  (`uint32`, `int32`: a map at the type maximum except pattern (0, 0)
+  at 1000, protection on, returned bitwise in the input dtype; the
+  float32 average of the maximum rounds beyond the type and must be
+  clipped, not wrapped) and
+  `TestLazyAndContracts::test_integer_output_clips_64_bit_types_inside_their_range`
+  (a float32 map at 1e20 with -1e20 and 1000 in pattern (0, 0):
+  `dtype_out=np.uint64` gives 0, 1000 and `2**64 - 2048`,
+  `dtype_out=np.int64` gives `-2**63`, 1000 and `2**63 - 1024`, the
+  clip bounds being the largest float64 inside each range). [D6]
 - [A, lazy arms B] `test_inplace_lazy_output_contract`: [A]
   `lazy_output=True` with `inplace=True` raises `ValueError` with the
   `average_neighbour_patterns` message (`ebsd.py:1019`) on an eager
@@ -2713,6 +2724,103 @@ assertion widened, PyEBSDIndex parity still bitwise.
    the NRL change list re-dated or split when the lambda objective
    lands. Entry 6 item 6 (d) asked for the `target_weight` retag at
    the next spec touch; V7 now has it.
+
+### 11. 2026-10-05 (Stage A bug injection)
+
+Machine: the Windows 11 Enterprise workstation of entries 7-10.
+Recipe: one mutant at a time with the Edit tool on
+`src/kikuchipy/pattern/_nlpar.py` (LF) or `src/kikuchipy/signals/ebsd.py`
+(CRLF kept), killers run as `uv run --no-sync pytest <node ids> -n 0
+-q -p no:cacheprovider -x --tb=line`, every restore from a
+byte-for-byte backup with an md5 check (`_nlpar.py`
+56afaad6bae49b07a9ce63c016ec750e, `ebsd.py`
+f68fbc86efcbdea055c60069f4701d32, all matched). M1a, M1b and M2a ran
+before the park of the same date; the rest ran on resume. Where the
+code holds one rule in two places the mutant was split into a/b and
+each half killed separately (M3, M4, M11, M16, M22, S1, S3, S7, S8).
+No test was strengthened. The killer column names the tests that
+FAILED; `reference_agrees` =
+`TestIdentities::test_reference_agrees_with_the_method_on_random_maps`.
+
+| id | mutation | killer | outcome | evidence |
+|---|---|---|---|---|
+| M1a, M1b | sign of the sigma correction flipped (`d2 += n2 (s_0 + s_1)`) | `reference_agrees`; V4 `TestNoiseOracle::test_normalised_distance_moments` | killed | both halves failed reference agreement and the moment tests (run before the park) |
+| M2a | sigma used unsquared in d | V3 `TestAveragingOracle::test_average_parity_compiled_*`; `reference_agrees` | killed | the averaging parity arms and reference agreement failed (run before the park) |
+| M3a, M3b | `sqrt(n2)` for `sqrt(2 n2)`: M3a distances kernel `dnorm`, M3b `_nlpar_normalized_distances` `den` | M3a `reference_agrees[sr=1-lam=0.7]`; M3b `test_normalised_distance_moments` | killed | M3b: D_MEAN 1.704 outside [1.01, 1.4]; the moment test reads only the sigma-pass normalisation, so M3a passed it |
+| M4a, M4b | denominator of the normalised distance replaced by `n2` (M4a distances kernel, M4b sigma pass) | M4a `reference_agrees[sr=1-lam=0.7]`; M4b `test_normalised_distance_moments` | killed | M4b: D_MEAN 6.50 |
+| M5 | self slot `-inf` -> `+inf` in `_nlpar_distances_kernel` (self weight 0) | V1 `TestIdentities::test_injected_tiny_sigma_is_an_identity` | killed | `[1-0.7]` raised ZeroDivisionError (weight sum 0) |
+| M6 | `np.maximum(d - dthresh, 0)` clamp dropped in `_nlpar_weights_kernel` | V1 `TestIdentities::test_weight_formula_on_injected_distances` | killed | `[0.0-0.7]`: weights [inf, 455.98, 1] where 1 was expected |
+| M7 | `exp(-d / lam)` for `exp(-d / lam^2)` | V1 `test_weight_formula_on_injected_distances` | killed | `[0.0-0.7]`: EXP_KERNEL_ULP 200759075, limit 0 |
+| M8 | `_window_bounds` shift branch clips instead of shifting inward | V3 `TestAveragingOracle::test_border_band_differs_from_clamp_and_zero_extend`; V1 `test_huge_lambda_is_the_shifted_window_box_mean[1-9]`; `reference_agrees[sr=1-lam=0.7]` | killed | border band array mismatch (oracle); both pyebsdindex-free killers also fail, run separately |
+| M9 | centred window over zero-extended borders (an out-of-map neighbour is a zero pattern with sigma 0, its weight counted) | same three as M8 | killed | border band (oracle); `huge_lambda[1-9]` and `reference_agrees[sr=1-lam=0.7]` also fail, run separately |
+| M10 | `_nlpar_depth` depth_axis = r | V7 `TestDepthAndHalo::test_depth_helper`; `test_pass_two_driver_on_multichunk_dask_array_equals_single_chunk[((3, 3, 4), (7, 7, 2))]` | killed | `depth_helper[rows_26_26_3_r3]`: {0:3} != {0:4}; the pass-two arm fails its chunks assertion, run separately |
+| M11a, M11b | saturation max per haloed block (`patterns.max()`) for `max_value`: M11a `_nlpar_average_chunk`, M11b `_nlpar_sigma_chunk` | M11a V10 `TestPolicyOracles::test_saturation_max_is_global` and pass_two `[((3, 3, 4), (7, 7, 2))]`; M11b `test_pass_one_driver_on_multichunk_dask_array_equals_the_kernel[((3, 3, 4), (7, 7, 2))]` | killed | the own-max core equals the global-max core; the global-max test and pass_two exercise the averaging wrapper only, so M11b died by pass_one |
+| M12 | `n2 = n_kept` (global N) after the pair loop | V3 `TestAveragingOracle::test_saturation_arm_separates_per_pair_n2_from_global_n`; `reference_agrees[saturation_protect=True]` | killed | saturation arm (oracle); the pyebsdindex-free reference arm also fails, run separately |
+| M13 | `np.rint` -> `np.floor` in `_nlpar_finalize` | V7 `TestLazyAndContracts::test_dtype_round_trip`; `reference_agrees[sr=1-lam=0.7]` | killed | `test_dtype_round_trip[uint8]` array mismatch; reference agreement also fails, run separately |
+| M14 | per-pattern min-max rescale to the dtype range ([-1, 1] for floats) in `_nlpar_finalize` | V7 `test_dtype_round_trip` | killed | `test_dtype_round_trip[uint8]` array mismatch |
+| M15 | `_nlpar_mask_indices` keeps the True pixels | V4 `TestNoiseOracle::test_mask_polarity_separates` | killed | masked sigma about 23 against about 7.7 for the left-half crop |
+| M16a, M16b | mask not forwarded to the sigma pass (all-pixel indices) in `ebsd.py`: M16a `average_non_local_neighbour_patterns`, M16b `get_nlpar_sigma` | M16a `reference_agrees[signal_mask=circle]`; M16b V2 `TestSigmaOracle::test_sigma_mask_is_forwarded` and V7 `TestSigmaMethod::test_forwards_mask_and_protection` | killed | `test_sigma_mask_is_forwarded` calls `get_nlpar_sigma` only, so M16a died by reference agreement; the pyebsdindex-free M16b killer also fails, run separately |
+| M17 | (B) phantom slots in the lambda objective | none | not applicable: Stage B | not injected |
+| M18 | (B) objective `max(d, dthresh)` | none | not applicable: Stage B | not injected |
+| M19 | (B) objective median instead of mean | none | not applicable: Stage B | not injected |
+| M20 | sigma 3x3 window shifted inward (`_window_bounds` shift plus a window-local slot index) | V2 `TestSigmaOracle::test_sigma_window_is_clipped_not_shifted`; `reference_agrees[sr=1-lam=0.7]` | killed | clipped-window oracle failed; reference agreement on the (4, 5) map also fails, run separately |
+| M21 | `fastmath=True` on `_nlpar_weights_kernel` | V0 `TestKernels::test_kernels_are_compiled_with_cache_and_nogil` | killed | `[_nlpar_weights_kernel]`: targetoptions fastmath True |
+| M22a, M22b | float64 accumulation: M22a distances `d2` seed `np.float64`, M22b weighted-sum output float64 | V3 `test_average_parity_compiled_*` | killed | M22a by `parity_two_grain[sr1_lam0.7_dthresh0_protect_nomask_injected]` after 96 passing cases; M22b by `parity_identical_plus_gaussian` with the same id; oracle-only, as the killer table states |
+| S1a, S1b | wrapper returns the whole haloed block: S1a `_nlpar_average_chunk`, S1b `_nlpar_sigma_chunk` | S1a V3 `TestAveragingOracle::test_calclim_from_block_info` and pass_two `[(5, 8)]`; S1b pass_one `[(5, 8)]` | killed | shape (5, 8, 12, 12) != (3, 8, 12, 12); calclim exercises the averaging wrapper only, so S1b died by pass_one |
+| S2 | distances padding slots 0.0 instead of `+inf` | V7 `TestLazyAndContracts::test_map_smaller_than_the_window` | killed | `[nav_shape0]`: 211 grey levels from the reference, limit 1.4e-4 |
+| S3a, S3b | S3a radius applied in (col, row) order in `_nlpar_average_chunk`; S3b a 1-D radius routed as (r, 0) in `_nlpar_average` | S3a `reference_agrees[(1, 2)]`; S3b V7 `test_one_dimensional_navigation_equals_a_one_row_map` | killed | S3a also fails the 1-D test, run separately; under S3b the two 2-D arms pass, as expected |
+| S4 | `_nlpar_depth` skips the minimum-chunksize rechunk | pass_two `[(1, 1)]` and `[((3, 3, 4), (7, 7, 2))]` | killed | `[(1, 1)]` raised ValueError: dask overlap merges thin chunks itself (5 blocks against 10 in `chunks=`); the other arm 2 against 3 |
+| S5 | sigma^2 = mean of the neighbour estimates with `d2 > 0` instead of their minimum | V2 `test_sigma_parity_compiled_*`; V4 `test_sigma_recovery_median_ratio`; V5 `TestTwoGrain::test_cross_boundary_weights_are_exactly_zero` | killed | `sigma_parity_identical_plus_gaussian[nomask_protect]` (oracle); run separately, median ratio 1.0009 outside [0.963, 0.983] and `cross_boundary[0.7]` fails |
+| S6 | duplicate guard `d2 > 0` replaced by `if True` | V2 `TestSigmaOracle::test_sigma_fallback_and_duplicates`; V10 `TestPolicyOracles::test_duplicate_neighbour_is_skipped_in_sigma_but_averaged` | killed | oracle failed; the pyebsdindex-free policy test also fails, run separately |
+| S7a, S7b | S7a `SIGMA_SATURATION_FACTOR` 0.9961 -> 0.999; S7b `AVERAGE_SATURATION_FACTOR` 0.999 -> 0.9961 | V10 `test_uint16_two_threshold_arm`; V10 `test_sigma_fallback_value_is_1e12`; S7a also V2 `test_sigma_saturation_threshold_constant[uint16]` | killed | the two-threshold arm failed for both, at different assertions; the constant asserts kill both, run separately |
+| S8a, S8b | `_nlpar_depth` depth_axis - 1 (S8a) and + 1 (S8b) | V7 `test_depth_helper`; pass_two | killed | `depth_helper[rows_26_26_3_r3]`: {0:3} and {0:5} != {0:4}; pass_two kills S8a at `[(5, 8)]` and S8b at `[((3, 3, 4), (7, 7, 2))]`; S8b passes `[(5, 8)]` since a deeper halo leaves values unchanged |
+
+Summary: 30 mutant ids in the table (27 Stage A, 3 Stage B). Stage A:
+37 injections (the 27 ids, with the a/b splits and M1a, M1b, M2a), 37
+killed by a named default-suite test, 0 killed after strengthening, 0
+equivalent, 0 survived; Stage B: 3 not applicable (M17, M18, M19, not
+injected). Coverage asymmetries, each half still killed by another
+named killer in its row: `test_saturation_max_is_global` and
+`test_calclim_from_block_info` exercise only the averaging wrapper
+(M11b, S1b die by pass_one); `test_sigma_mask_is_forwarded` only
+`get_nlpar_sigma` (M16a dies by reference agreement);
+`test_normalised_distance_moments` only the sigma-pass normalisation
+(M3a, M4a die by reference agreement); S4 dies by a ValueError, not
+by wrong values. After the last restore: the two test modules 751
+passed, 103.62 s, `-n 0`; `git status --short` showed only the two
+pre-existing untracked files.
+
+### 12. 2026-10-05 (Stage A close gate)
+
+Machine: the Windows 11 Enterprise workstation of entries 7-11, Git
+Bash. Commands as in plan.md section 5 and entry 9; the slice is
+`tests/test_signals/test_util/test_nlpar.py
+tests/test_signals/test_ebsd_nlpar.py`. Spec bookkeeping of this
+date: plan.md section 5 and the preamble model line amended to the
+owner's model rule of 2026-10-05 (opus, effort medium for Workflow
+agents; Opus 5.5 xhigh for spec work; Fable only as an escalation),
+section 8 trailer note; V7 [A] now names the two integer-output tests.
+
+a) slice `-n 0`: 751 passed, 15 warnings, 96.22 s.
+b) slice `-n 4`: 751 passed, 15 warnings, 39.53 s (no red test).
+c) coverage of `src/kikuchipy/pattern/_nlpar.py`: 303 statements, 0
+   missed, 100.00 % (the coverage run itself 751 passed, 101.73 s).
+d) full suite `pytest tests -n 4`: 4863 passed, 824 skipped, 2 rerun
+   (the rerun plugin; both passed on rerun), 166.80 s, exit 0.
+e) `SKIP=licenseheaders uvx pre-commit run --files` on the six files:
+   ruff and ruff format passed, black-jupyter no files, exit 0.
+f) oldest matrix, numba 0.57 (Python 3.10, numpy 1.23.0, orix 0.12.1,
+   pyebsdindex 0.3.9.2, dask 2021.8.1, scikit-image 0.21.0, `-k
+   nlpar`): 353 passed, 398 skipped (the `nlpar_nb` oracle does not
+   compile under numba 0.57.0), 348 deselected, 33.03 s.
+g) the same with numba 0.58.1: 751 passed, 0 skipped, 348
+   deselected, 101.42 s.
+h) clean-replay grep on `git diff develop...HEAD -- src tests doc
+   examples benchmarks conftest.py CHANGELOG.rst`: prints nothing.
+i) `git status --short`: only `plan.md` and `validation.md` of this
+   spec modified, plus the two pre-existing untracked files.
+
+Verdict: green.
 
 This section is filled at each stage's failing-tests gate
 (placeholder inventory confirmed), implementation gate

@@ -12,7 +12,13 @@ clean branch, and the API names of upstream PR pyxem/kikuchipy#824.
 Models per the recorded working practice: this spec on Fable 5 (xhigh,
 ultracode Workflow); tests, implementation, adversarial review, bug
 injection and fixes by Workflow agents with `model: "opus"`, effort
-`xhigh`; commits and pushes by the main loop only. Tests are written
+`xhigh`; commits and pushes by the main loop only. (Amended
+2026-10-05: the model choice above is history for the work done so
+far; going forward the owner's model rule of 2026-10-05 applies:
+tests, implementation, review, bug injection and fixes as Workflow
+agents on `{model: 'opus', effort: 'medium'}`, spec work on Opus 5.5
+xhigh, Fable only as an escalation when repeated errors and an
+inconsistency occur. See section 5.) Tests are written
 failing before the code they exercise. Three build stages under this
 one spec folder; `requirements.md` decisions govern; `validation.md`
 holds the V0-V11 oracle suite and the append-only Recorded results
@@ -932,7 +938,12 @@ Per-stage sequence (main loop between workflows): `nlpar-stage-tests`
 CHANGELOG + roadmap ticks) -> push both. Stage C runs
 `nlpar-stage-implement` (notebook author + measurer), `nlpar-stage-review`
 (validation matrix + failure modes) and `nlpar-stage-close` only.
-Every workflow: all agents `model: "opus"`, effort `xhigh`, `<= 15`
+Every workflow (amended 2026-10-05: the clause "all agents `model:
+"opus"`, effort `xhigh`" is superseded by the owner's model rule of
+2026-10-05: tests, implementation, review, bug injection and fixes
+run as Workflow agents on `{model: 'opus', effort: 'medium'}`; spec
+work on Opus 5.5 xhigh; Fable only as an escalation when repeated
+errors and an inconsistency occur): `<= 15`
 agents, read/write only within the explicit file list, no git
 commands (the main loop commits and pushes), no notebooks swept, no
 em-dashes, `X | Y` hints, no `print()`.
@@ -1213,7 +1224,10 @@ FOR THE USER (few by design; the 2026-10-04 decisions are not reopened):
 
 Signed (`git commit -s`), explicit pathspecs, the attribution trailer
 the session specifies at commit time (currently `Co-Authored-By: Claude
-Fable 5.1 <noreply@anthropic.com>`), no em-dashes in messages, LF files,
+Fable 5.1 <noreply@anthropic.com>`; amended 2026-10-05: the session
+now specifies `Co-Authored-By: Claude Opus 5.5
+<noreply@anthropic.com>`, and the trailer always follows the session),
+no em-dashes in messages, LF files,
 no BOM (`roadmap.md` line 1 checked after every spec-touching commit).
 
 1. **"Add NLPAR spec and constitution amendments"** --
