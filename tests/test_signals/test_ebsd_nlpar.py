@@ -18,10 +18,11 @@
 #
 
 """Tests of the NLPAR methods of the EBSD signal,
-:meth:`~kikuchipy.signals.EBSD.average_non_local_neighbour_patterns`
-and :meth:`~kikuchipy.signals.EBSD.get_nlpar_sigma`.
+:meth:`~kikuchipy.signals.EBSD.average_non_local_neighbour_patterns`,
+:meth:`~kikuchipy.signals.EBSD.get_nlpar_sigma` and
+:meth:`~kikuchipy.signals.EBSD.get_nlpar_lambda`.
 
-Oracles used here, none of which is PyEBSDIndex:
+Oracles used here, none of which is PyEBSDIndex's NLPAR:
 
 * :func:`nlpar_reference`, a float64 NumPy transcription of the three
   NLPAR equations of Brewick, Wright and Rowenhorst (2019), written
@@ -29,7 +30,10 @@ Oracles used here, none of which is PyEBSDIndex:
 * analytic identities whose answer is exact by construction (constant
   map, radius 0, injected sigma, huge lambda, power-of-two scaling);
 * seeded synthetic maps whose statistics are derived (iid noise, two
-  grains), from the generators of the root ``conftest.py``.
+  grains), from the generators of the root ``conftest.py``;
+* the eager route as the oracle of the lazy route (bitwise);
+* real datasets (``nickel_ebsd_large``, ``si_wafer``), on which map
+  metrics and Hough indexing quality must improve.
 
 Tolerances that were measured on the finished implementation and then
 pinned are module constants, each with a dated record of the
@@ -39,15 +43,23 @@ placeholder of a later stage would be, fails with "unfilled
 MEASURED-THEN-PINNED placeholder".
 """
 
+import logging
+import re
+import time
 import warnings
 
 import dask
+import dask.array as da
 import hyperspy.api as hs
 import numpy as np
+from orix.crystal_map import CrystalMap
+from orix.quaternion import Orientation
 import pytest
 from scipy.ndimage import correlate
+from scipy.optimize import minimize
 
 import kikuchipy as kp
+from kikuchipy._constants import dependency_version
 import kikuchipy.pattern._nlpar as nlpar_module
 from kikuchipy.pattern._nlpar import (
     _nlpar_distances_kernel,
@@ -140,6 +152,85 @@ TWO_GRAIN_CONTRAST_MIN: float = 0.995
 # excess over 1, 1.65.
 TWO_GRAIN_BOUNDARY_RESIDUAL_TOL: float = 1.65
 
+# ----------------- MEASURED-THEN-PINNED placeholders ---------------- #
+# Each constant below is a placeholder, measured then pinned: None
+# until the implementation gate measures it, records date, machine and
+# recipe, and pins it as a band around the measured value or with the
+# ~2x margin convention. The seeds quoted are drafting seeds (measured
+# 2026-09-11), not pins; where none exists the quantity is unmeasured.
+
+# Band (low, high) of get_nlpar_lambda() at target weight 0.34 on the
+# raw nickel_ebsd_large. Placeholder, measured then pinned. Seed 1.1387
+# (phantom-free; 1.1164 with PyEBSDIndex's phantom-counting objective).
+# Which seed pair belongs to the raw and which to the corrected map is
+# re-measured at the gate, not assumed.
+LAMBDA_NI_RAW: tuple[float, float] | None = None
+
+# Band (low, high) of get_nlpar_lambda() at target weight 0.34 on the
+# background-corrected nickel_ebsd_large (static, then dynamic
+# background removed with the defaults). Placeholder, measured then
+# pinned. Seed 2.5787 (phantom-free; 2.5246 with phantoms).
+LAMBDA_NI_CORRECTED: tuple[float, float] | None = None
+
+# Band (low, high) of the mean average neighbour dot product of the
+# background-corrected nickel_ebsd_large before NLPAR. Placeholder,
+# measured then pinned. Seed 0.600.
+ADP_BEFORE: tuple[float, float] | None = None
+
+# Band (low, high) of the same mean after NLPAR with the optimised
+# lambda (lam=None, about 2.52) at search radius 3. Placeholder,
+# measured then pinned. Seed 0.904.
+ADP_AFTER_AUTO: tuple[float, float] | None = None
+
+# Band (low, high) of the same mean after NLPAR with lam=0.7 at search
+# radius 3. Placeholder, measured then pinned. Seed 0.766.
+ADP_AFTER_07: tuple[float, float] | None = None
+
+# Band (low, high) of the mean image quality of the background-corrected
+# nickel_ebsd_large before NLPAR. Placeholder, measured then pinned.
+# Seed: unmeasured (0.184 seen while drafting these tests, 2026-10-05,
+# not a measurement of record).
+IQ_BEFORE: tuple[float, float] | None = None
+
+# Band (low, high) of the same mean after NLPAR with lam=None.
+# Placeholder, measured then pinned. Seed: unmeasured.
+IQ_AFTER_AUTO: tuple[float, float] | None = None
+
+# Smallest gains of the medians of the Hough indexing quality metrics on
+# the 165 patterns of s.inav[::5, ::5] of the corrected map, after NLPAR
+# minus before (pattern quality, cross-correlation metric, number of
+# matched bands) and before minus after (band fit, in degrees, lower is
+# better). Placeholders, measured then pinned: 0.5 x the measured gain
+# where it is positive, 0.0 ("not worse") otherwise, recorded as such.
+# Seeds: unmeasured.
+HOUGH_PQ_GAIN: float | None = None
+HOUGH_FIT_GAIN: float | None = None
+HOUGH_NMATCH_GAIN: float | None = None
+HOUGH_CM_GAIN: float | None = None
+
+# Largest median misorientation, in degrees, between the Hough
+# orientations after NLPAR and the orientations stored with the dataset,
+# on the same 165 patterns compared by point order. Placeholder,
+# measured then pinned (~2x); the value before NLPAR is recorded beside
+# it. Seed: unmeasured.
+HOUGH_MISO_MEDIAN_AFTER: float | None = None
+
+# Largest coefficient of variation of the sigma map of si_wafer (a
+# single crystal, so a flat map). Placeholder, measured then pinned.
+# Seed: unmeasured.
+SI_SIGMA_CV: float | None = None
+
+# Band (low, high) of the median number of effective neighbours,
+# 1 / sum_j w_ij^2 of the normalised search-window weights, of si_wafer
+# at the optimised lambda. Placeholder, measured then pinned. Seed:
+# unmeasured.
+SI_NEFF_MEDIAN: tuple[float, float] | None = None
+
+# Smallest ratio of the mean image quality of si_wafer after NLPAR to
+# the one before (lam=None). Placeholder, measured then pinned. Seed:
+# unmeasured, > 1.
+SI_IQ_GAIN: float | None = None
+
 # --------------------------- Small fixtures ------------------------- #
 
 NAV_SHAPE = (4, 5)
@@ -215,6 +306,29 @@ def _average(s, **kwargs) -> np.ndarray:
     """Return the data of the NLPAR-averaged copy of a signal."""
     s_out = s.average_non_local_neighbour_patterns(inplace=False, **kwargs)
     return s_out.data
+
+
+def _lazy_signal(data: np.ndarray | da.Array, nav_chunks: tuple) -> kp.signals.LazyEBSD:
+    """Return a lazy EBSD signal of a map of patterns with the given
+    navigation chunks (a chunk shape or explicit chunks, one entry per
+    navigation axis, -1 for one chunk) and each signal axis in one
+    chunk.
+    """
+    chunks = tuple(nav_chunks) + (-1, -1)
+    if isinstance(data, da.Array):
+        dask_array = data.rechunk(chunks)
+    else:
+        dask_array = da.from_array(data, chunks=chunks)
+    return kp.signals.LazyEBSD(dask_array)
+
+
+def _average_lazy(s: kp.signals.LazyEBSD, **kwargs) -> np.ndarray:
+    """Return the computed data of the NLPAR-averaged copy of a lazy
+    signal, asserting that the copy is lazy.
+    """
+    s_out = s.average_non_local_neighbour_patterns(inplace=False, **kwargs)
+    assert isinstance(s_out, kp.signals.LazyEBSD)
+    return s_out.data.compute()
 
 
 def _whole_map_sigma_pass(data: np.ndarray, saturation_protect: bool = True):
@@ -582,18 +696,23 @@ class TestIdentities:
 
     @pytest.mark.parametrize("search_radius", [0, (0, 0)])
     def test_search_radius_zero_warns_and_is_a_no_op(
-        self, random_uniform_saturated, search_radius
+        self, caplog, random_uniform_saturated, search_radius
     ):
         data = _random_map(random_uniform_saturated)
         s = kp.signals.EBSD(data.copy())
-        # The radius-0 check precedes the lam=None guard, so the default
-        # lam also returns quietly
+        # The radius-0 check precedes the lambda optimisation, so the
+        # default lam=None also returns quietly, without optimising
         for kwargs in [{"lam": 1.0}, {"lam": 1.0, "inplace": False}, {}]:
-            with warnings.catch_warnings(record=True) as record:
+            with (
+                warnings.catch_warnings(record=True) as record,
+                caplog.at_level(logging.INFO, logger=NLPAR_LOGGER),
+            ):
+                caplog.clear()
                 warnings.simplefilter("always")
                 out = s.average_non_local_neighbour_patterns(
                     search_radius=search_radius, **kwargs
                 )
+            assert _info_records(caplog) == []
             messages = [
                 str(r.message) for r in record if issubclass(r.category, UserWarning)
             ]
@@ -1000,6 +1119,279 @@ class TestTwoGrain:
         )
 
 
+# ------------------------- Lambda optimisation ---------------------- #
+
+# Logger of the one INFO record per lambda optimisation
+NLPAR_LOGGER = "kikuchipy.pattern._nlpar"
+LAMBDA_RECORD = re.compile(r"NLPAR: optimised lambda ([0-9.]+) for target weight 0\.34")
+
+# Bounds of the lambda search; a result within 1 % of one warns
+LAMBDA_SEARCH_LOW = 1.01e-3
+LAMBDA_SEARCH_HIGH = 9.9
+
+
+def _info_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return the INFO records of the NLPAR module logger."""
+    return [
+        record
+        for record in caplog.records
+        if record.name == NLPAR_LOGGER and record.levelno == logging.INFO
+    ]
+
+
+def _nickel_corrected() -> kp.signals.EBSD:
+    """Return ``nickel_ebsd_large`` with the static and then the
+    dynamic background removed, both with the default arguments.
+    """
+    s = kp.data.nickel_ebsd_large(allow_download=True)
+    s.remove_static_background(show_progressbar=False)
+    s.remove_dynamic_background(show_progressbar=False)
+    return s
+
+
+def _whole_map_lambda_distances(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the normalised 3 x 3 distances and the in-map slot mask
+    of the sigma pass on a whole 2D map, every pixel kept, protection
+    on.
+    """
+    sigma, d2, n2, valid = _whole_map_sigma_pass(data)
+    return _nlpar_normalized_distances(d2, n2, valid, sigma), valid
+
+
+def _phantom_counting_lambda(
+    d: np.ndarray, valid: np.ndarray, target_weight: float = 0.34
+) -> float:
+    """Return the lambda of a test-local transcription of PyEBSDIndex's
+    objective ``loptfunc``, in which every out-of-map slot counts as a
+    neighbour of weight 1 (its distance is 0.0, as in PyEBSDIndex's
+    ``dout``) and the distance enters as ``max(d, dthresh)`` with
+    ``dthresh = 0``, minimised with PyEBSDIndex's optimiser settings.
+
+    Slots without comparable pixels keep their ``+inf`` (weight 0), so
+    only the out-of-map slots separate this from the phantom-free
+    objective.
+    """
+    d_phantom = np.where(valid, d, np.float32(0.0)).astype(np.float32)
+
+    def loptfunc(lam, d2, tw, dthresh):
+        temp = np.maximum(d2, dthresh)
+        dw = np.exp(-temp / lam**2)
+        w = np.sum(dw, axis=2) + 1e-12
+        return np.mean(np.abs(tw - 1.0 / w))
+
+    result = minimize(
+        loptfunc,
+        1.0,
+        args=(d_phantom, target_weight, np.float32(0.0)),
+        method="Nelder-Mead",
+        bounds=[[0.001, 10.0]],
+        options={"fatol": 0.0001},
+    )
+    return float(result.x[0])
+
+
+class TestLambdaMethod:
+    """Contracts of :meth:`~kikuchipy.signals.EBSD.get_nlpar_lambda`
+    and of ``lam=None`` in
+    :meth:`~kikuchipy.signals.EBSD.average_non_local_neighbour_patterns`.
+    """
+
+    def test_get_nlpar_lambda_on_nickel_ebsd_large(self, caplog, record_property):
+        signals = {
+            "raw": kp.data.nickel_ebsd_large(allow_download=True),
+            "corrected": _nickel_corrected(),
+        }
+        measured = {}
+        for name, s in signals.items():
+            data = s.data.copy()
+            with caplog.at_level(logging.INFO, logger=NLPAR_LOGGER):
+                caplog.clear()
+                lam = s.get_nlpar_lambda(show_progressbar=False)
+                records = _info_records(caplog)
+            assert isinstance(lam, float)
+            assert len(records) == 1, name
+            assert LAMBDA_SEARCH_LOW < lam < LAMBDA_SEARCH_HIGH
+            record_property(f"lambda_ni_{name}", lam)
+
+            # The optimiser on the distances of the sigma pass of the
+            # whole map, with the default target weight and threshold
+            d, valid = _whole_map_lambda_distances(data)
+            assert (
+                nlpar_module._nlpar_optimize_lambda(d, valid, 0.34, np.float32(0.0))
+                == lam
+            )
+
+            # Recorded deviation: PyEBSDIndex counts the 776 out-of-map
+            # slots of this 55 x 75 map as neighbours of weight 1, which
+            # makes border patterns look more self-similar and lowers
+            # lambda (seeds +2.0 % raw and +2.1 % corrected)
+            assert np.sum(~valid) == 776
+            lam_phantom = _phantom_counting_lambda(d, valid)
+            record_property(f"lambda_ni_{name}_phantom_counting", lam_phantom)
+            record_property(f"lambda_ni_{name}_phantom_ratio", lam / lam_phantom)
+            assert lam > lam_phantom
+
+            # Lambda decreases with the target weight, which is why
+            # PyEBSDIndex's median of the fits to 0.5, 0.34 and 0.25 is
+            # the fit to 0.34
+            lam_05 = s.get_nlpar_lambda(target_weight=0.5, show_progressbar=False)
+            lam_025 = s.get_nlpar_lambda(target_weight=0.25, show_progressbar=False)
+            assert lam_05 < lam < lam_025
+            assert np.array_equal(s.data, data)
+            measured[name] = lam
+
+        # lam=None optimises the same value, logs it once and averages
+        # with it
+        s = signals["corrected"]
+        kwargs = {"dtype_out": "float32", "show_progressbar": False}
+        with caplog.at_level(logging.INFO, logger=NLPAR_LOGGER):
+            caplog.clear()
+            out_none = _average(s, lam=None, **kwargs)
+            records = _info_records(caplog)
+        assert len(records) == 1
+        match = LAMBDA_RECORD.search(records[0].getMessage())
+        assert match is not None, records[0].getMessage()
+        assert match.group(1) == f"{measured['corrected']:.4f}"
+        out_given = _average(s, lam=measured["corrected"], **kwargs)
+        assert np.array_equal(out_none, out_given)
+
+        _assert_in_band(measured["raw"], LAMBDA_NI_RAW, "LAMBDA_NI_RAW")
+        _assert_in_band(
+            measured["corrected"], LAMBDA_NI_CORRECTED, "LAMBDA_NI_CORRECTED"
+        )
+
+    def test_lam_none_logs_the_optimised_lambda(
+        self, caplog, capsys, identical_plus_gaussian
+    ):
+        s = kp.signals.EBSD(identical_plus_gaussian((12, 12), (32, 32)))
+        kwargs = {"dtype_out": "float32", "show_progressbar": False}
+        capsys.readouterr()
+        with caplog.at_level(logging.INFO, logger=NLPAR_LOGGER):
+            caplog.clear()
+            out_none = _average(s, lam=None, **kwargs)
+            records_average = _info_records(caplog)
+            caplog.clear()
+            lam = s.get_nlpar_lambda(show_progressbar=False)
+            records_lambda = _info_records(caplog)
+        # Reported through logging, never printed
+        assert capsys.readouterr().out == ""
+
+        # Exactly one record per call, of the value get_nlpar_lambda
+        # returns
+        assert len(records_average) == 1
+        assert len(records_lambda) == 1
+        for record in records_average + records_lambda:
+            match = LAMBDA_RECORD.search(record.getMessage())
+            assert match is not None, record.getMessage()
+            assert match.group(1) == f"{lam:.4f}"
+        assert LAMBDA_SEARCH_LOW < lam < LAMBDA_SEARCH_HIGH
+        assert np.array_equal(out_none, _average(s, lam=lam, **kwargs))
+
+    def test_target_weight_is_forwarded_through_lam_none(self, identical_plus_gaussian):
+        s = kp.signals.EBSD(identical_plus_gaussian((12, 12), (32, 32)))
+        kwargs = {"dtype_out": "float32"}
+        lam_05 = s.get_nlpar_lambda(target_weight=0.5)
+        lam_034 = s.get_nlpar_lambda()
+        lam_025 = s.get_nlpar_lambda(target_weight=0.25)
+        # Lambda decreases with the target weight
+        assert lam_05 < lam_034 < lam_025
+        assert lam_034 == s.get_nlpar_lambda(target_weight=0.34)
+
+        out_none_05 = _average(s, lam=None, target_weight=0.5, **kwargs)
+        assert np.array_equal(out_none_05, _average(s, lam=lam_05, **kwargs))
+        out_none_034 = _average(s, lam=None, **kwargs)
+        assert np.array_equal(out_none_034, _average(s, lam=lam_034, **kwargs))
+        # The keyword reaches the optimiser: one fit to the given
+        # target, neither a fixed 0.34 nor a median of three fits
+        assert not np.array_equal(out_none_05, out_none_034)
+
+    def test_get_nlpar_lambda_accepts_injected_sigma_and_mask(
+        self, identical_plus_gaussian, circle_mask
+    ):
+        data = identical_plus_gaussian((12, 12), (32, 32), dtype=np.uint8)
+        # A saturated corner in every pattern, so saturation protection
+        # changes the distances
+        data[..., :2, :2] = 255
+        s = kp.signals.EBSD(data.copy())
+        lam = s.get_nlpar_lambda()
+        sigma = s.get_nlpar_sigma()
+
+        # The sigma map of get_nlpar_sigma reproduces sigma=None exactly
+        assert s.get_nlpar_lambda(sigma=sigma) == lam
+        assert s.get_nlpar_lambda(sigma=sigma.astype(np.float64)) == lam
+        # Another sigma map changes the distances and lambda
+        assert s.get_nlpar_lambda(sigma=sigma * np.float32(1.5)) != lam
+        # A scalar is a constant map
+        lam_scalar = s.get_nlpar_lambda(sigma=8.0)
+        lam_constant = s.get_nlpar_lambda(sigma=np.full((12, 12), 8.0, np.float32))
+        assert lam_scalar == lam_constant
+        assert lam_scalar != lam
+
+        # The mask and the protection reach the sigma pass and the
+        # distances
+        mask = circle_mask((32, 32))
+        lam_mask = s.get_nlpar_lambda(signal_mask=mask)
+        assert lam_mask != lam
+        sigma_mask = s.get_nlpar_sigma(signal_mask=mask)
+        assert s.get_nlpar_lambda(signal_mask=mask, sigma=sigma_mask) == lam_mask
+        assert s.get_nlpar_lambda(signal_mask=mask.astype(np.int64)) == lam_mask
+        lam_unprotected = s.get_nlpar_lambda(saturation_protect=False)
+        assert lam_unprotected != lam
+        sigma_unprotected = s.get_nlpar_sigma(saturation_protect=False)
+        assert (
+            s.get_nlpar_lambda(saturation_protect=False, sigma=sigma_unprotected)
+            == lam_unprotected
+        )
+
+        # lam=None uses the same mask, sigma and protection as the
+        # averaging that follows
+        kwargs = {"signal_mask": mask, "dtype_out": "float32"}
+        out_none = _average(s, lam=None, **kwargs)
+        assert np.array_equal(out_none, _average(s, lam=lam_mask, **kwargs))
+        assert np.array_equal(s.data, data)
+
+    def test_lambda_forwards_dthresh_sigma_and_protection(
+        self, identical_plus_gaussian
+    ):
+        # The saturated-corner map of the test above. Reference values
+        # of the optimiser on its sigma-pass distances (drafting
+        # measurement 2026-10-05, a NumPy transcription of the
+        # objective): 0.8926 at dthresh 0, 0.6229 at dthresh 0.5, 0.8935
+        # without protection and 1.0 (the start, weights flat in
+        # lambda) with sigma x 1.5, so every keyword below moves lambda
+        data = identical_plus_gaussian((12, 12), (32, 32), dtype=np.uint8)
+        data[..., :2, :2] = 255
+        s = kp.signals.EBSD(data.copy())
+        lam = s.get_nlpar_lambda()
+
+        # dthresh reaches the objective, with the same meaning as in
+        # the averaging weights
+        lam_dthresh = s.get_nlpar_lambda(dthresh=0.5)
+        assert lam_dthresh != lam
+        d, valid = _whole_map_lambda_distances(data)
+        assert lam_dthresh == nlpar_module._nlpar_optimize_lambda(
+            d, valid, 0.34, np.float32(0.5)
+        )
+
+        # lam=None optimises with the dthresh, sigma and protection of
+        # the averaging that follows, not with their defaults
+        sigma = s.get_nlpar_sigma()
+        sigma_scaled = sigma * np.float32(1.5)
+        lam_sigma = s.get_nlpar_lambda(sigma=sigma_scaled)
+        lam_unprotected = s.get_nlpar_lambda(saturation_protect=False)
+        for kwargs, lam_forwarded in [
+            ({"dthresh": 0.5}, lam_dthresh),
+            ({"sigma": sigma_scaled}, lam_sigma),
+            ({"saturation_protect": False}, lam_unprotected),
+        ]:
+            assert lam_forwarded != lam, kwargs
+            kwargs = {**kwargs, "dtype_out": "float32"}
+            out_none = _average(s, lam=None, **kwargs)
+            assert np.array_equal(out_none, _average(s, lam=lam_forwarded, **kwargs))
+            assert not np.array_equal(out_none, _average(s, lam=lam, **kwargs))
+        assert np.array_equal(s.data, data)
+
+
 # ------------------------- Contracts (eager) ------------------------ #
 
 _NAN_SIGMA = np.ones(NAV_SHAPE, dtype=np.float32)
@@ -1063,6 +1455,23 @@ VALIDATION_ARMS = [
     ("sigma", {"signal_mask": np.ones((2, 2), dtype=bool)}, "signal shape"),
     ("sigma", {"signal_mask": np.ones(SIG_SHAPE, dtype=bool)}, "excludes every pixel"),
     ("sigma", {"signal_mask": "circle_int"}, {"signal_mask": "circle"}),
+    ("lambda", {"target_weight": 0.0}, "0 < target_weight < 1"),
+    ("lambda", {"target_weight": 1.0}, "0 < target_weight < 1"),
+    ("lambda", {"target_weight": True}, "0 < target_weight < 1"),
+    ("lambda", {"dthresh": -0.1}, "dthresh must be >= 0"),
+    ("lambda", {"dthresh": np.nan}, "dthresh must be >= 0"),
+    ("lambda", {"sigma": 0.0}, "sigma must be > 0"),
+    ("lambda", {"sigma": -1.0}, "sigma must be > 0"),
+    ("lambda", {"sigma": True}, "sigma must be > 0"),
+    ("lambda", {"sigma": np.zeros(NAV_SHAPE, dtype=np.float32)}, "sigma must be > 0"),
+    ("lambda", {"sigma": _NAN_SIGMA}, "sigma must be > 0"),
+    ("lambda", {"sigma": 1e19}, SIGMA_RANGE_MESSAGE),
+    ("lambda", {"sigma": np.ones((2, 2))}, "navigation shape"),
+    ("lambda", {"sigma": np.array(8.0)}, {"sigma": 8.0}),
+    ("lambda", {"signal_mask": np.ones((2, 2), dtype=bool)}, "signal shape"),
+    ("lambda", {"signal_mask": np.ones(SIG_SHAPE, dtype=bool)}, "excludes every pixel"),
+    ("lambda", {"signal_mask": "circle_int"}, {"signal_mask": "circle"}),
+    ("lambda_0d", {}, "nothing to average"),
 ]
 
 
@@ -1080,11 +1489,28 @@ def _assert_balanced_registration(events: list[str]) -> None:
     assert depth == 0
 
 
+# Input navigation chunkings of the lazy == eager arms on the
+# (10, 16 | 16, 16) map, as (id, chunks, processed rows):
+# get_dask_array(rechunk=True) keeps the row chunks and makes the 16
+# columns one chunk (measured 2026-10-04 and 2026-10-05, dask 2026.3.0),
+# so these arms pin the row chunkings; the column and both-axes
+# chunkings reach the drivers directly in their own tests
+LAZY_CHUNKINGS = [
+    ("single", (-1, -1), (10,)),
+    ("(5, 8)", (5, 8), (5, 5)),
+    ("((3, 3, 4), (7, 7, 2))", ((3, 3, 4), (7, 7, 2)), (3, 3, 4)),
+    ("((1, 9), (2, 14))", ((1, 9), (2, 14)), (1, 9)),
+    ("(1, 1)", (1, 1), (1,) * 10),
+    ("(2, 3)", (2, 3), (2,) * 5),
+    ("(4, 4)", (4, 4), (4, 4, 2)),
+]
+
+
 class TestLazyAndContracts:
     """The method contract inherited from ``average_neighbour_patterns``
-    on in-memory signals, the dtype policy, 1D navigation, small maps,
-    argument validation and the guards of the paths that are not
-    implemented yet.
+    on in-memory and lazy signals, lazy == eager over chunkings and
+    schedulers, the dtype policy, 1D navigation, small maps and
+    argument validation.
     """
 
     @pytest.mark.parametrize("method, kwargs, expected", VALIDATION_ARMS)
@@ -1105,6 +1531,8 @@ class TestLazyAndContracts:
             if method == "average":
                 kw.setdefault("lam", 1.0)
                 return _average(s, **kw)
+            if method == "lambda":
+                return s.get_nlpar_lambda(**kw)
             return s.get_nlpar_sigma(**kw)
 
         if isinstance(expected, str):
@@ -1114,95 +1542,18 @@ class TestLazyAndContracts:
             assert np.array_equal(call(**kwargs), call(**expected))
         assert np.array_equal(s.data, data)
 
-    @pytest.mark.parametrize(
-        "guard",
-        [
-            "lam_none",
-            "lazy_input",
-            "lazy_output",
-            "get_nlpar_sigma",
-            "get_nlpar_lambda",
-        ],
-    )
-    def test_stage_a_guards_raise_not_implemented(
-        self, random_uniform_saturated, guard
-    ):
-        # Five guards of the paths that land with the lambda optimisation
-        # and the lazy route; this test is deleted when they land. The
-        # method's guards fire after the argument validation, the
-        # get_nlpar_lambda stub before any validation
-        lambda_message = "lambda optimisation lands in Stage B"
-        lazy_message = "lazy NLPAR lands in Stage B"
-        data = _random_map(random_uniform_saturated)
-        s = kp.signals.EBSD(data.copy())
-
-        if guard == "lam_none":
-            # The guard is specific to lam=None
-            s_out = s.average_non_local_neighbour_patterns(lam=1.0, inplace=False)
-            assert isinstance(s_out, kp.signals.EBSD)
-            with pytest.raises(
-                ValueError, match="search_radius must be a non-negative"
-            ):
-                s.average_non_local_neighbour_patterns(search_radius=-1, lam=None)
-            with pytest.raises(NotImplementedError, match=lambda_message):
-                s.average_non_local_neighbour_patterns(lam=None, inplace=False)
-            with pytest.raises(NotImplementedError, match=lambda_message):
-                s.average_non_local_neighbour_patterns()
-        elif guard == "lazy_input":
-            # The guard is specific to a lazy input
-            s_out = s.average_non_local_neighbour_patterns(lam=1.0, inplace=False)
-            assert isinstance(s_out, kp.signals.EBSD)
-            s_lazy = s.as_lazy()
-            with pytest.raises(
-                ValueError, match="search_radius must be a non-negative"
-            ):
-                s_lazy.average_non_local_neighbour_patterns(search_radius=-1, lam=1.0)
-            for kwargs in [
-                {},
-                {"inplace": False},
-                {"inplace": False, "lazy_output": False},
-            ]:
-                with pytest.raises(NotImplementedError, match=lazy_message):
-                    s_lazy.average_non_local_neighbour_patterns(lam=1.0, **kwargs)
-        elif guard == "lazy_output":
-            # The guard is specific to lazy_output=True
-            out = s.average_non_local_neighbour_patterns(
-                lam=1.0, inplace=False, lazy_output=False
-            )
-            assert isinstance(out, kp.signals.EBSD)
-            assert not out._lazy
-            with pytest.raises(
-                ValueError, match="search_radius must be a non-negative"
-            ):
-                s.average_non_local_neighbour_patterns(
-                    search_radius=-1, lam=1.0, inplace=False, lazy_output=True
-                )
-            with pytest.raises(NotImplementedError, match=lazy_message):
-                s.average_non_local_neighbour_patterns(
-                    lam=1.0, inplace=False, lazy_output=True
-                )
-        elif guard == "get_nlpar_sigma":
-            # The guard is specific to a lazy input
-            sigma = s.get_nlpar_sigma()
-            assert sigma.shape == NAV_SHAPE
-            with pytest.raises(NotImplementedError, match=lazy_message):
-                s.as_lazy().get_nlpar_sigma()
-        else:
-            with pytest.raises(NotImplementedError, match=lambda_message):
-                s.get_nlpar_lambda()
-            # Before any validation
-            with pytest.raises(NotImplementedError, match=lambda_message):
-                s.get_nlpar_lambda(target_weight=5.0, dthresh=-1.0)
-        assert np.array_equal(s.data, data)
-
+    @pytest.mark.parametrize("route", ["eager", "lazy"])
     @pytest.mark.parametrize("nav_shape", [(2, 2), (3, 5)])
-    def test_map_smaller_than_the_window(self, random_uniform_saturated, nav_shape):
+    def test_map_smaller_than_the_window(
+        self, random_uniform_saturated, nav_shape, route
+    ):
         # At radius 3 both axes are shorter than the 7-point window, so
         # every pattern averages over the whole map (PyEBSDIndex would
         # index out of bounds here); padding slots must carry weight 0
         data = _random_map(random_uniform_saturated, nav_shape=nav_shape)
         s = kp.signals.EBSD(data)
-        out = _average(s, search_radius=3, lam=1.0, dtype_out="float32")
+        kwargs = {"search_radius": 3, "lam": 1.0, "dtype_out": "float32"}
+        out = _average(s, **kwargs)
         ref = nlpar_reference(data, search_radius=3, lam=1.0, dthresh=0.0)
 
         assert out.dtype == np.float32
@@ -1211,8 +1562,17 @@ class TestLazyAndContracts:
         max_abs = float(np.max(np.abs(out.astype(np.float64) - ref)))
         _assert_at_most(max_abs, REFERENCE_MAX_ABS_GREY, "REFERENCE_MAX_ABS_GREY")
 
+        if route == "lazy":
+            # One row per chunk: every axis is rechunked to one chunk,
+            # the window being longer than the axis
+            s_lazy = _lazy_signal(data, (1, -1))
+            out_lazy = _average_lazy(s_lazy, **kwargs)
+            assert out_lazy.dtype == np.float32
+            assert np.array_equal(out_lazy, out)
+
+    @pytest.mark.parametrize("route", ["eager", "lazy"])
     def test_one_dimensional_navigation_equals_a_one_row_map(
-        self, random_uniform_saturated
+        self, random_uniform_saturated, route
     ):
         data_1d = _random_map(random_uniform_saturated, nav_shape=(7,))
         s_1d = kp.signals.EBSD(data_1d)
@@ -1227,6 +1587,34 @@ class TestLazyAndContracts:
             assert out_1d.shape == data_1d.shape
             assert np.array_equal(out_1d, out_2d[0])
             assert not np.array_equal(out_1d.astype(np.float32), data_1d)
+
+            if route == "lazy":
+                # A lazy 1D scan and the lazy one-row map, both given
+                # in two chunks, (3, 4): the method merges the short
+                # scan into one chunk, so this covers the single-chunk
+                # 1D route
+                s_1d_lazy = _lazy_signal(data_1d, ((3, 4),))
+                processed = get_dask_array(
+                    signal=s_1d_lazy, chunk_bytes=8e6, rechunk=True
+                ).chunks
+                assert processed[0] == (7,)
+                processed = get_dask_array(
+                    signal=_lazy_signal(data_1d[None], (1, (3, 4))),
+                    chunk_bytes=8e6,
+                    rechunk=True,
+                ).chunks
+                assert processed[:2] == ((1,), (7,))
+                out_1d_lazy = _average_lazy(s_1d_lazy, **kwargs)
+                assert out_1d_lazy.shape == data_1d.shape
+                assert np.array_equal(out_1d_lazy, out_1d)
+                s_2d_lazy = _lazy_signal(data_1d[None], (1, (3, 4)))
+                assert np.array_equal(_average_lazy(s_2d_lazy, **kwargs), out_2d)
+
+        if route == "lazy":
+            sigma_1d_lazy = _lazy_signal(data_1d, ((3, 4),)).get_nlpar_sigma()
+            assert sigma_1d_lazy.shape == (7,)
+            assert sigma_1d_lazy.dtype == np.float32
+            assert np.array_equal(sigma_1d_lazy, s_1d.get_nlpar_sigma())
 
         # A 1-tuple radius is the int radius of the one axis
         out_int = _average(s_1d, search_radius=2, lam=1.0, dtype_out="float32")
@@ -1341,8 +1729,12 @@ class TestLazyAndContracts:
         assert np.all(s2.data >= data.min(axis=(0, 1)))
         assert np.all(s2.data <= data.max(axis=(0, 1)))
 
-    def test_inplace_lazy_output_contract(self, random_uniform_saturated):
+    @pytest.mark.parametrize("route", ["eager", "lazy"])
+    def test_inplace_lazy_output_contract(self, random_uniform_saturated, route):
         data = _random_map(random_uniform_saturated)
+        if route == "lazy":
+            self._lazy_arms_of_the_inplace_lazy_output_contract(data)
+            return
         s = kp.signals.EBSD(data.copy())
         message = "'lazy_output=True' requires 'inplace=False'"
         # Checked before anything else
@@ -1363,6 +1755,207 @@ class TestLazyAndContracts:
         returned = s.average_non_local_neighbour_patterns(lam=1.0)
         assert returned is None
         assert np.array_equal(s.data, s_out.data)
+
+    @staticmethod
+    def _lazy_arms_of_the_inplace_lazy_output_contract(data: np.ndarray) -> None:
+        """Assert the lazy arms of the inplace and lazy_output contract
+        on a map of shape (4, 5 | 6, 6), against the eager run.
+        """
+        kwargs = {"search_radius": 1, "lam": 1.0}
+        expected = _average(kp.signals.EBSD(data.copy()), **kwargs)
+        assert not np.array_equal(expected, data)
+        nav_chunks = ((2, 2), (5,))
+
+        # An in-memory signal with lazy_output=True gives a lazy signal
+        s = kp.signals.EBSD(data.copy())
+        s_out = s.average_non_local_neighbour_patterns(
+            inplace=False, lazy_output=True, **kwargs
+        )
+        assert isinstance(s_out, kp.signals.LazyEBSD)
+        assert np.array_equal(s.data, data)
+        s_out.compute()
+        assert isinstance(s_out, kp.signals.EBSD)
+        assert np.array_equal(s_out.data, expected)
+
+        # A lazy input stays lazy unless lazy_output=False
+        s_lazy = _lazy_signal(data, nav_chunks)
+        s_out = s_lazy.average_non_local_neighbour_patterns(inplace=False, **kwargs)
+        assert isinstance(s_out, kp.signals.LazyEBSD)
+        assert np.array_equal(s_out.data.compute(), expected)
+        s_out = s_lazy.average_non_local_neighbour_patterns(
+            inplace=False, lazy_output=False, **kwargs
+        )
+        assert isinstance(s_out, kp.signals.EBSD)
+        assert not s_out._lazy
+        assert np.array_equal(s_out.data, expected)
+        assert s_lazy._lazy
+        assert np.array_equal(s_lazy.data.compute(), data)
+
+        # In place, a lazy input keeps its chunks and stays lazy
+        s_lazy = _lazy_signal(data, nav_chunks)
+        old_chunks = s_lazy.data.chunks
+        returned = s_lazy.average_non_local_neighbour_patterns(**kwargs)
+        assert returned is None
+        assert s_lazy._lazy
+        assert isinstance(s_lazy.data, da.Array)
+        assert s_lazy.data.chunks == old_chunks
+        assert np.array_equal(s_lazy.data.compute(), expected)
+
+        # In place with lazy_output=False, the data is computed into an
+        # in-memory array
+        s_lazy = _lazy_signal(data, nav_chunks)
+        returned = s_lazy.average_non_local_neighbour_patterns(
+            lazy_output=False, **kwargs
+        )
+        assert returned is None
+        assert isinstance(s_lazy.data, np.ndarray)
+        assert np.array_equal(s_lazy.data, expected)
+
+        # lazy_output=True still requires inplace=False on a lazy input
+        with pytest.raises(ValueError, match="'lazy_output=True' requires"):
+            _lazy_signal(data, nav_chunks).average_non_local_neighbour_patterns(
+                lazy_output=True, **kwargs
+            )
+
+    @pytest.mark.parametrize(
+        "nav_chunks, processed_rows",
+        [chunking[1:] for chunking in LAZY_CHUNKINGS],
+        ids=[chunking[0] for chunking in LAZY_CHUNKINGS],
+    )
+    def test_lazy_equals_eager_chunking(
+        self, counting_spy, random_uniform_saturated, nav_chunks, processed_rows
+    ):
+        # Saturated pixels in the first (5, 8) navigation block only, so
+        # a saturation maximum taken per chunk differs from the global
+        # one on every other block
+        x = random_uniform_saturated((10, 16), (16, 16), one_block_only=True)
+        assert x[:5, :8].max() == 255
+        assert x[5:].max() < 255
+        assert x[:, 8:].max() < 255
+        s = kp.signals.EBSD(x.copy())
+        s_lazy = _lazy_signal(x, nav_chunks)
+
+        # What the method processes: the row chunks of the input, the
+        # 16 columns in one chunk
+        processed = get_dask_array(signal=s_lazy, chunk_bytes=8e6, rechunk=True).chunks
+        assert processed[:2] == (processed_rows, (16,))
+
+        sigma_lazy = s_lazy.get_nlpar_sigma()
+        assert sigma_lazy.dtype == np.float32
+        assert np.array_equal(sigma_lazy, s.get_nlpar_sigma())
+
+        average_calls = counting_spy(nlpar_module, "_nlpar_average_chunk")
+        for search_radius in (1, 3):
+            kwargs = {"search_radius": search_radius, "lam": 1.0}
+            expected = _average(s, dtype_out="float32", **kwargs)
+            average_calls.clear()
+            out = _average_lazy(s_lazy, dtype_out="float32", **kwargs)
+            # Through the chunked averaging pass, one wrapper call per
+            # block of the depth-rechunked processed chunks
+            chunks_out = nlpar_module._nlpar_depth(
+                processed, (search_radius, search_radius)
+            )[1]
+            assert len(average_calls) == len(chunks_out[0]) * len(chunks_out[1])
+            assert out.dtype == np.float32
+            assert np.array_equal(out, expected)
+
+            # The integer output, from the same float32 average
+            out_u8 = _average_lazy(s_lazy, **kwargs)
+            assert out_u8.dtype == np.uint8
+            assert np.array_equal(out_u8, _average(s, **kwargs))
+
+        # The lambda path on the lazy route: the same optimised lambda
+        # (the distances use the global saturation maximum, not one per
+        # chunk), and lam=None averages with it
+        lam = s.get_nlpar_lambda()
+        assert s_lazy.get_nlpar_lambda() == lam
+        kwargs = {"search_radius": 1, "lam": None, "dtype_out": "float32"}
+        expected = _average(s, **kwargs)
+        assert np.array_equal(_average_lazy(s_lazy, **kwargs), expected)
+        assert np.array_equal(
+            expected, _average(s, search_radius=1, lam=lam, dtype_out="float32")
+        )
+        assert np.array_equal(s_lazy.data.compute(), x)
+
+    @pytest.mark.parametrize("search_radius", [3, 4])
+    def test_lazy_equals_eager_nickel_ebsd_large_last_chunk_26_26_3(
+        self, search_radius
+    ):
+        s = kp.data.nickel_ebsd_large(allow_download=True)
+        data = s.data.copy()
+        kwargs = {"search_radius": search_radius, "lam": 2.5, "dtype_out": "float32"}
+        # The eager route runs on the default chunking
+        default_chunks = get_dask_array(signal=s, chunk_bytes=8e6, rechunk=True).chunks
+        assert default_chunks[:2] == ((47, 8), (47, 28))
+        expected = _average(s, **kwargs)
+
+        # Explicit rows (26, 26, 3), processed as ((26, 26, 3), (40, 35)):
+        # the 3-row last chunk is thinner than the depth of the shifted
+        # window of the last rows (4 at radius 3, 6 at radius 4)
+        s_lazy = _lazy_signal(data, ((26, 26, 3), (75,)))
+        processed = get_dask_array(signal=s_lazy, chunk_bytes=8e6, rechunk=True).chunks
+        assert processed[:2] == ((26, 26, 3), (40, 35))
+        _, chunks_out = nlpar_module._nlpar_depth(
+            processed, (search_radius, search_radius)
+        )
+        expected_rows = {3: (26, 25, 4), 4: (26, 23, 6)}[search_radius]
+        assert chunks_out[0] == expected_rows
+        out = _average_lazy(s_lazy, **kwargs)
+        assert np.array_equal(out, expected)
+
+        # The chunking of the signal made lazy, as the method processes it
+        out_as_lazy = _average_lazy(s.as_lazy(), **kwargs)
+        assert np.array_equal(out_as_lazy, expected)
+        assert np.array_equal(s.data, data)
+
+    @pytest.mark.parametrize("variant", ["zeros", "noisy"])
+    def test_issue_230_irregular_chunks(self, variant):
+        # The chunking of the lazy regression test of
+        # average_neighbour_patterns (pyxem/kikuchipy#230): rows thinner
+        # than the depth of the averaging pass
+        chunks = ((3, 3, 4, 3, 4, 3, 4, 3, 3, 4, 3, 4, 3, 4, 3, 4), (75,), (6,), (6,))
+        shape = (55, 75, 6, 6)
+        if variant == "zeros":
+            data = np.zeros(shape, dtype=np.uint8)
+        else:
+            rng = np.random.default_rng(230)
+            data = rng.integers(20, 240, shape, dtype=np.uint8)
+        s_lazy = kp.signals.LazyEBSD(da.from_array(data, chunks=chunks))
+        processed = get_dask_array(signal=s_lazy, chunk_bytes=8e6, rechunk=True).chunks
+        assert processed == chunks
+
+        s_out = s_lazy.average_non_local_neighbour_patterns(
+            lam=1.0, inplace=False, lazy_output=True
+        )
+        assert isinstance(s_out, kp.signals.LazyEBSD)
+        out = s_out.data.compute()
+        expected = _average(kp.signals.EBSD(data.copy()), lam=1.0)
+        assert out.dtype == np.uint8
+        assert np.array_equal(out, expected)
+        if variant == "noisy":
+            assert not np.array_equal(out, data)
+
+    def test_scheduler_and_thread_invariance(self, random_uniform_saturated):
+        x = random_uniform_saturated((10, 16), (16, 16), one_block_only=True)
+        s = kp.signals.EBSD(x.copy())
+        kwargs = {"search_radius": 3, "lam": 1.0, "dtype_out": "float32"}
+        expected = _average(s, **kwargs)
+        expected_sigma = s.get_nlpar_sigma()
+
+        configs = [
+            {"scheduler": "synchronous"},
+            {"scheduler": "threads", "num_workers": 1},
+            {"scheduler": "threads", "num_workers": 4},
+        ]
+        for config in configs:
+            s_lazy = _lazy_signal(x, ((3, 3, 4), -1))
+            with dask.config.set(**config):
+                sigma = s_lazy.get_nlpar_sigma()
+                out = _average_lazy(s_lazy, **kwargs)
+                out_eager = _average(s, **kwargs)
+            assert np.array_equal(sigma, expected_sigma), config
+            assert np.array_equal(out, expected), config
+            assert np.array_equal(out_eager, expected), config
 
     @pytest.mark.parametrize("scheduler", ["synchronous", "threads"])
     def test_inplace_equals_inplace_false_on_a_multichunk_eager_signal(
@@ -1609,3 +2202,235 @@ class TestSigmaMethod:
         sigma_unprotected = s.get_nlpar_sigma(saturation_protect=False)
         assert not np.array_equal(sigma_mask, sigma)
         assert not np.array_equal(sigma_unprotected, sigma)
+
+
+# ----------------------------- Real data ---------------------------- #
+
+requires_pyebsdindex = pytest.mark.skipif(
+    dependency_version["pyebsdindex"] is None, reason="pyebsdindex is not installed"
+)
+
+# Hough indexing quality metrics and the sign of their improvement:
+# higher is better except for the band fit, in degrees
+HOUGH_METRIC_SIGNS = {"pq": 1.0, "fit": -1.0, "nmatch": 1.0, "cm": 1.0}
+
+
+def _hough_quality(s: kp.signals.EBSD, reference: CrystalMap) -> tuple[dict, float]:
+    """Return the medians of the Hough indexing quality metrics of a
+    signal and the median misorientation, in degrees, of its
+    orientations to those of a reference crystal map, compared by point
+    order.
+    """
+    phase_list = reference.phases
+    indexer = s.detector.get_indexer(phase_list)
+    xmap = s.hough_indexing(phase_list, indexer, verbose=0)
+    assert xmap.size == reference.size
+    medians = {key: float(np.median(xmap.prop[key])) for key in HOUGH_METRIC_SIGNS}
+    point_group = phase_list[phase_list.ids[0]].point_group
+    ori = Orientation(xmap.rotations, symmetry=point_group)
+    ori_reference = Orientation(reference.rotations, symmetry=point_group)
+    misorientation = ori.angle_with(ori_reference, degrees=True)
+    return medians, float(np.median(misorientation))
+
+
+def _as_numpy(x: np.ndarray | da.Array) -> np.ndarray:
+    """Return a computed NumPy array of an array that may be lazy."""
+    if isinstance(x, da.Array):
+        x = x.compute()
+    return np.asarray(x)
+
+
+class TestRealData:
+    """NLPAR improves the background-corrected ``nickel_ebsd_large`` by
+    the map metrics and by Hough indexing quality, at search radius 3.
+    Hough gains are pinned at 0.5 x the measured gain where the metric
+    improves, and as "not worse" otherwise.
+    """
+
+    def test_adp_improves(self, record_property):
+        s = _nickel_corrected()
+        kwargs = {"inplace": False, "show_progressbar": False}
+        s_auto = s.average_non_local_neighbour_patterns(lam=None, **kwargs)
+        s_07 = s.average_non_local_neighbour_patterns(lam=0.7, **kwargs)
+        adp = {}
+        for name, signal in [("before", s), ("auto", s_auto), ("07", s_07)]:
+            adp_map = signal.get_average_neighbour_dot_product_map(
+                show_progressbar=False
+            )
+            adp[name] = float(np.mean(adp_map))
+            record_property(f"adp_{name}", adp[name])
+
+        assert adp["auto"] > adp["before"]
+        assert adp["07"] > adp["before"]
+        _assert_in_band(adp["before"], ADP_BEFORE, "ADP_BEFORE")
+        _assert_in_band(adp["auto"], ADP_AFTER_AUTO, "ADP_AFTER_AUTO")
+        _assert_in_band(adp["07"], ADP_AFTER_07, "ADP_AFTER_07")
+
+    def test_iq_improves(self, record_property):
+        s = _nickel_corrected()
+        s_auto = s.average_non_local_neighbour_patterns(
+            lam=None, inplace=False, show_progressbar=False
+        )
+        iq_before = float(np.mean(s.get_image_quality(show_progressbar=False)))
+        iq_after = float(np.mean(s_auto.get_image_quality(show_progressbar=False)))
+        record_property("iq_before", iq_before)
+        record_property("iq_after_auto", iq_after)
+
+        assert iq_after > iq_before
+        _assert_in_band(iq_before, IQ_BEFORE, "IQ_BEFORE")
+        _assert_in_band(iq_after, IQ_AFTER_AUTO, "IQ_AFTER_AUTO")
+
+    @requires_pyebsdindex
+    def test_hough_quality_before_and_after(self, record_property):
+        s = _nickel_corrected()
+        s_after = s.average_non_local_neighbour_patterns(
+            lam=None, inplace=False, show_progressbar=False
+        )
+        # Every fifth pattern along both axes: 165 patterns in the
+        # row-major order of the stored crystal map points
+        s_sub = s.inav[::5, ::5]
+        s_sub_after = s_after.inav[::5, ::5]
+        assert s_sub.data.shape == (11, 15, 60, 60)
+        assert s_sub_after.data.shape == (11, 15, 60, 60)
+        reference = s_sub.xmap
+        assert reference.size == 165
+
+        before, miso_before = _hough_quality(s_sub, reference)
+        after, miso_after = _hough_quality(s_sub_after, reference)
+        gains = {
+            key: sign * (after[key] - before[key])
+            for key, sign in HOUGH_METRIC_SIGNS.items()
+        }
+        for key in HOUGH_METRIC_SIGNS:
+            record_property(f"hough_{key}_median_before", before[key])
+            record_property(f"hough_{key}_median_after", after[key])
+            record_property(f"hough_{key}_gain", gains[key])
+        record_property("hough_miso_median_before", miso_before)
+        record_property("hough_miso_median_after", miso_after)
+
+        pins = {
+            "pq": HOUGH_PQ_GAIN,
+            "fit": HOUGH_FIT_GAIN,
+            "nmatch": HOUGH_NMATCH_GAIN,
+            "cm": HOUGH_CM_GAIN,
+        }
+        for key, pin in pins.items():
+            _assert_at_least(gains[key], pin, f"HOUGH_{key.upper()}_GAIN")
+        _assert_at_most(miso_after, HOUGH_MISO_MEDIAN_AFTER, "HOUGH_MISO_MEDIAN_AFTER")
+
+    @pytest.mark.weekly
+    @requires_pyebsdindex
+    def test_hough_quality_full_map(self, record_property):
+        s = _nickel_corrected()
+        s_after = s.average_non_local_neighbour_patterns(
+            lam=None, inplace=False, show_progressbar=False
+        )
+        reference = s.xmap
+        assert reference.size == 4125
+        before, miso_before = _hough_quality(s, reference)
+        after, miso_after = _hough_quality(s_after, reference)
+        # Recorded only
+        for key in HOUGH_METRIC_SIGNS:
+            record_property(f"hough_full_{key}_median_before", before[key])
+            record_property(f"hough_full_{key}_median_after", after[key])
+        record_property("hough_full_miso_median_before", miso_before)
+        record_property("hough_full_miso_median_after", miso_after)
+        assert np.all(np.isfinite(list(after.values())))
+        assert np.isfinite(miso_after)
+
+    def test_sigma_map_is_plausible(self, record_property):
+        s_raw = kp.data.nickel_ebsd_large(allow_download=True)
+        s_corrected = _nickel_corrected()
+        sigma_raw = s_raw.get_nlpar_sigma(show_progressbar=False)
+        sigma_corrected = s_corrected.get_nlpar_sigma(show_progressbar=False)
+        for sigma in (sigma_raw, sigma_corrected):
+            assert sigma.shape == (55, 75)
+            assert sigma.dtype == np.float32
+            assert np.all(np.isfinite(sigma) & (sigma > 0))
+        # Recorded, not gated: a noise level of grey levels on a 0-255
+        # scale, and how the background correction scales it
+        median_raw = float(np.median(sigma_raw))
+        median_corrected = float(np.median(sigma_corrected))
+        record_property("sigma_median_raw", median_raw)
+        record_property("sigma_median_corrected", median_corrected)
+        record_property(
+            "sigma_median_ratio_corrected_raw", median_corrected / median_raw
+        )
+        assert 0 < median_corrected < 255
+
+
+def _si_wafer() -> kp.signals.LazyEBSD:
+    """Return the lazy ``si_wafer`` dataset, (50, 50 | 480, 480), from
+    the local cache, or skip: the suite never downloads it by itself.
+    """
+    try:
+        return kp.data.si_wafer(allow_download=False, lazy=True)
+    except (ValueError, FileNotFoundError) as error:  # pragma: no cover
+        pytest.skip(
+            "si_wafer is not cached; fetch it once with "
+            f"kp.data.si_wafer(allow_download=True): {error}"
+        )
+
+
+@pytest.mark.weekly
+class TestSiWafer:
+    """Low-signal patterns of a single crystal, processed lazily with
+    the method's own chunking.
+    """
+
+    def test_si_wafer_sigma_cv(self, record_property):
+        s = _si_wafer()
+        t0 = time.perf_counter()
+        sigma = s.get_nlpar_sigma(show_progressbar=False)
+        record_property("si_wafer_sigma_runtime_s", time.perf_counter() - t0)
+        assert sigma.shape == (50, 50)
+        assert np.all(np.isfinite(sigma) & (sigma > 0))
+        sigma = sigma.astype(np.float64)
+        cv = float(np.std(sigma) / np.mean(sigma))
+        record_property("si_wafer_sigma_median", float(np.median(sigma)))
+        record_property("si_wafer_sigma_cv", cv)
+        _assert_at_most(cv, SI_SIGMA_CV, "SI_SIGMA_CV")
+
+    def test_si_wafer_effective_neighbours(self, record_property):
+        s = _si_wafer()
+        sigma = s.get_nlpar_sigma(show_progressbar=False)
+        lam = s.get_nlpar_lambda(show_progressbar=False)
+        record_property("si_wafer_lambda", lam)
+
+        # The search windows of the interior points (3:13, 3:13) of the
+        # block (17:33, 17:33) are those of the whole map at radius 3
+        radius = 3
+        block = _as_numpy(s.data[17:33, 17:33]).astype(np.float32)
+        data3 = np.ascontiguousarray(block.reshape(16, 16, -1))
+        sigma_block = np.ascontiguousarray(sigma[17:33, 17:33], dtype=np.float32)
+        sigma2 = (sigma_block * sigma_block).astype(np.float32)
+        mask_indices = np.arange(data3.shape[-1], dtype=np.int64)
+        max_value = np.float32(_as_numpy(s.data.max()))
+        d = _nlpar_distances_kernel(
+            data3, sigma2, mask_indices, max_value, True, radius, radius, 3, 13, 3, 13
+        )
+        w = _nlpar_weights_kernel(d, lam, np.float32(0.0)).astype(np.float64)
+        w /= w.sum(axis=-1, keepdims=True)
+        n_eff = 1.0 / np.sum(w**2, axis=-1)
+        assert np.all((n_eff >= 1) & (n_eff <= 49 + 1e-9))
+        median = float(np.median(n_eff))
+        record_property("si_wafer_n_eff_median", median)
+        _assert_in_band(median, SI_NEFF_MEDIAN, "SI_NEFF_MEDIAN")
+
+    def test_si_wafer_iq_gain(self, record_property):
+        s = _si_wafer()
+        t0 = time.perf_counter()
+        s_after = s.average_non_local_neighbour_patterns(
+            lam=None, inplace=False, lazy_output=False, show_progressbar=False
+        )
+        record_property("si_wafer_nlpar_runtime_s", time.perf_counter() - t0)
+        assert isinstance(s_after, kp.signals.EBSD)
+        assert not s_after._lazy
+        iq_before = _as_numpy(s.get_image_quality(show_progressbar=False))
+        iq_after = _as_numpy(s_after.get_image_quality(show_progressbar=False))
+        ratio = float(np.mean(iq_after) / np.mean(iq_before))
+        record_property("si_wafer_iq_before", float(np.mean(iq_before)))
+        record_property("si_wafer_iq_after", float(np.mean(iq_after)))
+        record_property("si_wafer_iq_gain", ratio)
+        assert ratio > 1
+        _assert_at_least(ratio, SI_IQ_GAIN, "SI_IQ_GAIN")

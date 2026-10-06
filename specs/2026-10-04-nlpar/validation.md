@@ -2822,6 +2822,90 @@ i) `git status --short`: only `plan.md` and `validation.md` of this
 
 Verdict: green.
 
+### 13. 2026-10-05 (Stage B failing-tests gate)
+
+Machine: the Windows 11 Enterprise workstation of entries 7-12, Git
+Bash. Files: `tests/test_signals/test_util/test_nlpar.py`,
+`tests/test_signals/test_ebsd_nlpar.py` (Stage B tests added to
+`TestLambdaOracle`, `TestPolicyOracles`, `TestPerformance`,
+`TestLambdaMethod`, `TestLazyAndContracts`, `TestRealData`,
+`TestSiWafer`), and the Stage B stubs `_nlpar_lambda_objective` and
+`_nlpar_optimize_lambda` in `src/kikuchipy/pattern/_nlpar.py` (numpydoc
+contract, body `raise NotImplementedError`). `EBSD.get_nlpar_lambda`
+is still the Stage A stub; the `lam=None`, lazy-input and
+`lazy_output=True` guards are still in place.
+
+Run: `uv run --no-sync pytest tests/test_signals/test_util/test_nlpar.py
+tests/test_signals/test_ebsd_nlpar.py -n 0 -q -p no:cacheprovider`:
+64 failed, 748 passed, 5 skipped (the four weekly tests and the weekly
+file-based PyEBSDIndex oracle), 111.79 s; zero collection errors.
+All 64 failures are `NotImplementedError` (classified from the JUnit
+XML of the run: 0 failures with another message). Stage A stays green.
+Placeholders: the 15 MEASURED-THEN-PINNED constants of the method
+module (`LAMBDA_NI_RAW`, `LAMBDA_NI_CORRECTED`, `ADP_BEFORE`,
+`ADP_AFTER_AUTO`, `ADP_AFTER_07`, `IQ_BEFORE`, `IQ_AFTER_AUTO`, the
+five `HOUGH_*` and the three `SI_*`) hold `None`, their seed in the
+comment; the util module's `LAMBDA_CLOSED_FORM_REL` (1e-3) and
+`LAMBDA_PHANTOM_RATIO` ((1.010, 1.030)) hold their seed value. Each
+carries the "placeholder, measured then pinned" comment.
+
+Critic findings (Stage B failing-tests review) and dispositions:
+
+- B-MAJ-1 (major; applied). No method-level test forwarded `dthresh`
+  to `get_nlpar_lambda`, nor `dthresh`, a user `sigma` or
+  `saturation_protect=False` through `lam=None` (upstream #824 drops
+  `dthresh`). New `TestLambdaMethod::
+  test_lambda_forwards_dthresh_sigma_and_protection` on the
+  saturated-corner `identical_plus_gaussian((12, 12), (32, 32))` map:
+  `get_nlpar_lambda(dthresh=0.5)` differs from the default and equals
+  `_nlpar_optimize_lambda(d, valid, 0.34, 0.5)` on the whole-map
+  distances; for each of `dthresh=0.5`, `sigma=1.5 sigma`,
+  `saturation_protect=False` the `lam=None` output is bitwise equal to
+  the output at the forwarded lambda and differs from the output at the
+  default lambda. Measured first (2026-10-05, a NumPy transcription of
+  the objective and the specified optimiser call on the Stage A
+  sigma-pass distances): 0.8926 default, 0.6229 at `dthresh` 0.5,
+  0.8935 without protection, 1.0 (the optimiser's start) with sigma x
+  1.5, so every keyword moves lambda on this map.
+- B-MIN-1 (minor; applied). The lazy 1-D arm of
+  `test_one_dimensional_navigation_equals_a_one_row_map` claimed two
+  chunks; the method merges the 7-point scan into one. Comment
+  corrected and the processed chunks asserted (`(7,)` and
+  `((1,), (7,))`). Multi-chunk 1-D coverage not added; S3 [B] is still
+  killed because the lazy 1-D route runs.
+- B-MIN-2 (minor; applied in the test, bullet text deferred).
+  `test_stride_above_1e6_points` uses the even-row and even-column
+  `c = 12` field (strided 2.9109, full 1.1884) because the even/odd-row
+  construction of the V6 bullet gives the same lambda strided and
+  unstrided (1.18838, measured with a reference implementation). The
+  `>= 1e6` arm now uses (1000, 1000), exactly 1e6 points, so a strict
+  `>` threshold mutant dies. The V6 bullet text is amended at the
+  implementation commit (this fix was limited to the ledger).
+- B-MIN-3 (minor; applied, following V9). `_si_wafer()` now calls
+  `kp.data.si_wafer(allow_download=False, lazy=True)` and skips with a
+  message naming `kp.data.si_wafer(allow_download=True)` when the file
+  is not cached (the spherical-harmonics weekly precedent). The task
+  brief's `allow_download=True` contradicted V9; V9 governs.
+- B-MIN-4 (minor; applied). `test_lazy_equals_eager_chunking` now
+  asserts, on every chunking of the saturated one-block map,
+  `s_lazy.get_nlpar_lambda() == s.get_nlpar_lambda()` and that the lazy
+  `lam=None` output (radius 1, float32) is bitwise equal to the eager
+  one and to the eager output at the eager lambda.
+- B-MIN-5 (minor; applied). Stale "lam=None guard" comment in
+  `test_search_radius_zero_warns_and_is_a_no_op` reworded; the test now
+  also asserts no INFO record of the module logger at radius 0 (so the
+  default `lam=None` does not optimise).
+- B-MIN-6 (minor; deferred to the implementation commit). The
+  concrete id `test_lazy_equals_eager_chunking[...]` is written into
+  the M11/S1/S4/S8 [B] killer rows of plan.md section 6 and the
+  killer table here at that commit.
+- B-MIN-7 (minor; applied). Type hints added to `_bound_messages`,
+  `_minimize_like_pyebsdindex`, `_lazy_signal`, `_info_records`,
+  `_hough_quality` and `_as_numpy`.
+
+`uvx ruff format` and `uvx ruff check` on the two test modules: clean.
+Verdict: gate passed (every new failure is `NotImplementedError`).
+
 This section is filled at each stage's failing-tests gate
 (placeholder inventory confirmed), implementation gate
 (measurements + pins with recipes and machine) and review gate

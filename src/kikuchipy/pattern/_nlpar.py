@@ -649,6 +649,123 @@ def _nlpar_normalized_distances(
     return d
 
 
+# ------------------------ Lambda optimisation ----------------------- #
+
+
+def _nlpar_lambda_objective(
+    lam: np.ndarray,
+    d: np.ndarray,
+    valid: np.ndarray,
+    dthresh: float,
+    target_weight: float,
+) -> float:
+    """Return the lambda objective, the mean over scan points of the
+    absolute difference between the target weight and the normalised
+    weight every pattern gives itself in its clipped 3 x 3
+    neighbourhood.
+
+    Parameters
+    ----------
+    lam
+        Smoothing parameter lambda, float64 of shape (1,), as passed by
+        :func:`scipy.optimize.minimize`. It is used as an array and
+        never cast to a Python float.
+    d
+        Normalised distances, float32 of shape (n_rows, n_cols, 9),
+        from :func:`_nlpar_normalized_distances` (self slot ``-inf``, a
+        slot without comparable pixels ``+inf``).
+    valid
+        Whether a slot lies inside the map, bool of shape
+        (n_rows, n_cols, 9).
+    dthresh
+        Distance threshold subtracted from every distance before the
+        weight is computed, as in the averaging weights.
+    target_weight
+        Normalised weight a pattern should keep for itself, in (0, 1).
+
+    Returns
+    -------
+    objective
+        ``mean_i |target_weight - 1 / S_i|`` as a Python float.
+
+    Notes
+    -----
+    A NumPy function, not a Numba kernel, driven by
+    :func:`scipy.optimize.minimize`. The operations and their order
+    are fixed: ``w = np.exp(-np.maximum(d - dthresh, np.float32(0.0))
+    / lam ** 2)`` (float64 by promotion of the float32 ``d`` with the
+    float64 ``lam``), ``w[~valid] = 0.0``, ``S = w.sum(axis=-1)`` over
+    all nine slots in slot order (not ``1 +`` the sum of the non-self
+    slots; the two are not bitwise equal) and
+    ``float(np.mean(np.abs(target_weight - 1.0 / S)))``. The self slot
+    has weight exactly 1 through ``d = -inf``, so ``S >= 1`` and no
+    guard term is added to it.
+
+    Two deviations from PyEBSDIndex's ``loptfunc``: out-of-map slots
+    are excluded from ``S`` instead of counting with weight 1, and the
+    distance enters as ``max(d - dthresh, 0)``, the averaging kernel's
+    form, instead of ``max(d, dthresh)``. The two forms coincide at
+    ``dthresh = 0``. The statistic over points is the mean.
+    """
+    raise NotImplementedError
+
+
+def _nlpar_optimize_lambda(
+    d: np.ndarray,
+    valid: np.ndarray,
+    target_weight: float,
+    dthresh: float,
+) -> float:
+    """Return the lambda minimising :func:`_nlpar_lambda_objective`.
+
+    Parameters
+    ----------
+    d
+        Normalised distances, float32 of shape (n_rows, n_cols, 9),
+        from :func:`_nlpar_normalized_distances`.
+    valid
+        Whether a slot lies inside the map, bool of shape
+        (n_rows, n_cols, 9).
+    target_weight
+        Normalised weight a pattern should keep for itself, in (0, 1).
+    dthresh
+        Distance threshold, as in the averaging weights.
+
+    Returns
+    -------
+    lam
+        Optimised lambda as a Python float, inside ``[1e-3, 10]``.
+
+    Warns
+    -----
+    UserWarning
+        If the optimised lambda lies within 1 % of a bound, i.e.
+        ``lam <= 1.01e-3`` ("lower") or ``lam >= 9.9`` ("upper"), with
+        the message "NLPAR lambda optimisation hit the {which} bound
+        ({lam:.4f}); the target weight {target_weight} is not supported
+        by the data".
+
+    Notes
+    -----
+    When ``d.shape[0] * d.shape[1] >= 1e6`` the map is strided as
+    ``d[::2, ::2]`` and ``valid[::2, ::2]`` before the objective is
+    called, as PyEBSDIndex's ``opt_lambda_cpu`` does. The optimiser is
+    ``scipy.optimize.minimize(_nlpar_lambda_objective,
+    x0=np.array([1.0]), args=(d, valid, dthresh, target_weight),
+    method="Nelder-Mead", bounds=[(1e-3, 10.0)],
+    options={"fatol": 1e-4})``, PyEBSDIndex's call, for one target
+    weight (PyEBSDIndex's median of the fits to three targets is the
+    fit to the middle one, since lambda decreases monotonically with
+    the target weight). A map whose weights barely depend on lambda
+    leaves the optimiser at its start ``1.0`` without a warning.
+
+    Exactly one INFO record "NLPAR: optimised lambda {lam:.4f} for
+    target weight {target_weight} (objective {F:.2e})" is emitted
+    through the module logger per call.
+    """
+    raise NotImplementedError
+
+
 # -------------------------- Driver helpers -------------------------- #
 
 

@@ -39,9 +39,16 @@ Covers:
   PyEBSDIndex, with call-counting spies on the chunk wrappers and a
   recorder of the chunks reaching ``dask.array.overlap.overlap``, so
   that the chunked route itself is checked and not only its values.
+- The lambda objective and its optimiser (``TestLambdaOracle``): the
+  closed form on constructed distance fields, the exclusion of
+  out-of-map neighbours, the mean over points, the bound warnings, the
+  stride of large maps, and a test-local transcription of PyEBSDIndex's
+  objective on its own distances.
 - The recorded deviations from PyEBSDIndex (``TestPolicyOracles``),
   each pinned against a test-local transcription and, where
   PyEBSDIndex is installed, against its compiled kernels.
+- Runtimes on ``nickel_ebsd_large`` (``TestPerformance``), recorded and
+  never asserted.
 
 The oracle is always called through the compiled dispatchers. Their
 ``py_func`` is not bitwise equal to the compiled kernels (NumPy and
@@ -57,18 +64,22 @@ the inscribed-circle signal mask ``circle_mask`` and the call-counting
 """
 
 import ast
+from collections.abc import Callable
 from importlib.metadata import version
 import inspect
 import math
 import textwrap
 import time
+import warnings
 
 import dask
 import dask.array as da
 from dask.array.overlap import ensure_minimum_chunksize
+import h5py
 import numpy as np
 from packaging.version import Version
 import pytest
+from scipy.optimize import minimize
 
 import kikuchipy as kp
 from kikuchipy._constants import dependency_version
@@ -115,6 +126,20 @@ BORDER_BAND_MIN_DIFF: float = 3.63
 # measures 0.078-0.088 s.
 PYEBSDINDEX_JIT_WARMUP_S = 7.4
 
+# Placeholder, measured then pinned: the largest relative difference
+# allowed between the optimised lambda and the closed form
+# sqrt(-c / ln((1 / tw - 1) / 8)) on the constructed fields of eight
+# neighbours at distance c. Seed 1e-3, the class in lambda that
+# Nelder-Mead's fatol of 1e-4 on the objective gives.
+LAMBDA_CLOSED_FORM_REL = 1e-3
+
+# Placeholder, measured then pinned: band (low, high) of the ratio of our
+# phantom-free lambda to the lambda of PyEBSDIndex's objective (out-of-map
+# slots counted with weight 1) at target weight 0.34 on
+# nickel_ebsd_large, raw and background-corrected. Seeds 1.1387 / 1.1164
+# = 1.020 (raw) and 2.5787 / 2.5246 = 1.021 (corrected).
+LAMBDA_PHANTOM_RATIO: tuple[float, float] = (1.010, 1.030)
+
 # ------------------------------ Constants ----------------------------- #
 
 # Every Numba kernel of the module, for the flag and py_func tests
@@ -151,6 +176,21 @@ DISTANCE_CASES = [
     ((1, 7, 4, 4), (3, 3), (0, 1, 0, 7)),
     ((2, 2, 4, 4), (3, 3), (0, 2, 0, 2)),
 ]
+
+# Closed-form lambda, to four decimals, of a point with eight neighbours
+# at distance c for the target weights 0.5, 0.34 and 0.25 (computed
+# 2026-10-04 from sqrt(-c / ln((1 / tw - 1) / 8)))
+CLOSED_FORM_LAMBDA = {
+    (2, 0.5): 0.9807,
+    (2, 0.34): 1.1884,
+    (2, 0.25): 1.4280,
+    (5, 0.5): 1.5506,
+    (5, 0.34): 1.8790,
+    (5, 0.25): 2.2578,
+    (12, 0.5): 2.4022,
+    (12, 0.34): 2.9110,
+    (12, 0.25): 3.4978,
+}
 
 requires_pyebsdindex = pytest.mark.skipif(
     dependency_version["pyebsdindex"] is None, reason="pyebsdindex is not installed"
@@ -779,6 +819,159 @@ def _ours_method_average(
         inplace=False,
     )
     return s_out.data
+
+
+# ---------------------------- Lambda helpers --------------------------- #
+
+
+def _closed_form_lambda(c: float, target_weight: float) -> float:
+    """Return the lambda for which a point with eight neighbours, all at
+    normalised distance ``c``, keeps the target weight:
+    ``1 / (1 + 8 exp(-c / lam^2)) = tw``.
+    """
+    return math.sqrt(-c / math.log((1.0 / target_weight - 1.0) / 8.0))
+
+
+def _constructed_field(
+    nav_shape: tuple[int, int] = (10, 10), c: float = 2.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a constructed float32 field of 3 x 3 distances, every
+    non-self slot at ``np.float32(c)`` and the self slot (4) at
+    ``-inf``, with every slot valid.
+    """
+    d = np.full(nav_shape + (9,), np.float32(c), dtype=np.float32)
+    d[..., 4] = -np.inf
+    valid = np.ones(nav_shape + (9,), dtype=bool)
+    return d, valid
+
+
+def _set_non_self(d: np.ndarray, where: np.ndarray, c: float) -> None:
+    """Set every non-self slot of the points selected by ``where`` to
+    ``np.float32(c)``, in place.
+    """
+    for slot in (0, 1, 2, 3, 5, 6, 7, 8):
+        d[where, slot] = np.float32(c)
+
+
+def _in_map_slots(nav_shape: tuple[int, int]) -> np.ndarray:
+    """Return whether every slot of the clipped 3 x 3 neighbourhood lies
+    inside a map, bool of shape ``nav_shape + (9,)``; slot
+    ``(dj + 1) * 3 + (di + 1)`` is the neighbour at offset (dj, di).
+    """
+    nrows, ncols = nav_shape
+    rows = np.arange(nrows)[:, None, None]
+    cols = np.arange(ncols)[None, :, None]
+    slots = np.arange(9)[None, None, :]
+    jn = rows + slots // 3 - 1
+    i_n = cols + slots % 3 - 1
+    return (jn >= 0) & (jn < nrows) & (i_n >= 0) & (i_n < ncols)
+
+
+def _self_weight_terms(
+    lam: np.ndarray,
+    d: np.ndarray,
+    valid: np.ndarray,
+    dthresh: float,
+    target_weight: float,
+) -> np.ndarray:
+    """Return the per-point terms ``|tw - 1 / S_i|`` of the lambda
+    objective in the frozen form: float64 weights by promotion with the
+    float64 ``lam``, invalid slots zeroed, nine-slot sum in slot order.
+    """
+    w = np.exp(-np.maximum(d - dthresh, np.float32(0.0)) / lam**2)
+    w[~valid] = 0.0
+    s = w.sum(axis=-1)
+    return np.abs(target_weight - 1.0 / s)
+
+
+def _loptfunc_local(
+    lam: np.ndarray,
+    d2: np.ndarray,
+    mask: np.ndarray,
+    tw: float,
+    dthresh: float,
+) -> float:
+    """Return PyEBSDIndex's ``loptfunc`` (``nlpar_cpu.py``) transcribed
+    with the two corrections of our objective and without its
+    ``+ 1e-12`` on the weight sum: slots outside ``mask`` are excluded
+    and the distance enters as ``max(d2 - dthresh, 0)``.
+    """
+    temp = np.maximum(d2 - dthresh, np.float32(0.0))
+    dw = np.exp(-(temp) / lam**2)
+    dw[~mask] = 0.0
+    w = np.sum(dw, axis=2)
+    return float(np.mean(np.abs(tw - 1.0 / w)))
+
+
+def _loptfunc_pyebsdindex(
+    lam: np.ndarray, d2: np.ndarray, tw: float, dthresh: float
+) -> float:
+    """Return PyEBSDIndex's ``loptfunc`` transcribed verbatim: every slot
+    counted (out-of-map slots of ``dout`` hold 0.0, i.e. weight 1),
+    ``max(d2, dthresh)`` and ``+ 1e-12`` on the weight sum.
+    """
+    temp = np.maximum(d2, dthresh)
+    dw = np.exp(-(temp) / lam**2)
+    w = np.sum(dw, axis=2) + 1e-12
+    return float(np.mean(np.abs(tw - 1.0 / w)))
+
+
+def _loptfunc_dthresh_floor(
+    lam: np.ndarray,
+    d2: np.ndarray,
+    mask: np.ndarray,
+    tw: float,
+    dthresh: float,
+) -> float:
+    """Return the masked objective with PyEBSDIndex's ``max(d2,
+    dthresh)`` form of the distance threshold in place of ours.
+    """
+    dw = np.exp(-np.maximum(d2, np.float32(dthresh)) / lam**2)
+    dw[~mask] = 0.0
+    w = np.sum(dw, axis=2)
+    return float(np.mean(np.abs(tw - 1.0 / w)))
+
+
+def _minimize_like_pyebsdindex(func: Callable[..., float], args: tuple) -> float:
+    """Return the minimiser of ``func`` with PyEBSDIndex's optimiser
+    settings: bounded Nelder-Mead from 1.0 in [1e-3, 10], ``fatol``
+    1e-4.
+    """
+    result = minimize(
+        func,
+        x0=np.array([1.0]),
+        args=args,
+        method="Nelder-Mead",
+        bounds=[(1e-3, 10.0)],
+        options={"fatol": 1e-4},
+    )
+    return float(result.x[0])
+
+
+def _compact_self_slot(nav_shape: tuple[int, int]) -> np.ndarray:
+    """Return the position of every point's own slot in PyEBSDIndex's
+    compact 3 x 3 slot order (in-map neighbours, row outer, column
+    inner), int of shape ``nav_shape``.
+    """
+    nrows, ncols = nav_shape
+    position = np.empty(nav_shape, dtype=np.int64)
+    for j in range(nrows):
+        for i in range(ncols):
+            row_start, col_start = max(j - 1, 0), max(i - 1, 0)
+            n_win_cols = min(i + 1, ncols - 1) - col_start + 1
+            position[j, i] = (j - row_start) * n_win_cols + (i - col_start)
+    return position
+
+
+def _bound_messages(records: list[warnings.WarningMessage]) -> list[str]:
+    """Return the messages of the recorded warnings about a lambda
+    bound.
+    """
+    return [
+        str(r.message)
+        for r in records
+        if "NLPAR lambda optimisation hit the" in str(r.message)
+    ]
 
 
 # ------------------------------- Fixtures ------------------------------ #
@@ -1747,6 +1940,344 @@ class TestAveragingOracle:
             for i in range(ncols):
                 assert np.all(np.abs(out[j, i].astype(np.float64) - box_mean) <= bound)
 
+    @pytest.mark.weekly
+    @requires_pyebsdindex
+    def test_file_based_pyebsdindex_end_to_end(
+        self, pyebsdindex_kernels, nickel_large_patterns, tmp_path, record_property
+    ):
+        # kikuchipy writes the corrected map to a kikuchipy h5ebsd file,
+        # PyEBSDIndex reads it and runs its own file-based driver
+        sr, lam, dthresh = 3, 2.5, 0.0
+        patterns = nickel_large_patterns["corrected"]
+        nrows, ncols, h, w = patterns.shape
+        path_in = tmp_path / "nickel_ebsd_large_corrected.h5"
+        kp.signals.EBSD(patterns.copy()).save(path_in)
+
+        # Two mismatches between PyEBSDIndex's kikuchipy reader and the
+        # current writer are patched in the temporary file, neither
+        # touching the patterns: the reader compares the file version as
+        # a string with "0.3.dev0", so a version such as "0.14.dev0"
+        # sorts before it and the header (map and pattern shape) is not
+        # read, and it reads EBSD/Header/grid_type, which the writer
+        # keeps in the crystal map header only
+        from pyebsdindex import ebsd_pattern
+
+        with h5py.File(path_in, "r") as f:
+            file_version = f["version"][()][0].decode("utf-8")
+        if file_version < "0.3.dev0":
+            unread = ebsd_pattern.get_pattern_file_obj([str(path_in), None])
+            assert unread.nRows is None
+            with h5py.File(path_in, "r+") as f:
+                del f["version"]
+                f.create_dataset("version", data=np.array([b"0.9.0"]))
+        with h5py.File(path_in, "r+") as f:
+            header = f["Scan 1/EBSD/Header"]
+            if "grid_type" not in header:
+                header.create_dataset("grid_type", data=np.array([b"square"]))
+        pattern_file = ebsd_pattern.get_pattern_file_obj([str(path_in), None])
+        assert (pattern_file.nRows, pattern_file.nCols) == (nrows, ncols)
+        assert (pattern_file.patternH, pattern_file.patternW) == (h, w)
+
+        nl = pyebsdindex_kernels(
+            filename=str(path_in),
+            lam=lam,
+            searchradius=sr,
+            dthresh=dthresh,
+            automask=False,
+        )
+        tic = time.perf_counter()
+        path_out = nl.calcnlpar(
+            fileout=str(tmp_path / "nickel_ebsd_large_nlpar.h5"),
+            chunksize=32e9,
+            verbose=0,
+        )
+        record_property("pyebsdindex_file_driver_s", time.perf_counter() - tic)
+        assert path_out
+
+        # The patterns PyEBSDIndex reads back equal ours bitwise (the
+        # h5ebsd round trip)
+        pattern_file = nl.getinfileobj()
+        read, _ = pattern_file.read_data(
+            patStartCount=[[0, 0], [ncols, nrows]],
+            convertToFloat=True,
+            returnArrayOnly=True,
+        )
+        read = np.asarray(read, dtype=np.float32).reshape(nrows, ncols, h, w)
+        np.testing.assert_array_equal(read, patterns.astype(np.float32))
+
+        # Its driver's sigma, a minimum over overlapping tiles, is the
+        # whole-map sigma: every point is interior to some tile
+        sigma_driver = np.asarray(nl.sigma, dtype=np.float32)
+        sigma_o, _, _ = _oracle_sigma(pyebsdindex_kernels, read)
+        np.testing.assert_array_equal(sigma_driver, sigma_o)
+
+        # The driver splits the map into tiles of at least two columns,
+        # each with its own saturation maximum: the recorded quirk. The
+        # file it writes truncates to integers, so the comparison is made
+        # on the float32 kernel output over the whole map instead
+        chunks = nl._calcchunks(
+            [w, h], ncols, nrows, target_bytes=32e9, col_overlap=sr, row_overlap=sr
+        )
+        record_property("pyebsdindex_file_driver_tiles", int(chunks[0] * chunks[1]))
+        expected = _oracle_average(
+            pyebsdindex_kernels, read, sigma_driver, sr, lam, dthresh
+        )
+        ours = _ours_method_average(patterns, sr, lam, dthresh)
+        _assert_average_parity(ours, expected)
+
+
+class TestLambdaOracle:
+    # The pyebsdindex-free tests drive the objective and the optimiser
+    # on constructed fields of 3 x 3 normalised distances (self slot 4
+    # at -inf), the oracle tests on PyEBSDIndex's own dout
+
+    @pytest.mark.parametrize("target_weight", [0.5, 0.34, 0.25])
+    @pytest.mark.parametrize("c", [2, 5, 12])
+    def test_closed_form_lambda_on_constructed_distances(self, c, target_weight):
+        rel = _require_placeholder(LAMBDA_CLOSED_FORM_REL, "LAMBDA_CLOSED_FORM_REL")
+        expected = _closed_form_lambda(c, target_weight)
+        assert round(expected, 4) == CLOSED_FORM_LAMBDA[(c, target_weight)]
+
+        # Every point has eight valid neighbours at distance c, so the
+        # closed form holds at every point, the border included
+        d, valid = _constructed_field((10, 10), c)
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            lam = _nlpar._nlpar_optimize_lambda(
+                d, valid, target_weight, np.float32(0.0)
+            )
+        assert _bound_messages(records) == []
+        assert type(lam) is float
+        assert abs(lam / expected - 1) <= rel
+
+    def test_phantom_free_objective_excludes_missing_neighbours(self):
+        # The border points of a (10, 10) map: 4 corners with 5
+        # out-of-map slots, 32 edge points with 3, as in a real map; the
+        # out-of-map slots carry d = 0.0, PyEBSDIndex's dout convention
+        # for unvisited slots
+        nav_shape = (10, 10)
+        d, _ = _constructed_field(nav_shape, 2)
+        valid = _in_map_slots(nav_shape)
+        assert np.count_nonzero(~valid) == 4 * 5 + 32 * 3
+        d_zero = d.copy()
+        d_zero[~valid] = np.float32(0.0)
+        d_inf = d.copy()
+        d_inf[~valid] = np.inf
+        tw, dthresh = 0.34, np.float32(0.0)
+
+        for lam_value in (1.0, 2.0):
+            lam = np.array([lam_value])
+            value_zero = _nlpar._nlpar_lambda_objective(lam, d_zero, valid, dthresh, tw)
+            value_inf = _nlpar._nlpar_lambda_objective(lam, d_inf, valid, dthresh, tw)
+            # Exclusion through valid, not through the stored distance
+            assert value_zero == value_inf
+            # Counting the out-of-map slots with weight 1 (measured
+            # 2026-10-04: 0.049 apart at lam 1.0, 0.042 at lam 2.0)
+            phantom = _loptfunc_local(lam, d_zero, np.ones_like(valid), tw, dthresh)
+            assert abs(value_zero - phantom) > 1e-3
+            phantom_own = _nlpar._nlpar_lambda_objective(
+                lam, d_zero, np.ones_like(valid), dthresh, tw
+            )
+            assert phantom_own == phantom
+
+        # The minimiser still sits at the all-valid closed form
+        rel = _require_placeholder(LAMBDA_CLOSED_FORM_REL, "LAMBDA_CLOSED_FORM_REL")
+        lam = _nlpar._nlpar_optimize_lambda(d_zero, valid, tw, dthresh)
+        assert abs(lam / _closed_form_lambda(2, tw) - 1) <= rel
+
+    def test_mixed_c_field_distinguishes_mean_from_median(self):
+        # 70 points with every non-self slot at c = 2 and 30 at c = 12,
+        # all valid; no optimiser call
+        d, valid = _constructed_field((10, 10), 2)
+        far = np.zeros((10, 10), dtype=bool)
+        far[7:] = True
+        _set_non_self(d, far, 12)
+        assert np.count_nonzero(far) == 30
+        lam = np.array([1.5])
+        tw, dthresh = 0.34, np.float32(0.0)
+
+        terms = _self_weight_terms(lam, d, valid, dthresh, tw)
+        mean, median = float(np.mean(terms)), float(np.median(terms))
+        # Computed 2026-10-04: mean 0.2616, median 0.1068 (the c = 2
+        # term alone)
+        assert round(mean, 4) == 0.2616
+        assert round(median, 4) == 0.1068
+
+        value = _nlpar._nlpar_lambda_objective(lam, d, valid, dthresh, tw)
+        assert type(value) is float
+        assert value == mean
+        assert abs(value - median) > 1e-3
+
+    def test_lambdas_ascend_with_decreasing_target(self, identical_plus_gaussian):
+        targets = (0.5, 0.34, 0.25)
+        d, valid = _constructed_field((10, 10), 5)
+        on_field = [
+            _nlpar._nlpar_optimize_lambda(d, valid, tw, np.float32(0.0))
+            for tw in targets
+        ]
+        assert on_field[0] < on_field[1] < on_field[2]
+
+        # The distances of the sigma pass of a synthetic map
+        patterns = identical_plus_gaussian(ORACLE_NAV, ORACLE_SIG)
+        _, d_map, _, valid_map = _ours_sigma_pass(patterns)
+        on_map = [
+            _nlpar._nlpar_optimize_lambda(d_map, valid_map, tw, np.float32(0.0))
+            for tw in targets
+        ]
+        assert on_map[0] < on_map[1] < on_map[2]
+
+    @pytest.mark.parametrize("arm", ["upper", "lower", "inside", "flat"])
+    def test_bound_hit_warns(self, arm):
+        tw, dthresh = 0.34, np.float32(0.0)
+        if arm == "upper":
+            # One neighbour at 1.0, seven with weight exactly 0: the self
+            # weight 1 / (1 + exp(-1 / lam^2)) stays above 0.5 > 0.34 for
+            # every lambda, so the fit runs into the upper bound
+            # (measured 2026-10-04 with scipy 1.17.1: 10.0)
+            d = np.full((10, 10, 9), np.inf, dtype=np.float32)
+            d[..., 4] = -np.inf
+            d[..., 0] = np.float32(1.0)
+            valid = np.ones(d.shape, dtype=bool)
+        elif arm == "lower":
+            # Closed form sqrt(1e-7 / 1.41617) = 2.66e-4 < 1e-3 (measured
+            # 2026-10-04: 1e-3)
+            d, valid = _constructed_field((10, 10), 1e-7)
+        elif arm == "inside":
+            # Closed form 0.0084, inside the bounds: no warning
+            d, valid = _constructed_field((10, 10), 1e-4)
+        else:
+            # Every non-self weight below 2^-53 relative to 1 near the
+            # start: the objective is flat in float64 and the fit stays
+            # at its start 1.0 without a warning (measured 2026-10-04)
+            d, valid = _constructed_field((10, 10), 200)
+
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            lam = _nlpar._nlpar_optimize_lambda(d, valid, tw, dthresh)
+        messages = _bound_messages(records)
+
+        if arm in ("upper", "lower"):
+            if arm == "upper":
+                assert lam >= 9.9
+            else:
+                assert lam <= 1.01e-3
+            assert messages == [
+                f"NLPAR lambda optimisation hit the {arm} bound ({lam:.4f}); the "
+                f"target weight {tw} is not supported by the data"
+            ]
+            assert all(
+                issubclass(r.category, UserWarning)
+                for r in records
+                if "NLPAR lambda" in str(r.message)
+            )
+        elif arm == "inside":
+            assert messages == []
+            assert abs(lam / _closed_form_lambda(1e-4, tw) - 1) <= 1e-2
+        else:
+            assert messages == []
+            assert abs(lam - 1.0) < 1e-6
+
+    def test_stride_above_1e6_points(self):
+        # c = 12 on the points of even row and even column, c = 2
+        # elsewhere: the strided grid d[::2, ::2] is all c = 12, the full
+        # one three quarters c = 2, and the two fits differ (measured
+        # 2026-10-05: 2.9109 strided, 1.1884 full from x0 = 1.0)
+        def grid(nav_shape):
+            d, valid = _constructed_field(nav_shape, 2)
+            even = np.zeros(nav_shape, dtype=bool)
+            even[::2, ::2] = True
+            _set_non_self(d, even, 12)
+            return d, valid
+
+        tw, dthresh = 0.34, np.float32(0.0)
+
+        # >= 1e6 points: strided before the objective, so the call equals
+        # the one on the strided field (< 1e6 points, not strided again).
+        # Exactly 1e6 points, so a strict > threshold fails here
+        d, valid = grid((1000, 1000))
+        assert d.shape[0] * d.shape[1] == 1e6
+        assert d[::2, ::2].shape[0] * d[::2, ::2].shape[1] < 1e6
+        full = _nlpar._nlpar_optimize_lambda(d, valid, tw, dthresh)
+        strided = _nlpar._nlpar_optimize_lambda(
+            d[::2, ::2], valid[::2, ::2], tw, dthresh
+        )
+        assert full == strided
+        del d, valid
+
+        # < 1e6 points: never strided
+        d, valid = grid((999, 1000))
+        assert d.shape[0] * d.shape[1] < 1e6
+        full = _nlpar._nlpar_optimize_lambda(d, valid, tw, dthresh)
+        strided = _nlpar._nlpar_optimize_lambda(
+            d[::2, ::2], valid[::2, ::2], tw, dthresh
+        )
+        assert full != strided
+
+    @requires_pyebsdindex
+    def test_objective_equals_test_local_loptfunc_on_pyebsdindex_dout(
+        self, pyebsdindex_kernels, identical_plus_gaussian
+    ):
+        patterns = identical_plus_gaussian(ORACLE_NAV, ORACLE_SIG)
+        _, dout, nout = _oracle_sigma(pyebsdindex_kernels, patterns)
+        tw = 0.34
+        dthresh = np.float32(0.0)
+
+        # The slots with a compared pair; the self slot replaced by
+        # weight 1 (d = -inf) at its compact position
+        mask = nout >= 1
+        d = dout.copy()
+        self_slot = _compact_self_slot(ORACLE_NAV)
+        np.put_along_axis(d, self_slot[..., None], -np.inf, axis=-1)
+        assert np.all(np.take_along_axis(mask, self_slot[..., None], axis=-1))
+        assert np.count_nonzero(~mask) > 0
+
+        for lam_value in (0.7, 1.0, 2.5):
+            lam = np.array([lam_value])
+            ours = _nlpar._nlpar_lambda_objective(lam, d, mask, dthresh, tw)
+            assert ours == _loptfunc_local(lam, d, mask, tw, dthresh)
+            # The recorded differences: PyEBSDIndex's own objective on
+            # its raw dout counts the out-of-map slots as weight 1
+            assert ours != _loptfunc_pyebsdindex(lam, dout, tw, dthresh)
+            # ... and floors the distances at dthresh instead of
+            # shifting them, which differs from dthresh > 0 on
+            dthresh_half = np.float32(0.5)
+            ours_half = _nlpar._nlpar_lambda_objective(lam, d, mask, dthresh_half, tw)
+            assert ours_half == _loptfunc_local(lam, d, mask, tw, dthresh_half)
+            assert ours_half != _loptfunc_dthresh_floor(lam, d, mask, tw, dthresh_half)
+
+        # Deterministic Nelder-Mead from the same start and options
+        expected = _minimize_like_pyebsdindex(_loptfunc_local, (d, mask, tw, dthresh))
+        assert _nlpar._nlpar_optimize_lambda(d, mask, tw, dthresh) == expected
+
+    @requires_pyebsdindex
+    @pytest.mark.parametrize("variant", ["raw", "corrected"])
+    def test_phantom_deviation_is_measured_and_pinned(
+        self, pyebsdindex_kernels, nickel_large_patterns, variant, record_property
+    ):
+        band = _require_placeholder(LAMBDA_PHANTOM_RATIO, "LAMBDA_PHANTOM_RATIO")
+        patterns = nickel_large_patterns[variant]
+        nrows, ncols = patterns.shape[:2]
+        tw, dthresh = 0.34, np.float32(0.0)
+
+        # PyEBSDIndex: its raw dout with the unmasked loptfunc; the
+        # out-of-map slots hold 0.0 (4 x 5 + (2 x 53 + 2 x 73) x 3 = 776
+        # of 37125 on the (55, 75) map)
+        _, dout, nout = _oracle_sigma(pyebsdindex_kernels, patterns)
+        assert (nrows, ncols) == (55, 75)
+        assert np.count_nonzero(nout == 0) == 776
+        assert np.all(dout[nout == 0] == 0.0)
+        theirs = _minimize_like_pyebsdindex(_loptfunc_pyebsdindex, (dout, tw, dthresh))
+
+        # Ours: the phantom-free objective on our own sigma pass
+        _, d, _, valid = _ours_sigma_pass(patterns)
+        ours = _nlpar._nlpar_optimize_lambda(d, valid, tw, dthresh)
+
+        ratio = ours / theirs
+        record_property(f"lambda_ours_{variant}", ours)
+        record_property(f"lambda_pyebsdindex_{variant}", theirs)
+        record_property(f"lambda_phantom_ratio_{variant}", ratio)
+        assert band[0] <= ratio <= band[1]
+
 
 class TestDepthAndHalo:
     @pytest.mark.parametrize("nav_chunks", DRIVER_CHUNKINGS, ids=str)
@@ -2258,7 +2789,60 @@ class TestPolicyOracles:
             np.testing.assert_array_equal(out_ints.reshape(3, 3, 4, 4), expected_ints)
             assert sigma_floats[1, 1] != sigma_o_floats[1, 1]
 
-    def test_saturation_max_is_global(self):
+    @pytest.mark.parametrize("lam", [1.0, 2.5])
+    def test_dthresh_is_consistent_between_kernel_and_objective(
+        self, lam, identical_plus_gaussian
+    ):
+        dthresh = np.float32(0.5)
+        tw = 0.34
+        lam_arr = np.array([lam])
+
+        # Exact arm: a (4, 5) field whose non-self distances are at or
+        # below dthresh (weight exactly 1 in the averaging kernel) or
+        # +inf (weight exactly 0), with the out-of-map slots of the map
+        # invalid; the kernel's float32 weights are then exact and the
+        # objective recomputed from them is bitwise the objective
+        nav_shape = (4, 5)
+        rng = np.random.default_rng(61)
+        values = np.array([-0.3, 0.0, 0.25, 0.5, np.inf], dtype=np.float32)
+        d = rng.choice(values, size=nav_shape + (9,)).astype(np.float32)
+        d[..., 4] = -np.inf
+        valid = _in_map_slots(nav_shape)
+        weights = _nlpar._nlpar_weights_kernel(d, lam, dthresh)
+        assert set(np.unique(weights)) == {0.0, 1.0}
+        w = weights.astype(np.float64)
+        w[~valid] = 0.0
+        from_kernel = float(np.mean(np.abs(tw - 1.0 / w.sum(axis=-1))))
+        value = _nlpar._nlpar_lambda_objective(lam_arr, d, valid, dthresh, tw)
+        assert value == from_kernel
+        # PyEBSDIndex's max(d, dthresh) floors the distances at dthresh
+        # (weight exp(-0.5 / lam^2) < 1 on the slots at or below it)
+        floor = _loptfunc_dthresh_floor(lam_arr, d, valid, tw, dthresh)
+        assert abs(value - floor) > 1e-3
+        # The two forms coincide at dthresh = 0
+        zero = np.float32(0.0)
+        assert _nlpar._nlpar_lambda_objective(
+            lam_arr, d, valid, zero, tw
+        ) == _loptfunc_dthresh_floor(lam_arr, d, valid, tw, zero)
+
+        # Map arm: the 3 x 3 distances of the sigma pass of a synthetic
+        # map, where the kernel's weights are rounded to float32
+        # (measured 2026-10-05: 2e-10 from the objective at lam 1.0 and
+        # 2.5) and the floored form is 0.057 and 0.011 away
+        patterns = identical_plus_gaussian(ORACLE_NAV, ORACLE_SIG)
+        _, d_map, _, valid_map = _ours_sigma_pass(patterns)
+        w_map = _nlpar._nlpar_weights_kernel(d_map, lam, dthresh).astype(np.float64)
+        w_map[~valid_map] = 0.0
+        from_kernel_map = float(np.mean(np.abs(tw - 1.0 / w_map.sum(axis=-1))))
+        value_map = _nlpar._nlpar_lambda_objective(
+            lam_arr, d_map, valid_map, dthresh, tw
+        )
+        assert abs(value_map - from_kernel_map) <= 1e-6
+        floor_map = _loptfunc_dthresh_floor(lam_arr, d_map, valid_map, tw, dthresh)
+        assert abs(value_map - floor_map) > 1e-3
+
+    @pytest.mark.parametrize("arm", ["wrapper", "lazy"])
+    def test_saturation_max_is_global(self, arm, monkeypatch):
         # A (3, 6 | 4, 4) map whose left half holds the maximum 255 (in
         # column 0) and whose right half has the maximum 200 (pixel 15 of
         # every pattern); columns chunked (3, 3) at search radius 1:
@@ -2285,6 +2869,45 @@ class TestPolicyOracles:
             right, sigma[:, 2:6], (1, 1), 1.0, 0.0, kept, _average_threshold(255, True)
         )
         assert not np.array_equal(own[:, 1:], glob[:, 1:])
+
+        if arm == "lazy":
+            # Through the method a column chunking of this tiny map is
+            # merged into one chunk by the signal's rechunk, which keeps
+            # only the row chunks; the transposed map (6, 3 | 4, 4) with
+            # rows chunked (3, 3) keeps its two chunks, the 255 in the
+            # upper chunk and the maximum 200 in the lower one. The
+            # transcription is symmetric in rows and columns at radius
+            # (1, 1), so the self-check above holds transposed
+            patterns_t = np.ascontiguousarray(patterns.transpose(1, 0, 2, 3))
+            sigma_t = np.ascontiguousarray(sigma.T)
+            lazy_chunks = ((3, 3), (3,), (4,), (4,))
+            row_blocks = [(0, 3), (3, 6)]
+            maxima_t = [np.float32(patterns_t[a:b].max()) for a, b in row_blocks]
+            assert maxima_t == [255, 200]
+            for sigma_in in (sigma_t, None):
+                kwargs = dict(
+                    search_radius=1,
+                    lam=1.0,
+                    sigma=sigma_in,
+                    dtype_out="float32",
+                    show_progressbar=False,
+                    inplace=False,
+                )
+                eager = kp.signals.EBSD(patterns_t.copy())
+                expected = eager.average_non_local_neighbour_patterns(**kwargs).data
+                recorded = _record_overlap_chunks(monkeypatch)
+                lazy = kp.signals.LazyEBSD(
+                    da.from_array(patterns_t, chunks=lazy_chunks)
+                )
+                s_out = lazy.average_non_local_neighbour_patterns(**kwargs)
+                assert isinstance(s_out, kp.signals.LazyEBSD)
+                s_out.compute(show_progressbar=False)
+                monkeypatch.undo()
+                # The two row chunks reached the overlap
+                assert any(c[0] == (3, 3) for c in recorded)
+                assert s_out.data.dtype == np.float32
+                np.testing.assert_array_equal(s_out.data, expected)
+            return
 
         def average(block, sigma_block, max_value, depth, location, num_chunks):
             return _nlpar._nlpar_average_chunk(
@@ -2528,3 +3151,44 @@ class TestPolicyOracles:
             )
             assert sigma.dtype == np.float32
             np.testing.assert_array_equal(sigma, np.full((3, 3), np.float32(1e12)))
+
+
+class TestPerformance:
+    # Recorded baselines, never asserted: the numbers are read from a
+    # junit-xml report of a run without xdist
+
+    @staticmethod
+    def _best_of(func, n_repeats: int = 3) -> float:
+        """Return the best wall time in seconds of ``n_repeats`` calls
+        after one warm-up call.
+        """
+        func()
+        times = []
+        for _ in range(n_repeats):
+            tic = time.perf_counter()
+            func()
+            times.append(time.perf_counter() - tic)
+        return min(times)
+
+    def test_runtime_is_recorded(self, nickel_large_patterns, record_property):
+        s = kp.signals.EBSD(nickel_large_patterns["raw"].copy())
+        sr, lam = 3, 2.5
+
+        def sigma_pass():
+            s.get_nlpar_sigma(show_progressbar=False)
+
+        def average_pass():
+            s.average_non_local_neighbour_patterns(
+                search_radius=sr, lam=lam, inplace=False, show_progressbar=False
+            )
+
+        for scheduler in ("threads", "synchronous"):
+            with dask.config.set(scheduler=scheduler):
+                record_property(
+                    f"nlpar_sigma_nickel_ebsd_large_{scheduler}_s",
+                    self._best_of(sigma_pass),
+                )
+                record_property(
+                    f"nlpar_average_nickel_ebsd_large_sr{sr}_{scheduler}_s",
+                    self._best_of(average_pass),
+                )
