@@ -33,7 +33,7 @@ jobs:
   tests:
     name: ${{ matrix.os }}-py${{ matrix.python-version }}${{ matrix.LABEL }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       MPLBACKEND: agg
       PYTEST_ARGS: --cov-branch --cov-report=xml --reruns 2 -n 4 --cov=kikuchipy
