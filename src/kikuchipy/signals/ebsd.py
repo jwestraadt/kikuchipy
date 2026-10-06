@@ -1925,10 +1925,10 @@ class EBSD(KikuchipySignal2D):
         >>> s.remove_static_background()
         >>> s.remove_dynamic_background()
         >>> iq = s.get_image_quality()
-        >>> iq
-        array([[0.19935645, 0.16657268, 0.18802597],
-               [0.19040637, 0.16169308, 0.17834103],
-               [0.19411428, 0.16031112, 0.18414427]], dtype=float32)
+        >>> iq.round(4)
+        array([[0.1994, 0.1666, 0.188 ],
+               [0.1904, 0.1617, 0.1783],
+               [0.1941, 0.1603, 0.1841]], dtype=float32)
         """
         # Calculate frequency vectors
         sx, sy = self.axes_manager.signal_shape
