@@ -42,6 +42,7 @@ def _dictionary_indexing(
     metric: SimilarityMetric,
     keep_n: int,
     n_per_iteration: int,
+    verbose: bool = True,
 ) -> CrystalMap:
     """Dictionary indexing matching experimental patterns to a
     dictionary of simulated patterns of known orientations.
@@ -58,11 +59,17 @@ def _dictionary_indexing(
     metric
     keep_n
     n_per_iteration
+    verbose
+        Whether to print information, progress bars and the indexing
+        speed. Default is True.
 
     Returns
     -------
     xmap
     """
+    if not verbose:
+        raise NotImplementedError
+
     dictionary_size = metric.n_dictionary_patterns
     keep_n = min(keep_n, dictionary_size)
     n_iterations = int(np.ceil(dictionary_size / n_per_iteration))

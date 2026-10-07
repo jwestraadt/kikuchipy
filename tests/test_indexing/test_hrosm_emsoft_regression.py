@@ -34,6 +34,9 @@ this module:
   similarity map on EMsoft's top-match lists.
 - ``TestClusterStage``: segmentation, dilation, bounding boxes and
   grain averages against EMHROSM's cluster stage.
+- ``TestEndToEnd``: ``EBSD.hrosm`` in EMsoft compatible mode on
+  ``nickel_ebsd_large`` against EMHROSM's re-indexed map, within
+  tolerances, since the dictionary stage is kikuchipy's own.
 - ``TestReferenceFiles``, ``TestEMsoftFileReader``,
   ``TestEMsoftProgramLock`` and ``TestRegenerateReferences``: the
   shipped references, the private EMsoft file reader, the lock shared
@@ -77,6 +80,7 @@ import kikuchipy as kp
 from kikuchipy.data._data import Dataset
 from kikuchipy.data._registry import _registry_hashes
 import kikuchipy.indexing._hrosm as hrosm_package
+from kikuchipy.indexing._hrosm import _driver as hrosm_driver
 from kikuchipy.indexing._hrosm._averaging import average_grain_orientations
 from kikuchipy.indexing._hrosm._emsoft_file import (
     parse_namelist_text,
@@ -241,9 +245,11 @@ KAM_FALLBACK_MAX_ULP = 2
 
 # Number of non-degenerate KAM points differing from EMsoft's file
 SHIPPED_KAM_NONDEGENERATE_DIFF = 0
-# measured: 4 of 4,110 non-degenerate points, each within the fallback
-# ulp bound
-SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF = 4
+# Upper bound on the number of differing non-degenerate points, each
+# within the fallback ulp bound; the count depends on the platform's
+# libm (measured: 4 of 4,110 on Windows, 6 on ubuntu with Python 3.10
+# and the oldest dependencies)
+SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF = 8
 NI6_KAM_NONDEGENERATE_DIFF = 6
 NI6_KAM_MAX_ULP = 2
 NI6_DI_KAM_NONDEGENERATE_DIFF = 0
@@ -261,8 +267,9 @@ NI6_OSM_EDGE_PIXELS = 214
 # shipped refined Euler angles
 SHIPPED_GRAIN_ID_FROM_EULER_DIFF = 0
 # Largest float64 ulp distance of a "center" grain average (measured:
-# 2, for EMsoft's eq_ of the centre point and for ours alike)
-CENTER_AVOR_MAX_ULP = 2
+# 2 on Windows, for EMsoft's eq_ of the centre point and for ours
+# alike, and 3 on macOS)
+CENTER_AVOR_MAX_ULP = 4
 # Watson averages: largest symmetry reduced angle in degrees to
 # EMsoft's average. Measured 2026-10-06: 0.136 degrees (seed 0;
 # 0.086-0.136 over seeds 0-7, grain 5 of six points). The
@@ -323,6 +330,20 @@ REGENERATION_GRAIN_COUNT_TOLERANCE = 2
 # in the namelist paths is normalised, the kikuchipy version recorded
 RUN_DIRECTORY_PATTERN = re.compile(r"kikuchipy_hrosm/\d{8}-\d{6}")
 RECORDED_ONLY_KEYS = ("kikuchipy_version",)
+
+# End to end against EMHROSM's "center" run (seeds, to be measured):
+# the median and 99th percentile of the symmetry reduced angle in
+# degrees between our re-indexed rotations and EMHROSM's, and the
+# Pearson correlation of our similarity and best score with EMHROSM's
+# over the compared points. The one-grain arm simulates from the small
+# master pattern and the full map from the 1001 px one, so their
+# angle pins are separate
+E2E_ONE_GRAIN_DISORIENTATION_MEDIAN_DEG = 0.3
+E2E_ONE_GRAIN_DISORIENTATION_P99_DEG = 1.0
+E2E_FULL_MAP_OSM_PEARSON_MIN = 0.8
+E2E_FULL_MAP_DISORIENTATION_MEDIAN_DEG = 0.3
+E2E_FULL_MAP_DISORIENTATION_P99_DEG = 1.0
+E2E_FULL_MAP_CI_PEARSON_MIN = 0.5
 
 # ----------------------------- Helpers ------------------------------ #
 
@@ -861,6 +882,7 @@ EMSOFT_DERIVED_MODULES = {
     "_directional_statistics": "2014-2026",
     "_sampling": "2013-2026",
     "_osm": "2013-2026",
+    "_driver": "2013-2026",
 }
 
 GPL_HEADER = (
@@ -1069,7 +1091,7 @@ class TestCompatKAMOnEMsoftFiles:
         n_differ, max_ulp = compat_kam_comparison(
             euler, expected, record_property, "shipped_refined_kam"
         )
-        assert n_differ == SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF
+        assert n_differ <= SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF
         assert max_ulp <= KAM_FALLBACK_MAX_ULP
 
     def test_ni6_hrosm_kam_on_nondegenerate_pixels(
@@ -1374,6 +1396,225 @@ class TestClusterStage:
             assert np.all(np.asarray(hrosm["newOSM"])[mask] == 0)
             assert np.all(np.asarray(hrosm["newEuler"])[mask] == 0)
             assert np.all(np.asarray(hrosm["newCI"])[mask] == 0)
+
+
+# ===================== End to end against EMHROSM ==================== #
+
+# EMHROSM's namelist and dictionary indexing run of the "center"
+# reference: points per side of the ball, best matches kept, beam
+# energy of the master pattern, and the batch size below which the
+# binary thins the dictionary of a bounding box (W * H points), which
+# is not reproduced, so smaller boxes are not compared
+E2E_N_STEPS = 10
+E2E_KEEP_N = 20
+E2E_ENERGY = 20
+E2E_MIN_BOX_AREA = 32
+
+E2E_KEYWORDS = {
+    "threshold": GANGLE,
+    "max_angle": MISORANG,
+    "n_steps": E2E_N_STEPS,
+    "keep_n": E2E_KEEP_N,
+    "n_osm": NOSM,
+    "average": "center",
+    "pc": "single",
+    "emsoft_compatible": True,
+    "verbose": 0,
+}
+
+
+def end_to_end_inputs() -> tuple[
+    kp.signals.EBSD, CrystalMap, kp.detectors.EBSDDetector
+]:
+    """Return the patterns of ``nickel_ebsd_large`` with the static and
+    then the dynamic background removed, the crystal map of EMsoft's
+    refined Euler angles and the dataset's detector with its average
+    PC, as the reference run used them.
+
+    Skips if the dataset cannot be downloaded.
+    """
+    pytest.importorskip("pooch")
+    try:
+        signal = kp.data.nickel_ebsd_large(allow_download=True)
+    except (OSError, ValueError) as error:  # pragma: no cover
+        pytest.skip(
+            f"nickel_ebsd_large could not be downloaded ({error}); connect to "
+            "the internet once to cache it"
+        )
+    signal.remove_static_background(show_progressbar=False)
+    signal.remove_dynamic_background(show_progressbar=False)
+    detector = signal.detector.deepcopy()
+    detector.pc = detector.pc_average
+    euler = np.asarray(load_reference("large_refined")["RefinedEulerAngles"])
+    xmap = crystal_map_from_euler(euler, MAP_SHAPE)
+    return signal, xmap, detector
+
+
+def compared_grains(ref: dict) -> np.ndarray:
+    """Return the labels of the grains EMHROSM re-indexed (at least
+    ``EMSOFT_MIN_PIXELS`` points, not rejected) whose bounding box has
+    at least ``E2E_MIN_BOX_AREA`` points.
+    """
+    roi = np.asarray(ref["grainROI"], dtype=np.int64)
+    area = roi[:, 2] * roi[:, 3]
+    processed = (np.asarray(ref["npixels"]) >= EMSOFT_MIN_PIXELS) & (
+        np.asarray(ref["kappa"]) != -1
+    )
+    return np.flatnonzero(processed & (area >= E2E_MIN_BOX_AREA)) + 1
+
+
+def one_grain_label(ref: dict) -> int:
+    """Return the compared grain with the smallest bounding box, the
+    lowest label on a tie.
+    """
+    labels = compared_grains(ref)
+    roi = np.asarray(ref["grainROI"], dtype=np.int64)[labels - 1]
+    return int(labels[np.argmin(roi[:, 2] * roi[:, 3])])
+
+
+def end_to_end_angles(
+    xmap_out: CrystalMap, ref: dict, points: np.ndarray
+) -> np.ndarray:
+    """Return the symmetry reduced angles in degrees between our
+    rotations and EMHROSM's ``newEuler`` on a mask of map points.
+    """
+    ours = xmap_out.rotations.data.reshape(MAP_SHAPE + (4,))[points]
+    theirs = Rotation.from_euler(
+        np.asarray(ref["newEuler"])[points].astype(np.float64)
+    ).data
+    return symmetry_reduced_angle_deg(ours, theirs)
+
+
+def map_prop(xmap_out: CrystalMap, name: str) -> np.ndarray:
+    """Return a one-value-per-point property on the map grid."""
+    return np.asarray(xmap_out.prop[name]).reshape(MAP_SHAPE)
+
+
+def center_reference() -> dict:
+    """Return the "center" reference, checking that the keywords above
+    are those of its run.
+    """
+    ref = load_reference("large_center")
+    text = str(ref["hrosm_namelist"])
+    assert namelist_value_matches(text, "nsamples", str(E2E_N_STEPS))
+    assert namelist_value_matches(text, "nosm", str(NOSM))
+    assert namelist_value_matches(text, "orav", "'center'")
+    assert int(ref["numdictsingle"]) == E2E_MIN_BOX_AREA
+    return ref
+
+
+class TestEndToEnd:
+    @pytest.mark.weekly
+    def test_one_grain_against_emhrosm(self, monkeypatch, record_property):
+        ref = center_reference()
+        label = one_grain_label(ref)
+        grain = np.asarray(ref["grainID"]) == label
+        assert np.all(np.asarray(ref["newCI"])[grain] > 0)
+        record_property("one_grain_label", label)
+        record_property("one_grain_points", int(grain.sum()))
+
+        signal, xmap, detector = end_to_end_inputs()
+        master = kp.data.nickel_ebsd_master_pattern_small(
+            projection="lambert", hemisphere="both"
+        )
+
+        # Run the validated call through the driver, restricted to the
+        # one grain
+        calls = []
+
+        def one_grain_driver(*args, **kwargs):
+            calls.append(kwargs)
+            return hrosm_driver._hrosm(*args, grains=[label], **kwargs)
+
+        monkeypatch.setattr("kikuchipy.signals.ebsd._hrosm", one_grain_driver)
+        t0 = time.perf_counter()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            xmap_out = signal.hrosm(
+                xmap, master, detector, energy=E2E_ENERGY, **E2E_KEYWORDS
+            )
+        record_property("one_grain_seconds", round(time.perf_counter() - t0, 1))
+        assert len(calls) == 1
+
+        # Our grain is EMHROSM's, and only it is re-indexed
+        assert np.array_equal(map_prop(xmap_out, "grain_id") == label, grain)
+        assert np.array_equal(map_prop(xmap_out, "reindexed"), grain)
+
+        angles = end_to_end_angles(xmap_out, ref, grain)
+        median = float(np.median(angles))
+        p99 = float(np.percentile(angles, 99))
+        record_property("one_grain_disorientation_median_deg", median)
+        record_property("one_grain_disorientation_p99_deg", p99)
+        assert median <= E2E_ONE_GRAIN_DISORIENTATION_MEDIAN_DEG
+        assert p99 <= E2E_ONE_GRAIN_DISORIENTATION_P99_DEG
+
+        # Every other point keeps the EMsoft compatible fill
+        rest = ~grain
+        rotations = xmap_out.rotations.data.reshape(MAP_SHAPE + (4,))
+        assert np.all(rotations[rest] == np.array([1.0, 0.0, 0.0, 0.0]))
+        assert np.all(map_prop(xmap_out, "osm")[rest] == 0)
+
+    @pytest.mark.weekly
+    def test_full_map_against_emhrosm(self, record_property):
+        if not os.environ.get("KIKUCHIPY_EMSOFT_DATA"):
+            pytest.skip(
+                "KIKUCHIPY_EMSOFT_DATA is not set; this arm takes minutes and "
+                "runs only on a machine where the variable is set"
+            )
+        ref = center_reference()
+        signal, xmap, detector = end_to_end_inputs()
+        try:
+            master = kp.data.ebsd_master_pattern(
+                "ni",
+                hemisphere="both",
+                projection="lambert",
+                energy=E2E_ENERGY,
+                allow_download=True,
+            )
+        except (OSError, ValueError) as error:  # pragma: no cover
+            pytest.skip(
+                f"the 1001 px Ni master pattern could not be downloaded ({error}); "
+                "connect to the internet once to cache it"
+            )
+
+        t0 = time.perf_counter()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            xmap_out = signal.hrosm(
+                xmap, master, detector, energy=E2E_ENERGY, **E2E_KEYWORDS
+            )
+        record_property("full_map_seconds", round(time.perf_counter() - t0, 1))
+
+        # Compared points: the points of grains re-indexed by both
+        # sides whose box is not thinned by the binary
+        grain_id = np.asarray(ref["grainID"])
+        reindexed = map_prop(xmap_out, "reindexed")
+        labels = compared_grains(ref)
+        both = [g for g in labels if np.all(reindexed[grain_id == g])]
+        record_property("full_map_grains_compared", f"{len(both)} of {len(labels)}")
+        assert both
+        points = np.isin(grain_id, both)
+
+        angles = end_to_end_angles(xmap_out, ref, points)
+        median = float(np.median(angles))
+        p99 = float(np.percentile(angles, 99))
+        osm_r = float(
+            np.corrcoef(
+                map_prop(xmap_out, "osm")[points], np.asarray(ref["newOSM"])[points]
+            )[0, 1]
+        )
+        scores = np.asarray(xmap_out.prop["scores"])[:, 0].reshape(MAP_SHAPE)
+        ci_r = float(
+            np.corrcoef(scores[points], np.asarray(ref["newCI"])[points])[0, 1]
+        )
+        record_property("full_map_disorientation_median_deg", median)
+        record_property("full_map_disorientation_p99_deg", p99)
+        record_property("full_map_osm_pearson", osm_r)
+        record_property("full_map_ci_pearson", ci_r)
+        assert median <= E2E_FULL_MAP_DISORIENTATION_MEDIAN_DEG
+        assert p99 <= E2E_FULL_MAP_DISORIENTATION_P99_DEG
+        assert osm_r >= E2E_FULL_MAP_OSM_PEARSON_MIN
+        assert ci_r >= E2E_FULL_MAP_CI_PEARSON_MIN
 
 
 # ======================= The reference files ======================== #

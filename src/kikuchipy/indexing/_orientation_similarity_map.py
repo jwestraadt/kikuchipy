@@ -35,6 +35,9 @@ def orientation_similarity_map(
     from_n_best: int | None = None,
     footprint: np.ndarray | None = None,
     center_index: int = 2,
+    *,
+    grain_id: np.ndarray | None = None,
+    emsoft_compatible: bool = False,
 ) -> np.ndarray:
     r"""Compute an orientation similarity map (OSM) where the ranked
     list of the dictionary indices of the best matching simulated
@@ -65,6 +68,19 @@ def orientation_similarity_map(
     center_index
         Flat index of central navigation point in the truthy values of
         footprint, by default ``2``.
+    grain_id
+        Grain labels of the map's grid shape (n rows, n columns): 0
+        outside grains, 1, 2, ... for the grains, as returned by
+        :func:`~kikuchipy.indexing.segment_grains_kam`. If given, the
+        lists of a point are compared only to those of its four
+        nearest neighbours in the same grain. Cannot be combined with
+        ``from_n_best``, ``footprint`` or ``center_index``.
+    emsoft_compatible
+        Whether to reproduce EMsoft's orientation similarity map, with
+        EMsoft's neighbour bookkeeping and edge multipliers in single
+        precision. Requires every map point to be in the data. Default
+        is ``False``. Cannot be combined with ``from_n_best``,
+        ``footprint`` or ``center_index``.
 
     Returns
     -------
@@ -93,6 +109,9 @@ def orientation_similarity_map(
     .. versionchanged:: 0.5
        Default value of ``normalize`` changed to ``False``.
     """
+    if grain_id is not None or emsoft_compatible:
+        raise NotImplementedError
+
     simulation_indices = xmap.prop[simulation_indices_prop]
     nav_size, keep_n = simulation_indices.shape
 

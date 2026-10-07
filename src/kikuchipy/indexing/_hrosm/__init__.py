@@ -39,6 +39,9 @@ Submodules
 ``_directional_statistics``
     Von Mises-Fisher and Watson mixture estimates of a grain's mean
     orientation over the symmetry variants.
+``_driver``
+    Per-grain re-indexing against a misorientation ball, the driver
+    of the ``EBSD.hrosm()`` method.
 ``_emsoft_file``
     Reader of EMsoft's dictionary indexing and EMHROSM HDF5 files,
     for tests and the reference script.

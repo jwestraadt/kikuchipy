@@ -1922,6 +1922,53 @@ def _hrosm_top_lists(
     return np.asarray(lists, dtype=np.int32).reshape(n_points, n)
 
 
+@functools.lru_cache(maxsize=1)
+def _hrosm_master_pattern() -> kp.signals.EBSDMasterPattern:
+    """Return the small nickel master pattern in the Lambert projection
+    of both hemispheres, loaded once per session.
+    """
+    return kp.data.nickel_ebsd_master_pattern_small(
+        projection="lambert", hemisphere="both"
+    )
+
+
+def _hrosm_synthetic_signal(
+    xmap: CrystalMap,
+    sig_shape: tuple[int, int] = (32, 32),
+    pc: tuple[float, float, float] = (0.42, 0.22, 0.50),
+    noise: float = 0.0,
+    seed: int = 50,
+) -> tuple[kp.signals.EBSD, kp.detectors.EBSDDetector, kp.signals.EBSDMasterPattern]:
+    """Return an EBSD signal simulated from the small nickel master
+    pattern at 20 kV for the rotations of a crystal map, with the
+    detector and the master pattern.
+
+    The signal has the map's 2D grid as navigation shape: points not in
+    the data get the pattern of the identity rotation. With ``noise >
+    0``, Gaussian noise of standard deviation ``noise * (max - min)``
+    of the patterns, from ``default_rng(seed)``, is added in float32.
+    """
+    from kikuchipy.indexing._hrosm._grains import _map_grid
+
+    mp = _hrosm_master_pattern()
+    det = kp.detectors.EBSDDetector(sig_shape, pc=pc, sample_tilt=70)
+    _, grid_shape = _map_grid(xmap)
+    rotations = xmap.rotations
+    if rotations.ndim > 1:
+        rotations = rotations[:, 0]
+    data = np.zeros((xmap.is_in_data.size, 4))
+    data[:, 0] = 1
+    data[xmap.is_in_data] = rotations.data
+    s = mp.get_patterns(
+        Rotation(data).reshape(*grid_shape), det, energy=20, compute=True
+    )
+    if noise > 0:
+        rng = np.random.default_rng(seed)
+        scale = noise * float(s.data.max() - s.data.min())
+        s.data += rng.normal(0, scale, size=s.data.shape).astype(np.float32)
+    return s, det, mp
+
+
 # Namelist keys of EMsoft's dictionary indexing and EMHROSM files, and
 # the ones stored as float32 (the others as int32 or strings)
 _EMSOFT_DI_NAMELIST_KEYS = (
@@ -2109,3 +2156,11 @@ def write_emsoft_layout_file() -> Callable:
     EMsoft-layout dot product and HROSM files.
     """
     return _write_emsoft_layout_file
+
+
+@pytest.fixture
+def hrosm_synthetic_signal() -> Callable:
+    """Return the generator :func:`_hrosm_synthetic_signal` of EBSD
+    signals simulated for a crystal map's rotations.
+    """
+    return _hrosm_synthetic_signal

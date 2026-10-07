@@ -167,7 +167,13 @@ with orix `Rotation.__mul__`, angles in radians via `np.deg2rad`):
   being V15 and V16.
 
 **MTP placeholder inventory** (drafted; the failing-tests gate of
-each stage confirms the names). Stage A,
+each stage confirms the names). Stage B, `test_signals/test_ebsd_hrosm.py`
+(added 2026-10-07, Stage B failing-tests gate, entry 20):
+`SUBGRAIN_FULL_CONTRAST_MIN` (seed 3.0), `SUBGRAIN_FULL_CONTRAST_RATIO`
+(seed 2.0), `SUBGRAIN_FULL_MEDIAN_ERROR_DEG` (seed 0.15),
+`SUBGRAIN_FULL_STEP_TOL_DEG` (seed 0.15) for the weekly full-size
+sub-grain arm, and `TRUTH_MEDIAN_TOLERANCE_DEG` (seed 0.15; oracle:
+nearest ball orientation 0.10 deg median vs the input map's 0.18 deg). Stage A,
 `test_hrosm_emsoft_regression.py`: `SHIPPED_KAM_NONDEGENERATE_DIFF`,
 `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF`, `SHIPPED_OSM_DIFF`,
 `SHIPPED_GRAIN_ID_FROM_EULER_DIFF`, `CENTER_AVOR_MAX_ULP`,
@@ -374,7 +380,7 @@ difference are recorded with `record_property`, never asserted.
 | test | input -> compared with | gate | pin (seed) |
 |---|---|---|---|
 | `test_shipped_di_kam_on_nondegenerate_pixels` | `regression_hrosm_large_refined` `EulerAngles` -> `regression_hrosm_large_di` `KAM` (55, 75) (file placement per D13.3 as amended 2026-10-06) | CI | `SHIPPED_KAM_NONDEGENERATE_DIFF` (0; fallback <= 2 ulp, count pinned) |
-| `test_shipped_refined_kam_on_nondegenerate_pixels` | `regression_hrosm_large_refined` `RefinedEulerAngles` -> `regression_hrosm_large_center` `kam` | CI | `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF` (0; fallback <= 2 ulp, count pinned) |
+| `test_shipped_refined_kam_on_nondegenerate_pixels` | `regression_hrosm_large_refined` `RefinedEulerAngles` -> `regression_hrosm_large_center` `kam` | CI | `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF` (0; fallback <= 2 ulp, count pinned; amended 2026-10-07: an UPPER BOUND of 8 pixels, each within 2 ulp, since the count is platform dependent: 4 on Windows, 6 on ubuntu py3.10 oldest CI) |
 | `test_ni6_hrosm_kam_on_nondegenerate_pixels` | `DItutorial/Ni/dp-Ni6-refined.h5` `RefinedEulerAngles` -> `dp-Ni6-refined_HROSM.h5` `kam` (151 x 186 (H x W) map, 28,086 px) | local | `NI6_KAM_NONDEGENERATE_DIFF` (6 of 27,992) and `NI6_KAM_MAX_ULP` (2); degenerate seed 37 of 94, max 22.5 deg |
 | `test_ni6_di_kam_on_nondegenerate_pixels` | `dp-Ni6-refined.h5` `EulerAngles` -> `KAM` | local | `NI6_DI_KAM_NONDEGENERATE_DIFF` (0 of 6,774); degenerate seed 7,079 of 21,312 |
 | `test_grx810_di_kam_on_nondegenerate_pixels` | `OSM/GRX810_HROSM/dp-GRX-refined.h5` `EulerAngles` -> `KAM` (337 x 413) | local | `GRX810_KAM_NONDEGENERATE_DIFF` (0 of 4,182); degenerate seed 358 of 134,999 |
@@ -954,7 +960,8 @@ requirements D13: EMHROSM leaks ~1 GB per grain at 20), `nosm 10`). CI;
   `avor` equals EMsoft `eq_` of the K4 pixel's float32 angles,
   `kappa == 1.0`; `CENTER_AVOR_MAX_ULP` (seed 0 = bitwise; fallback 1
   float64 ulp per component, count recorded; amended 2026-10-06, Stage A
-  gates: pinned 2, measured in EMsoft's own `eq_` oracle as well as ours).
+  gates: pinned 2, measured in EMsoft's own `eq_` oracle as well as ours;
+  amended 2026-10-07, ledger entry 19: 4, macOS CI measured 3).
 - `test_watson_average_within_bands`: `wat` `avor` vs our compat
   Watson (seed 0): symmetry-aware angle <= `WAT_AVOR_MAX_DEG` (seed
   0.01 deg) and `|kappa / kappa_ref - 1| <= WAT_KAPPA_REL` (seed 0.01)
@@ -3082,3 +3089,127 @@ with coverage vs 25 s; serial 7.11 s vs 60 s; clean-replay grep empty),
 the CHANGELOG bullet with the #20 link, and commit 3 signed and pushed
 with commits 1-2. Stage B is NOT started: Johan, 2026-10-07 ~02:00,
 "Stop at beginning of Stage B for now".
+
+### 19. 2026-10-07 (resume: platform-dependent pins, main loop)
+
+Johan resumed HROSM ("Go forth with Stage B"). The push CI of d8b837a2
+(run 37580418911) was red only on two pins measured on Windows and on
+the known macOS `test_ni_proper_oh_count`: (1) ubuntu py3.10 oldest,
+`test_shipped_refined_kam_on_nondegenerate_pixels`, `6 == 4`; (2) macOS
+py3.13/3.14, `test_center_average_is_the_box_centre_pixel[center|
+center_dilate]`, 3 ulp > 2. Both count last-ulp differences of libm
+calls (arccos, sin/cos in `eq_`) and are platform dependent. Amended:
+`SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF` becomes an upper bound (<= 8
+pixels, each within 2 ulp; measured 4 Windows, 6 Linux oldest) and
+`CENTER_AVOR_MAX_ULP` 4 (measured 2 Windows incl. EMsoft's own oracle, 3
+macOS). The killers still separate: M1/M5 change KAM by orders of
+magnitude, M15 by ~1e15 ulp. Applied by the Stage B skeleton agent,
+pushed with the Stage B commits, CI rechecked.
+
+### 20. 2026-10-07 (Stage B failing-tests gate)
+
+Fixer round on the Stage B failing tests after the test critic (T1-T6).
+Only `tests/test_signals/test_ebsd_hrosm.py` changed in this round; no
+stub, `conftest.py` or `src/` change. The driver stays a stub
+(`NotImplementedError`).
+
+**Files of the Stage B failing-tests commit** (with the skeleton agent's
+work): `src/kikuchipy/indexing/_hrosm/_driver.py` (new, stub),
+`src/kikuchipy/indexing/_hrosm/__init__.py`,
+`src/kikuchipy/indexing/_dictionary_indexing.py`,
+`src/kikuchipy/indexing/_orientation_similarity_map.py`,
+`src/kikuchipy/signals/ebsd.py`, `conftest.py`,
+`tests/test_signals/test_ebsd_hrosm.py` (new),
+`tests/test_indexing/test_dictionary_indexing.py`,
+`tests/test_indexing/test_orientation_similarity_map.py`,
+`tests/test_indexing/test_hrosm_emsoft_regression.py`,
+`specs/2026-10-06-hrosm/validation.md`.
+
+**Test counts (collected) and per-module results, `-n 0`, this machine:**
+
+| module | collected | result |
+|---|---|---|
+| `test_signals/test_ebsd_hrosm.py` | 97 (Validation 54, Output 13, Contracts 15, Invariance 5, Messages 6, SubgrainContrast 4) | 73 failed, 1 passed, 1 skipped, 22 errors in 18.03s |
+| `test_orientation_similarity_map.py` | 17 | 13 failed, 4 passed in 2.06s |
+| `test_dictionary_indexing.py` | 13 | 2 failed, 11 passed in 4.67s |
+| `test_hrosm_emsoft_regression.py` | 94 | 80 passed, 14 skipped in 3.43s |
+| `test_hrosm_kam.py` | 36 | 36 passed in 3.13s |
+| `test_hrosm_segmentation.py` | 33 | 33 passed in 0.36s |
+| `test_hrosm_averaging.py` | 108 | 91 passed, 17 skipped in 6.97s |
+| `test_hrosm_sampling.py` | 33 | 31 passed, 2 skipped in 1.11s |
+| `test_hrosm_osm.py` | 27 | 27 passed in 0.10s |
+
+All nine together: `88 failed, 314 passed, 34 skipped, 306 warnings, 22
+errors in 39.25s`; zero collection errors. Every failure and error is the
+stub's `NotImplementedError` (109 of 110 report it directly; the 110th,
+`test_master_pattern_must_be_in_the_lambert_projection`, fails because
+the stub's bare `NotImplementedError` does not match "Lambert
+projection"). The 22 errors are fixture set-ups (`run_correct`,
+`run_compat`, `subgrain`) calling the stub. The passing Stage B arms:
+`test_signatures_are_frozen` (the full-size V15 arm skips, weekly), the
+legacy OSM and `dictionary_indexing` arms. Stage A modules green.
+`-k TestExports`: `16 passed, 1 skipped`. `ruff format` / `ruff check`
+clean on the touched file; ASCII, LF kept. Clean-replay grep (committed
+diff plus working tree plus the two untracked files): no match.
+
+**Mutant -> killer table as implemented (Stage B rows):**
+
+| mutant | killer(s) present | note |
+|---|---|---|
+| M27 `min_pixels` `<=` | `sig::TestContracts::test_min_pixels_boundary_is_inclusive` | |
+| M28 mask polarity / leak | `sig::TestContracts::test_navigation_mask_true_excludes_and_fills` | |
+| M30 ball not re-centred | `sig::TestContracts::test_each_grain_is_matched_against_its_own_ball`; `sig::TestSubgrainContrast::test_subgrain_step_is_recovered` | the first now also kills a centre-only driver (median error, distinct indices) |
+| S2 compat domain = grain pixels | `sig::TestContracts::test_compat_domain_is_the_bounding_box`; `sig::TestOutput::test_osm_equals_the_osm_of_the_kept_best_matches[compat]` | second killer added (T1) |
+| S3 compat fills | `sig::TestOutput::test_properties_dtypes_shapes_and_fills[compat]` | |
+| S5 / S20 `verbose=False` prints / sleeps | `test_dictionary_indexing.py::TestDictionaryIndexing::test_verbose_false_silences_the_core_for_hrosm` | |
+| S7 defaults routed to grain-aware OSM | `test_orientation_similarity_map.py::TestHROSMKeywords::test_defaults_run_the_legacy_path_unchanged` | |
+| S13 warning after the ball / first simulation | `sig::TestMessages::test_coverage_warning_precedes_the_first_simulation` | now spies the cubochoric grid too: the last grid built before the first simulation must already see the warning (T3) |
+| S14 driver warning `>=` | `sig::TestMessages::test_coverage_warning_is_silent_at_equality` | plus a quarter float32 ulp below arm: float32 comparison killed (T3) |
+| S17 (B) compat checks removed | `sig::TestValidation::test_arguments_are_validated_in_order` | |
+| S19 (B) `_map_grid` from in-data rows | `sig::TestContracts::test_navigation_masked_dictionary_indexing_map_keeps_its_grid` | |
+| (new, T1) OSM from `keep_n` instead of `n_osm`; legacy map with cross-grain / label-0 neighbours; compat copy-back skipped | `sig::TestOutput::test_osm_equals_the_osm_of_the_kept_best_matches[correct, compat]` | bitwise against `_osm_grain_aware` / `_osm_emsoft` of the box lists; also asserts the `keep_n` map differs |
+| (new, T2) coverage warning lists grains of a phase without the master | `sig::TestMessages::test_warnings_are_issued_once_per_call` | message equals `_coverage_warning_message` over grain A only; precondition: grain B's max GROD 0.565 > max_angle 0.348 (measured) |
+| (new, T4) wrong score order | `sig::TestContracts::test_each_grain_is_matched_against_its_own_ball` | rows of `scores` non-increasing |
+
+No Stage B mutant is without a killer. M29 is a Stage A row (reader).
+
+**MTP constants in `test_ebsd_hrosm.py`** (to be added to the MTP
+inventory by the main loop, T5): `SUBGRAIN_CONTRAST_MIN` 3.0,
+`SUBGRAIN_CONTRAST_RATIO` 2.0, `SUBGRAIN_MEDIAN_ERROR_DEG` 0.15,
+`SUBGRAIN_STEP_TOL_DEG` 0.15 (already listed); NEW to the inventory:
+`SUBGRAIN_FULL_CONTRAST_MIN` 3.0, `SUBGRAIN_FULL_CONTRAST_RATIO` 2.0,
+`SUBGRAIN_FULL_MEDIAN_ERROR_DEG` 0.15, `SUBGRAIN_FULL_STEP_TOL_DEG` 0.15
+(seeds, the full-size weekly arm), `TRUTH_MEDIAN_TOLERANCE_DEG` 0.15
+(seed; oracle numbers on the base map: nearest ball orientation to the
+truth median 0.102 deg correct / 0.104 deg compat, max 0.147 deg; input
+map median 0.182 deg; ball spacing 0.2123 deg); `CHUNK_INVARIANCE`
+"bitwise" with `CHUNK_FALLBACK_MAX_ULP` 2 (frozen spec value).
+`TRUTH_TOLERANCE_DEG` 0.5 is a fixed bound, not measured (marked so in
+the test comment).
+
+**Runtime estimate.** With the stub the module takes 18 s serial (the
+base signal, the sub-grain fixture's global dictionary indexing up to
+the stub). Driver runs in the default arms after this round: the cached
+correct, compat, masked, `min_pixels` (2), `n_per_iteration=50` runs,
+plus fresh runs in the validation-free contract, lazy, seeded (2),
+verbose (2), warnings (2), PC policy, multi-phase (2) and absent-point
+(2) arms, and the V15 small arm; three full runs removed (T6: verbose 0
+from the cached run, the redundant `n_per_iteration=343` case, the full
+run in the coverage-precedes arm), none added (T1 records the compat
+run's box lists while the cached run is built; the T3 precision case
+stops at the first simulation, ~0.3 s). Estimate 22-30 s serial for the
+module; the CI-style HROSM selection must be measured at the build gate
+(median of three) against 25 s pytest time, with the spec's trim order
+if over. `xdist_group` / `--dist loadgroup` not adopted (CI command line
+unchanged).
+
+**Critic dispositions:**
+
+| id | disposition | one line |
+|---|---|---|
+| T1 | fixed | new `TestOutput::test_osm_equals_the_osm_of_the_kept_best_matches[correct, compat]`: bitwise against `_osm_grain_aware` on the output lists (correct) and `_osm_emsoft` on each box's recorded lists copied back to the grain (compat); asserts the n = `keep_n` map differs; `_record_matching` now records the returned simulation indices and `run_compat` records its calls |
+| T2 | fixed | the multi-phase arm asserts the single message equals `_coverage_warning_message` over grain A only, contains "1 grain" and grain A, not grain B, with the precondition max GROD(B) > max_angle |
+| T3 | fixed | the coverage-precedes arm spies `_sampling._cubochoric_grid` (and `_driver._cubochoric_grid` if imported); the spacing builds a grid before the warning, so the last grid built before the first simulation must already see it; the equality arm adds `max_angle = m - ulp32(m) / 4`, which warns only in float64 |
+| T4 | fixed | per grain: median error <= `TRUTH_MEDIAN_TOLERANCE_DEG` and below the input map's median, more than one distinct best index; `scores` rows non-increasing |
+| T5 | fixed (ledger) | the five constants listed above go to the MTP inventory; `TRUTH_TOLERANCE_DEG` marked as a fixed bound in its comment |
+| T6 | fixed (partly) | `n_per_iteration=343` dropped (the default equals the ball size here, asserted, so the spec's "None, 50 and 343" arm runs None and 50); verbose 0 checked on the cached run's captured output (`_cached_run` redirects stdout and stderr); the full run in the coverage-precedes arm dropped (the once-per-call arm keeps a full run warning once); `xdist_group` rejected (needs a CI flag) |

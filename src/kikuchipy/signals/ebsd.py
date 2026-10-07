@@ -56,6 +56,7 @@ from kikuchipy.indexing._hough_indexing import (
     _optimize_pc,
     _phase_lists_are_compatible,
 )
+from kikuchipy.indexing._hrosm._driver import _hrosm
 from kikuchipy.indexing._refinement._refinement import (
     _refine_orientation,
     _refine_orientation_pc,
@@ -2555,6 +2556,278 @@ class EBSD(KikuchipySignal2D):
         xmap.scan_unit = _get_navigation_axes_unit(am_exp)
 
         return xmap
+
+    def hrosm(
+        self,
+        xmap: CrystalMap,
+        master_pattern: EBSDMasterPattern,
+        detector: EBSDDetector,
+        energy: int | float | None = None,
+        *,
+        threshold: float = 5.0,
+        max_angle: float = 5.0,
+        n_steps: int = 20,
+        keep_n: int = 20,
+        n_osm: int = 10,
+        average: str = "mean",
+        n_em: int = 25,
+        n_iter: int = 40,
+        min_kappa: float = 5.0,
+        min_pixels: int = 10,
+        dilate: bool = False,
+        metric: SimilarityMetric | str = "ncc",
+        signal_mask: np.ndarray | None = None,
+        navigation_mask: np.ndarray | None = None,
+        pc: str = "grain",
+        n_per_iteration: int | None = None,
+        seed: int | np.random.Generator | None = None,
+        emsoft_compatible: bool = False,
+        verbose: int = 1,
+    ) -> CrystalMap:
+        r"""Re-index each grain of an indexed map against a fine
+        misorientation ball centred on the grain's reference
+        orientation, and return a high angular resolution orientation
+        similarity map (HROSM) :cite:`marquardt2017quantitative`.
+
+        The map is segmented into grains from its kernel average
+        misorientation (KAM), each grain's reference orientation is
+        computed, and the grain's patterns are matched by dictionary
+        indexing :cite:`chen2015dictionary` against patterns simulated
+        from ``master_pattern`` for orientations on a cubochoric grid
+        :cite:`singh2016orientation` within ``max_angle`` of that
+        reference. The orientation similarity of the re-indexed points
+        then resolves orientation differences far below the spacing of
+        a global dictionary.
+
+        Parameters
+        ----------
+        xmap
+            Indexed crystal map of this signal, e.g. from
+            :meth:`dictionary_indexing` followed by
+            :meth:`refine_orientation`. Its grid, including points not
+            in the data, must equal the navigation shape.
+        master_pattern
+            Master pattern in the Lambert projection of one phase, used
+            to simulate each grain's dictionary.
+        detector
+            Detector describing the pattern geometry, with one
+            projection center (PC) or one PC per map point.
+        energy
+            Energy of the master pattern to use. If not given, the
+            highest energy in the master pattern is used.
+        threshold
+            KAM difference in degrees below which neighbouring points
+            join the same grain. Default is 5 degrees.
+        max_angle
+            Radius in degrees of the misorientation ball around each
+            grain's reference orientation. Default is 5 degrees.
+        n_steps
+            Number of grid steps along each half axis of the ball,
+            giving :math:`(2 n_{steps} + 1)^3` orientations. Default
+            is 20 (68 921 orientations).
+        keep_n
+            Number of best matches to keep per point. Default is 20.
+        n_osm
+            Number of best matches compared in the orientation
+            similarity map, at most ``keep_n``. Default is 10.
+        average
+            How to compute each grain's reference orientation:
+            ``"mean"`` (default, the normalised mean of the points'
+            symmetry variants aligned with the grain's centre point),
+            ``"center"`` (the grain point nearest the grain's
+            centroid), ``"vmf"`` or ``"watson"`` (the mean of a von
+            Mises-Fisher or Watson mixture over the symmetry variants,
+            estimated by expectation maximisation).
+        n_em
+            Number of initial guesses of the ``"vmf"`` and
+            ``"watson"`` averages. Default is 25.
+        n_iter
+            Largest number of iterations per initial guess of the
+            ``"vmf"`` and ``"watson"`` averages. Default is 40.
+        min_kappa
+            A ``"vmf"`` or ``"watson"`` grain is re-indexed only if
+            its concentration is above this value. Default is 5.
+        min_pixels
+            Smallest number of points of a grain for it to be
+            re-indexed. Default is 10.
+        dilate
+            Whether to grow the grains into neighbouring points not
+            assigned to any grain before averaging. Default is
+            ``False``.
+        metric
+            Similarity metric, by default ``"ncc"`` (normalized
+            cross-correlation). ``"ndp"`` (normalized dot product) or a
+            user-defined :class:`~kikuchipy.indexing.SimilarityMetric`
+            may be used instead.
+        signal_mask
+            A boolean mask equal to the detector shape, where only
+            pixels equal to ``False`` are matched. If not given, all
+            pixels are used.
+        navigation_mask
+            A boolean mask equal to the navigation shape, where points
+            equal to ``True`` are excluded: they are not assigned to
+            any grain and not re-indexed. If not given, all points in
+            the data of ``xmap`` are used.
+        pc
+            How a detector with one PC per map point is used:
+            ``"grain"`` (default) simulates each grain with the mean PC
+            of the points it re-indexes, ``"single"`` simulates every
+            grain with the average PC of the map. Ignored for a
+            detector with one PC.
+        n_per_iteration
+            Number of dictionary patterns simulated and matched per
+            iteration. If not given, as many as fit in about 256 MB of
+            32-bit floats, at most the ball size.
+        seed
+            Seed or random number generator of the initial guesses of
+            the ``"vmf"`` and ``"watson"`` averages. If not given,
+            these averages are not reproducible.
+        emsoft_compatible
+            Whether to reproduce EMsoftOO's program EMHROSM, including
+            its known defects, instead of the corrected computation.
+            Default is ``False``. See the Notes.
+        verbose
+            ``0`` prints nothing, ``1`` (default) prints the ball size,
+            radius and mean spacing, a progress bar over grains and the
+            total time, and ``2`` also prints each grain's dictionary
+            indexing information.
+
+        Returns
+        -------
+        xmap_out
+            Crystal map with the coordinates, phases and points in the
+            data of ``xmap`` and one rotation per point: the best match
+            in the grain's ball where re-indexed, otherwise the input
+            rotation (the identity with ``emsoft_compatible=True``).
+            The properties are ``"osm"`` (orientation similarity,
+            range 0 to ``n_osm``), ``"scores"`` and
+            ``"simulation_indices"`` (``keep_n`` per point, indices
+            into the grain's own ball), ``"grain_id"`` (0 for points
+            in no grain, grains numbered from 1), ``"kam"`` and
+            ``"grod"`` (degrees), ``"reindexed"``, and the grain's
+            ``"grain_orientation"`` (quaternion), ``"grain_kappa"`` and
+            ``"grain_max_grod"`` broadcast to its points. Points not
+            re-indexed have NaN ``"osm"`` and ``"scores"`` (0 with
+            ``emsoft_compatible=True``) and ``"simulation_indices"``
+            of -1.
+
+        Raises
+        ------
+        ValueError
+            If the signal, map, master pattern, detector, masks or
+            keyword values are incompatible or out of range, or if
+            ``emsoft_compatible=True`` is combined with points not in
+            the data, several phases, ``pc="grain"`` with one PC per
+            point, or a point group without an EMsoft equivalent.
+
+        Warns
+        -----
+        UserWarning
+            Once, before anything is simulated, if the largest grain
+            reference orientation deviation (GROD) of a grain to be
+            re-indexed exceeds ``max_angle``; once if grains of phases
+            without the master pattern are skipped; and once if no
+            grain is re-indexed.
+
+        See Also
+        --------
+        dictionary_indexing
+        refine_orientation
+        kikuchipy.indexing.misorientation_ball_spacing :
+            Mean angular spacing of the misorientation ball.
+        kikuchipy.indexing.grain_reference_orientation_deviation_map :
+            Grain reference orientation deviation (GROD) of each point.
+        kikuchipy.indexing.orientation_similarity_map
+
+        Notes
+        -----
+        This method is a port of the program EMHROSM of EMsoftOO by M.
+        De Graef (2025), https://github.com/EMsoft-org/EMsoftOO. The
+        correct KAM and the GROD coverage check follow J. Westraadt's
+        EMsoftOO branch ``feature/emhrosm-grod-precheck``.
+
+        The keyword arguments map to the EMHROSM namelist as follows:
+        ``threshold`` is ``gangle``, ``max_angle`` is ``misorang``,
+        ``n_steps`` is ``nsamples``, ``keep_n`` is ``nnk`` of the
+        dictionary indexing run, ``n_osm`` is ``nosm``, ``average`` is
+        ``orav``, ``n_em`` is ``numEM``, ``n_iter`` is ``numIter`` and
+        ``dilate`` is ``dilate``. ``min_kappa`` and ``min_pixels``
+        expose EMHROSM's fixed limits of 5 and 10. EMHROSM's default
+        reference orientation is the grain centre (``"center"``).
+
+        Differences from EMsoftOO's EMHROSM. By default, the following
+        are corrected, and ``emsoft_compatible=True`` reproduces
+        EMHROSM instead:
+
+        - KAM averages the misorientation to the existing four nearest
+          neighbours in the data and of the same phase, while EMHROSM
+          pairs some points with the wrong neighbour, compares the
+          last point of the first row with the identity and divides by
+          edge multipliers tuned to those counts.
+        - Misorientation angles are computed in double precision with
+          the dot product snapped to one when within rounding, while
+          EMHROSM evaluates an unclipped arccosine over its own
+          symmetry operator table and operation order.
+        - Dilation assigns unassigned points the largest label among
+          their neighbours of the same phase, while EMHROSM takes the
+          largest label of each 3 x 3 window, skipping the first row
+          and column and overwriting assigned points.
+        - The ``"center"`` orientation is that of the grain point
+          nearest the centroid, while EMHROSM uses the centre of the
+          bounding box, which may lie outside the grain.
+        - The ``"vmf"`` and ``"watson"`` estimates apply the crystal
+          symmetry consistently on the left, while EMHROSM mixes the
+          sides and may keep stale values when a likelihood
+          underflows.
+        - The ball orientations are kept in double precision, while
+          EMHROSM stores them as single precision Rodrigues vectors.
+        - The orientation similarity of a point is the mean over its
+          neighbours in the same grain that were re-indexed, while
+          EMHROSM uses its KAM neighbour bookkeeping in single
+          precision.
+        - Only a grain's own points are matched against its ball,
+          while EMHROSM matches the grain's whole bounding box. The
+          thinning of the dictionary in boxes smaller than EMHROSM's
+          batch size is not reproduced in either mode.
+        - Points not in the data, several phases and one PC per point
+          are supported, while EMHROSM requires a dense single phase
+          map with one PC.
+        - Points not re-indexed keep their input rotation, while
+          EMHROSM sets the identity and zero similarity and score.
+
+        In both modes, grains are segmented with EMHROSM's rule from
+        KAM differences, and only one master pattern is used: on a map
+        with several phases, the grains of the phase with the master
+        pattern's name are re-indexed.
+        """
+        # TODO: validate the input before calling the driver, and add a
+        # short example on the small nickel dataset to the docstring
+        return _hrosm(
+            self,
+            xmap,
+            master_pattern,
+            detector,
+            energy,
+            threshold=threshold,
+            max_angle=max_angle,
+            n_steps=n_steps,
+            keep_n=keep_n,
+            n_osm=n_osm,
+            average=average,
+            n_em=n_em,
+            n_iter=n_iter,
+            min_kappa=min_kappa,
+            min_pixels=min_pixels,
+            dilate=dilate,
+            metric=metric,
+            signal_mask=signal_mask,
+            navigation_mask=navigation_mask,
+            pc=pc,
+            n_per_iteration=n_per_iteration,
+            seed=seed,
+            emsoft_compatible=emsoft_compatible,
+            verbose=verbose,
+        )
 
     def spherical_indexing(
         self,
