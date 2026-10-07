@@ -20,8 +20,13 @@ collide with the V9 fixtures F1 to F7).
 User go 2026-10-06: Johan extended his overnight waiver to Stage F
 ("continue with the merlin guess implementation after the gpu
 implementation is done"; plan 11.4 approval record, item 20 carried
-to this spec gate). Motivation, measured: the translation-only
-phase-XC seed of D5 captures 2.0 deg of pure in-plane rotation on
+to this spec gate). Narrowed 2026-10-07 by Johan's own instruction:
+the Stage F SPEC is written and committed, then work STOPS before
+any Stage F failing test or code; the Stage F plan gate is PENDING
+his review, and the 2026-10-06 waiver no longer covers it, so no
+item below is approved yet. Motivation, measured: the
+translation-only phase-XC seed of D5 captures 2.0 deg of pure
+in-plane rotation on
 the 480 px oracle and fails from 2.5 deg at the default budget of 50
 (ledger 202); on rigidly rotated REAL Si-indent patterns WITH THE
 DEFAULT BAND-PASS `(0.05, None)` it needs 19 and 124 iterations at
@@ -91,10 +96,12 @@ function instead of a batched host pre-pass (D22.10). Every number
 below is from the THROWAWAY spec-gate prototypes (ledger 200 to
 216); nothing of them is committed, and each prototype number is
 tagged with the recipe that produced it where that recipe is not
-the frozen one. Items marked FROZEN are frozen at this spec gate;
+the frozen one. Items marked FROZEN are frozen at this spec gate,
+subject like everything here to Johan's review at the plan gate;
 items marked RECORDED DEFAULT stand as written until Johan approves
-or changes them at the Stage F plan gate (plan 12.4, pre-accepted
-2026-10-06); MTP numbers are filled at the Stage F gates.
+or changes them at the Stage F plan gate (plan 12.4; PENDING
+Johan's review, not pre-accepted); MTP numbers are filled at the
+Stage F gates.
 
 - **D22.1 API (FROZEN)**: one new keyword-only parameter on
   `EBSD.hrebsd_dic` and on `run_hrebsd_dic`, `fourier_mellin: str =
@@ -720,7 +727,7 @@ or changes them at the Stage F plan gate (plan 12.4, pre-accepted
   gather, XC on the de-rotated crop), two criterion evaluations
   (20-24 / 28-30 ms each) and the duplicate preprocessing and spline
   of D22.10 (15 / 45 ms; ledger 90), about 165 to 205 ms at 480x480
-  and 245 to 275 ms at 512x622, i.e. about 7 to 10 IC-GN iterations
+  and 240 to 275 ms at 512x622, i.e. about 7 to 11 IC-GN iterations
   (21-23 / 24-31 ms each), plus one more translation seed (23-35 ms)
   inside `fit_pattern` when `h_T` wins. GPU: about 2.2 to 2.5 ms per
   SLOT of every sub-batch that holds a routed point (an INFERENCE

@@ -4,18 +4,20 @@ drafted 2026-10-07 by the Stage F spec workflow and REVISED the same
 day after the two-critic spec review (plan 12.5; no repo file was
 edited). Block 1 (the V10 oracle section) goes immediately after the
 last V9 subsection the Stage E gates have appended by splice time
-(today "#### V9 recorded results, failing-tests gate (2026-10-06)",
-plus whatever Stage E's implementation gate adds after it). Block 2
+(at 2026-10-07 "#### V9 recorded results, implementation gate
+(2026-10-07)", whose latest ledger entry is 103, plus whatever the
+Stage E close adds after it). Block 2
 (the spec-gate ledger) follows Block 1 directly. Block 3 is a dated
-note inside V9(b). Ledger entries are
-numbered from 200 on purpose: the main session renumbers them to
-follow the last Stage E entry at splice time, and the references in
-requirements D22 and plan section 12 move with them.
+note inside V9(b). Ledger entries are numbered from 200 on
+purpose: the main session renumbers 200-216 to follow the last
+Stage E entry at splice time (N + 1 to N + 17 for a last entry N),
+and every "ledger 2xx" reference in requirements D22, this block,
+plan section 12 and the roadmap moves with them.
 -->
 
 <!-- ========================= BLOCK 1: V10 ========================= -->
 
-### V10 -- Fourier-Mellin oracles (Stage F, 2026-10-06)
+### V10 -- Fourier-Mellin oracles (Stage F, 2026-10-07)
 
 Requirements D22 govern. One new file,
 `tests/test_indexing/test_hrebsd_fourier_mellin.py`, laid out like
@@ -30,8 +32,9 @@ identical to it (a drift is a test edit with a dated comment): from
 assertion helpers (754-796), the oracle helpers (`matrix_of` to
 `deformed_pattern`; 797-991), the V9 F6 map and the Ni inputs
 (`f6_map`, `ni_inputs`, `run_ni`, `run_engine`; 1224-1347) and the
-numpy-session helpers (`make_state` to `run_gpu_numpy`; 1376-1538);
-from `test_hrebsd_seeding.py`, the V8 ramp map (the `RAMP_`
+numpy-session helpers (`make_state` to `run_gpu_numpy`; 1376-1538)
+and, where an arm needs a V9(d) seed fixture, `seed_case` and
+`numpy_seed_rows` (2165-2194); from `test_hrebsd_seeding.py`, the V8 ramp map (the `RAMP_`
 constants, lines 170-203; `in_plane_fe`, `out_of_plane_fe`,
 `orientation_a`, `deformed_pattern`, `oracle_reference`, `ramp_map`;
 713-830); about 1000 lines in all (plan 12.4 item 16 records the
@@ -283,7 +286,10 @@ where the `"off"` fit does not, or in fewer iterations (MTP). A
 planted wrong angle (`theta_hat + 10` deg through a patched
 `fourier_mellin_angles`): `h_T` is kept, bitwise. A planted tie
 (`fourier_mellin_criteria` patched to return the same values for
-both rows): `h_T` is kept and `applied` is False. G6 (unrelated
+both rows): `h_T` is kept and `applied` is False. A planted NaN
+criterion for a finite `h_T` beside a finite, lower FM criterion
+(the same patch point): `h_T` is kept and `applied` is False (the
+D22.5 rule; the FM51 killer). G6 (unrelated
 pair): no exception, no non-finite row introduced, the acceptance
 refuses the FM row (`applied` False), and the fit's `converged` flag
 equals the `"off"` path's. Criterion calls, counted on
@@ -355,7 +361,10 @@ returns 14-wide rows on FM runs and 12-wide rows on `"off"` runs
 (k) **Numpy session** [default] (D22.6, D22.11, D22.14, D22.18). The
 device runner under the numpy session of V9 (patched
 `_gpu._make_session`) with `seed_extras`: the route flags arrive in
-`SeedBatch.extras` in fit order with 0 on padded slots (spy); the
+`SeedBatch.extras` in fit order with 0 on padded slots (spy); after
+every seam call `extras` is the same host dictionary holding
+exactly the route key, unchanged, and the angle and applied arrays
+live in `SeedBatch.outputs` only (the FM45 killer); the
 outputs exist exactly when the route key has a nonzero entry (an
 all-zero route key: no outputs and the Stage E rows bitwise); a
 planted `seed_homographies` that writes no outputs is read as angle
