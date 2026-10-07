@@ -3940,3 +3940,24 @@ CI estimate: the weekly-only arms take 70.4 s at `-n 4` here (entry
 ~3 min of setup (entry 27), a test-time ratio of about 3.3; estimate
 70.4 s x 3.3 = ~4 min on a CI runner, under the 5 min target (never a
 gate).
+
+### 32. 2026-10-07 (merge and fan-out, main loop)
+
+Johan merged jwestraadt/kikuchipy#20 into develop as 90453bc3 (M). Clean
+replay with `_staging/pick.ps1` (run as `powershell -ExecutionPolicy
+Bypass -File`; no conflict outside specs/) as two commits on the new
+`feat-spherical-indexing-hrosm` off `feat-spherical-indexing-nlpar`
+(e49b3d85): f6461dba "Add high angular resolution orientation similarity
+maps (HROSM)" and f1b42148 "Add HROSM tutorial", both `Staged-from:
+jwestraadt/kikuchipy#20 (90453bc3...)`; `gate.ps1` OK for both (the
+tutorial registration files parked outside the worktree for the first
+commit, the NLPAR precedent); equivalence gate 17164/17164 +/- lines;
+clean-replay grep and notebook source check empty. Worktree tests with
+the guarded PYTHONPATH: HROSM selection 440 passed / 34 skipped (`-n 0`
+35.6 s, `-n 4` 59.3 s), full suite 4941 passed / 1289 skipped (`-n 2`,
+358 s; = baseline 4515 / 1251 + HROSM), nbval `hrosm.ipynb` 23/23 (132
+s). Pushed after a GitHub Git Operations outage (three "Internal Server
+Error" rejections, then success). `feat-spherical-indexing` 6723aaf0 and
+`feat-spherical-indexing-nlpar` e49b3d85 unchanged. The `hrebsd-dic`
+merge is deferred: that worktree holds uncommitted Stage E work of the
+other session.
