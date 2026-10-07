@@ -1,0 +1,245 @@
+"""Stage F Fourier-Mellin prototype library (THROWAWAY, CPU only).
+
+xp-agnostic in style (only xp.* calls on arrays), run with numpy here.
+Nothing here is repo code; it measures the design choices of the
+Stage F method report.
+"""
+import sys
+import time
+
+import numpy as np
+
+REPO = r"C:\Users\westraadt.1\Repos\kikuchipy-hrebsd"
+sys.path.insert(0, REPO + r"\tests\test_indexing")
+
+import test_hrebsd_engine as T  # noqa: E402
+from kikuchipy.indexing._hrebsd._engine import fit_pattern, initial_guess  # noqa: E402
+from kikuchipy.indexing._hrebsd._homography import (  # noqa: E402
+    fe_to_homography,
+    homography_parameters,
+    shape_function,
+)
+from kikuchipy.indexing._hrebsd._interpolation import (  # noqa: E402
+    evaluate,
+    spline_coefficients,
+)
+from kikuchipy.indexing._hrebsd._preprocessing import (  # noqa: E402
+    band_pass_transfer_function,
+    preprocess,
+)
+from scipy.spatial.transform import Rotation as SR  # noqa: E402
+
+xp = np
+
+
+# ------------------------------------------------------------------ #
+# oracle helpers
+# ------------------------------------------------------------------ #
+def oracle():
+    reference, detector = T.oracle_reference(T.SHAPE_480)
+    pc_px = T.pc_pixels_of(detector)
+    return reference, detector, pc_px
+
+
+def target_for(detector, rotvec_deg):
+    """Target pattern for a detector-frame rotation vector (deg)."""
+    fe = SR.from_rotvec(np.deg2rad(np.asarray(rotvec_deg, float))).as_matrix()
+    rotation = T.generic_rotation()
+    pattern = T.project_pattern(
+        detector, rotation, T.impose_detector_frame_fe(detector, rotation, fe)
+    )
+    return pattern, fe
+
+
+def exact_h(fe, pc_px):
+    return fe_to_homography(fe, np.zeros(2), pc_px[2])
+
+
+# ------------------------------------------------------------------ #
+# spectra
+# ------------------------------------------------------------------ #
+def zmn(a):
+    a = a - a.mean()
+    return a / np.sqrt((a * a).sum())
+
+
+def crop_of(state, pattern_pre):
+    r0, r1, c0, c1 = state.bounds
+    return pattern_pre[r0:r1, c0:c1]
+
+
+def spectrum_raw(crop):
+    """What seed_spectra computes today: fft2 of the ZMN'd crop."""
+    return xp.fft.fft2(zmn(crop))
+
+
+def spectrum_hann(crop):
+    m, n = crop.shape
+    w = np.outer(np.hanning(m), np.hanning(n))
+    c = zmn(crop)
+    c = (c - (c * w).sum() / w.sum()) * w
+    return xp.fft.fft2(c)
+
+
+def smooth_component_spectrum(crop_zmn):
+    """Moisan 2011 periodic-plus-smooth: the FFT of the smooth
+    component s, from two 1D FFTs of the boundary jumps only."""
+    m, n = crop_zmn.shape
+    d_rows = crop_zmn[m - 1, :] - crop_zmn[0, :]  # length n
+    d_cols = crop_zmn[:, n - 1] - crop_zmn[:, 0]  # length m
+    D = xp.fft.fft(d_rows)  # over columns
+    E = xp.fft.fft(d_cols)  # over rows
+    q = xp.arange(m)[:, None]
+    r = xp.arange(n)[None, :]
+    v_hat = D[None, :] * (1 - xp.exp(2j * np.pi * q / m)) + E[:, None] * (
+        1 - xp.exp(2j * np.pi * r / n)
+    )
+    denom = 2 * xp.cos(2 * np.pi * q / m) + 2 * xp.cos(2 * np.pi * r / n) - 4
+    denom[0, 0] = 1.0
+    s_hat = v_hat / denom
+    s_hat[0, 0] = 0.0
+    return s_hat
+
+
+def spectrum_periodic(crop, raw_spectrum=None):
+    """Periodic component spectrum = existing spectrum - smooth part."""
+    c = zmn(crop)
+    u_hat = xp.fft.fft2(c) if raw_spectrum is None else raw_spectrum
+    return u_hat - smooth_component_spectrum(c)
+
+
+# ------------------------------------------------------------------ #
+# polar LUT and angular profile
+# ------------------------------------------------------------------ #
+class PolarLUT:
+    """Bilinear polar resampling of an UNSHIFTED (sr, sc) spectrum in
+    physical frequency units (cycles/px), half plane [0, pi)."""
+
+    def __init__(self, shape, n_theta=360, rho_min=0.05, rho_max=0.35, dr_bins=0.5):
+        sr, sc = shape
+        self.shape = shape
+        self.n_theta = n_theta
+        dr = dr_bins / min(sr, sc)
+        rho = np.arange(rho_min, rho_max + 1e-12, dr)
+        theta = np.arange(n_theta) * np.pi / n_theta
+        fx = rho[None, :] * np.cos(theta)[:, None]
+        fy = rho[None, :] * np.sin(theta)[:, None]
+        kx = fx * sc
+        ky = fy * sr
+        x0 = np.floor(kx)
+        y0 = np.floor(ky)
+        ax = kx - x0
+        ay = ky - y0
+        x0 = x0.astype(np.int64)
+        y0 = y0.astype(np.int64)
+        idx = []
+        wts = []
+        for dy, dx, w in (
+            (0, 0, (1 - ay) * (1 - ax)),
+            (0, 1, (1 - ay) * ax),
+            (1, 0, ay * (1 - ax)),
+            (1, 1, ay * ax),
+        ):
+            iy = (y0 + dy) % sr
+            ix = (x0 + dx) % sc
+            idx.append(iy * sc + ix)
+            wts.append(w)
+        # (n_theta, n_rho, 4)
+        self.idx = np.stack(idx, axis=-1)
+        self.w = np.stack(wts, axis=-1)
+        self.rho = rho
+        self.n_rho = rho.size
+
+    def resample(self, values):
+        """values (P, sr, sc) real -> (P, n_theta, n_rho)."""
+        p = values.shape[0]
+        flat = values.reshape(p, -1)
+        g = flat[:, self.idx]  # (P, n_theta, n_rho, 4)
+        return (g * self.w[None]).sum(axis=-1)
+
+    def profile(self, values, radial_weight=None):
+        pol = self.resample(values)
+        if radial_weight is not None:
+            pol = pol * radial_weight[None, None, :]
+        return pol.mean(axis=-1)  # (P, n_theta)
+
+
+def magnitude_transform(spec, kind):
+    a = xp.abs(spec)
+    if kind == "abs":
+        return a
+    if kind == "log":
+        # scale-free log: relative to the median magnitude per slot
+        med = np.median(a.reshape(a.shape[0], -1), axis=1)
+        return xp.log1p(a / med[:, None, None])
+    if kind == "sqrt":
+        return xp.sqrt(a)
+    raise ValueError(kind)
+
+
+def angular_xcorr(p_ref, p_tgt):
+    """Circular ZNCC over the pi-periodic angle axis.
+    c[k] = sum_j pr[j] * pt[j + k]  (peak at the target's rotation)."""
+    pr = p_ref - p_ref.mean(axis=-1, keepdims=True)
+    pt = p_tgt - p_tgt.mean(axis=-1, keepdims=True)
+    pr = pr / np.sqrt((pr * pr).sum(axis=-1, keepdims=True))
+    pt = pt / np.sqrt((pt * pt).sum(axis=-1, keepdims=True))
+    c = xp.fft.ifft(xp.conj(xp.fft.fft(pr, axis=-1)) * xp.fft.fft(pt, axis=-1), axis=-1).real
+    return c
+
+
+def peak_angle(c, n_theta, max_deg=None):
+    """Sub-bin peak of the circular correlation; returns degrees in
+    (-90, 90] and the peak value."""
+    p, n = c.shape
+    lags = np.arange(n)
+    lags = np.where(lags >= n // 2, lags - n, lags)
+    bin_deg = 180.0 / n_theta
+    cc = c.copy()
+    if max_deg is not None:
+        cc[:, np.abs(lags) * bin_deg > max_deg] = -np.inf
+    k = np.argmax(cc, axis=1)
+    rows = np.arange(p)
+    y0 = c[rows, k]
+    ym = c[rows, (k - 1) % n]
+    yp = c[rows, (k + 1) % n]
+    den = ym - 2 * y0 + yp
+    delta = np.where(den < 0, 0.5 * (ym - yp) / den, 0.0)
+    return (lags[k] + delta) * bin_deg, y0
+
+
+# ------------------------------------------------------------------ #
+# phase correlation peak height (gate signal), translation seed
+# ------------------------------------------------------------------ #
+def phase_peak(ref_spec, tgt_spec):
+    prod = ref_spec * np.conj(tgt_spec)
+    prod = prod / np.maximum(np.abs(prod), 100 * np.finfo(float).eps)
+    cross = np.fft.ifft2(prod)
+    return float(np.abs(cross).max())
+
+
+def derotate_crop(state, coeffs, theta_rad):
+    """target(R xi) sampled at the reference crop pixels (the gather
+    with a pure-rotation carried matrix)."""
+    r0, r1, c0, c1 = state.bounds
+    pcx, pcy = state.pc_pixels[0], state.pc_pixels[1]
+    rows, cols = np.mgrid[r0:r1, c0:c1].astype(float)
+    x = cols + 0.5 - pcx
+    y = rows + 0.5 - pcy
+    c, s = np.cos(theta_rad), np.sin(theta_rad)
+    xw = c * x - s * y
+    yw = s * x + c * y
+    return evaluate(coeffs, xw + pcx - 0.5, yw + pcy - 0.5)
+
+
+def compose_rotation_translation(theta_rad, h_t):
+    c, s = np.cos(theta_rad), np.sin(theta_rad)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    return homography_parameters(R @ shape_function(h_t))
+
+
+def timeit(fn, n=3):
+    t0 = time.perf_counter()
+    for _ in range(n):
+        out = fn()
+    return out, (time.perf_counter() - t0) / n
