@@ -18,8 +18,15 @@ Unreleased
 
 Added
 -----
-- Grain tools for high angular resolution orientation similarity maps (HROSM), the
-  building blocks of a NumPy port of EMsoftOO's EMHROSM program:
+- High angular resolution orientation similarity maps (HROSM), a NumPy port of
+  EMsoftOO's EMHROSM program: ``EBSD.hrosm()`` segments an indexed map into grains,
+  re-indexes every grain against patterns simulated for a fine misorientation ball
+  around its reference orientation, and returns a crystal map with the re-indexed
+  orientations, the orientation similarity map (OSM), the grain labels, the KAM and the
+  GROD. ``kikuchipy.indexing.orientation_similarity_map()`` gains the keyword-only
+  ``grain_id``, comparing a point only with its nearest neighbours in the same grain,
+  and ``emsoft_compatible``, reproducing EMsoftOO's map; the default behaviour is
+  unchanged. The building blocks are public too:
   ``kikuchipy.indexing.kernel_average_misorientation_map()`` returns the kernel average
   misorientation (KAM) over the four nearest neighbours of every map point;
   ``kikuchipy.indexing.segment_grains_kam()`` labels grains from KAM differences, with
@@ -33,11 +40,12 @@ Added
   ``kikuchipy.indexing.misorientation_ball()`` samples rotations within a maximum
   misorientation of a centre orientation, and
   ``kikuchipy.indexing.misorientation_ball_spacing()`` returns that sampling's mean
-  nearest-neighbour angle. ``kernel_average_misorientation_map()``,
-  ``segment_grains_kam()``, ``average_grain_orientations()`` and
-  ``misorientation_ball()`` take ``emsoft_compatible=True`` to reproduce EMsoftOO's
-  output, including its known defects, for regression against EMsoftOO; the default is
-  the corrected behaviour. EMsoftOO's EMHROSM program (Marc De Graef,
+  nearest-neighbour angle. ``EBSD.hrosm()``,
+  ``kernel_average_misorientation_map()``, ``segment_grains_kam()``,
+  ``average_grain_orientations()`` and ``misorientation_ball()`` take
+  ``emsoft_compatible=True`` to reproduce EMsoftOO's output, including its known
+  defects, for regression against EMsoftOO; the default is the corrected behaviour.
+  EMsoftOO's EMHROSM program (Marc De Graef,
   Carnegie Mellon University, BSD-3) and Johan Westraadt's EMsoftOO branch are
   gratefully acknowledged as the source of the algorithms.
   (`#20 <https://github.com/jwestraadt/kikuchipy/pull/20>`_)

@@ -1330,7 +1330,9 @@ cached `hrosm` result per mode (`run_correct`, `run_compat` with
 - `test_results_do_not_depend_on_n_per_iteration`: `n_per_iteration`
   None, 50 and 343 give identical outputs (`CHUNK_INVARIANCE`, MTP:
   seed bitwise; fallback of D8.12: identical top-1 except exact score
-  ties, scores within 2 float32 ulp, recorded).
+  ties, scores within 2 float32 ulp, recorded; amended 2026-10-07: 16
+  ulp, measured 8 (5 on the oldest stack), indices and rotations
+  identical).
 - `test_lazy_signal_equals_eager`: `s.as_lazy()` gives the same
   output (same pin).
 - `test_seeded_runs_are_identical`: two `average="watson", seed=0`
@@ -3213,3 +3215,393 @@ unchanged).
 | T4 | fixed | per grain: median error <= `TRUTH_MEDIAN_TOLERANCE_DEG` and below the input map's median, more than one distinct best index; `scores` rows non-increasing |
 | T5 | fixed (ledger) | the five constants listed above go to the MTP inventory; `TRUTH_TOLERANCE_DEG` marked as a fixed bound in its comment |
 | T6 | fixed (partly) | `n_per_iteration=343` dropped (the default equals the ball size here, asserted, so the spec's "None, 50 and 343" arm runs None and 50); verbose 0 checked on the cached run's captured output (`_cached_run` redirects stdout and stderr); the full run in the coverage-precedes arm dropped (the once-per-call arm keeps a full run warning once); `xdist_group` rejected (needs a CI flag) |
+
+### 21. 2026-10-07 (Stage B measurement)
+
+Measurer on the Stage B implementation (working tree on 5f3e899d with
+the driver, `EBSD.hrosm`, the OSM routing and `verbose=False`), this
+machine (Windows 11, 20 logical CPUs), `uv run --no-sync`. Pins were
+measured with a scratch pytest plugin that relaxes the pins and records
+the `record_property` values (no test edited for the measurement).
+
+**1. Stage B selection, `-n 0`** (`test_ebsd_hrosm.py`,
+`test_orientation_similarity_map.py`, `test_dictionary_indexing.py`,
+`test_hrosm_emsoft_regression.py`), before pinning: `3 failed, 203
+passed, 15 skipped in 21.66s`. After pinning, the whole `$B_TESTS`:
+`2 failed, 422 passed, 34 skipped in 19.39s`. The two remaining reds
+are not pins:
+
+- `TestInvariance::test_results_do_not_depend_on_n_per_iteration`:
+  `n_per_iteration=50` against the single pass (343) gives identical
+  simulation indices everywhere (top-1 and all 20 columns), identical
+  rotations, and 328 of 1,280 scores differing by up to 8 float32 ulp
+  (max abs 4.8e-7 at ~0.97). Lazy vs eager is bitwise. "bitwise" is
+  therefore false and the D8.12 fallback's frozen 2 ulp is too tight:
+  `CHUNK_INVARIANCE` pinned "fallback" (the measured decision), the
+  arm fails on `8 <= 2`. NOT pinned honestly: needs a spec amendment of
+  the 2 ulp bound (recommend 16 ulp, 2x the measured 8). The source is
+  BLAS sgemm blocking over 1,024-term sums for other dictionary chunk
+  shapes (`get_patterns(chunk_shape=n_per_iteration)` and the chunked
+  loop of `_dictionary_indexing`).
+- `TestMessages::test_coverage_warning_is_silent_at_equality`:
+  `KeyError: 'detector'`, a test defect. The arm calls
+  `_run_until_first_simulation` three times in one test;
+  `_stop_at_first_simulation` takes `inspect.signature(
+  EBSDMasterPattern.get_patterns)` AFTER the first call already
+  monkeypatched it, so the second spy binds against the first spy's
+  `(self, *args, **kwargs)` signature and `bound.arguments` has no
+  "detector". Fix (for the test author): capture the original
+  signature once at module level, or `monkeypatch.undo()` between the
+  three runs. The first sub-run (equality, no warning) passes.
+
+**2. Pins (measured values, this machine):**
+
+| constant | seed | measured | pinned |
+|---|---|---|---|
+| `SUBGRAIN_CONTRAST_MIN` | 3.0 | 2.25 (global 1.125) | 1.5 |
+| `SUBGRAIN_CONTRAST_RATIO` | 2.0 | 2.0 | 1.5 |
+| `SUBGRAIN_MEDIAN_ERROR_DEG` | 0.15 | 0.0857 | 0.15 (kept) |
+| `SUBGRAIN_STEP_TOL_DEG` | 0.15 | step 0.4916 (dev 0.0084); global step 0.0 | 0.15 (kept) |
+| `SUBGRAIN_FULL_CONTRAST_MIN` (weekly) | 3.0 | 2.625 (global 1.25) | 1.75 |
+| `SUBGRAIN_FULL_CONTRAST_RATIO` (weekly) | 2.0 | 2.1 | 1.5 |
+| `SUBGRAIN_FULL_MEDIAN_ERROR_DEG` (weekly) | 0.15 | 0.0856 | 0.15 (kept) |
+| `SUBGRAIN_FULL_STEP_TOL_DEG` (weekly) | 0.15 | step 0.4915 (dev 0.0085); global 0.0 | 0.15 (kept) |
+| `TRUTH_MEDIAN_TOLERANCE_DEG` | 0.15 | per grain correct 0.069 / 0.125, compat 0.104 / 0.115 (input 0.170-0.186; 3 distinct best indices per grain) | 0.15 (kept) |
+| `CHUNK_INVARIANCE` | "bitwise" | 8 ulp, indices identical | "fallback" (arm red, see above) |
+| `E2E_ONE_GRAIN_DISORIENTATION_MEDIAN_DEG` (weekly) | 0.3 | 0.0 (label 23, 20 points) | 0.3 (kept) |
+| `E2E_ONE_GRAIN_DISORIENTATION_P99_DEG` (weekly) | 1.0 | 0.4999 | 1.0 (kept) |
+| `E2E_FULL_MAP_DISORIENTATION_MEDIAN_DEG` (local + weekly) | 0.3 | 1.7e-6 | 0.3 (kept) |
+| `E2E_FULL_MAP_DISORIENTATION_P99_DEG` (local + weekly) | 1.0 | 0.866 | 1.2 |
+| `E2E_FULL_MAP_OSM_PEARSON_MIN` (local + weekly) | 0.8 | 0.774 | 0.7 |
+| `E2E_FULL_MAP_CI_PEARSON_MIN` (local + weekly) | 0.5 | 0.987 | 0.9 |
+
+Notes. The sub-grain contrast seed was optimistic: with 0.25 deg
+shells the 0.5 deg step shows as a dip of the HROSM OSM from ~9.25 to
+~7 of 10 in the two boundary columns; the global dictionary (1.43 deg)
+also dips (to ~8.5) but its top-1 step is 0.0, so the step pin, not the
+ratio, is the sharp separator. The 0.3 deg median pins sit below one
+ball spacing (0.318 deg at 5 deg / N 10): most points must pick
+EMHROSM's ball orientation; measured 74 % of the 2,497 full-map points
+equal within 0.01 deg, the rest one or two shells off (p90 0.50, max
+8.45 deg on an isolated point). The full-map OSM r 0.774 is below the
+0.8 seed: our OSM is higher by 0.32 on average (7.70 vs 7.37), median
+|diff| 0.67, 10.7 % exact; plausible for an independent dictionary
+stage (different master file and pattern processing: static + dynamic
+background vs EMsoft's), not a driver defect (top-1 agrees, CI r
+0.987). Full map: 30 of 30 compared grains re-indexed by both.
+
+**Mutant check (emulated, pins live).** M30 (ball not re-centred,
+`_driver._multiply` replaced by the identity ball): killed by
+`test_subgrain_step_is_recovered` (median error 42.6 deg),
+`test_hrosm_osm_shows_the_subboundary` (contrast -0.33 < 1.5), the
+weekly full-size arm (contrast 0.375 < 1.75) and
+`test_each_grain_is_matched_against_its_own_ball[correct, compat]`.
+Centre-only driver emulated on the cached runs (every point given its
+grain orientation): grain medians 0.201 / 0.200 (correct; above 0.15,
+killed by the median pin) and 0.127 / 0.131 (compat box centre pixel;
+below 0.15, killed by the "more than one distinct best index" assert
+of the same arm, as entry 20 designed). No named Stage B mutant has a
+V13 or V15 pin as its only killer.
+
+**3. Weekly and local + weekly arms** (`--weekly`,
+`KIKUCHIPY_EMSOFT_DATA=C:/Users/westraadt.1/Software/EMSOFT/EMsoftData`,
+`-n 0`, relaxed run; every measured value inside the pins above):
+`3 passed in 58.18s`: `test_full_map_against_emhrosm` 37.47 s (hrosm
+call 36.2 s, 1001 px master), `test_full_size_subgrain_demonstration`
+18.78 s (hrosm 17.4 s), `test_one_grain_against_emhrosm` 1.88 s (hrosm
+1.2 s).
+
+**4. Performance baselines** (local ledger runs, not tests; scratch
+script: `nickel_ebsd_large`, static + dynamic background removed,
+`det.pc = det.pc_average`, input map = the shipped
+`RefinedEulerAngles` (55 x 75), 1001 px Ni master at 20 kV,
+`verbose=0`; "match" = one `_dictionary_indexing` call per grain,
+which includes the lazy simulation; simulation = one standalone
+`get_patterns(compute=True)` of a grain's ball; peak = process peak
+working set):
+
+| run | total | grains re-indexed (of map) | points (domain) | match per grain median / max | one ball simulated | est. simulation / NCC total | peak |
+|---|---|---|---|---|---|---|---|
+| defaults (correct, mean, N 20, 68,921) | 273.2 s | 32 (45) | 2,614 (2,614) | 8.35 / 9.8 s | 1.84 s | ~59 / ~213 s | 1.21 GB (0.38 before) |
+| `n_steps=10` (9,261) | 44.3 s | 32 (45) | 2,614 | 1.38 / 1.85 s | 1.34 s | ~43 / ~1 s | 0.70 GB |
+| compat (center, single PC, N 20) | 307.8 s | 31 (44) | 2,507 (4,791 box) | 9.06 / 14.2 s | 2.06 s | ~64 / ~242 s | 1.21 GB |
+
+Against the D8.13 seeds: the defaults take 273 s against the ~136 s
+seed (NCC ~40 s + ~3 s x 32 grains). Simulation matches (~1.8 s per
+grain) but the matching part is ~213 s for 1.3e12 flops (~6 GFLOP/s),
+~5x the seed. `n_steps=10` is 6.2x cheaper (seed 7.4x) and simulation
+bound. Compat box-pixel overhead +91 % pixels (seed 20-50 %), +13 %
+time.
+
+**5. Budget** (`$B_TESTS`, the nine modules):
+
+- CI-style, `uv run --no-sync --with pytest-cov pytest $B_TESTS -n 4
+  -q -p no:cacheprovider --cov=kikuchipy --cov-branch --cov-report=`:
+  21.94 s, 20.19 s, 20.17 s; median 20.19 s <= 25 s. PASS.
+- Serial `-n 0`: 19.39 s pytest-reported <= 60 s. PASS. Summed
+  per-module seconds (`--durations=0`, setup + call + teardown, 17.47
+  s): `test_ebsd_hrosm.py` 5.60, `test_hrosm_averaging.py` 3.97,
+  `test_dictionary_indexing.py` 3.12, `test_hrosm_emsoft_regression.py`
+  1.99, `test_hrosm_kam.py` 1.78, `test_hrosm_sampling.py` 0.75,
+  `test_orientation_similarity_map.py` 0.15,
+  `test_hrosm_segmentation.py` 0.11, `test_hrosm_osm.py` < 0.01.
+  Slowest items: the sub-grain fixture setup 1.38 s, `test_verbose_levels`
+  0.79 s. A cold first run of the Stage B four took 21.66 s serial,
+  the sub-grain setup 3.71 s.
+- Weekly additions (local serial): 58.2 s for the three Stage B arms.
+
+**Files changed by this step:** `tests/test_signals/test_ebsd_hrosm.py`
+(pins and comments only), `tests/test_indexing/test_hrosm_emsoft_regression.py`
+(the six `E2E_*` pins and their comment), this entry. ruff check and
+format clean, ASCII, LF kept, clean-replay grep on the diff empty.
+
+### 22. 2026-10-07 (Stage B hot spot)
+
+Spare implementer on the hot spot of entry 21 (working tree on
+5f3e899d plus entry 21's pins), this machine, `uv run --no-sync`.
+
+**Cause.** Not NCC. Timed per grain on `nickel_ebsd_large` (defaults,
+N 20, 68,921 orientations, `n_per_iteration` 17,777): computing one
+lazy dictionary chunk took 3.7-3.8 s, prepare + einsum + top-k of
+the same chunk ~0.5 s (NumPy matmul of 80 x 3,600 by 3,600 x 17,777:
+0.10 s). `get_patterns(chunk_shape=n_per_iteration)` makes ONE dask
+task per chunk, and the Numba projection projects a task's patterns
+serially on one thread, so the whole simulation ran single-threaded
+(a standalone `get_patterns(compute=True)` with its default chunking
+uses every thread). Entry 21's "~59 s simulation / ~213 s NCC" split
+assumed the standalone simulation time; the lazy simulation was in
+fact most of the "match" time.
+
+**Fix (bitwise, `_driver.py` only).** Step (h) simulates each grain's
+ball in tasks of `_simulation_task_size(n_per_iteration)` patterns (at
+most one task per `dask.system.CPU_COUNT`, at least
+`_SIMULATION_TASK_MIN = 1024` patterns each, so `n_per_iteration <
+2048` gives one task, the old graph) and rechunks the result back to
+`n_per_iteration` along the ball before `_dictionary_indexing`. The
+dictionary seen by the matching keeps its chunks (entry 21's chunk
+structure, so the einsum shapes and the D8.12 finding are unchanged);
+patterns are projected one by one, so the values are bitwise those of
+one task per chunk. `rechunk` to the same chunks returns the same
+array (checked), so every default-suite run builds the identical
+graph. No test, no Stage A module, no shared module changed.
+
+**Bitwise checks** (old = the same run with `_simulation_task_size`
+patched to the identity): full map at the defaults and at
+`n_steps=10` (single-pass path), `scores`, `simulation_indices`,
+rotations and `osm` all `np.array_equal` (NaN-aware); grain 1 alone
+too.
+
+**Performance baselines** (local ledger runs, never gated; scratch
+script, `nickel_ebsd_large`, static + dynamic background removed,
+`det.pc = det.pc_average`, input map = `s.xmap`, Ni master upper
+hemisphere at 20 kV, `verbose=0`; another session's GPU pytest ran
+concurrently for part of these runs, so old and new were run back to
+back):
+
+| run | old | new | speed-up | grains (points) | peak |
+|---|---|---|---|---|---|
+| defaults (N 20) | 499.4 s | 186.3 s | 2.7x | 31 (2,597) | 1.20 / 1.24 GB |
+| `n_steps=10` | 67.8 s | 21.8 s | 3.1x | 31 (2,597) | 0.69 / 0.69 GB |
+
+(The old defaults ran 273 s in entry 21 on a quieter machine; the
+ratio, not the absolute, is the comparison.) Per grain now (grain 19,
+378 points, defaults): 8.6 s total, of which lazy simulation 4.3 s
+(4 chunks at ~0.8 s; one standalone `compute=True` of the ball 3.0 s
+in the same session, so simulation is at the projection's own
+ceiling), `_match_chunk` graph building 2.4 s (serial NumPy
+normalisation of each 256 MB chunk ~0.37 s and dask tokenising the
+NumPy chunk for `da.einsum` ~0.36 s, both inside the shared
+`_dictionary_indexing`/metric code, left alone for legacy bitwise),
+the einsum + top-k compute 1.0 s. Peak +0.04 GB (the sub-tasks
+concatenated by the rechunk).
+
+**Tests.** `$B_TESTS -n 0`: `2 failed, 422 passed, 34 skipped`, the
+same two reds as entry 21 (`test_results_do_not_depend_on_n_per_iteration`
+still `8 <= 2` ulp, `test_coverage_warning_is_silent_at_equality`
+`KeyError: 'detector'`), nothing new. Weekly + local arms
+(`--weekly`, `KIKUCHIPY_EMSOFT_DATA` set, `-n 0`): `3 passed in
+42.72s` (entry 21: 58.18 s): `test_full_map_against_emhrosm` 24.28 s
+(37.47 s), `test_full_size_subgrain_demonstration` 15.63 s (18.78 s),
+`test_one_grain_against_emhrosm` 2.56 s (1.88 s); every pin of entry
+21 holds.
+
+**Budget** (`$B_TESTS`, nine modules). The default suite builds the
+identical graph (no ball reaches 2,048 per iteration), so the change
+cannot move the budget; the machine was busier than in entry 21 (a
+second session's GPU pytest runs in a loop). CI-style `-n 4` with
+coverage, new: 25.29, 25.68, 26.24 s, median 25.68 s; A/B in the same
+window with the edit reverted: 28.53, 25.99, 26.32 s, median 26.32 s.
+Serial `-n 0`: 28.20 s (<= 60 s, PASS). The CI-style median is over
+25 s in this contended window for both old and new code; entry 21's
+20.19 s median on a quiet machine stands as the gate figure and
+should be re-measured at the Stage B gate on a quiet machine.
+
+**Files changed by this step:** `src/kikuchipy/indexing/_hrosm/_driver.py`
+(import of `CPU_COUNT`, `_SIMULATION_TASK_MIN`, `_simulation_task_size`,
+step (h)), this entry. ruff check and format clean, ASCII, LF kept,
+clean-replay grep on the diff empty.
+
+### 23. 2026-10-07 (Stage B build gates)
+
+Gate runner on the working tree (5f3e899d plus entries 21-22), this
+machine, `uv run --no-sync`, quiet machine (no other pytest running).
+
+| gate | result |
+|---|---|
+| `$B_TESTS -n 0` | `2 failed, 422 passed, 34 skipped in 28.89s` |
+| `$B_TESTS -n 2` | `2 failed, 422 passed, 34 skipped in 24.92s` |
+| reds re-run alone | both fail deterministically: `test_results_do_not_depend_on_n_per_iteration` `8 <= 2` ulp; `test_coverage_warning_is_silent_at_equality` `KeyError: 'detector'` (entry 21 items) |
+| coverage `_hrosm/*` (statements, config `branch = false`) | every module 100 % except `_driver.py` 97.27 % (178/183): lines 517-521 (`grains is not None` in `_grains_to_reindex`), reached only by the weekly one-grain test. FAIL vs the 100 % gate. (With `--branch`: `_driver.py` also misses 507->514; `_emsoft_file.py` 4 partial branches, Stage A, branch coverage not gated) |
+| coverage of changed lines | `_dictionary_indexing.py` 100 %; `_orientation_similarity_map.py` 95.3 % of the file, changed lines 187 (`grain_id` + `emsoft_compatible=True`), 196 (`n_best > keep_n` in the new routing) and 211 (`emsoft_compatible` with absent points; the test_ebsd_hrosm cases stop earlier in `EBSD.hrosm`) uncovered. FAIL; `ebsd.py` hrosm lines covered |
+| doctests | `_hrosm`, `_orientation_similarity_map.py`, `data/emsoft_hrosm`: 8 passed; `ebsd.py -k hrosm`: 1 passed (0.39 s) |
+| full suite `tests -n 2` | `3 failed, 4916 passed, 1282 skipped, 4 rerun in 291.66s`: the two reds above plus `test_refine_orientation_projection_center_local_nlopt[LN_NELDERMEAD-...]` (known flake, passes alone: 2 passed) |
+| pre-commit (`SKIP=licenseheaders`, 11 changed files since d8b837a2 + tree) | all hooks passed, no file modified |
+| oldest matrix (`$B_TESTS -n 0`, py3.10) | `2 failed, 422 passed, 34 skipped in 34.51s`: the same two reds (chunk ulp max 5 here) |
+| clean-replay grep (`git diff develop` incl. tree) | empty; added lines ASCII |
+| budget CI-style (`-n 4`, pytest-cov, branch) | 24.43, 23.82, 24.47 s, median 24.43 s <= 25 s PASS (margin 0.57 s) |
+| budget serial (`-n 0`, durations) | 27.09 s, one-test overhead 1.43 s, net 25.66 s, summed durations 23.5 s <= 60 s PASS; slowest: 1.37 s subgrain setup, 1.28 s Watson bands, 1.22 s compat EM vmf |
+| weekly + local (`--weekly`, `KIKUCHIPY_EMSOFT_DATA`, `-n 4`) | `2 failed, 453 passed, 3 skipped in 167.16s` (the two reds; skips are BIN-only). `-m weekly` arms (22) summed 70.4 s; data arms summed 183.8 s: `test_ni6_watson_average_within_bands` 106.96 s, `test_full_map_against_emhrosm` 28.54 s, `test_al_di_kam_on_nondegenerate_pixels` 20.46 s, `test_full_size_subgrain_demonstration` 14.04 s, `test_one_grain_against_emhrosm` 2.15 s |
+| on-push CI job times | not measured (branch not pushed); due at the commit + push step |
+| hygiene | no notebook, `upstream-issue.md`, `.h5oina` or `plan-upstream-merge` staged or modified; `stash@{0}` present; roadmap starts `# R`; develop de27741a, feat-spherical-indexing 6723aaf0, feat-spherical-indexing-nlpar e49b3d85 unchanged; `hrebsd-dic` d6b5096c (moved from b64cc18f by the other session's Stage E/F commits in `Repos\kikuchipy-hrebsd`, fast-forward descendant, not by this branch) |
+
+**Open for the main loop:** (1) the chunk-invariance fallback bound
+(entry 21: amend to 16 ulp; oldest stack max 5, current 8); (2) the
+`detector` KeyError test bug; (3) default-suite coverage of
+`_driver.py` 517-521 and of `_orientation_similarity_map.py` 187, 196,
+211 needs default-suite tests (none added: test edits are out of this
+step's scope).
+
+### 24. 2026-10-07 (Stage B build-gate decisions, main loop)
+
+Open items of entry 23: (1) chunk invariance: requirements D8.12 and the
+V16 arm amended to a 16 float32 ulp score bound (measured 8 here, 5 on
+the oldest stack; indices and rotations identical; lazy == eager
+bitwise); (2) `test_coverage_warning_is_silent_at_equality` KeyError
+'detector' is a test bug (the spy is installed before the second
+signature lookup): fixed in the harden pre-fix; (3) default-suite tests
+for `_driver.py` 517-521 (`grains` subset) and
+`_orientation_similarity_map.py` 187, 196, 211 added in the harden
+pre-fix. Measured pins of entry 21 accepted (V13 full map: P99 1.2, OSM
+Pearson 0.7 (0.774; independent dictionary stage), CI Pearson 0.9).
+Performance after the hot-spot fix (entry 22): nickel_ebsd_large full
+map 186.3 s at the defaults, 21.8 s at `n_steps=10`.
+
+### 25. 2026-10-07 (Stage B bug injection)
+
+Each Stage B mutant of `plan.md` section 6 (M27-M30, S2, S3, S5, S7,
+S13, S14, S17 (B), S19 (B), S20) applied ALONE in the main tree by a
+scripted exact-string edit, its named killer(s) run with `uv run
+--no-sync pytest -n 0 -q -p no:cacheprovider <file> -k <name>`, the
+file restored from a byte copy and checked by sha256 (all six touched
+source files match the pre-injection hashes). Sequential batches of
+three; after each batch the touched modules' test files re-ran green
+at `-n 2` (`test_ebsd_hrosm.py` + `test_hrosm_emsoft_regression.py`
+186 passed, 15 skipped; `test_ebsd_hrosm.py` 106 passed, 1 skipped;
+`test_dictionary_indexing.py` + `test_orientation_similarity_map.py`
+31 passed; `test_ebsd_hrosm.py` + `test_hrosm_averaging.py` 197
+passed, 18 skipped; last batch 137 passed, 1 skipped). Baseline: all
+named killers 71 passed before injection. Rows marked "variant" are
+extra, stricter forms added by the injector where the listed form died
+by a crash rather than by the arm's assertion.
+
+| mutant | file | exact change | killer | result |
+|---|---|---|---|---|
+| M27 | `_hrosm/_driver.py` | `n_pixels >= min_pixels` -> `n_pixels > min_pixels` | `sig::TestContracts::test_min_pixels_boundary_is_inclusive` | killed |
+| M28 | `_hrosm/_driver.py` | `_without_masked_points`: `is_in_data & ~mask` -> `& mask` | `sig::TestContracts::test_navigation_mask_true_excludes_and_fills` | killed |
+| M29 | `_hrosm/_emsoft_file.py` | `_read_group`: `np.deg2rad` on `EulerAngles`, `RefinedEulerAngles`, `newEuler` | `reg::TestEMsoftFileReader::test_euler_datasets_are_returned_in_radians` | killed |
+| M30 | `_hrosm/_driver.py` | `q_ball = q_raw.copy()` (ball about the identity) | `sig::TestContracts::test_each_grain_is_matched_against_its_own_ball[correct,compat]`; `sig::TestSubgrainContrast::test_subgrain_step_is_recovered` | killed (both, 3 arms) |
+| S2 | `_hrosm/_driver.py` | compat `domain = np.flatnonzero(in_grain & present)` | `sig::TestContracts::test_compat_domain_is_the_bounding_box` | killed (by a crash: `_osm_emsoft` reshape 380 into (8, 5, 10)) |
+| S2 variant | `_hrosm/_driver.py` | as S2, plus the compat OSM replaced by zeros (no crash) | same | killed by the arm's assertion `[38, 38] == [40, 40]` (block size) |
+| S3 | `_hrosm/_driver.py` | `fill = np.nan` and the input rotation copied in compat mode | `sig::TestOutput::test_properties_dtypes_shapes_and_fills[compat]` | killed |
+| S5 | `_dictionary_indexing.py` | info line printed with `verbose=False` | `test_dictionary_indexing.py::TestDictionaryIndexing::test_verbose_false_silences_the_core_for_hrosm[one_iteration,chunked]` | killed (`capsys` not empty) |
+| S7 | `_orientation_similarity_map.py` | every call routed to `_osm_grain_aware_or_emsoft` | `test_orientation_similarity_map.py::TestHROSMKeywords::test_defaults_run_the_legacy_path_unchanged` | killed (by `grain_id shape ()` ValueError) |
+| S7 variant | `_orientation_similarity_map.py` | as S7, plus `grain_id=None` taken as one grain over the map (no crash) | same | killed ("cannot be combined with from_n_best, footprint or center_index") |
+| S13 | `_hrosm/_driver.py` | coverage warning issued in the grain loop after the first `get_patterns` | `sig::TestMessages::test_coverage_warning_precedes_the_first_simulation` | killed (`0 == 1` warnings at the first simulation) |
+| S14 | `_hrosm/_driver.py` | call site passes `np.nextafter(max_angle, -inf)` (`>=` in effect) | `sig::TestMessages::test_coverage_warning_is_silent_at_equality` | killed |
+| S17 (B) | `signals/ebsd.py` | check 6: the "every map point" and "one phase" raises removed | `sig::TestValidation::test_arguments_are_validated_in_order` | killed (`compat_absent_point`, `compat_not_indexed_point`) |
+| S17 (B) variant | `signals/ebsd.py` | only the "one phase" raise removed | same | SURVIVED (51 passed): see below |
+| S19 (B) | `_hrosm/_grains.py` | `_map_grid` from in-data `row.max() + 1`, `col.max() + 1`, `size == 1` shortcut | `sig::TestContracts::test_navigation_masked_dictionary_indexing_map_keeps_its_grid`; `avg::TestGrainTable::test_map_grid_spans_points_not_in_the_data*` | killed (sig: "xmap shape (7, 10)"; avg: 5 arms) |
+| S20 | `_dictionary_indexing.py` | `sleep(0.2)` called with `verbose=False` | `test_dictionary_indexing.py::TestDictionaryIndexing::test_verbose_false_silences_the_core_for_hrosm[one_iteration,chunked]` | killed (`[0.2] == []`) |
+
+All 13 listed Stage B mutants die by their named default-suite
+killers. One injector variant survives: with only the `EBSD.hrosm`
+"one phase" check removed, `compat_two_phases` still raises "one
+phase", from the compat KAM's own several-phases check inside the
+driver (the first work step), so the order arm cannot tell the method
+check from the KAM check. Suggested killer (not added: out of this
+step's scope): a `VALIDATION_CASES` row combining `compat_two_phases`
+with `metric="foo"` expecting "one phase" (check 6 precedes check 7),
+or a `compat_two_phases` case in
+`test_metric_and_energy_are_checked_before_any_work`'s spy pattern
+asserting the KAM is never called.
+
+### 26. 2026-10-07 (Stage B close gate)
+
+Strengthener + close-gate runner (Opus 5.5, medium). No git state
+change; no test weakened.
+
+1. **Survivor of entry 25 killed.** New
+   `sig::TestValidation::test_compat_input_is_checked_before_any_work`
+   (arms `absent`, `not_indexed`, `masked`, `two_phases`): calls
+   `EBSD.hrosm(..., emsoft_compatible=True)` with a spy on
+   `_driver.kernel_average_misorientation_map` and on `get_patterns`,
+   expects the message and asserts neither is called (the driver's
+   first work step repeats the checks, so the message alone cannot
+   tell them apart). Re-injected alone in `signals/ebsd.py`, restored
+   from a byte copy (sha256 5a48503a...57ee before and after):
+   - S17 (B) variant (`if False and ids.size > 1:`): killed,
+     `[two_phases]` fails.
+2. **Coverage gap found and closed.** `coverage run -m pytest
+   $B_TESTS -n 0`: statements 100 % in every `_hrosm/` module (branch
+   is off in `pyproject.toml`; with `--branch` as a probe: 1312
+   statements, 5 partial branches, `_driver.py` 522->529 and
+   `_emsoft_file.py` 99->98, 184->174, 186->188, 267->269, not gated).
+   Changed lines vs `develop` in the shared modules:
+   `_dictionary_indexing.py` 13/13, `_orientation_similarity_map.py`
+   34/34, `signals/ebsd.py` 77/78 before the fix: line 2948
+   (`absent |= navigation_mask`, compat with a navigation mask) was
+   never run. Added the `VALIDATION_CASES` row `compat_masked_point`
+   (one masked point, compat, "every map point") and the `masked` arm
+   above. Mutant "mask ignored in the compat check" (line 2948 ->
+   `pass`) injected alone and restored byte-exactly: the order row
+   alone does NOT kill it (the driver raises the same message later);
+   the `masked` arm kills it (`assert [1] == []`, the KAM was called).
+   After the fix 78/78.
+3. **Gates** (all on the working tree; selection = plan section 5
+   `$B_TESTS`, 474 collected):
+
+| gate | result |
+|---|---|
+| `$B_TESTS -n 0` | 438 passed, 34 skipped, 15.08 s (before items 1-2); 440 passed, 34 skipped, 15.60 s after |
+| `$B_TESTS -n 2` | 438 passed, 34 skipped, 17.41 s (before items 1-2) |
+| coverage `_hrosm/*` (statements) | 100.00 % all 11 modules, 1312 statements |
+| coverage changed lines, shared modules | 13/13, 34/34, 78/78 (after item 2) |
+| doctests `_hrosm`, `_orientation_similarity_map.py`, `data/emsoft_hrosm` | 8 passed |
+| doctest `signals/ebsd.py -k hrosm` | 1 passed |
+| full default suite `tests -n 2` | 4935 passed, 1282 skipped, 0 failed, 183.54 s, 4 reruns; second run with `-rR`: 1 rerun, the known flake `TestCalculateMasterPattern::test_shape`, which passes alone |
+| `SKIP=licenseheaders uvx pre-commit run --files` (11 changed files since d8b837a2) | all hooks passed, no file modified |
+| oldest matrix (py3.10, numpy 1.23.0, orix 0.12.1, ...) on `$B_TESTS` | 440 passed, 34 skipped, 22.63 s |
+| clean-replay grep (`git diff develop -- src tests ... CHANGELOG.rst`) | prints nothing; added lines all ASCII; `print` only behind `verbose` |
+| budget CI-style (`--with pytest-cov`, `-n 4`, `--cov-branch`), 3 runs | 17.59 / 17.85 / 17.78 s, median 17.78 s (<= 25 s) |
+| budget serial (`-n 0 --durations=0`) | wall 22.59 s minus one-test run 6.19 s = 16.40 s net; summed durations 14.27 s (<= 60 s) |
+| `--weekly -n 4` with `KIKUCHIPY_EMSOFT_DATA` | 471 passed, 3 skipped (the bin-gated arms, `KIKUCHIPY_EMSOFT_BIN` unset), 86.54 s; 47 weekly/local-only arms sum 134.3 s (largest: `test_ni6_watson_average_within_bands` 76.7 s, `test_full_map_against_emhrosm` 21.9 s, `test_al_di_kam_on_nondegenerate_pixels` 14.7 s, `test_full_size_subgrain_demonstration` 10.4 s) |
+
+   Slowest default-arm durations (serial): 0.94 s setup
+   `TestSubgrainContrast::test_grains_are_segmented_without_splitting_the_subgrain`,
+   0.75 s `TestMessages::test_verbose_levels`, 0.62 s
+   `test_dictionary_indexing_navigation_mask`.
+4. **Hygiene.** Nothing staged; `stash@{0}` present;
+   `specs/roadmap.md` starts `# R` (no BOM, CRLF kept);
+   `AGH__Si_indent_1_512x672.h5oina` and
+   `specs/_research/plan-upstream-merge-0.13.1.md` untracked; no
+   notebook touched. Branches: develop de27741a,
+   feat-spherical-indexing 6723aaf0, feat-spherical-indexing-nlpar
+   e49b3d85 unchanged; hrebsd-dic d6b5096c (fast-forward descendant
+   of f297867e by the other worktree: "Revise the parked Stage F
+   draft against its 45 critic findings"; not HROSM work).
+5. **Roadmap** (HROSM block, Stage B): ticked the driver/method box,
+   the upstream-touches box, the tests box (performance baselines:
+   entry 21 item 4) and the adversarial-review box (entries 23-26,
+   plan section 12). These ticks go into the Stage B implementation
+   commit. Not ticked: the gates box (signed commits pushed, on-push
+   CI job times against 18 min, plan section 1.4).

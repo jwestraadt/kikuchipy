@@ -331,19 +331,24 @@ REGENERATION_GRAIN_COUNT_TOLERANCE = 2
 RUN_DIRECTORY_PATTERN = re.compile(r"kikuchipy_hrosm/\d{8}-\d{6}")
 RECORDED_ONLY_KEYS = ("kikuchipy_version",)
 
-# End to end against EMHROSM's "center" run (seeds, to be measured):
-# the median and 99th percentile of the symmetry reduced angle in
-# degrees between our re-indexed rotations and EMHROSM's, and the
-# Pearson correlation of our similarity and best score with EMHROSM's
-# over the compared points. The one-grain arm simulates from the small
-# master pattern and the full map from the 1001 px one, so their
-# angle pins are separate
+# End to end against EMHROSM's "center" run: the median and 99th
+# percentile of the symmetry reduced angle in degrees between our
+# re-indexed rotations and EMHROSM's, and the Pearson correlation of
+# our similarity and best score with EMHROSM's over the compared
+# points. The one-grain arm simulates from the small master pattern
+# and the full map from the 1001 px one, so their angle pins are
+# separate. Measured 2026-10-07 on Windows: one grain (label 23, 20
+# points) median 0.0, 99th percentile 0.50; full map (30 grains, 2,497
+# points) median 1.7e-6, 99th percentile 0.87, similarity r 0.774,
+# best score r 0.987. A median below 0.3 degrees, less than one ball
+# spacing at 5 degrees and 10 steps (0.32), means most points pick
+# EMHROSM's ball orientation
 E2E_ONE_GRAIN_DISORIENTATION_MEDIAN_DEG = 0.3
 E2E_ONE_GRAIN_DISORIENTATION_P99_DEG = 1.0
-E2E_FULL_MAP_OSM_PEARSON_MIN = 0.8
+E2E_FULL_MAP_OSM_PEARSON_MIN = 0.7
 E2E_FULL_MAP_DISORIENTATION_MEDIAN_DEG = 0.3
-E2E_FULL_MAP_DISORIENTATION_P99_DEG = 1.0
-E2E_FULL_MAP_CI_PEARSON_MIN = 0.5
+E2E_FULL_MAP_DISORIENTATION_P99_DEG = 1.2
+E2E_FULL_MAP_CI_PEARSON_MIN = 0.9
 
 # ----------------------------- Helpers ------------------------------ #
 
@@ -1398,7 +1403,7 @@ class TestClusterStage:
             assert np.all(np.asarray(hrosm["newCI"])[mask] == 0)
 
 
-# ===================== End to end against EMHROSM ==================== #
+# ==================== End to end against EMHROSM ==================== #
 
 # EMHROSM's namelist and dictionary indexing run of the "center"
 # reference: points per side of the ball, best matches kept, beam

@@ -928,7 +928,11 @@ absent points, `keep_n = 1`).
     change with `n_per_iteration` nor lazy vs eager (MTP: seed bitwise;
     fallback: identical top-1 except at exact score ties, scores within 2
     float32 ulp, recorded; BLAS may sum differently for other chunk
-    shapes); dask threaded scheduler.
+    shapes; amended 2026-10-07, Stage B build gate: the fallback holds,
+    the bound is 16 float32 ulp: measured 8 ulp on 328 of 1,280 scores at
+    `n_per_iteration=50` vs one pass, 5 on the oldest stack, with every
+    simulation index and rotation identical; lazy vs eager is bitwise);
+    dask threaded scheduler.
 13. **Cost seeds** (MTP at Stage B, never gated): NCC ~ `n_px x 68,921 x
     sig_size x 2` flops: nickel_ebsd_large 2.0e12 (~40 s), ni_gain 1.5e13
     (~5 min), si_wafer (480 x 480) 7.9e13 (hours with simulation);

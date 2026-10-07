@@ -191,10 +191,10 @@ and keeps the CHANGELOG gate (it ships a tutorial).
 - [x] Gates: `-n 0` then `-n 4` (red tests re-run alone), full suite, doctests, `SKIP=licenseheaders` pre-commit on explicit files, oldest-matrix recipe, clean-replay grep, default-suite budget measured; CHANGELOG "Added" bullet with the fork PR link; signed commits pushed (the failing-tests commit never alone)
 
 ## Stage B -- per-grain re-indexing and `EBSD.hrosm()`
-- [ ] `src/kikuchipy/indexing/_hrosm/_driver.py` and `EBSD.hrosm()` directly after `dictionary_indexing` in `signals/ebsd.py` (validation order, absent points, grains per phase, the ball composed per grain, eager experimental block, chunked lazy dictionary, `pc="grain"|"single"`, `verbose` 0/1/2, the GROD coverage warning before any simulation, warnings, one output `CrystalMap` with the documented props)
-- [ ] Backwards-compatible upstream touches: `orientation_similarity_map(..., *, grain_id=None, emsoft_compatible=False)` (legacy path bitwise unchanged at the defaults) and `_dictionary_indexing(..., verbose=True)`
-- [ ] Tests: `tests/test_signals/test_ebsd_hrosm.py` (contracts, masks, PC policy, skips, `n_per_iteration` and lazy/eager invariance, determinism, warnings, physics sanity on a synthetic sub-grain map, end-to-end tolerance against the EMHROSM references: one grain weekly, full map local + weekly) and additions to `test_orientation_similarity_map.py` and `test_dictionary_indexing.py`; performance baselines recorded as local ledger runs, never gated
-- [ ] Adversarial review + bug injection (Stage B rows) + fixes; coverage 100 % of `_hrosm/` re-recorded
+- [x] `src/kikuchipy/indexing/_hrosm/_driver.py` and `EBSD.hrosm()` directly after `dictionary_indexing` in `signals/ebsd.py` (validation order, absent points, grains per phase, the ball composed per grain, eager experimental block, chunked lazy dictionary, `pc="grain"|"single"`, `verbose` 0/1/2, the GROD coverage warning before any simulation, warnings, one output `CrystalMap` with the documented props)
+- [x] Backwards-compatible upstream touches: `orientation_similarity_map(..., *, grain_id=None, emsoft_compatible=False)` (legacy path bitwise unchanged at the defaults) and `_dictionary_indexing(..., verbose=True)`
+- [x] Tests: `tests/test_signals/test_ebsd_hrosm.py` (contracts, masks, PC policy, skips, `n_per_iteration` and lazy/eager invariance, determinism, warnings, physics sanity on a synthetic sub-grain map, end-to-end tolerance against the EMHROSM references: one grain weekly, full map local + weekly) and additions to `test_orientation_similarity_map.py` and `test_dictionary_indexing.py`; performance baselines recorded as local ledger runs, never gated
+- [x] Adversarial review + bug injection (Stage B rows) + fixes; coverage 100 % of `_hrosm/` re-recorded
 - [ ] Gates as Stage A; CHANGELOG bullet extended with `EBSD.hrosm()` and the two keywords; signed commits pushed
 
 ## Stage C -- tutorial

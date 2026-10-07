@@ -1596,3 +1596,33 @@ Spec clarifications recommended (not made; the fixes follow the
 existing text): D5.6 could name the compat Rodrigues round trip
 (last-bit change, identity snap below a 1e-10 vector norm); D5.2 could
 say compat `"mean"` uses the correct-mode inputs and operators.
+
+## 12. Stage B code-review disposition table (2026-10-07, fixer)
+
+Nine surviving findings (all minor; none refuted by both skeptics, C6
+refuted by one). Each was re-verified against the working tree before
+editing. The new killers were run against the pre-fix code with the
+fix lines replaced by `pass` and failed there (stale mask arm 1,
+before-work arms 2; the tiling arm cannot import the pre-fix
+helper), restored after. HROSM selection `-n 0`: 435 passed, 34
+skipped in 14.31 s; CI-style `-n 4` with pytest-cov, branch: 15.46,
+14.52, 14.65 s (median 14.65 s <= 25 s); `_hrosm` and
+`_orientation_similarity_map` doctests 8 passed, `ebsd.py -k hrosm`
+1 passed; ruff check and format clean.
+
+| id | severity | disposition | one line |
+|---|---|---|---|
+| F1 | minor | fixed | Driver sets `metric.navigation_mask = None` after `_prepare_metric` (D8 step 5 "no navigation mask"); killer `TestContracts::test_stale_navigation_mask_of_a_metric_is_not_applied` (NCC instance with a map-sized mask; a spy on the matching core asserts mask None and metric size = block size, then stops) |
+| F2 | minor | fixed | `_simulation_task_size` replaced by `_simulation_chunks(ball_size, n_per_iteration)`: explicit task sizes tiling every iteration chunk (at most one per CPU, >= 1,024 unless single, near equal), passed as `chunk_shape`; results unchanged (per-pattern projection; chunk invariance arms green); test `TestInvariance::test_simulation_tasks_tile_each_iteration_chunk` (4 cases incl. 68,921 / 17,777 at 16 CPUs) |
+| F3 | minor | fixed | `EBSD.hrosm` check 7, after the D1.5 checks 1-6: `_prepare_metric(metric, None, signal_mask, None, False, ball_size)` and `master_pattern._get_master_pattern_arrays_from_energy(energy)`; killer `TestValidation::test_metric_and_energy_are_checked_before_any_work[metric, energy]` (no grain large enough; spies assert KAM and simulation never called); validation cases `metric_unknown`, `compat_before_metric` |
+| C1 | minor | fixed | `EBSD.hrosm` Raises lists `NotImplementedError` for a master pattern not in the Lambert projection, and ValueError now names the metric and energy |
+| C2 | minor | fixed | Same root cause and fix as F3: an invalid metric now raises ValueError even when no grain is re-indexed |
+| C3 | minor | fixed | `orientation_similarity_map` Returns describes the (n rows, n columns) float32 never-squeezed output of the new paths; Raises section added (n_best, keyword combinations, compat points, grain_id); `versionchanged:: 0.14` note |
+| C4 | minor | fixed | Banner comments shortened to 72 characters (11 in `test_ebsd_hrosm.py`, 1 each in `test_orientation_similarity_map.py` and `test_hrosm_emsoft_regression.py`) |
+| C5 | minor | fixed | `OUTPUT_PROPS` comment says "keep_n", 4 for quaternions, otherwise None |
+| C6 | minor | fixed | Kept `_KEYWORD_DEFAULTS` (the merge base of the driver's `**keywords`); `test_signatures_are_frozen` now asserts it equals the keyword-only defaults of `EBSD.hrosm` |
+
+Spec clarification recommended (not made; the fix adds a check after
+the listed ones and changes no listed behaviour): D1.5 could list a
+check 7, "metric (as `dictionary_indexing`) and master-pattern energy,
+before any work", so the ordered list matches the code.

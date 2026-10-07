@@ -57,6 +57,10 @@ from kikuchipy.indexing._hough_indexing import (
     _phase_lists_are_compatible,
 )
 from kikuchipy.indexing._hrosm._driver import _hrosm
+from kikuchipy.indexing._hrosm._emsoft_quaternions import (
+    emsoft_point_group_number as _emsoft_point_group_number,
+)
+from kikuchipy.indexing._hrosm._grains import _map_grid as _hrosm_map_grid
 from kikuchipy.indexing._refinement._refinement import (
     _refine_orientation,
     _refine_orientation_pc,
@@ -2714,11 +2718,14 @@ class EBSD(KikuchipySignal2D):
         Raises
         ------
         ValueError
-            If the signal, map, master pattern, detector, masks or
-            keyword values are incompatible or out of range, or if
-            ``emsoft_compatible=True`` is combined with points not in
-            the data, several phases, ``pc="grain"`` with one PC per
-            point, or a point group without an EMsoft equivalent.
+            If the signal, map, master pattern, detector, masks,
+            metric, energy or keyword values are incompatible or out
+            of range, or if ``emsoft_compatible=True`` is combined with
+            points not in the data, several phases, ``pc="grain"`` with
+            one PC per point, or a point group without an EMsoft
+            equivalent.
+        NotImplementedError
+            If ``master_pattern`` is not in the Lambert projection.
 
         Warns
         -----
@@ -2799,9 +2806,168 @@ class EBSD(KikuchipySignal2D):
         KAM differences, and only one master pattern is used: on a map
         with several phases, the grains of the phase with the master
         pattern's name are re-indexed.
+
+        Examples
+        --------
+        Re-index the grains of the small nickel dataset against a ball
+        of 125 orientations within 5 degrees of each grain's mean
+        orientation
+
+        >>> import warnings
+        >>> import kikuchipy as kp
+        >>> s = kp.data.nickel_ebsd_small()
+        >>> mp = kp.data.nickel_ebsd_master_pattern_small(
+        ...     projection="lambert", hemisphere="both"
+        ... )
+        >>> with warnings.catch_warnings():
+        ...     warnings.simplefilter("ignore", UserWarning)
+        ...     out = s.hrosm(
+        ...         s.xmap,
+        ...         mp,
+        ...         s.detector,
+        ...         energy=20,
+        ...         n_steps=2,
+        ...         keep_n=5,
+        ...         n_osm=5,
+        ...         min_pixels=2,
+        ...         verbose=0,
+        ...     )
+        >>> bool(out.prop["reindexed"].any())
+        True
+        >>> out.prop["osm"].dtype
+        dtype('float32')
         """
-        # TODO: validate the input before calling the driver, and add a
-        # short example on the small nickel dataset to the docstring
+        # 1. The map's grid against the navigation shape
+        nav_shape = tuple(self.axes_manager.navigation_shape[::-1])
+        if len(nav_shape) != 2:
+            raise ValueError(
+                f"The signal must have two navigation dimensions, not {len(nav_shape)}"
+            )
+        _, grid_shape = _hrosm_map_grid(xmap)
+        if tuple(grid_shape) != nav_shape:
+            raise ValueError(
+                f"The xmap shape {tuple(grid_shape)}, over all its points in the "
+                f"data or not, must equal the navigation shape {nav_shape}; pass "
+                "the unsliced signal of a sliced crystal map"
+            )
+
+        # 2. Master pattern and detector
+        master_pattern._is_suitable_for_projection(raise_if_not=True)
+        sig_shape = tuple(self.axes_manager.signal_shape[::-1])
+        if tuple(detector.shape) != sig_shape:
+            raise ValueError(
+                f"The detector shape {tuple(detector.shape)} must equal the signal "
+                f"shape {sig_shape}"
+            )
+        if detector.navigation_shape not in ((1,), nav_shape):
+            raise ValueError(
+                "The detector must have one PC or one PC per map point, navigation "
+                f"shape (1,) or {nav_shape}, not {detector.navigation_shape}"
+            )
+
+        # 3. Numbers
+        def is_real(value) -> bool:
+            return not isinstance(value, bool) and isinstance(value, numbers.Real)
+
+        def is_int(value) -> bool:
+            return not isinstance(value, bool) and isinstance(value, (int, np.integer))
+
+        if not is_real(threshold) or not 0 < threshold < np.inf:
+            raise ValueError(f"threshold {threshold!r} must be a finite number > 0")
+        if not is_real(max_angle) or not 0 < max_angle < 180:
+            raise ValueError(f"max_angle {max_angle!r} must be a number in (0, 180)")
+        for name, value in [("n_steps", n_steps), ("keep_n", keep_n)]:
+            if not is_int(value) or value < 1:
+                raise ValueError(f"{name} {value!r} must be an integer of at least 1")
+        if not is_int(n_osm) or not 1 <= n_osm <= keep_n:
+            raise ValueError(
+                f"n_osm {n_osm!r} must be an integer in [1, keep_n = {keep_n}]"
+            )
+        ball_size = (2 * n_steps + 1) ** 3
+        if keep_n > ball_size:
+            raise ValueError(
+                f"keep_n {keep_n} must be at most the ball size (2 n_steps + 1)**3 "
+                f"= {ball_size}"
+            )
+        for name, value in [("n_em", n_em), ("n_iter", n_iter)]:
+            if not is_int(value) or value < 1:
+                raise ValueError(f"{name} {value!r} must be an integer of at least 1")
+        if not is_real(min_kappa) or not min_kappa >= 0:
+            raise ValueError(f"min_kappa {min_kappa!r} must be a number of at least 0")
+        if not is_int(min_pixels) or min_pixels < 1:
+            raise ValueError(
+                f"min_pixels {min_pixels!r} must be an integer of at least 1"
+            )
+        if n_per_iteration is not None and (
+            not is_int(n_per_iteration) or n_per_iteration < 1
+        ):
+            raise ValueError(
+                f"n_per_iteration {n_per_iteration!r} must be None or an integer of "
+                "at least 1"
+            )
+        if not is_int(verbose) or verbose not in (0, 1, 2):
+            raise ValueError(f"verbose {verbose!r} must be 0, 1 or 2")
+
+        # 4. Options
+        averages = ("mean", "center", "vmf", "watson")
+        if not isinstance(average, str) or average not in averages:
+            raise ValueError(f"average {average!r} must be one of {averages}")
+        if not isinstance(pc, str) or pc not in ("grain", "single"):
+            raise ValueError(f"pc {pc!r} must be 'grain' or 'single'")
+
+        # 5. Masks
+        for label, mask, shape in [
+            ("navigation", navigation_mask, nav_shape),
+            ("signal", signal_mask, sig_shape),
+        ]:
+            if mask is None:
+                continue
+            if not isinstance(mask, np.ndarray):
+                raise ValueError(f"The {label} mask must be a NumPy array")
+            if mask.dtype != bool:
+                raise ValueError(f"The {label} mask must be boolean, not {mask.dtype}")
+            if mask.shape != shape:
+                raise ValueError(
+                    f"The {label} mask shape {mask.shape} must equal the {label} "
+                    f"shape {shape}"
+                )
+            if label == "navigation" and mask.all():
+                raise ValueError(
+                    "The navigation mask must allow at least one pattern to be used "
+                    "(at least one value equal to False)"
+                )
+
+        # 6. The EMsoft compatible input
+        if emsoft_compatible:
+            grid, _ = _hrosm_map_grid(xmap)
+            phase_id = np.full(grid.shape, -1, dtype=np.int64)
+            in_data = grid >= 0
+            phase_id[in_data] = np.asarray(xmap.phase_id).ravel()[grid[in_data]]
+            absent = phase_id < 0
+            if navigation_mask is not None:
+                absent |= navigation_mask
+            if absent.any():
+                raise ValueError(
+                    "emsoft_compatible requires every map point to be in the data, "
+                    f"indexed and not masked, but {int(absent.sum())} are not"
+                )
+            ids = np.unique(phase_id)
+            if ids.size > 1:
+                raise ValueError(
+                    "emsoft_compatible requires one phase, but the map has "
+                    f"{ids.size} phases"
+                )
+            if detector.navigation_shape != (1,) and pc == "grain":
+                raise ValueError(
+                    "emsoft_compatible with one PC per map point requires pc='single'"
+                )
+            # Raises if EMsoft has no matching point group
+            _ = _emsoft_point_group_number(xmap.phases[int(ids[0])].point_group)
+
+        # 7. The metric and the master pattern energy, before any work
+        _ = self._prepare_metric(metric, None, signal_mask, None, False, ball_size)
+        _ = master_pattern._get_master_pattern_arrays_from_energy(energy)
+
         return _hrosm(
             self,
             xmap,

@@ -68,7 +68,7 @@ class TestOrientationSimilarityMap:
         assert osm.shape == (10, 10, 4)
 
 
-# ----------------- Grain-aware and EMsoft compatible ----------------- #
+# ----------------- Grain-aware and EMsoft compatible ---------------- #
 
 
 def _osm_crystal_map(
@@ -320,3 +320,25 @@ class TestHROSMKeywords:
         assert osm_compat.shape == shape
         assert osm_compat.dtype == np.float32
         np.testing.assert_array_equal(osm_compat, _osm_emsoft(values[:, None], 1, 6, 1))
+
+    def test_new_path_rejects_invalid_combinations(self, hrosm_top_lists):
+        shape = (5, 8)
+        lists = hrosm_top_lists(shape) - 1
+        xmap = _osm_crystal_map(lists, shape)
+        with pytest.raises(ValueError, match="grain_id cannot be combined with"):
+            kp.indexing.orientation_similarity_map(
+                xmap, grain_id=_two_grain_id(shape), emsoft_compatible=True
+            )
+        for keywords in (
+            {"grain_id": _two_grain_id(shape)},
+            {"emsoft_compatible": True},
+        ):
+            with pytest.raises(ValueError, match="n_best 11 cannot be greater"):
+                kp.indexing.orientation_similarity_map(xmap, n_best=11, **keywords)
+
+        # A point not in the data has no EMsoft compatible map
+        is_in_data = np.ones(lists.shape[0], dtype=bool)
+        is_in_data[3] = False
+        sparse = _osm_crystal_map(lists, shape, is_in_data=is_in_data)
+        with pytest.raises(ValueError, match="emsoft_compatible requires every"):
+            kp.indexing.orientation_similarity_map(sparse, emsoft_compatible=True)

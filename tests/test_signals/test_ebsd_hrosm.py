@@ -70,37 +70,48 @@ from kikuchipy.indexing._hrosm._grains import _map_grid
 from kikuchipy.indexing._hrosm._osm import _osm_emsoft, _osm_grain_aware
 from kikuchipy.signals import EBSD, EBSDMasterPattern
 
-# ------------------- Measured pins (sub-grain contrast) -----------------
+# ----------------- Measured pins (sub-grain contrast) -----------------
 
 # Smallest HROSM contrast, the median orientation similarity of points
 # one and two columns from the sub-grain boundary minus that of the
-# two boundary columns, of 10 (seed 3.0)
-SUBGRAIN_CONTRAST_MIN = 3.0
+# two boundary columns, of 10 (measured 2026-10-07: 2.25; seed 3.0).
+# Shells 0.25 degrees apart resolve the 0.5 degree step as a dip to
+# about 7 of 10
+SUBGRAIN_CONTRAST_MIN = 1.5
 # Smallest ratio of the HROSM contrast over the global dictionary's
-# contrast, the latter floored at 0.5 (seed 2.0)
-SUBGRAIN_CONTRAST_RATIO = 2.0
+# contrast, the latter floored at 0.5 (measured 2026-10-07: 2.0, the
+# global contrast 1.125; seed 2.0)
+SUBGRAIN_CONTRAST_RATIO = 1.5
 # Largest median disorientation in degrees of the re-indexed
 # orientations of grain A, away from the grain boundary, to the truth
-# (seed 0.15)
+# (measured 2026-10-07: 0.086; seed 0.15)
 SUBGRAIN_MEDIAN_ERROR_DEG = 0.15
 # Largest deviation in degrees of the median disorientation across the
-# sub-grain boundary from its true 0.5 degrees (seed 0.15)
+# sub-grain boundary from its true 0.5 degrees (measured 2026-10-07:
+# 0.008, the global dictionary's step 0.0; seed 0.15)
 SUBGRAIN_STEP_TOL_DEG = 0.15
-# The same four pins for the full size demonstration (seeds as above)
-SUBGRAIN_FULL_CONTRAST_MIN = 3.0
-SUBGRAIN_FULL_CONTRAST_RATIO = 2.0
+# The same four pins for the full size demonstration (measured
+# 2026-10-07: contrast 2.625, global 1.25, ratio 2.1, median error
+# 0.086, step deviation 0.008; seeds as above)
+SUBGRAIN_FULL_CONTRAST_MIN = 1.75
+SUBGRAIN_FULL_CONTRAST_RATIO = 1.5
 SUBGRAIN_FULL_MEDIAN_ERROR_DEG = 0.15
 SUBGRAIN_FULL_STEP_TOL_DEG = 0.15
 
 # Whether results are bitwise identical for any number of dictionary
 # patterns per iteration and for lazy and eager signals ("bitwise"),
 # or identical in the best match except at exact score ties with
-# scores within 2 float32 ulp ("fallback") (seed "bitwise")
-CHUNK_INVARIANCE = "bitwise"
-# Largest float32 ulp distance of scores in the fallback
-CHUNK_FALLBACK_MAX_ULP = 2
+# scores within a few float32 ulp ("fallback") (seed "bitwise";
+# measured 2026-10-07: lazy and eager bitwise, 50 patterns per
+# iteration identical in every simulation index with 328 of 1,280
+# scores up to 8 ulp off, as BLAS sums other chunk shapes differently;
+# 5 ulp on the oldest supported stack)
+CHUNK_INVARIANCE = "fallback"
+# Largest float32 ulp distance of scores in the fallback (measured 8
+# and 5, bound with a factor of two margin)
+CHUNK_FALLBACK_MAX_ULP = 16
 
-# ------------------------------- Constants ------------------------------
+# ------------------------------ Constants -----------------------------
 
 # Base map: two grains of 8 x 10 points with an orientation gradient of
 # 0.2 degrees per column
@@ -120,8 +131,9 @@ TRUTH_TOLERANCE_DEG = 0.5
 # Largest median disorientation in degrees of the re-indexed
 # orientations of a grain to the truth on the noise-free base map; the
 # nearest ball orientations are 0.10 degrees off in the median, the
-# input map 0.18 degrees, the grain average 0.2 degrees or more (seed
-# 0.15)
+# input map 0.18 degrees, the grain average 0.2 degrees (measured
+# 2026-10-07: largest grain median 0.125, the correct mode's 0.069 and
+# 0.125, the EMsoft compatible mode's 0.104 and 0.115; seed 0.15)
 TRUTH_MEDIAN_TOLERANCE_DEG = 0.15
 # Number of best matches compared by the orientation similarity map
 # and kept per point by default
@@ -144,7 +156,8 @@ VANISHING_SEED = 31
 VANISHING_THRESHOLD = 0.5
 
 # The ten properties of the output and their dtypes; the second entry
-# is True for properties with ``keep_n`` columns and 4 for quaternions
+# is "keep_n" for properties with ``keep_n`` columns, 4 for quaternions
+# and otherwise None
 OUTPUT_PROPS = {
     "osm": (np.float32, None),
     "scores": (np.float32, "keep_n"),
@@ -164,6 +177,9 @@ OPERATORS = Oh.proper_subgroup.data
 # re-indexing once keeps the default suite within its budget
 _CACHE: dict = {}
 
+# Signature of the unpatched simulation method
+_GET_PATTERNS_SIGNATURE = inspect.signature(EBSDMasterPattern.get_patterns)
+
 
 class _StopRun(Exception):
     """Raised by the simulation spy to stop a run at the first
@@ -171,7 +187,7 @@ class _StopRun(Exception):
     """
 
 
-# ------------------------------- Helpers --------------------------------
+# ------------------------------- Helpers ------------------------------
 
 
 def _axis_angle(axis, angle_deg) -> Rotation:
@@ -404,7 +420,9 @@ def _stop_at_first_simulation(monkeypatch, on_call=None) -> list:
     :class:`_StopRun`; return the list of recorded calls.
     """
     calls = []
-    signature = inspect.signature(EBSDMasterPattern.get_patterns)
+    # The signature of the original method, as a spy may be installed
+    # by a previous call within the same test
+    signature = _GET_PATTERNS_SIGNATURE
 
     def spy(self, *args, **kwargs):
         bound = signature.bind(self, *args, **kwargs)
@@ -423,7 +441,7 @@ def _record_simulations(monkeypatch) -> list:
     """
     calls = []
     original = EBSDMasterPattern.get_patterns
-    signature = inspect.signature(original)
+    signature = _GET_PATTERNS_SIGNATURE
 
     def spy(self, *args, **kwargs):
         bound = signature.bind(self, *args, **kwargs)
@@ -483,7 +501,7 @@ def _zero_signal(shape: tuple[int, ...]) -> EBSD:
     return EBSD(np.zeros(tuple(shape) + SIG_SHAPE, dtype=np.float32))
 
 
-# ------------------------------- Fixtures -------------------------------
+# ------------------------------ Fixtures ------------------------------
 
 
 @pytest.fixture
@@ -669,7 +687,7 @@ def _step_deg(rotations: np.ndarray, col_left: int, col_right: int) -> float:
     )
 
 
-# ----------------------------- Physics sanity ---------------------------
+# --------------------------- Physics sanity ---------------------------
 
 
 class TestSubgrainContrast:
@@ -758,7 +776,7 @@ class TestSubgrainContrast:
         assert abs(step - 0.5) <= SUBGRAIN_FULL_STEP_TOL_DEG
 
 
-# ------------------------------ Validation ------------------------------
+# ----------------------------- Validation -----------------------------
 
 P = inspect.Parameter.POSITIONAL_OR_KEYWORD
 K = inspect.Parameter.KEYWORD_ONLY
@@ -891,6 +909,12 @@ def _absent_one(shape=BASE_SHAPE) -> np.ndarray:
     return is_in_data
 
 
+def _masked_one(shape=BASE_SHAPE) -> np.ndarray:
+    navigation_mask = np.zeros(shape, dtype=bool)
+    navigation_mask[1, 1] = True
+    return navigation_mask
+
+
 def _not_indexed_one(shape=BASE_SHAPE) -> np.ndarray:
     phase_id = np.zeros(int(np.prod(shape)), dtype=np.int32)
     phase_id[11] = -1
@@ -955,6 +979,7 @@ VALIDATION_CASES = [
     ("verbose_bool", {"verbose": True}, "verbose"),
     ("average", {"average": "median"}, "average"),
     ("pc", {"pc": "point"}, "pc"),
+    ("metric_unknown", {"metric": "foo"}, "must be either of"),
     (
         "navigation_mask_list",
         {"navigation_mask": [[False] * 10] * 8},
@@ -998,6 +1023,14 @@ VALIDATION_CASES = [
         "compat_not_indexed_point",
         {
             "xmap": lambda: _one_phase_map(BASE_SHAPE, phase_id=_not_indexed_one()),
+            "emsoft_compatible": True,
+        },
+        "emsoft_compatible requires every map point",
+    ),
+    (
+        "compat_masked_point",
+        {
+            "navigation_mask": _masked_one(),
             "emsoft_compatible": True,
         },
         "emsoft_compatible requires every map point",
@@ -1050,6 +1083,15 @@ VALIDATION_CASES = [
         "navigation mask must be a NumPy array",
     ),
     (
+        "compat_before_metric",
+        {
+            "detector": _per_point_detector,
+            "emsoft_compatible": True,
+            "metric": "foo",
+        },
+        "pc='single'",
+    ),
+    (
         "all_true_mask_before_compat",
         {
             "navigation_mask": _nav_size_8x10_mask(True),
@@ -1070,6 +1112,87 @@ class TestValidation:
             names = [p[0] for p in actual]
             assert "show_progressbar" not in names, name
             assert "max_chunk_bytes" not in names, name
+        # The driver's fallback defaults are those of the method
+        defaults = {
+            p.name: p.default
+            for p in inspect.signature(EBSD.hrosm).parameters.values()
+            if p.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        assert _driver._KEYWORD_DEFAULTS == defaults
+
+    @pytest.mark.parametrize("case", ["metric", "energy"])
+    def test_metric_and_energy_are_checked_before_any_work(
+        self, base, monkeypatch, case
+    ):
+        # No grain is large enough to be re-indexed, so the metric and
+        # the energy are never used by the run itself
+        kwargs = {"min_pixels": 10**6}
+        mp = base.mp
+        if case == "metric":
+            kwargs["metric"] = "foo"
+            fragment = "must be either of"
+        else:
+            # Two energies, 20 and 21 kV, and one out of their range
+            mp = EBSDMasterPattern(
+                np.stack([base.mp.data, base.mp.data], axis=1),
+                projection=base.mp.projection,
+                hemisphere=base.mp.hemisphere,
+                phase=base.mp.phase,
+            )
+            axis = mp.axes_manager.navigation_axes[0]
+            axis.name, axis.offset, axis.scale = "energy", 20, 1
+            assert mp._has_multiple_energies
+            kwargs["energy"] = 99
+            fragment = "axis limits"
+        kam_calls = []
+        original = _driver.kernel_average_misorientation_map
+
+        def kam_spy(*args, **kw):
+            kam_calls.append(1)
+            return original(*args, **kw)
+
+        monkeypatch.setattr(_driver, "kernel_average_misorientation_map", kam_spy)
+        calls = _stop_at_first_simulation(monkeypatch)
+        with pytest.raises(ValueError, match=fragment):
+            _hrosm(base.s, base.xmap, mp, base.det, **kwargs)
+        assert kam_calls == []
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "xmap_kwargs, navigation_mask, fragment",
+        [
+            ({"is_in_data": _absent_one()}, None, "every map point"),
+            ({"phase_id": _not_indexed_one()}, None, "every map point"),
+            ({}, _masked_one(), "every map point"),
+            ({"phase_id": _two_phases()}, None, "one phase"),
+        ],
+        ids=["absent", "not_indexed", "masked", "two_phases"],
+    )
+    def test_compat_input_is_checked_before_any_work(
+        self, base, monkeypatch, xmap_kwargs, navigation_mask, fragment
+    ):
+        # The driver repeats these checks in its first work step, so
+        # the method must raise before that step is reached
+        kam_calls = []
+        original = _driver.kernel_average_misorientation_map
+
+        def kam_spy(*args, **kw):
+            kam_calls.append(1)
+            return original(*args, **kw)
+
+        monkeypatch.setattr(_driver, "kernel_average_misorientation_map", kam_spy)
+        calls = _stop_at_first_simulation(monkeypatch)
+        xmap = _one_phase_map(BASE_SHAPE, **xmap_kwargs)
+        with pytest.raises(ValueError, match=fragment):
+            _zero_signal(BASE_SHAPE).hrosm(
+                xmap,
+                base.mp,
+                base.det,
+                emsoft_compatible=True,
+                navigation_mask=navigation_mask,
+            )
+        assert kam_calls == []
+        assert calls == []
 
     @pytest.mark.parametrize(
         "changes, fragment",
@@ -1130,7 +1253,7 @@ class TestValidation:
             _hrosm(_zero_signal(shape), xmap, base.mp, base.det, n_osm=0)
 
 
-# -------------------------------- Output --------------------------------
+# ------------------------------- Output -------------------------------
 
 
 class TestOutput:
@@ -1340,7 +1463,7 @@ class TestOutput:
         assert not np.array_equal(mean.kappa, center.kappa)
 
 
-# ------------------------------- Contracts ------------------------------
+# ------------------------------ Contracts -----------------------------
 
 
 class TestContracts:
@@ -1405,6 +1528,38 @@ class TestContracts:
         rotations = _grid_rotations(out)[reindexed]
         truth = base.xmap_truth.rotations.data.reshape(BASE_SHAPE + (4,))[reindexed]
         assert np.all(_disorientation_deg(rotations, truth) <= TRUTH_TOLERANCE_DEG)
+
+    def test_stale_navigation_mask_of_a_metric_is_not_applied(self, base, monkeypatch):
+        # A metric instance keeps the map-sized navigation mask of an
+        # earlier masked dictionary indexing call
+        metric = kp.indexing.NormalizedCrossCorrelationMetric()
+        metric.navigation_mask = np.zeros(BASE_SHAPE, dtype=bool)
+        from kikuchipy.indexing import _dictionary_indexing as di_module
+
+        signature = inspect.signature(di_module._dictionary_indexing)
+        seen = []
+
+        def spy(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            used = bound.arguments["metric"]
+            seen.append(
+                (
+                    used.navigation_mask,
+                    used.n_experimental_patterns,
+                    int(np.prod(bound.arguments["experimental_nav_shape"])),
+                )
+            )
+            raise _StopRun
+
+        monkeypatch.setattr(_driver, "_dictionary_indexing", spy, raising=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(_StopRun):
+                _hrosm(base.s, base.xmap, base.mp, base.det, metric=metric)
+        assert len(seen) == 1
+        mask, n_metric, n_block = seen[0]
+        assert mask is None
+        assert n_metric == n_block
 
     @staticmethod
     def _mask() -> np.ndarray:
@@ -1694,8 +1849,57 @@ class TestContracts:
         assert table.valid[1]
         assert out.prop["reindexed"][dilated.ravel() == 2].all()
 
+    def test_grains_subset_reindexes_only_the_chosen_grains(self, base, monkeypatch):
+        # The skip decision directly: labels out of range are ignored
+        reindex = _driver._grains_to_reindex(base.table, 1, base.xmap, base.mp, None)
+        assert reindex.tolist() == [True, True]
+        chosen = _driver._grains_to_reindex(
+            base.table, 1, base.xmap, base.mp, [0, base.label_b, 99, -1]
+        )
+        expected = np.zeros(2, dtype=bool)
+        expected[base.label_b - 1] = True
+        np.testing.assert_array_equal(chosen, expected)
+        none = _driver._grains_to_reindex(base.table, 1, base.xmap, base.mp, [])
+        assert not none.any()
 
-# ------------------------------ Invariance ------------------------------
+        # Through the driver: the one grain's points are the only
+        # domain, and the run stops at its simulation
+        grains = []
+
+        def subset_driver(*args, **kwargs):
+            return _driver._hrosm(*args, grains=grains, **kwargs)
+
+        monkeypatch.setattr("kikuchipy.signals.ebsd._hrosm", subset_driver)
+        domains = []
+        original_block = _driver._experimental_block
+
+        def block_spy(signal, domain, nx, sig_size):
+            domains.append(np.array(domain))
+            return original_block(signal, domain, nx, sig_size)
+
+        monkeypatch.setattr(_driver, "_experimental_block", block_spy)
+        _stop_at_first_simulation(monkeypatch)
+        grains[:] = [base.label_b]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(_StopRun):
+                _hrosm(base.s, base.xmap, base.mp, base.det)
+        assert len(domains) == 1
+        np.testing.assert_array_equal(
+            domains[0], np.flatnonzero(base.grain_id.ravel() == base.label_b)
+        )
+
+        # No chosen grain: nothing is simulated or re-indexed
+        grains[:] = [99]
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            out = _hrosm(base.s, base.xmap, base.mp, base.det)
+        assert len(domains) == 1
+        assert not out.prop["reindexed"].any()
+        assert any("no grain re-indexed" in m for m in _user_warnings(record))
+
+
+# ----------------------------- Invariance -----------------------------
 
 
 class TestInvariance:
@@ -1716,7 +1920,17 @@ class TestInvariance:
         assert _default_n_per_iteration(SIG_SHAPE[0] * SIG_SHAPE[1], BALL_SIZE) == (
             BALL_SIZE
         )
-        _assert_outputs_invariant(self._chunked(base, 50), run_correct)
+        chunked = self._chunked(base, 50)
+        _assert_outputs_invariant(chunked, run_correct)
+        # Only the scores may differ: every simulation index and
+        # rotation is identical
+        np.testing.assert_array_equal(
+            chunked.prop["simulation_indices"],
+            run_correct.prop["simulation_indices"],
+        )
+        np.testing.assert_array_equal(
+            chunked.rotations.data, run_correct.rotations.data
+        )
 
     def test_lazy_signal_equals_eager(self, base, run_correct):
         s_lazy = base.s.as_lazy()
@@ -1754,6 +1968,38 @@ class TestInvariance:
         assert _default_n_per_iteration(10**9, BALL_SIZE) == 1
         assert isinstance(_default_n_per_iteration(60 * 60, 68_921), int)
 
+    @pytest.mark.parametrize(
+        "n_cpu, n_patterns, n_per_iteration",
+        [(16, 68_921, 17_777), (16, 68_921, 277), (4, 343, 50), (3, 5000, 4500)],
+    )
+    def test_simulation_tasks_tile_each_iteration_chunk(
+        self, monkeypatch, n_cpu, n_patterns, n_per_iteration
+    ):
+        monkeypatch.setattr(_driver, "CPU_COUNT", n_cpu)
+        chunks = _driver._simulation_chunks(n_patterns, n_per_iteration)
+        assert sum(chunks) == n_patterns
+        assert min(chunks) >= 1
+        # Every iteration boundary is a task boundary
+        ends = set(np.cumsum(chunks).tolist())
+        starts = range(n_per_iteration, n_patterns, n_per_iteration)
+        assert set(starts) <= ends
+        # At most one task per CPU in each iteration chunk, of at least
+        # the smallest task size unless the chunk has a single task,
+        # and of near equal size
+        for start in range(0, n_patterns, n_per_iteration):
+            end = min(start + n_per_iteration, n_patterns)
+            bounds = [0] + np.cumsum(chunks).tolist()
+            tasks = [
+                b - a
+                for a, b in zip(bounds[:-1], bounds[1:])
+                if a >= start and b <= end
+            ]
+            assert sum(tasks) == end - start
+            assert len(tasks) <= n_cpu
+            if len(tasks) > 1:
+                assert min(tasks) >= _driver._SIMULATION_TASK_MIN
+            assert max(tasks) - min(tasks) <= 1
+
     def test_simulation_indices_are_int32_on_both_paths(self, base, run_correct):
         # One pass over the ball and a chunked loop
         for out in (run_correct, self._chunked(base, 50)):
@@ -1761,7 +2007,7 @@ class TestInvariance:
             assert out.prop["scores"].dtype == np.float32
 
 
-# ------------------------------- Messages -------------------------------
+# ------------------------------ Messages ------------------------------
 
 
 def _numbers(line: str) -> list[str]:
@@ -1845,7 +2091,7 @@ class TestMessages:
         assert len([m for m in messages if "no grain re-indexed" in m]) == 1
         assert len(_ball_warnings(record)) == 0
 
-    # ------------------- Coverage warning before the run ------------------
+    # ----------------- Coverage warning before the run ----------------
 
     @staticmethod
     def _run_until_first_simulation(
