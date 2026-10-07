@@ -18,6 +18,29 @@ Unreleased
 
 Added
 -----
+- Grain tools for high angular resolution orientation similarity maps (HROSM), the
+  building blocks of a NumPy port of EMsoftOO's EMHROSM program:
+  ``kikuchipy.indexing.kernel_average_misorientation_map()`` returns the kernel average
+  misorientation (KAM) over the four nearest neighbours of every map point;
+  ``kikuchipy.indexing.segment_grains_kam()`` labels grains from KAM differences, with
+  optional dilation of unassigned points; ``kikuchipy.indexing.grain_bounding_boxes()``
+  returns the bounding box of every grain;
+  ``kikuchipy.indexing.average_grain_orientations()`` returns a
+  ``kikuchipy.indexing.GrainTable`` of grain reference orientations by the mean, the
+  centre point, or von Mises-Fisher or Watson expectation maximisation;
+  ``kikuchipy.indexing.grain_reference_orientation_deviation_map()`` returns the
+  misorientation of every point to its grain reference orientation (GROD);
+  ``kikuchipy.indexing.misorientation_ball()`` samples rotations within a maximum
+  misorientation of a centre orientation, and
+  ``kikuchipy.indexing.misorientation_ball_spacing()`` returns that sampling's mean
+  nearest-neighbour angle. ``kernel_average_misorientation_map()``,
+  ``segment_grains_kam()``, ``average_grain_orientations()`` and
+  ``misorientation_ball()`` take ``emsoft_compatible=True`` to reproduce EMsoftOO's
+  output, including its known defects, for regression against EMsoftOO; the default is
+  the corrected behaviour. EMsoftOO's EMHROSM program (Marc De Graef,
+  Carnegie Mellon University, BSD-3) and Johan Westraadt's EMsoftOO branch are
+  gratefully acknowledged as the source of the algorithms.
+  (`#20 <https://github.com/jwestraadt/kikuchipy/pull/20>`_)
 - Tutorial on non-local pattern averaging (NLPAR), ``doc/tutorials/nlpar.ipynb``,
   including a comparison on a very noisy dataset, and a gallery example.
   (`#17 <https://github.com/jwestraadt/kikuchipy/pull/17>`_)

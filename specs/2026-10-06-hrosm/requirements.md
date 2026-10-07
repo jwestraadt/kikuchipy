@@ -1192,9 +1192,33 @@ section 6.
       matchdepth 1, PCcorrection 'off'`; acid band median <= 0.5 deg.
    6. `EMgetOSM.nml`: `nmatch = 10 5 0 0 0` -> `OSM_10`, `OSM_05`;
       self-check `OSM_10 == OSM` bitwise.
-   7. `EMHROSM.nml`: `center` (gangle 5, misorang 5, nsamples 20, nosm 10,
+   7. `EMHROSM.nml`: `center` (gangle 5, misorang 5, nsamples 10 (amended,
+      see below), nosm 10,
       dilate .FALSE., orav 'center'), `center_dilate`, `wat` (orav
       'averageWAT', numEM 25, numIter 40); `maxRAMmem 1.0`.
+   **Reference `nsamples` (amended 2026-10-06, Stage A build gate,
+   autonomous night run per Johan's "continue automatically and do the
+   recommendations").** The c127868 EMHROSM leaks one `dicttranspose`
+   buffer per 32-pattern dictionary batch (`OSMDIdriver`, `mod_DI.f90`:
+   the `memth%dealloc(dicttranspose)` line is commented out): 0.43-0.46
+   MB per batch, about 0.99 GB per indexed grain at `nsamples 20`
+   (68,921 orientations), so the `center` scenario (31 grains with >= 10
+   points) needs ~31 GB of commit; on this laptop (commit limit 38.9 GB,
+   ~27 GB committed by other processes, C: 5 GB free) the run died at
+   grain 19 of 44 after 715 s with "Unable to allocate ... dicttranspose"
+   and EXIT CODE 0 (EMsoft's fatal handler). The reference EMHROSM runs
+   therefore use `nsamples 10` (9,261 orientations, ~0.13 GB per grain,
+   ~4 GB per run); everything else is unchanged. The cluster-stage
+   outputs (`kam`, `grainID`, `npixels`, `grainROI`, `avor`, `kappa`) do
+   not depend on `nsamples`; the re-indexing outputs (`newOSM`,
+   `newEuler`, `newQuat`, `newCI`) are compared at the same `n_steps=10`
+   (V13), 7.4x cheaper. The EMsampleRFZ N 20 bin arm (V7) is unaffected
+   (passes). Alternatives not taken: freeing ~25 GB of commit (other
+   applications, not ours), rebuilding EMsoftOO with the deallocation
+   restored (the checkout must not be modified), the 975a1fc build (its
+   EMHROSM rejects the c127868 namelist and dot-product file and writes
+   no `newQuat`). The script also treats "ended abnormally", "Fatal
+   error" and "forrtl: severe" in a program's output as failure.
    8. `EMsampleRFZ.nml`: `samplemode 'MIS', pgnum 32, maxmisor 5, nsteps
       6` (shipped) and `20` (bin-gated), `rodrigues` a generic centre (unit
       axis (1, 2, 3)/sqrt(14), magnitude 0.1), `quoutname`, `euoutname`,

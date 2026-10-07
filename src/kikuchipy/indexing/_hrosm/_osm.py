@@ -68,6 +68,15 @@ from __future__ import annotations
 
 import numpy as np
 
+from kikuchipy.indexing._hrosm._kam import (
+    _emsoft_edge_multipliers,
+    _emsoft_neighbour_sum,
+)
+
+# Number of list pairs compared per chunk, bounding the memory of the
+# broadcast equality tables
+_CHUNK_SIZE = 65536
+
 
 def _osm_grain_aware(
     simulation_indices: np.ndarray,
@@ -101,7 +110,38 @@ def _osm_grain_aware(
         Map of shape (H, W) of float32, range 0 to ``n``; NaN without
         such a neighbour.
     """
-    raise NotImplementedError
+    simulation_indices = np.asarray(simulation_indices)
+    grain_id = np.asarray(grain_id)
+    reindexed = np.asarray(reindexed, dtype=bool)
+    H, W = grain_id.shape
+    lists = simulation_indices[:, :n].reshape(H, W, n)
+
+    total = np.zeros((H, W), dtype=np.float64)
+    count = np.zeros((H, W), dtype=np.int64)
+    # Horizontal pairs (y, x)-(y, x + 1) and vertical pairs
+    # (y, x)-(y + 1, x), each credited to both of its points
+    for a_slice, b_slice in [
+        ((slice(None), slice(None, -1)), (slice(None), slice(1, None))),
+        ((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+    ]:
+        valid = (
+            reindexed[a_slice]
+            & reindexed[b_slice]
+            & (grain_id[a_slice] == grain_id[b_slice])
+        )
+        if not valid.any():
+            continue
+        shared = np.zeros(valid.shape, dtype=np.int64)
+        shared[valid] = _set_intersection_count(
+            lists[a_slice][valid], lists[b_slice][valid]
+        )
+        for point_slice in (a_slice, b_slice):
+            total[point_slice] += shared
+            count[point_slice] += valid
+    osm = np.full((H, W), np.nan, dtype=np.float64)
+    has_neighbour = reindexed & (count > 0)
+    osm[has_neighbour] = total[has_neighbour] / count[has_neighbour]
+    return osm.astype(np.float32)
 
 
 def _osm_emsoft(simulation_indices: np.ndarray, H: int, W: int, n: int) -> np.ndarray:
@@ -123,4 +163,82 @@ def _osm_emsoft(simulation_indices: np.ndarray, H: int, W: int, n: int) -> np.nd
     n
         Number of indices per list to compare.
     """
-    raise NotImplementedError
+    lists = np.asarray(simulation_indices)[:, :n].reshape(H, W, n)
+    # Horizontal pairs, right list against left list, and vertical
+    # pairs, upper list against lower list, as EMsoft compares them
+    # (the count is not symmetric if a list holds duplicates)
+    pair_h = _vectormatch(
+        lists[:, 1:].reshape(-1, n), lists[:, :-1].reshape(-1, n)
+    ).reshape(H, W - 1)
+    pair_v = _vectormatch(lists[:-1].reshape(-1, n), lists[1:].reshape(-1, n)).reshape(
+        H - 1, W
+    )
+    # EMsoft's comparison with its initial list of zeros shares no
+    # index (indices are 1-based), so the spurious term is zero
+    acc = _emsoft_neighbour_sum(
+        pair_h.astype(np.float32),
+        pair_v.astype(np.float32),
+        np.float32(0),
+        H,
+        W,
+        np.float32,
+    )
+    acc = _emsoft_edge_multipliers(acc, H, W, _third_float32)
+    return acc.reshape(H, W)
+
+
+def _vectormatch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Return, per row, the number of entries of ``a`` present in
+    ``b``, as EMsoft's ``vectormatch`` counts them.
+
+    Parameters
+    ----------
+    a, b
+        Lists of shape (m, n).
+
+    Returns
+    -------
+    counts
+        Integer counts of shape (m,).
+    """
+    m = a.shape[0]
+    counts = np.zeros(m, dtype=np.int64)
+    for start in range(0, m, _CHUNK_SIZE):
+        stop = min(start + _CHUNK_SIZE, m)
+        equal = a[start:stop, :, None] == b[start:stop, None, :]
+        counts[start:stop] = equal.any(axis=2).sum(axis=1)
+    return counts
+
+
+def _set_intersection_count(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Return, per row, the number of distinct values shared by ``a``
+    and ``b``, the size of their set intersection.
+
+    Parameters
+    ----------
+    a, b
+        Lists of shape (m, n).
+
+    Returns
+    -------
+    counts
+        Integer counts of shape (m,).
+    """
+    m = a.shape[0]
+    counts = np.zeros(m, dtype=np.int64)
+    for start in range(0, m, _CHUNK_SIZE):
+        stop = min(start + _CHUNK_SIZE, m)
+        a_sorted = np.sort(a[start:stop], axis=1)
+        # Count every distinct value of a row once
+        first = np.ones(a_sorted.shape, dtype=bool)
+        first[:, 1:] = a_sorted[:, 1:] != a_sorted[:, :-1]
+        present = (a_sorted[:, :, None] == b[start:stop, None, :]).any(axis=2)
+        counts[start:stop] = (present & first).sum(axis=1)
+    return counts
+
+
+def _third_float32(x: np.ndarray) -> np.ndarray:
+    """Return ``(x * 4) / 3`` in float32, in the order of EMsoft's
+    source text.
+    """
+    return (x * np.float32(4)) / np.float32(3)

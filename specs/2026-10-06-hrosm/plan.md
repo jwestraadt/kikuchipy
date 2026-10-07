@@ -172,7 +172,7 @@ Everything above applies on `feat-HROSM` too, with these additions and scopings.
 - **Numerics (HROSM-scoped, like the NLPAR and HREBSD scopings).** The float64 rule under "Numerics" is EMSphInx-scoped. HROSM keeps orientation maths in float64 and stores maps in float32 (`kam`, `osm`, `grod`, `max_grod`, as EMsoft does); `emsoft_compatible=True` mirrors EMsoft's precision exactly (KAM pairs and sums in float64 then `sngl`, OSM in float32, the ball as float32 Rodrigues vectors, unclipped `acos`); correct mode sets a symmetry-reduced dot within 4 float64 eps of 1 to 1 before `2 arccos` (identical orientations give exactly 0, never NaN). `emsoft_compatible` is a keyword on every entry point, never a module global. No numba kernels are planned; a kernel enters only if a stage gate measures a hot loop over budget, then under the numba rule above with `.py_func` parity.
 - **Oldest-matrix recipe (local, once per stage, recorded; the full CI pin set of `.github/workflows/tests.yml:48`):** `uv run --isolated --python 3.10 --extra tests --with "dask==2021.8.1" --with "diffsims==0.5.2" --with "hyperspy==2.2" --with "matplotlib==3.6" --with "numba==0.57" --with "numpy==1.23.0" --with "orix==0.12.1" --with "pooch==1.3.0" --with "pyebsdindex==0.3.9.2" --with "scikit-image==0.21.0" pytest <the HROSM test modules> -n 0 -q -p no:cacheprovider`. Verified 2026-10-06 in an isolated py3.10 environment (scipy 1.13.1 resolved; CI pins no scipy): `Rotation.random_vonmises`, `Rotation.from_homochoric`, `orix.quaternion._conversions.cu2ho`, `Symmetry.proper_subgroup`, `Orientation.angle_with(degrees=...)`, `Rotation.angle_with_outer`, the Hamilton `Rotation.__mul__`, the `orix.io` save/load round trip of bool and 2-D props, `scipy.sparse.csgraph.connected_components`, `scipy.ndimage.maximum_filter`, `scipy.special.ive`, `scipy.spatial.cKDTree`. Tests never use `Orientation.reduce()`.
 - **Numba-cache flake rule.** The root `conftest.py` autouse fixture `_keep_numba_cache_dir_per_worker` stays; gates run `-n 0` first, then `-n 4`, and a red test under `-n 4` is re-run alone before it counts. The two known pre-existing flakes of the NLPAR section never block a gate.
-- **CI budget.** The fork's `tests.yml` job limit is 20 min (fork-only; 15 upstream and on the staging branches); on `develop` de27741a the jobs already take up to 17 min 21 s (ubuntu py3.10 oldest; windows py3.13 16 min 55 s). HROSM's default-suite additions are gated by the CI-style wall time of the HROSM selection (`-n 4` with coverage, this machine) <= 25 s, the NLPAR post-trim equivalent, with 60 s serial (`-n 0`, warm caches) as the ceiling, both measured at every stage gate and pinned in the ledger; heavy arms are `@pytest.mark.weekly` (balls with `n_steps=20` and real dictionary indexing, the V13 one-grain arm), local + weekly (the full-map run) or local ledger runs (performance baselines, `si_wafer`), and regenerate-and-diff is bin gated. The fork's Weekly workflow (`weekly.yml`, the only CI home of `--weekly` and nbval) is `disabled_inactivity` since 2026-08 (its notebook job failed on the last three runs), so the weekly arms run in the local `--weekly` stage gate and nbval of `hrosm.ipynb` in the local Stage C and fan-out gates; the weekly additions' local seconds are recorded with a scaled CI estimate (target <= 5 min), never a gate. The on-push CI run of each stage push (the Stage B push at the latest, before Stage C) is checked against 18 min on every job; a job above 18 min triggers the NLPAR trim at once (arms to weekly, one named killer per mutant kept).
+- **CI budget.** The fork's `tests.yml` job limit is 20 min (fork-only; 15 upstream and on the staging branches); on `develop` de27741a the jobs already take up to 17 min 21 s (ubuntu py3.10 oldest; windows py3.13 16 min 55 s). HROSM's default-suite additions are gated by the CI-style time of the HROSM selection (`-n 4` with coverage, this machine; amended 2026-10-06, Stage A gates: pytest's own reported time, the work HROSM adds, not the shell wall time, which includes the xdist and coverage start-up the whole suite pays once: measured 18.2-19.3 s pytest vs 40.2-40.6 s wall) <= 25 s, the NLPAR post-trim equivalent, with 60 s serial (`-n 0`, warm caches) as the ceiling, both measured at every stage gate and pinned in the ledger; heavy arms are `@pytest.mark.weekly` (balls with `n_steps=20` and real dictionary indexing, the V13 one-grain arm), local + weekly (the full-map run) or local ledger runs (performance baselines, `si_wafer`), and regenerate-and-diff is bin gated. The fork's Weekly workflow (`weekly.yml`, the only CI home of `--weekly` and nbval) is `disabled_inactivity` since 2026-08 (its notebook job failed on the last three runs), so the weekly arms run in the local `--weekly` stage gate and nbval of `hrosm.ipynb` in the local Stage C and fan-out gates; the weekly additions' local seconds are recorded with a scaled CI estimate (target <= 5 min), never a gate. The on-push CI run of each stage push (the Stage B push at the latest, before Stage C) is checked against 18 min on every job; a job above 18 min triggers the NLPAR trim at once (arms to weekly, one named killer per mutant kept).
 - **Fixtures and reference data.** Test data from `src/kikuchipy/data/**` (`nickel_ebsd_small`, `nickel_ebsd_master_pattern_small`; `nickel_ebsd_large(allow_download=True)` once cached; `ebsd_master_pattern("ni")` weekly) or generated in the test with fixed seeds (HROSM generators are plain functions in the root `conftest.py` exposed as fixtures; test modules never import each other). EMsoft references ship uncompressed under `src/kikuchipy/data/emsoft_hrosm/` (each `.npz` <= 250 kB, md5 in `_registry.py`, no URL), written by the import-safe `create_hrosm_reference.py` (excluded from doctests by an `--ignore-glob` and from coverage by the existing `omit`).
 - **CHANGELOG.** Fork PR-link convention `` (`#20 <https://github.com/jwestraadt/kikuchipy/pull/20>`_) ``, entries at the top of `Unreleased -> Added` (newest first), the number confirmed with `gh pr list` at PR time and rewritten if it differs.
 - **Clean-replay rule (enforced at every stage gate and before the replay).** Nothing under `src/`, `tests/`, `doc/`, `examples/`, `benchmarks/`, nor the root `conftest.py`, `CHANGELOG.rst` or `pyproject.toml`, may name a `specs/` path, a spec file name (`requirements.md`, `plan.md`, `validation.md`, `tech-stack.md`, `mission.md`, `roadmap.md`) or a spec ID (D-, V-, M-, K-, R-numbers); comments, docstrings and test names state the fact ("EMsoft credits the vertical neighbour to iii-W+1"), never the ID. Gate: `git diff develop...HEAD -- src tests doc examples benchmarks conftest.py CHANGELOG.rst pyproject.toml ':!*.ipynb' | grep -E "^\+" | grep -n -E "specs/|requirements\.md|plan\.md|validation\.md|tech-stack\.md|mission\.md|roadmap\.md|[^A-Za-z0-9_][DVKMR][0-9]+([^0-9]|$)"` prints nothing, and the same pattern over the cell sources of `doc/tutorials/hrosm.ipynb` (read with `nbformat`, since stored base64 outputs give false hits) finds nothing; a Fortran literal such as `180.D0` is written `180/pi`.
@@ -719,7 +719,8 @@ Build modules, in implementation order:
       (required, `mod_OSM.f90:177-179`), `nmatch = 10 5 0 0 0` ->
       `OSM_10`, `OSM_05`; self-check `OSM_10 == OSM` bitwise. (4)
       `EMHROSM.nml` x 3 with `dpfile '<r>/dp-refined.h5'`, `gangle 5.0,
-      misorang 5.0, nsamples 20, nosm 10, numEM 25, numIter 40,
+      misorang 5.0, nsamples 10 (amended 2026-10-06 from 20: EMHROSM's
+      per-grain memory leak, requirements D13), nosm 10, numEM 25, numIter 40,
       maxRAMmem 1.0`, `OSMfile '<r>/hrosm_<scenario>.h5'`, `OSMtiff
       '<r>/hrosm_<scenario>.tiff'` (written unconditionally,
       `mod_HROSM.f90:778`), `IPFmap`, `angfile`, `ctffile`
@@ -1221,7 +1222,7 @@ Round-2 mutants (added 2026-10-06, spec review round 2):
 
 | # | mutant: exact code change | killer modules, V |
 |---|---|---|
-| S18 | `_kam._dot_to_angle`: the snap replaced by the old clip `2 * np.arccos(np.clip(d, 0, 1))` | `kam` V3 (identical neighbours, the below-1 rotation: ~3e-6 deg instead of 0); `avg` V8 (correct centre pixel GROD exactly 0) |
+| S18 | `_kam._dot_to_angle`: the snap replaced by the old clip `2 * np.arccos(np.clip(d, 0, 1))` | `kam` V3 (identical neighbours, the below-1 rotation: ~3e-6 deg instead of 0); `avg` V8 (correct centre pixel GROD exactly 0) (amended 2026-10-07, Stage A close gate: the below-1 case is a SYMMETRY-EQUIVALENT pair; a stored rotation's self-dot never rounds below 1 in the production sum, measured on 1000 seeded rotations, while 213-243 of 23,000 rotation/operator pairs do; the killers build such pairs) |
 | S19 | `_grains._map_grid`: grid from the in-data `xmap.row.max() + 1`, `xmap.col.max() + 1` with the `xmap.size == 1` shortcut (the drafted rule) | `avg` V8 (grid spans points not in the data); (B) `sig` V16 (map from a navigation-masked `dictionary_indexing`) |
 | S20 (B) | `_dictionary_indexing(verbose=False)` keeps the `sleep(0.2)` | `test_dictionary_indexing.py` (`sleep` spy not called) |
 | S21 | `_directional_statistics._em_correct` VMF: operator set `G` instead of `G+- = {S_j} u {-S_j}` (added 2026-10-06, Stage A failing-tests gate; requirements D5.4 antipodal amendment) | `avg` V8 (`test_vmf_treats_q_and_minus_q_as_one_orientation`; all-24-operator left-scrambled VMF recovery) |
@@ -1300,7 +1301,8 @@ them unless Johan names one to switch.
     gate.
 14. **V13 placement** (amended 2026-10-06, spec review, for the CI
     budget of 1.4). The one-grain arm (the smallest grain with `W*H >=
-    32` and `n_pixels >= min_pixels`, `n_steps=20`) is
+    32` and `n_pixels >= min_pixels`, `n_steps=10` since the D13
+    `nsamples` amendment) is
     `@pytest.mark.weekly`; the full map is local + weekly. M29 and M30
     keep default-suite killers.
 15. **Tutorial runtime.** The executed cells use the defaults if nbval
@@ -1563,3 +1565,34 @@ navigation-masked arm). Nothing unresolved that blocks approval. Open
 for Johan with this plan: R1-R7 (7.1), items 24-27 (7.4; 26 and 27
 new: re-enabling the fork's Weekly workflow, and sliced crystal
 maps), and the two round-1 variants (E3, E8).
+
+## 11. Stage A code-review disposition table (2026-10-07, fixer)
+
+Eleven surviving findings (1 major, 10 minor) plus one refuted by both
+skeptics. Every fix was re-verified against the code (and, for F3 and
+F4, the EMsoftOO source) before editing; each new killer test was run
+against the pre-fix code and failed there (11 failures, restored
+after). Six HROSM modules after the fixes, `-n 0`: 293 passed, 31
+skipped in 7.14 s; `_hrosm` doctests 8 passed; ruff check and format
+clean.
+
+| id | severity | disposition | one line |
+|---|---|---|---|
+| F1 | minor | fixed | D9.1 ("everything else identical") governs: `"mean"` now uses the orix quaternions and operators in both modes (`_average_grains`); killer `test_mean_is_identical_in_both_modes` (bitwise rotation, kappa, max_grod); `emsoft_compatible` doc says "mean" is the same in both modes |
+| F2 | minor | fixed | Correct dilation's present mask is `phase_id >= 0` when `phase_id` is given (D8.1, D4.5), finite KAM only without it; killer `test_correct_dilate_fills_a_present_point_with_a_nan_kam` (and an absent point stays 0); `dilate`/`kam`/`phase_id` docs updated |
+| F3 | minor | fixed | Compat `_final_representative` applies EMsoft's float64 `qr_` -> `ra_` -> `aq_` -> normalise round trip (`mod_dirstats.f90:949-961`, `mod_rotations.f90` `qr_`, `ra_`, `aq_`, `rq_`, thresholds 1e-10 and 1e-12) per D5.5 "literal transcription"; the test-local V9 transcription gets the same step (`_emsoft_qr_rq`); killer `test_compat_final_representative_round_trips_rodrigues`; side test now bitwise against the round trip |
+| F4 | minor | fixed | Horizontal compat pairs call `_vectormatch(right, left)` as `vectormatch(lnm, cp, lp)` (`mod_DIsupport.f90:235`); the test-local loop oracle had the same swap and is corrected; killer `test_pair_order_follows_the_source_with_duplicates` (1 x 2 and 2 x 2 maps with a duplicate) |
+| C1 | major | fixed | CHANGELOG names the four functions that take `emsoft_compatible=True` |
+| C2 | minor | fixed | Raises sections on `segment_grains_kam` and `grain_bounding_boxes`; `kam` doc: floating dtype, float64 for an integer KAM map |
+| C3 | minor | fixed | `average_grain_orientations` Raises lists `max_angle`, `n_em`, `n_iter`, `min_kappa` |
+| C4 | minor | fixed | `GrainTable.kappa` doc covers mean (VMF concentration of the mean resultant length), vmf/watson (EM estimate), center (1.0), rejected (-1.0) |
+| C5 | minor | fixed | `from_crystal_map` no longer names the Stage B method; it describes the four properties (to become a `:meth:` link when `EBSD.hrosm` lands) |
+| C6 | minor | fixed | `read_local_dot_product_file` and `read_local_hrosm_file` return arrays made read only (`_read_only`, recursive), like `load_reference` |
+| C7 | - | refuted-by-both | Not acted on |
+| C8 | minor | fixed | CHANGELOG uses "high angular resolution orientation similarity maps (HROSM)", as `_hrosm/__init__.py` |
+| C9 | minor | fixed | Banner comment shortened to 72 characters |
+
+Spec clarifications recommended (not made; the fixes follow the
+existing text): D5.6 could name the compat Rodrigues round trip
+(last-bit change, identity snap below a 1e-10 vector norm); D5.2 could
+say compat `"mean"` uses the correct-mode inputs and operators.

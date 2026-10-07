@@ -110,6 +110,8 @@ N_EM = 25
 N_ITER = 40
 # EMHROSM skips grains with fewer points
 EMSOFT_MIN_PIXELS = 10
+# EMHROSM keeps a Watson average only if its concentration is above
+EMSOFT_MIN_KAPPA = 5.0
 
 # The cached master pattern file every reference run started from
 MASTER_MD5 = "8b69c071a036ad3488d465093b67fe4d"
@@ -232,60 +234,91 @@ DEGENERATE_ANGLE_RAD = 1e-6
 # if a count pin is not 0 (the recorded fallback)
 KAM_FALLBACK_MAX_ULP = 2
 
-# ------------- Measured-then-pinned (drafting seeds) ---------------- #
+# ------------------- Measured-then-pinned --------------------------- #
+# The local KAM and OSM pins (Ni6, GRX810, Al) and the pins on the
+# shipped references were measured on 2026-10-06 (the shipped ones on
+# the references written that day by the c127868 build).
 
 # Number of non-degenerate KAM points differing from EMsoft's file
 SHIPPED_KAM_NONDEGENERATE_DIFF = 0
-SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF = 0
+# measured: 4 of 4,110 non-degenerate points, each within the fallback
+# ulp bound
+SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF = 4
 NI6_KAM_NONDEGENERATE_DIFF = 6
 NI6_KAM_MAX_ULP = 2
 NI6_DI_KAM_NONDEGENERATE_DIFF = 0
 GRX810_KAM_NONDEGENERATE_DIFF = 0
 AL_KAM_NONDEGENERATE_DIFF = 16
 AL_KAM_MAX_ULP = 2
-# Number of OSM points differing from the shipped OSM maps (0 if the
-# generating build keeps the source order of the edge multiplier)
-SHIPPED_OSM_DIFF = 0
+# Number of OSM points differing from each shipped OSM map (0 if the
+# generating build keeps the source order of the edge multiplier; the
+# c127868 build folds it, so these are straight-edge points, 1 ulp)
+SHIPPED_OSM_DIFF = {"OSM": 79, "OSM_05": 87}
 # Number of OSM points of the Ni6 file differing by the folded edge
 # multiplier
 NI6_OSM_EDGE_PIXELS = 214
 # Number of grain labels differing when segmenting our KAM of the
 # shipped refined Euler angles
 SHIPPED_GRAIN_ID_FROM_EULER_DIFF = 0
-# Largest float64 ulp distance of a "center" grain average
-CENTER_AVOR_MAX_ULP = 0
+# Largest float64 ulp distance of a "center" grain average (measured:
+# 2, for EMsoft's eq_ of the centre point and for ours alike)
+CENTER_AVOR_MAX_ULP = 2
 # Watson averages: largest symmetry reduced angle in degrees to
-# EMsoft's average and largest relative concentration difference
-WAT_AVOR_MAX_DEG = 0.01
-WAT_KAPPA_REL = 0.01
-NI6_WAT_AVOR_MAX_DEG = 0.01
-NI6_WAT_KAPPA_REL = 0.01
-# Total bytes of the six shipped references
-REFERENCE_TOTAL_BYTES = 841_000
+# EMsoft's average. Measured 2026-10-06: 0.136 degrees (seed 0;
+# 0.086-0.136 over seeds 0-7, grain 5 of six points). The
+# concentrations are recorded, never banded: the EMsoft compatible
+# expectation maximisation lands in seed dependent optima of the
+# concentration (grain 35: EMsoft 1,072, ours 2.77e5 at seed 0;
+# relative differences 257-671 over seeds 0-7) while the averages
+# agree, and EMHROSM seeds its generator from the clock. Only the
+# outcome of the concentration gate is compared per grain.
+WAT_AVOR_MAX_DEG = 0.3
+# Ni6: EMHROSM seeds its generator from the clock, so its Watson
+# averages of diffuse grains depend on the run. Grains whose EMsoft
+# concentration is at least NI6_WAT_TIGHT_MIN_KAPPA are compared within
+# the two bands below (measured 2026-10-06 on those grains: at most
+# 0.0086 degrees and 2.2e-4); the others are only required to be kept
+# by both, and their count is pinned (measured 2026-10-06: 22 grains
+# below the concentration, four of them diffuse with averages 12-54
+# degrees apart, plus grain 1, see NI6_WAT_SEED_DEPENDENT_GRAINS)
+NI6_WAT_TIGHT_MIN_KAPPA = 50.0
+NI6_WAT_AVOR_MAX_DEG = 0.02
+NI6_WAT_KAPPA_REL = 5e-4
+NI6_WAT_LOOSE_GRAIN_COUNT = 23
+# Grain 1 has a concentration of 26,617-37,155 depending on the seed
+# (EMsoft's file: 34,896; ours: 37,155, 0.065 apart), outside the
+# concentration band, so it is treated like the diffuse grains
+NI6_WAT_SEED_DEPENDENT_GRAINS = (1,)
+# Total bytes of the six shipped references (measured: 918,408)
+REFERENCE_TOTAL_BYTES = 920_000
 # Seconds of one regeneration of the references with the local
-# EMsoft programs; recorded, never asserted (None until measured)
-REGENERATION_RUNTIME_S = None
-# How a regenerated array derived from the GPU programs is compared
-# with the shipped one: "bitwise"; "tie swaps" (each row holds the same
-# indices, the rows with swapped ties are counted); "watson band" (the
-# Watson average bands above; EMHROSM seeds its generator from the
-# clock); "recorded" (differences are recorded, never asserted).
-# Arrays not listed are computed on the CPU and compared bitwise.
-GPU_ARRAY_POLICY = {
-    "TopMatchIndices": "tie swaps",
-    "EulerAngles": "bitwise",
-    "RefinedEulerAngles": "bitwise",
-    "RefinedDotProducts": "bitwise",
-    "CI": "bitwise",
-    "newOSM": "bitwise",
-    "newEuler": "bitwise",
-    "newCI": "bitwise",
-    "large_wat/avor": "watson band",
-    "large_wat/kappa": "watson band",
-    "large_wat/newOSM": "recorded",
-    "large_wat/newEuler": "recorded",
-    "large_wat/newCI": "recorded",
+# EMsoft programs; recorded, never asserted (measured 2026-10-06: one
+# complete run of the script, 2,148.8 s)
+REGENERATION_RUNTIME_S = 2148.8
+# The arrays a regeneration reproduces bitwise, per file. Measured
+# 2026-10-06 over four EMDI runs of the c127868 build: the top matches
+# and their dot products are identical, but the dictionary Euler
+# angles EMDI stores differ on 8,608-12,105 of 333,248 rows between
+# any two runs, so the Euler angles of 125 of 4,125 points differ, and
+# with them everything computed from them (KAM, the segmentation, 44
+# or 45 grains, the grain averages and the re-indexed maps). Those
+# arrays are checked for their keys, dtypes and layout only.
+REGENERATION_BITWISE_KEYS = {
+    "large_di": ("CI", "OSM", "OSM_05", "TopMatchIndices"),
+    "ball_n6": ("qu", "ro"),
 }
+# Data sets of the dot product file of a run compared bitwise with
+# those of the run the shipped files came from (the shipped files do
+# not hold the dot products)
+REGENERATION_BITWISE_DOT_PRODUCT_KEYS = ("TopMatchIndices", "TopDotProductList")
+# Misorientation ball files of a run compared bitwise with those of
+# the run the shipped files came from
+REGENERATION_BALL_FILES = tuple(
+    f"ball_n{n}_{kind}.txt" for n in (6, 20) for kind in ("qu", "ro")
+)
+# Largest difference of the number of grains of a regenerated scenario
+# to the shipped one (measured 2026-10-06: 44 vs 45)
+REGENERATION_GRAIN_COUNT_TOLERANCE = 2
 # Provenance which differs between runs by design: the run directory
 # in the namelist paths is normalised, the kikuchipy version recorded
 RUN_DIRECTORY_PATTERN = re.compile(r"kikuchipy_hrosm/\d{8}-\d{6}")
@@ -623,31 +656,12 @@ def watson_table(xmap: CrystalMap, grain_id: np.ndarray):
         )
 
 
-def assert_watson_within_bands(
-    table, avor, kappa, max_deg, kappa_rel, record_property, tag
-):
-    """Assert our Watson grain averages agree with EMsoft's within the
-    bands, on the grains both keep, and that both keep the same grains.
-    """
-    theirs_valid = np.asarray(kappa) != -1
-    assert np.array_equal(np.asarray(table.valid), theirs_valid)
-    ours = table.rotation.data[theirs_valid]
-    angles = symmetry_reduced_angle_deg(ours, np.asarray(avor)[theirs_valid])
-    rel = kappa_relative_difference(
-        np.asarray(table.kappa)[theirs_valid], np.asarray(kappa)[theirs_valid]
-    )
-    record_property(f"{tag}_avor_max_deg", float(angles.max(initial=0)))
-    record_property(f"{tag}_kappa_max_rel", float(rel.max(initial=0)))
-    assert np.all(angles <= max_deg)
-    assert np.all(rel <= kappa_rel)
-
-
 @functools.lru_cache(maxsize=None)
 def read_local_dot_product_file(fpath: Path) -> dict:
     """Return the reader's view of a local dot product file, once per
     session.
     """
-    return read_emsoft_dot_product_file(fpath)
+    return _read_only(read_emsoft_dot_product_file(fpath))
 
 
 @functools.lru_cache(maxsize=None)
@@ -655,19 +669,33 @@ def read_local_hrosm_file(fpath: Path) -> dict:
     """Return the reader's view of a local EMHROSM file, once per
     session.
     """
-    return read_emsoft_hrosm_file(fpath)
+    return _read_only(read_emsoft_hrosm_file(fpath))
 
 
-def gpu_array_policy(name: str, key: str) -> str:
-    """Return the regeneration policy of one array of one reference."""
-    return GPU_ARRAY_POLICY.get(f"{name}/{key}", GPU_ARRAY_POLICY.get(key, "bitwise"))
+def _read_only(values: dict) -> dict:
+    """Return a cached reader dictionary with its arrays made read
+    only, so no test can change them for the others.
+    """
+    for value in values.values():
+        if isinstance(value, np.ndarray):
+            value.setflags(write=False)
+        elif isinstance(value, dict):
+            _read_only(value)
+    return values
 
 
 def regeneration_differences(
     name: str, regenerated, shipped, record_property=None
 ) -> list[str]:
     """Return one line per array of a regenerated reference which
-    breaks its policy against the shipped one.
+    breaks the regeneration contract against the shipped one.
+
+    The arrays of :data:`REGENERATION_BITWISE_KEYS` and the provenance
+    (run directory normalised, :data:`RECORDED_ONLY_KEYS` skipped) are
+    compared bitwise. Every other array is checked for its key, dtype
+    and layout, the number of grains within
+    :data:`REGENERATION_GRAIN_COUNT_TOLERANCE`, and the number of
+    differing values recorded.
     """
     lines = []
     with (
@@ -676,68 +704,120 @@ def regeneration_differences(
     ):
         theirs = {key: theirs_file[key] for key in theirs_file.files}
         ours = {key: ours_file[key] for key in ours_file.files}
+    table = {**REFERENCE_TABLE.get(name, {}), **PROVENANCE_KEYS}
+    n_grains = int(theirs["nGrains"]) if "nGrains" in theirs else None
+    bitwise = REGENERATION_BITWISE_KEYS.get(name, ())
     for key in sorted(set(theirs) | set(ours)):
         if key not in theirs or key not in ours:
             lines.append(f"  {key}: only in one of the two files")
             continue
         one, two = theirs[key], ours[key]
-        if one.dtype != two.dtype or one.shape != two.shape:
+        if one.dtype != two.dtype:
             lines.append(f"  {key}: {one.dtype}{one.shape} vs {two.dtype}{two.shape}")
+            continue
+        if key in table:
+            shape = tuple(n_grains if s == "n" else s for s in table[key][1])
+        else:
+            shape = two.shape
+        if one.shape != shape:
+            lines.append(f"  {key}: {one.dtype}{one.shape}, layout {shape}")
             continue
         if key in RECORDED_ONLY_KEYS:
             continue
+        if key == "nGrains":
+            if abs(int(one) - int(two)) > REGENERATION_GRAIN_COUNT_TOLERANCE:
+                lines.append(
+                    f"  nGrains: {int(one)} vs {int(two)} grains, more than "
+                    f"{REGENERATION_GRAIN_COUNT_TOLERANCE} apart"
+                )
+            continue
+        provenance = key in PROVENANCE_KEYS or one.dtype.kind == "U"
         if one.dtype.kind == "U":
             one = np.asarray(RUN_DIRECTORY_PATTERN.sub("<run>", str(one)))
             two = np.asarray(RUN_DIRECTORY_PATTERN.sub("<run>", str(two)))
-        if np.array_equal(one, two):
+        if one.shape == two.shape and np.array_equal(one, two):
             continue
-        policy = gpu_array_policy(name, key)
-        n_differ = int(np.count_nonzero(one != two))
-        if record_property is not None:
+        if provenance:
+            lines.append(f"  {key}: differs (provenance)")
+        elif key in bitwise:
+            n_differ = int(np.count_nonzero(one != two))
+            lines.append(f"  {key}: differs in {n_differ} values (bitwise)")
+        elif record_property is not None:
+            if one.shape == two.shape:
+                n_differ = int(np.count_nonzero(one != two))
+            else:
+                n_differ = f"{one.shape} vs {two.shape}"
             record_property(f"{name}_{key}_differ", n_differ)
-        if policy == "recorded":
-            continue
-        if policy == "tie swaps" and np.array_equal(
-            np.sort(one, axis=-1), np.sort(two, axis=-1)
-        ):
-            continue
-        if policy == "watson band":
-            if key == "avor":
-                angles = symmetry_reduced_angle_deg(one, two)
-                if np.all(angles <= WAT_AVOR_MAX_DEG):
-                    continue
-            elif np.all(kappa_relative_difference(one, two) <= WAT_KAPPA_REL):
-                continue
-        lines.append(f"  {key}: differs in {n_differ} values ({policy})")
     return lines
 
 
-def regeneration_message(name: str, lines: list[str]) -> str:
+def regeneration_message(lines: list[str]) -> str:
     """Return the failure message of a regeneration mismatch.
 
     Suspect number one is a rebuilt EMsoft program or library, which
     ``program_md5`` names outright.
     """
     header = [
-        f"the regenerated {name} does not reproduce the shipped reference.",
+        "the regenerated references do not reproduce the shipped ones.",
         "Suspect #1 is a rebuilt EMsoft program or library: program_md5 "
         "pins the md5 of every program and library the shipped bytes came "
         "from, so a differing program_md5 below means another build.",
-        "Per-array differences (arrays computed on the CPU: the contract is "
-        "bitwise; arrays derived from the GPU programs: their recorded "
-        "policy):",
+        "Per-array differences (the arrays EMsoft reproduces run to run "
+        "and the provenance: the contract is bitwise; the rest: keys, "
+        "dtypes, layout and the number of grains):",
     ]
     return "\n".join(header + lines)
 
 
 def assert_regenerated(written: dict, record_property=None) -> None:
-    """Assert every regenerated file reproduces its shipped twin."""
-    for name, fpath in written.items():
-        lines = regeneration_differences(
+    """Assert every regenerated file keeps the regeneration contract
+    with its shipped twin.
+    """
+    lines = []
+    for name, fpath in sorted(written.items()):
+        differences = regeneration_differences(
             name, fpath, reference_path(name), record_property
         )
-        if lines:
-            raise AssertionError(regeneration_message(name, lines))
+        if differences:
+            lines.append(f"{name}:")
+            lines.extend(differences)
+    if lines:
+        raise AssertionError(regeneration_message(lines))
+
+
+def shipped_run_directory(data_root: Path) -> Path:
+    """Return the EMsoft run directory the shipped files came from,
+    as named in their provenance namelist.
+    """
+    namelist = str(load_reference("large_di")["namelist"])
+    match = RUN_DIRECTORY_PATTERN.search(namelist)
+    assert match is not None, "the shipped namelist names no run directory"
+    return data_root / match.group(0)
+
+
+def read_raw_top_matches(fpath: Path) -> dict[str, np.ndarray]:
+    """Return the padded top match data sets of a dot product file as
+    written.
+    """
+    with h5py.File(fpath, "r") as f:
+        group = f["Scan 1/EBSD/Data"]
+        return {key: group[key][()] for key in REGENERATION_BITWISE_DOT_PRODUCT_KEYS}
+
+
+def acid_band_medians(log_path: Path) -> tuple[float, float]:
+    """Return the last top-1 and refined median disorientations in
+    degrees a reference run logged.
+    """
+    text = Path(log_path).read_text(encoding="utf-8")
+    top1 = re.findall(
+        r"acid band: top-1 median disorientation(?: with flipy)? ([0-9.]+) deg",
+        text,
+    )
+    refined = re.findall(
+        r"acid band: refined median disorientation ([0-9.]+) deg", text
+    )
+    assert top1 and refined, f"no acid band lines in {log_path}"
+    return float(top1[-1]), float(refined[-1])
 
 
 def namelist_value_matches(text: str, key: str, value: str) -> bool:
@@ -1053,7 +1133,7 @@ class TestCompatOSMOnEMsoftFiles:
         assert osm.shape == MAP_SHAPE
         differ = osm != expected
         record_property(f"shipped_{key}_differ", int(differ.sum()))
-        assert int(differ.sum()) == SHIPPED_OSM_DIFF
+        assert int(differ.sum()) == SHIPPED_OSM_DIFF[key]
         if differ.any():
             # a build folding the edge multiplier to x * (4 / 3)
             assert np.all(third_pixel_mask(H, W)[differ])
@@ -1184,15 +1264,33 @@ class TestClusterStage:
         euler = load_reference("large_refined")["RefinedEulerAngles"]
         xmap = crystal_map_from_euler(euler, MAP_SHAPE)
         table = watson_table(xmap, np.asarray(ref["grainID"]))
-        assert_watson_within_bands(
-            table,
-            ref["avor"],
-            ref["kappa"],
-            WAT_AVOR_MAX_DEG,
-            WAT_KAPPA_REL,
-            record_property,
-            "wat",
+        kappa = np.asarray(ref["kappa"])
+        ours_kappa = np.asarray(table.kappa)
+
+        # both keep the same grains, and the concentration gate has
+        # the same outcome per grain (EMsoft writes -1 for a grain it
+        # rejects)
+        theirs_valid = kappa != -1
+        assert np.array_equal(np.asarray(table.valid), theirs_valid)
+        with np.errstate(invalid="ignore"):
+            ours_gate = ours_kappa > EMSOFT_MIN_KAPPA
+        assert np.array_equal(ours_gate, kappa > EMSOFT_MIN_KAPPA)
+
+        # the averages within the angle band; the concentrations are
+        # recorded only (see WAT_AVOR_MAX_DEG)
+        ours = table.rotation.data[theirs_valid]
+        angles = symmetry_reduced_angle_deg(ours, np.asarray(ref["avor"])[theirs_valid])
+        rel = kappa_relative_difference(ours_kappa[theirs_valid], kappa[theirs_valid])
+        record_property("wat_avor_max_deg", float(angles.max(initial=0)))
+        record_property("wat_kappa_max_rel", float(rel.max(initial=0)))
+        record_property(
+            "wat_kappa_ratio_range",
+            [
+                float(np.min(ours_kappa[theirs_valid] / kappa[theirs_valid])),
+                float(np.max(ours_kappa[theirs_valid] / kappa[theirs_valid])),
+            ],
         )
+        assert np.all(angles <= WAT_AVOR_MAX_DEG)
 
     @pytest.mark.parametrize("scenario", SCENARIOS_HROSM)
     def test_new_euler_lies_in_the_grain_ball(self, scenario):
@@ -1250,15 +1348,21 @@ class TestClusterStage:
         assert 34_000 < kappa.max() < 35_000
         xmap = crystal_map_from_euler(di["RefinedEulerAngles"], di[READER_SHAPE_KEY])
         table = watson_table(xmap, np.asarray(hrosm["grainID"]))
-        assert_watson_within_bands(
-            table,
-            hrosm["avor"],
-            kappa,
-            NI6_WAT_AVOR_MAX_DEG,
-            NI6_WAT_KAPPA_REL,
-            record_property,
-            "ni6_wat",
-        )
+        # both keep every grain
+        assert np.all(np.asarray(table.valid))
+
+        seed_dependent = np.zeros(kappa.size, dtype=bool)
+        seed_dependent[np.asarray(NI6_WAT_SEED_DEPENDENT_GRAINS) - 1] = True
+        tight = (kappa >= NI6_WAT_TIGHT_MIN_KAPPA) & ~seed_dependent
+        assert int((~tight).sum()) == NI6_WAT_LOOSE_GRAIN_COUNT
+
+        ours = table.rotation.data[tight]
+        angles = symmetry_reduced_angle_deg(ours, np.asarray(hrosm["avor"])[tight])
+        rel = kappa_relative_difference(np.asarray(table.kappa)[tight], kappa[tight])
+        record_property("ni6_wat_avor_max_deg", float(angles.max(initial=0)))
+        record_property("ni6_wat_kappa_max_rel", float(rel.max(initial=0)))
+        assert np.all(angles <= NI6_WAT_AVOR_MAX_DEG)
+        assert np.all(rel <= NI6_WAT_KAPPA_REL)
 
     def test_ni6_small_grains_are_not_reindexed(self, emsoft_data_file):
         hrosm = read_local_hrosm_file(emsoft_data_file(*NI6_HROSM_FILE))
@@ -1606,6 +1710,34 @@ class TestEMsoftFileReader:
         assert list(values["ROI"]) == [0, 0, 0, 0]
         assert parse_namelist_text(" dilate = .FALSE.,")["dilate"] is False
 
+    def test_parse_namelist_text_keeps_an_unquoted_word(self):
+        values = parse_namelist_text(" indexingmode = dynamic,\n nnk = 5,")
+        assert values["indexingmode"] == "dynamic"
+        assert values["nnk"] == 5
+
+    def test_dot_product_file_text_strings_and_subgroups(
+        self, tmp_path, write_emsoft_layout_file
+    ):
+        H, W = 3, 4
+        arrays = dot_product_arrays(H, W)
+        arrays["namelist_text"] = [" &DictIndxOpenCLListData", " nnk = 5,", " /"]
+        fpath = write_emsoft_layout_file(tmp_path / "dp.h5", "dot_product", arrays)
+        string = h5py.string_dtype("ascii")
+        with h5py.File(fpath, "a") as f:
+            # A string data set and a group among the data sets and
+            # among the namelist values
+            f.create_dataset(
+                "Scan 1/EBSD/Data/Phase", data=np.array([b"Ni"], dtype=string)
+            )
+            f.create_group("Scan 1/EBSD/Data/Extra")
+            f.create_group("NMLparameters/EMDINameList/Extra")
+
+        data = read_emsoft_dot_product_file(fpath)
+        assert data[READER_TEXT_KEY] == "\n".join(arrays["namelist_text"])
+        assert data["Phase"] == "Ni"
+        assert "Extra" not in data
+        assert tuple(data[READER_SHAPE_KEY]) == (H, W)
+
 
 # ====================== The EMsoft program lock ===================== #
 
@@ -1643,25 +1775,60 @@ class TestEMsoftProgramLock:
 
 class TestRegenerateReferences:
     def test_the_mismatch_message_names_the_programs_and_the_arrays(self, tmp_path):
-        # the diagnostic of the gated test, exercised on a stand-in
-        # which drops one array, changes one and widens one
+        # the diagnostic of the gated test, exercised on stand-ins:
+        # one drops an array, widens one and changes the re-indexed
+        # map (not reproducible run to run, so not reported); one
+        # changes a bitwise array; one has three grains more
         shipped = load_reference("large_center")
         arrays = {key: shipped[key] for key in shipped if key != "newCI"}
-        arrays["nGrains"] = np.int32(int(shipped["nGrains"]) + 1)
         arrays["kam"] = shipped["kam"].astype(np.float64)
-        fpath = tmp_path / "regression_hrosm_large_center.npz"
-        np.savez(fpath, **arrays)
+        arrays["newOSM"] = shipped["newOSM"] + np.float32(1)
+        center = tmp_path / "regression_hrosm_large_center.npz"
+        np.savez(center, **arrays)
 
+        shipped = load_reference("large_di")
+        arrays = dict(shipped)
+        arrays["CI"] = shipped["CI"].copy()
+        arrays["CI"][0] += np.float32(0.5)
+        di = tmp_path / "regression_hrosm_large_di.npz"
+        np.savez(di, **arrays)
+
+        shipped = load_reference("large_wat")
+        n = int(shipped["nGrains"])
+        arrays = dict(shipped)
+        arrays["nGrains"] = np.int32(n + 3)
+        for key in ("npixels", "kappa", "grainROI", "avor"):
+            arrays[key] = np.concatenate([shipped[key], shipped[key][:3]])
+        wat = tmp_path / "regression_hrosm_large_wat.npz"
+        np.savez(wat, **arrays)
+
+        written = {"large_center": center, "large_di": di, "large_wat": wat}
         with pytest.raises(AssertionError) as error:
-            assert_regenerated({"large_center": fpath})
+            assert_regenerated(written)
         message = str(error.value)
         assert "program_md5" in message
         assert "the contract is bitwise" in message
-        assert "nGrains: differs" in message
         assert "kam: float64(55, 75) vs float32(55, 75)" in message
         assert "newCI: only in one of the two files" in message
-        # the arrays which agree are not listed
+        assert "CI: differs in 1 values (bitwise)" in message
+        assert f"nGrains: {n + 3} vs {n} grains, more than 2 apart" in message
+        # the arrays which agree, and those outside the bitwise set
+        # with the right layout, are not listed
         assert "grainROI" not in message
+        assert "newOSM" not in message
+        assert "TopMatchIndices" not in message
+
+        # a grain count within the tolerance with a consistent layout
+        # passes, and a layout which does not fit the grain count fails
+        arrays["nGrains"] = np.int32(n + 2)
+        for key in ("npixels", "kappa", "grainROI", "avor"):
+            arrays[key] = arrays[key][:-1]
+        np.savez(wat, **arrays)
+        assert_regenerated({"large_wat": wat})
+        arrays["kappa"] = arrays["kappa"][:-1]
+        np.savez(wat, **arrays)
+        with pytest.raises(AssertionError, match=r"kappa: float64\(\d+,\), layout"):
+            assert_regenerated({"large_wat": wat})
 
     def test_regenerated_references_are_bitwise(
         self,
@@ -1701,6 +1868,28 @@ class TestRegenerateReferences:
         assert sorted(written) == sorted(REFERENCE_TABLE)
         for fpath in written.values():
             assert Path(fpath).parent == tmp_path
+
+        # the acid bands of the new run (the script aborts before
+        # writing outside them; asserted again from its log)
+        top1, refined = acid_band_medians(Path(run_dir) / "run.log")
+        record_property("regeneration_top1_median_deg", top1)
+        record_property("regeneration_refined_median_deg", refined)
+        assert top1 <= create_hrosm_reference.TOP1_MEDIAN_MAX_DEG
+        assert refined <= create_hrosm_reference.REFINED_MEDIAN_MAX_DEG
+
+        # the top matches, their dot products and the ball lists equal
+        # those of the run the shipped files came from (the shipped
+        # files hold only part of them)
+        shipped_run = shipped_run_directory(data_root)
+        assert (shipped_run / "dp.h5").is_file(), shipped_run
+        new_top = read_raw_top_matches(Path(run_dir) / "dp.h5")
+        shipped_top = read_raw_top_matches(shipped_run / "dp.h5")
+        for key in REGENERATION_BITWISE_DOT_PRODUCT_KEYS:
+            assert new_top[key].dtype == shipped_top[key].dtype, key
+            assert np.array_equal(new_top[key], shipped_top[key]), key
+        for fname in REGENERATION_BALL_FILES:
+            new_ball = (Path(run_dir) / fname).read_bytes()
+            assert new_ball == (shipped_run / fname).read_bytes(), fname
 
         # newQuat is the float32 eq_ of newEuler on re-indexed points
         for scenario in SCENARIOS_HROSM:

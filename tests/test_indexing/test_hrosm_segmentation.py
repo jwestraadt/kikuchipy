@@ -521,6 +521,24 @@ class TestDilateAndBoxes:
         )
         assert np.array_equal(labels_public, np.array([[1, 1, 0]], dtype=np.int32))
 
+    def test_correct_dilate_fills_a_present_point_with_a_nan_kam(self):
+        # The phase 0 point (2, 2) has only phase 1 4-neighbours, so its
+        # KAM is NaN, but it is present and its diagonal neighbour
+        # (1, 1) of phase 0 is in grain 1
+        phase_id = np.array([[0, 0, 1], [0, 0, 1], [1, 1, 0]])
+        kam = np.full((3, 3), 0.1, dtype=np.float32)
+        kam[2, 2] = np.nan
+        labels = segment_grains_kam(kam, threshold=5.0, phase_id=phase_id)
+        assert labels[2, 2] == 0
+        dilated = segment_grains_kam(kam, threshold=5.0, dilate=True, phase_id=phase_id)
+        assert dilated[2, 2] == labels[1, 1] == 1
+        assert np.array_equal(dilated[phase_id == 1], labels[phase_id == 1])
+
+        # An absent point (phase ID -1) is never filled
+        phase_id[2, 2] = -1
+        dilated = segment_grains_kam(kam, threshold=5.0, dilate=True, phase_id=phase_id)
+        assert dilated[2, 2] == 0
+
     def test_bounding_boxes_are_zero_based_row_col_height_width(self):
         labels = np.zeros((7, 6), dtype=np.int32)
         # An L-shaped grain at rows 2-5, columns 1-3
@@ -541,3 +559,23 @@ class TestDilateAndBoxes:
         x0, y0, w, h = roi.T
         converted = np.column_stack([y0 - 1, x0 - 1, h, w])
         assert np.array_equal(grain_bounding_boxes(labels), converted)
+
+
+class TestInputValidation:
+    def test_rejects_invalid_kam_threshold_phase_id_and_labels(self):
+        kam = np.ones((2, 2), dtype=np.float32)
+        with pytest.raises(ValueError, match="kam must be a 2D array"):
+            segment_grains_kam(np.ones(3, dtype=np.float32))
+        for threshold in (0.0, -1.0, np.nan):
+            with pytest.raises(ValueError, match="threshold"):
+                segment_grains_kam(kam, threshold=threshold)
+        with pytest.raises(ValueError, match="phase_id shape"):
+            segment_grains_kam(kam, phase_id=np.zeros((2, 3), dtype=int))
+        with pytest.raises(ValueError, match="grain_id must be a 2D array"):
+            grain_bounding_boxes(np.ones(3, dtype=np.int32))
+
+    def test_integer_kam_is_compared_in_float64(self):
+        kam = np.array([[1, 6, 12]])
+        labels = segment_grains_kam(kam, threshold=5.0)
+        assert labels.dtype == np.int32
+        assert np.array_equal(labels, np.array([[1, 1, 0]], dtype=np.int32))

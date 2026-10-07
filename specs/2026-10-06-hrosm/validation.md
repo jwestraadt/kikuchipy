@@ -936,7 +936,9 @@ Pins D7.1, D7.5, R7. CI; < 1 s.
 Pins D4 (rule, K3 dilate, boxes), D5.3 (K4), D5.5 (K5-K7 bands), D12.2,
 K12 as written by the binary, R3. Scenarios `center`, `center_dilate`,
 `wat` (shipped, `regression_hrosm_large_<scenario>.npz`, map 55 x 75,
-`gangle 5`, `misorang 5`, `nsamples 20`, `nosm 10`). CI; < 2 s.
+`gangle 5`, `misorang 5`, `nsamples 10` (amended 2026-10-06 from 20,
+requirements D13: EMHROSM leaks ~1 GB per grain at 20), `nosm 10`). CI;
+< 2 s.
 
 - `test_grain_ids_from_the_reference_kam_are_bitwise[scenario]`:
   `segment_grains_kam(ref["kam"], threshold=5.0, dilate=<scenario>,
@@ -951,12 +953,23 @@ K12 as written by the binary, R3. Scenarios `center`, `center_dilate`,
 - `test_center_average_is_the_box_centre_pixel[center-center_dilate]`:
   `avor` equals EMsoft `eq_` of the K4 pixel's float32 angles,
   `kappa == 1.0`; `CENTER_AVOR_MAX_ULP` (seed 0 = bitwise; fallback 1
-  float64 ulp per component, count recorded).
+  float64 ulp per component, count recorded; amended 2026-10-06, Stage A
+  gates: pinned 2, measured in EMsoft's own `eq_` oracle as well as ours).
 - `test_watson_average_within_bands`: `wat` `avor` vs our compat
   Watson (seed 0): symmetry-aware angle <= `WAT_AVOR_MAX_DEG` (seed
   0.01 deg) and `|kappa / kappa_ref - 1| <= WAT_KAPPA_REL` (seed 0.01)
   per grain; the binary's seed is the clock (`mod_cluster.f90:266`), so
-  never bitwise.
+  never bitwise. **Amended 2026-10-06 (Stage A gates, autonomous night
+  run, recommended option):** kappa is RECORDED, not gated. Measured:
+  the compat Watson kappa lands in seed-dependent optima (grain 35:
+  EMsoft 1,072, ours 2.77e5 at seed 0; relative error up to 257-671
+  over our seeds 0-7; 15 grains never within 0.01), while `avor` agrees
+  within 0.136 deg (0.086-0.136 over seeds 0-7). The arm asserts the
+  angle band (`WAT_AVOR_MAX_DEG` 0.3, margin 2.2x), the valid-grain set
+  (both sides keep the same grains, the `kappa > min_kappa` gate
+  outcome equal per grain) and records the kappa ratios in the ledger;
+  `WAT_KAPPA_REL` is removed. The local Ni6 arm keeps its kappa band on
+  grains with EMsoft kappa >= 50 (measured 2.2e-4), where it holds.
 - `test_new_euler_lies_in_the_grain_ball[scenario]`: for re-indexed
   pixels (`newCI > 0`), `Rotation.from_euler(newEuler.astype(
   np.float64))` is within `5 + 1e-3` deg of `Rotation(avor[g - 1])`
@@ -985,7 +998,8 @@ background removed (as the reference script); the detector of the
 dataset with `det.pc = det.pc_average` (one PC, the reference route);
 input `xmap` from the shipped `RefinedEulerAngles` (float64 promoted,
 phase Ni m-3m, shape (55, 75)); `average="center"`, `threshold=5`,
-`max_angle=5`, `n_steps=20`, `keep_n=20`, `n_osm=10`, `pc="single"`,
+`max_angle=5`, `n_steps=10` (amended 2026-10-06 with the reference
+`nsamples`, requirements D13), `keep_n=20`, `n_osm=10`, `pc="single"`,
 `emsoft_compatible=True`. Compared pixels `P`: grain pixels of grains
 re-indexed by both sides whose box has `W * H >= 32`
 (`numdictsingle`, D8.10). Disorientation = symmetry-aware angle
@@ -1124,7 +1138,18 @@ removed on release.
   directory, compared with `Path(kp.data.__file__).parent /
   "emsoft_hrosm"`, whose md5s are asserted unchanged after the run,
   reproduces every shipped file (and `newQuat` of the run equals
-  float32 `eq_` of its `newEuler`): CPU-only arrays (`KAM`, `OSM`,
+  float32 `eq_` of its `newEuler`). **Amended 2026-10-06 (Stage A
+  gates, autonomous night run, recommended option):** the c127868 EMDI
+  stores `DictionaryEulerAngles` that differ between runs (8,608-12,105
+  of 333,248 rows between any two of four runs), so `EulerAngles`,
+  `RefinedEulerAngles` and everything downstream of them (`KAM`, `kam`,
+  `grainID` (44 vs 45 grains), `npixels`, `grainROI`, `avor`, `kappa`,
+  the `new*` arrays) are NOT reproducible run to run. Bitwise: the ball
+  lists, `TopMatchIndices`, `TopDotProductList`, `CI`, `OSM`, `OSM_05`
+  (identical across all four EMDI runs). Structural for the rest: same
+  keys, dtypes and per-file layout; the acid bands of the new run; the
+  grain count within +-2 of the shipped one; and the shipped files'
+  md5s unchanged after the run. (Superseded text follows.) CPU-only arrays (`KAM`, `OSM`,
   `OSM_05`, `grainID`, `kam`, `npixels`, `grainROI`, ball lists)
   bitwise; GPU-derived arrays (`TopMatchIndices`, `EulerAngles`,
   `RefinedEulerAngles`, `RefinedDotProducts`, `CI`, `newOSM`,
@@ -1520,7 +1545,7 @@ Supplementary mutants (`plan.md` section 6, S1-S21):
 | S15 | compat `arccos` clipped to [0, 1] | `kam::TestCompatKAM::test_matches_the_loop_transcription_on_duplicated_orientations` | the guaranteed non-zero duplicated pair becomes 0 |
 | S16 | correct-mode near-one snap dropped (redefined 2026-10-06, spec review round 2) | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan` | NaN on the rotation whose self-dot rounds above 1 |
 | S17 | compat K11 checks removed (absent points, several phases) | `kam::TestCompatKAM::test_rejects_absent_points_and_several_phases`; (B) `sig::TestValidation::test_arguments_are_validated_in_order` | no `ValueError` |
-| S18 | correct-mode snap replaced by the clip to [0, 1] | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan`; `avg::TestGROD::test_correct_center_pixel_has_zero_grod` | the rotation whose self-dot rounds below 1 gives ~3e-6 deg, not 0.0 |
+| S18 | correct-mode snap replaced by the clip to [0, 1] | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan`; `avg::TestGROD::test_correct_center_pixel_has_zero_grod` | the rotation whose self-dot rounds below 1 gives ~3e-6 deg, not 0.0 (amended 2026-10-07, Stage A close gate: the below-1 case is a SYMMETRY-EQUIVALENT pair; a stored rotation's self-dot never rounds below 1 in the production sum, measured on 1000 seeded rotations, while 213-243 of 23,000 rotation/operator pairs do; the killers build such pairs) |
 | S19 | `_map_grid` from the in-data `row`/`col` (the drafted rule) | `avg::TestGrainTable::test_map_grid_spans_points_not_in_the_data`; (B) `sig::TestContracts::test_navigation_masked_dictionary_indexing_map_keeps_its_grid` | the absent-row-0 map shrinks to (2, 4); `hrosm` raises "xmap shape" |
 | S20 | `_dictionary_indexing(verbose=False)` keeps `sleep(0.2)` | `test_dictionary_indexing.py::TestDictionaryIndexing::test_verbose_false_silences_the_core_for_hrosm` | the `sleep` spy is called |
 | S21 | `_directional_statistics._em_correct` VMF: operator set `G` instead of `G+- = {S_j} u {-S_j}` (amended 2026-10-06, Stage A failing-tests gate) | `test_hrosm_averaging.py::TestRecovery::test_vmf_treats_q_and_minus_q_as_one_orientation`; `TestRecovery::test_recovers_left_scrambled_variants[vmf-alpha100-n300]` | sign-flipped samples split into two clusters: `mu` differs and `kappa_hat` collapses |
@@ -2108,3 +2133,952 @@ amendments; plan section 6 gains S21 (correct-mode VMF over `G` instead
 of `G+-`), killed by `test_vmf_treats_q_and_minus_q_as_one_orientation`
 and the all-24-operator left-scrambled VMF recovery arm. The open items
 of entry 5 on V8/V9/V1/D5.5 are closed by this entry.
+
+### 7. 2026-10-06 (Stage A reference run)
+
+Reference runner, Opus 5.5; the workstation of entry 1 (Windows 11
+Enterprise 10.0.26200, 20 logical CPUs, 32 GB RAM, NVIDIA RTX 2000 Ada
+Generation Laptop GPU, driver 595.71). **Status: BLOCKED at EMHROSM; no
+`.npz` shipped, no registry rows added** (details in item 6).
+
+1. **Code.** `_emsoft_file.py` implemented (D12; `TestEMsoftFileReader`
+   6/6 green `-n 0`; also reads the local Ni6 DI and HROSM files:
+   shape (151, 186), `TopMatchIndices` (28086, 50), `dilate` True from
+   the namelist text, `newQuat` None). `create_hrosm_reference.py`
+   implemented per plan 2.12 (import safe: `test_script_is_import_safe`
+   green); deviations listed in item 7.
+2. **Binary.** `KIKUCHIPY_EMSOFT_BIN=C:/Users/westraadt.1/Software/
+   EMSOFT/EMsoftOO/build-ifx-release/Bin`, `6_0_20260525_0`, commit
+   `c127868` (from the DLL string and the program banners). md5:
+   `EMDI.exe` 1c51a207c53c653fd52c3999af9e64f1, `EMFitOrientation.exe`
+   7fea908a244c33429117ee74272f74c2, `EMHROSM.exe`
+   62eb0d1cd2b6ed595213b39fbd5cf468, `EMgetOSM.exe`
+   da80ec33c9e44ac480c71c3c46a4ce40, `EMsampleRFZ.exe`
+   e6dac3386872111029fb07380da82bfb, `EMsoftOOLib.dll`
+   67f3e7f5d8683d140ba8d3907953878e, `EMOpenCLLib.dll`
+   0bc1f12c2146cc80ea6e819af4f90caa. `nvidia-smi` before the run: GPU
+   idle (0 MiB, 0 %, no processes).
+3. **Run directory** `EMsoftData/kikuchipy_hrosm/20261006-195203/`
+   (kept; `run.log` and `probe.log` there). Pre-flight: programs ok;
+   configuration ok; `Xtal/Ni.xtal` space group 225, a = 0.35236 nm ok;
+   inputs cached, master md5 8b69c071a036ad3488d465093b67fe4d ok; no
+   EMsoft program running ok; namelist paths ok; dry EMDI
+   (`ncubochoric 10`, 4.9 s) exit 0, `TopMatchIndices` (4128, 20) ok,
+   so the patched master and `Ni.xtal` are read and the OpenCL device
+   answers (no fallback master needed). The data root gained only
+   `kikuchipy_hrosm/`.
+4. **Inputs.** `patterns_md5` 6d07b0d2c0a783abd2b1773b2a59a1bd
+   (`Pattern.dat`, uint8, static then dynamic background removed);
+   `master_run_md5` ee41b1da6c61420b8af39cbf161cb289 (copy with both
+   `xtalname` = `Ni.xtal`); PC `.6g` = xpc 4.6044, ypc 17.182, L
+   240.996, delta 8.
+5. **Runs and acid bands (`flipy .FALSE.`, no retry needed).** EMDI
+   1356.7 s (22.6 min; the drafting estimate assumed far less), top-1
+   median disorientation to the stored `xmap` 0.5914 deg (<= 1.5);
+   EMFitOrientation 104.0 s, refined median 0.3713 deg (<= 0.5);
+   EMgetOSM first failed (exit 64: the EMsoftOO template quotes the
+   logical `dpweighted = '.FALSE.'`, which `mod_OSM.f90:169` cannot
+   read; the script now sets `dpweighted = .FALSE.`), then 0.1 s with
+   `OSM_10 == OSM` bitwise (True) on `dp-refined.h5`; EMsampleRFZ N 6
+   0.5 s, 2,197 rows. Assembled in a scratch directory from this run
+   (not shipped): `large_di` 242,474 B, `large_refined` 126,586 B,
+   `ball_n6` 151,396 B, keys equal to the V14 table; the provenance
+   `namelist` (the comment-free EMDI namelist, ~1.3 k characters, 4 B
+   each as `U`) puts `large_di` 7.5 kB under the 250,000 B cap, and the
+   projected total (~905 kB) is above the `REFERENCE_TOTAL_BYTES` seed
+   841,000 (MTP; the measurer pins it).
+6. **Blocker: EMHROSM `c127868` leaks ~1 GB per indexed grain.**
+   EMHROSM `center` ran 715.5 s and stopped at grain 19 of 44 (39 %)
+   with `Fatal error in routine mod_memory:alloc_sgl1_:: Unable to
+   allocate real(kind=sgl) array dicttranspose of dimension 115200 ...
+   Progam ended abnormally`, **exit code 0**. Measured (second run,
+   sampled every 10 s, then killed): private bytes grow 0.43-0.46 MB
+   per dictionary batch (790 MB at 10 s -> 3,296 MB at 120 s, 54 progress
+   lines = 540 batches per 10 s), i.e. one `dicttranspose` buffer of
+   Nd x 3600 float32 (32 x 3600 x 4 = 460,800 B) per batch: in
+   `OSMDIdriver` (`EMOpenCLLib/program_mods/mod_DI.f90`, checkout
+   3031e5a) the matching `memth%dealloc(dicttranspose, ...)` is
+   commented out. The leak is per dictionary pattern (68,921 x 3600 x 4
+   B = 0.99 GB per indexed grain) whatever `numdictsingle` is. `center`
+   has 44 grains, 31 with >= 10 points (`center.txt`), so one EMHROSM
+   run needs ~31 GB of commit; this machine has a 38.9 GB commit limit
+   with 29.9 GB committed by other processes, and C: has 4.7 GB free, so
+   the system managed page file cannot grow. EMDI's own driver
+   survived (its 333,227 patterns would leak at most ~4.8 GB). The
+   `975a1fc` build (`EMsoftOOBuild/Release/Bin`) is no workaround as it
+   stands: its EMHROSM rejects the `c127868` namelist keys `angfile`/
+   `ctffile` and, without them, the `c127868` dot product file's EMDI
+   namelist (`mod_DIfiles.f90:660`), and it writes no `newQuat`, which
+   the bin arm asserts. Options for Johan: (a) free ~25 GB of commit
+   (close applications and/or free disk for the page file) and rerun
+   the script unchanged (~23 + 2 + 3 x ~25 min); (b) rebuild EMsoftOO
+   with the `dicttranspose` deallocation restored (changes every
+   `program_md5`); (c) run the whole pipeline with the `975a1fc` build
+   (drops `newQuat`; the bin arm's `newQuat` check and plan 2.12's
+   binary choice amended). The script was not rerun.
+7. **Deviations from plan 2.12.** (i) Each namelist is the template
+   with comment and blank lines removed (template comments hold
+   example paths such as `dotproductfile = 'dp1.h5'`, which the V14
+   path check would reject) and `dpweighted = .FALSE.` (template bug,
+   item 5). (ii) `namelist` provenance = the EMDI namelist text only
+   (the scenario files add `hrosm_namelist`), since all five texts
+   would put `large_di` over 250,000 B. (iii) The NPZ files are written
+   by the script's own zip writer (uncompressed, `allow_pickle=False`
+   arrays, member dates fixed at 1980-01-01) so that equal arrays give
+   equal bytes; `numpy.savez` stamps the current time. (iv) Progress
+   goes to `logging` and `run.log`, not `print`. (v) Beyond the exit
+   code, a program run fails if its output contains `ended
+   abnormally`, `Fatal error` or `forrtl: severe` (EMsoft's fatal
+   handler exits 0). (vi) Two probe runs of EMHROSM (memory sampling,
+   one with the `975a1fc` build) were made in the run directory, the
+   second under the program lock, the first without it while no other
+   EMsoft program ran.
+
+### 8. 2026-10-06 (Stage A measurement)
+
+Measurer, Opus 5.5; this laptop (the workstation of entry 1: Windows 11
+Enterprise 10.0.26200, Intel i7-13700H, 20 logical CPUs, 32 GB RAM,
+NVIDIA RTX 2000 Ada Generation Laptop GPU), `.venv` (orix 0.14.2,
+numpy 2.4.6), Git Bash, warm caches. Inputs: the Stage A implementation
+in the working tree (uncommitted) and NO shipped references (entry 7
+blocker). Recipes: `uv run --no-sync pytest <module> -n 0 -q -p
+no:cacheprovider` (plus `--junitxml` for the `record_property` values);
+scratchpad scripts that import the test modules and call their own
+helpers with the tests' seeds and arguments (nothing written outside
+the files listed in item 6).
+
+1. **Pinned in the tests (measured values; band / pin / margin).**
+   - `test_hrosm_averaging.py` (every recovery arm of the full grid,
+     alpha 20/100/1000 x N 30/300 x mean/vmf/watson, `default_rng(70)`,
+     `n_em` 25, seed 0, plus the q/-q, Watson-antipodal and compat arms):
+     `RECOVERY_ANGLE_FACTOR` **4.0 kept**: error / (2 / sqrt(8 alpha N))
+     at most 1.248 on the default arms, 0.711-1.248 on vmf/watson of the
+     grid, 2.357 on the weekly `mean-alpha20-n300` (margin 1.7 x the
+     worst, 3.2 x the default worst); M19/S1 die at 39-51 x and M23 at
+     ~49 deg (entry 5), unchanged. `KAPPA_RATIO_BAND_N300` **1.25 kept**:
+     `kappa_hat / kappa` 0.9854-0.9864 (left recovery, q/-q, Watson
+     antipodal, compat Watson 0.9858). `KAPPA_RATIO_BAND_N30` **1.6
+     kept**: 1.4727-1.4769 (thin margin, 8 % above the measured value;
+     deterministic seed; no mutant row relies on it).
+     `WRONG_SIDE_MAX_KAPPA_RATIO` **0.2 -> 0.1**: right / left `kappa_hat`
+     mean 0.0417, vmf 0.0358, watson 0.0383, compat Watson left / right
+     0.0373 (margin 2.4 x; a tightening, so every killer still dies).
+     `WATSON_UNDERFLOW_SEED` **80 kept**: seed 80 itself has an init
+     underflowing at its second iteration (the arm passes).
+   - `test_hrosm_sampling.py` (`misorientation_ball_spacing`):
+     `BALL_SPACING_DEFAULT_DEG` 0.15918 -> **0.159176** (measured
+     0.15917641697102608), `BALL_SPACING_N10_DEG` 0.31765 -> **0.317654**
+     (0.3176539461897972), `BALL_SPACING_N2_DEG` 1.60130 -> **1.601304**
+     (1.6013039792844361); `rel=1e-4` kept, S9 (halves) and S10 (0.0)
+     still die.
+   - `test_hrosm_kam.py` `CONSTANT_PAIR_RTOL` **3e-5 kept**: re-measured
+     on the implementation 4.212e-6 (euler0 (10, 20, 30), both fields),
+     1.476e-5 ((40, 50, 60), both fields), equal to entry 5's
+     transcription; margin 2.0 x.
+   - `test_hrosm_emsoft_regression.py` local pins **kept, all equal to
+     the measurement** (`KIKUCHIPY_EMSOFT_DATA=C:/Users/westraadt.1/
+     Software/EMSOFT/EMsoftData`, `--weekly`): `NI6_KAM_NONDEGENERATE_DIFF`
+     6 of 27,992 with `NI6_KAM_MAX_ULP` 2 (max 2 measured);
+     `NI6_DI_KAM_NONDEGENERATE_DIFF` 0 of 6,774;
+     `GRX810_KAM_NONDEGENERATE_DIFF` 0 of 4,182;
+     `AL_KAM_NONDEGENERATE_DIFF` 16 of 210,294 with `AL_KAM_MAX_ULP` 2
+     (max 2 measured); `NI6_OSM_EDGE_PIXELS` 214. The block comment now
+     says the local pins are measured and the shipped ones are seeds.
+2. **Degenerate-pixel counts (recorded, never pinned)**, identical to
+   the seeds of the KAM parity policy: Ni6 HROSM `kam` 37 of 94 differ,
+   max 22.5 deg; Ni6 DI `KAM` 7,079 of 21,312, max 90.0 deg; GRX810 DI
+   358 of 134,999, max 90.0 deg; Al DI 9,838 of 291,298, max 90.0 deg.
+   Compat KAM seconds: Ni6 0.45-0.48, GRX810 2.16, Al 7.88.
+3. **Edge multiplier order of the chosen binary (`c127868`)**, measured
+   on the entry-7 run directory (`dp.h5`, `dp-refined.h5`, 55 x 75):
+   the build FOLDS (`x * float32(4 / 3)`): `_osm_emsoft` (source order)
+   differs from `OSM`/`OSM_10` (n 10) on **79** and from `OSM_05` (n 5)
+   on **87** straight-edge points, each by 1 float32 ulp, and the folded
+   transcription is bitwise on all of them. Compat KAM of that run's
+   `EulerAngles` vs its `KAM`: 0 non-degenerate differences (both
+   files), consistent with the `SHIPPED_KAM_NONDEGENERATE_DIFF` seed 0.
+4. **Not pinned (cannot be pinned honestly now).**
+   - `SHIPPED_OSM_DIFF` (seed 0): the chosen binary gives 79 (n 10) and
+     87 (n 5), but one constant serves both parametrisations of
+     `test_shipped_osm_matches`, so no single value can pass; it needs a
+     per-key pin (a test change for the main session) and the shipped
+     files (the GPU `TopMatchIndices` of a rerun may move the counts).
+   - `SHIPPED_KAM_NONDEGENERATE_DIFF`,
+     `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF`,
+     `SHIPPED_GRAIN_ID_FROM_EULER_DIFF`, `CENTER_AVOR_MAX_ULP`,
+     `WAT_AVOR_MAX_DEG`, `WAT_KAPPA_REL`, `REFERENCE_TOTAL_BYTES` (entry 7
+     projection ~905 kB, above the seed 841,000), `GPU_ARRAY_POLICY`,
+     `REGENERATION_RUNTIME_S`: seeds kept, blocked on the missing
+     references (EMHROSM leak, entry 7).
+   - `NI6_WAT_AVOR_MAX_DEG` / `NI6_WAT_KAPPA_REL` (seeds 0.01 / 0.01):
+     `test_ni6_watson_average_within_bands` FAILS (66.5 s): max angle
+     53.74 deg, max relative kappa 0.352. Per grain the disagreement is
+     confined to diffuse grains: grain 12 (121 px, EMsoft kappa 18.8)
+     53.74 deg / 0.352, grain 2 (22,798 px, kappa 8.19) 33.12 deg /
+     0.025, grain 22 (21 px, 31.5) 30.05 deg / 0.038, grain 26 (10 px,
+     49.4) 11.99 deg / 0.052; every grain with EMsoft kappa >= 50 (40 of
+     62) is within 0.0086 deg; grain 1 (kappa 34,896) has relative kappa
+     0.065 at 1e-4 deg. EMHROSM seeds its generator from the clock, so on
+     diffuse grains the EM picks a different local optimum; a band that
+     holds (~60 deg, 0.4) would test nothing. Left at the seeds; the
+     arm needs a scoped comparison (e.g. grains above a concentration,
+     plus a relative-kappa band that admits ~0.07 at kappa ~3.5e4),
+     which is a test/spec decision for the main session.
+5. **Local and bin arm outcomes.** Local (`-k "ni6 or grx810 or al_"
+   --weekly`): every KAM/OSM arm passes (Ni6 HROSM, Ni6 DI, GRX810 DI,
+   Al DI KAM; GRX810 `OSM`/`OSM_20`, Al OSM, Ni6 OSM edge pixels; Ni6
+   clustering bitwise; Ni6 small grains), `test_ni6_watson_average_
+   within_bands` fails (item 4). Bin (`KIKUCHIPY_EMSOFT_BIN=C:/Users/
+   westraadt.1/Software/EMSOFT/EMsoftOO/build-ifx-release/Bin`,
+   `-k EMsampleRFZ`): the EMsampleRFZ N 6 and N 20 arms pass (9.5 s
+   wall); `test_shipped_n6_ball_matches_in_order` fails on the missing
+   `regression_hrosm_ball_n6.npz`. The regenerate-and-diff arm was NOT
+   run: it needs EMHROSM to complete, and the commit charge available
+   now (9.3 GB free of 38.9 GB, C: 4.4 GB free) is far below the ~31 GB
+   the leaking `c127868` EMHROSM needs (entry 7, item 6).
+6. **Files changed by this entry**: `tests/test_indexing/
+   test_hrosm_averaging.py` (constants block: measured values in the
+   comments, `WRONG_SIDE_MAX_KAPPA_RATIO` 0.1; CRLF kept),
+   `tests/test_indexing/test_hrosm_sampling.py` (three spacing pins),
+   `tests/test_indexing/test_hrosm_emsoft_regression.py` (block
+   comment only), this entry. `ruff check` and `ruff format --check`
+   clean.
+7. **Budget table** (default suite, this laptop; "wall" = shell wall
+   time incl. ~6-7 s interpreter, import and collection start-up;
+   "pytest" = pytest's own reported time):
+
+   | file | seed s | wall s (`-n 0`) | pytest s | result |
+   |---|---|---|---|---|
+   | `test_hrosm_kam.py` | 3 | 8.85 | 1.85 | 35 passed, 1 failed (shipped file) |
+   | `test_hrosm_segmentation.py` | 2 | 6.25 | 0.18 | 32 passed |
+   | `test_hrosm_averaging.py` | 8 | 9.11 | 3.13 | 70 passed, 1 failed, 17 skipped |
+   | `test_hrosm_sampling.py` | 3.5 | 7.51 | 1.19 | 30 passed, 1 failed (shipped file), 2 skipped |
+   | `test_hrosm_osm.py` | 2 | 6.22 | 0.09 | 25 passed |
+   | `test_hrosm_emsoft_regression.py` | 4 | 8.62 | 2.53 | 31 passed, 45 failed (shipped files), 12 skipped |
+   | **total** | **22.5** | **46.6** | **8.97** | |
+
+   Serial ceiling (<= 60 s): holds on both measures. CI-style (`uv run
+   --no-sync --with pytest-cov pytest <the six modules> -n 4 -q -p
+   no:cacheprovider --cov=kikuchipy --cov-branch --cov-report=`), three
+   runs: shell wall 38.65 / 35.07 / 32.75 s (median **35.1 s**), pytest
+   15.90 / 15.78 / 15.67 s (median **15.8 s**); `uv run --with
+   pytest-cov python -c "import kikuchipy"` alone takes 6.9 s. Against
+   the binding 25 s: met on pytest's time, exceeded on shell wall time;
+   which measure the gate means is not stated (the NLPAR ledger does not
+   say either), and the regression module's shipped arms fail fast now
+   (no files), so both numbers understate the final selection. Weekly
+   (`--weekly -n 0`, six modules, no environment variables): 17.3 s
+   wall, 8.94 s pytest.
+8. **Failures outside the measurement (reported, tests not edited).**
+   `test_hrosm_averaging.py::TestCompatEM::test_compat_model_is_right_
+   sided[vmf]` fails: error 21.2 x the base band (0.0864 rad > 0.0163),
+   `kappa_hat / kappa` 0.076, left / right 0.589. Cause measured: the
+   arm picks its sign-safe operator subset from orix' m-3m operators,
+   but compat mode uses EMsoft's own operators, 9 of whose 24
+   quaternions are the negatives of orix' (15 equal, 9 negated), so the
+   "sign-safe" variants are not sign safe for EMsoft's mixture (the
+   Watson arm passes: 1.233 x, 0.9858, 0.0373). The arm needs the subset
+   chosen against the operators the compat EM uses (a test change for
+   the main session). The remaining failures are the missing shipped
+   references (entry 7).
+
+### 9. 2026-10-06 (Stage A build gates)
+
+Gate runner, Opus 5.5; the laptop of entry 8 (Windows 11 Enterprise
+10.0.26200, i7-13700H, 32 GB RAM), `.venv`, Git Bash; working tree =
+commit 1e9471e1 + the uncommitted Stage A implementation and the
+entry-8 pins. No environment gate variable set (default suite). Code
+not changed by this entry. "wall" = shell wall time.
+
+1. **HROSM selection (`$A_TESTS`, plan section 5).** `-n 0`: 48
+   failed, 223 passed, 31 skipped, pytest 7.42 s, wall 15 s. `-n 4`:
+   48 failed, 223 passed, 31 skipped, pytest 10.78 s, wall 18 s; the
+   same 48 node ids as `-n 0` and as the coverage run (diffed). Re-run
+   alone (one per failure kind, 5 node ids): 5 red. Breakdown: 45 in `test_hrosm_emsoft_regression.py`
+   (43 `KeyError` from the registry, 2 `FileNotFoundError`, plus the
+   scenario-set and budget arms) and 1 each in `test_hrosm_kam.py`
+   (`test_euler_round_trip_reproduces_the_shipped_float32_angles`,
+   missing `regression_hrosm_large_refined.npz`) and
+   `test_hrosm_sampling.py` (`test_shipped_n6_ball_matches_in_order`,
+   missing `regression_hrosm_ball_n6.npz`): 47 on the missing shipped
+   references (entry 7 blocker; `src/kikuchipy/data/emsoft_hrosm/`
+   holds no `.npz`). 1 not file related:
+   `test_hrosm_averaging.py::TestCompatEM::test_compat_model_is_right_
+   sided[vmf]` (0.08645 rad > band 0.01633 rad; entry 8 item 8). Skips:
+   19 weekly, 3 `KIKUCHIPY_EMSOFT_BIN`, 9 `KIKUCHIPY_EMSOFT_DATA`.
+2. **Coverage** (`COVERAGE_FILE=<scratchpad>/.coverage.hrosm uv run
+   --no-sync coverage run -m pytest $A_TESTS -n 0`, then `coverage
+   report -m --include="src/kikuchipy/indexing/_hrosm/*"`; statement
+   coverage): total 1093 statements, 18 missed, 98.35 %. 100 %:
+   `__init__`, `_directional_statistics` (200), `_emsoft_quaternions`
+   (70), `_grains` (76), `_kam` (130), `_sampling` (122),
+   `_segmentation` (97). Below: `_averaging.py` 212 / 10 missed, 95.28 %
+   (lines 321, 335, 349, 355, 374, 376, 380, 400, 406, 426: the
+   grain-id shape check, a skipped-grain `continue`, a 2-D data
+   squeeze, five argument-validation raises, the box padding);
+   `_emsoft_file.py` 133 / 7, 94.74 % (90, 217-218, 235, 237-238,
+   253: the DictionaryIndexingNML text branch, a non-numeric token
+   fallback, string datasets and skipped keys in the reader); `_osm.py`
+   53 / 1, 98.11 % (133, a `continue`). Target 100 %: NOT met. Part of
+   the misses may be reached by the shipped-reference arms once the
+   files exist; not measurable now.
+3. **Doctests** (`pytest --doctest-modules src/kikuchipy/indexing/
+   _hrosm src/kikuchipy/data/emsoft_hrosm -q`): 8 passed, 0.11 s, wall
+   6 s.
+4. **Full default suite** (`pytest -n 4 -q -p no:cacheprovider`): 67
+   failed, 4712 passed, 1283 skipped, 1 error, 118.12 s, wall 125 s.
+   48 failed = the HROSM set of item 1. The other 19 failed + 1 error
+   (`test_ebsd_spherical_indexing.py` 17, `test_ebsd_nlpar.py` 1,
+   `test_nlpar.py` 1 failed + 1 error) carry 11
+   `numpy._core._exceptions._ArrayMemoryError` lines (1.9-56.6 MiB
+   allocations) and the follow-on asserts; re-run alone together (`-n
+   0`): 20 passed, 11.65 s. Commit charge after the run: 12.1 GB free
+   of 38.9 GB, C: 5.5 GB free (the low-page-file condition of entries
+   7 and 8). Not HROSM regressions.
+5. **pre-commit** (`SKIP=licenseheaders uvx pre-commit run --files`
+   the 22 non-`specs/` files of commit 2 and the working tree): ruff
+   Passed, ruff format Passed, black-jupyter skipped (no files),
+   licenseheaders skipped; 0 files modified; wall 4 s.
+6. **Oldest matrix** (plan section 5 command, Python 3.10, numpy
+   1.23.0, orix 0.12.1, numba 0.57, ...; `$A_TESTS -n 0`): 48 failed,
+   223 passed, 31 skipped, 9.24 s, wall 53 s; the same 48 node ids as
+   item 1.
+7. **Clean-replay grep** (plan section 5 pattern over src, tests, doc,
+   examples, benchmarks, conftest.py, CHANGELOG.rst, pyproject.toml,
+   notebooks excluded): `develop...HEAD` 0 lines; merge base de27741a
+   vs the working tree (21 files, +11,155) 0 lines.
+8. **Hygiene.** Changed vs HEAD: `CHANGELOG.rst`, this file,
+   `create_hrosm_reference.py`, nine `_hrosm/` modules (`_averaging`,
+   `_directional_statistics`, `_emsoft_file`, `_emsoft_quaternions`,
+   `_grains`, `_kam`, `_osm`, `_sampling`, `_segmentation`), five test
+   modules (averaging, emsoft_regression, kam, sampling, segmentation).
+   Untracked: only `AGH__Si_indent_1_512x672.h5oina` and
+   `specs/_research/plan-upstream-merge-0.13.1.md` (untouched). No
+   notebook, `upstream-issue.md` change; `stash@{0}` present;
+   `specs/roadmap.md` starts `# R`. Branches: develop de27741a,
+   feat-spherical-indexing 6723aaf0, feat-spherical-indexing-nlpar
+   e49b3d85 unchanged; hrebsd-dic 49d8bbad (fast-forward of b64cc18f by
+   the other worktree, commit "Add Stage E spec: GPU backend for the DIC
+   engine", 2026-10-06 21:00; not by HROSM work). Line endings: index
+   LF for all; working copy CRLF for `CHANGELOG.rst` and
+   `test_hrosm_averaging.py`, LF for the rest (core.autocrlf true, so
+   the commit normalises; no content effect).
+9. **Open failures at this gate:** (a) the shipped references are
+   missing (47 tests; entry 7 EMHROSM blocker); (b) the compat
+   right-sided VMF arm (test change for the main session, entry 8
+   item 8); (c) coverage 98.35 %, 18 lines missed (item 2); (d) local
+   Ni6 Watson arm (entry 8 item 4; not run here, gate variables unset).
+
+### 10. 2026-10-06 (reference nsamples amendment, main loop, autonomous night run)
+
+Build gate outcome: EMHROSM c127868 leaks ~0.99 GB per indexed grain at
+`nsamples 20` (entry 7); the reference run cannot finish on this machine.
+Requirements D13 item 7, plan 2.12 and V12/V13 amended to `nsamples 10`
+/ `n_steps=10` (reasons and rejected alternatives in D13). Other gate
+follow-ups queued for the fix workflow: the compat right-sided VMF arm
+picks its sign-safe subset from orix's operator signs although compat
+uses EMsoft's table (10 of 24 operators have the opposite sign): the
+test selects from the operators the compat path uses (spec unchanged);
+`SHIPPED_OSM_DIFF` becomes a per-key pin; the Ni6 Watson local arm
+compares only grains whose EMsoft kappa >= 50 tightly (EMsoft seeds
+from the clock; diffuse grains reach other local optima) and records the
+rest; coverage 98.35 % -> 100 % by tests for the 18 missed lines; the
+full-suite `_ArrayMemoryError` failures under `-n 4` (20 tests, all pass
+alone) are machine memory pressure, re-run with `-n 2`.
+
+### 11. 2026-10-06 (Stage A reference rerun at nsamples 10)
+
+Reference runner, Opus 5.5; the laptop of entry 8, `KIKUCHIPY_EMSOFT_BIN
+=C:/Users/westraadt.1/Software/EMSOFT/EMsoftOO/build-ifx-release/Bin`
+(c127868), NVIDIA RTX 2000 Ada Generation Laptop GPU (0 MiB used, 0 %
+before each run). Program lock taken by the script.
+
+1. **Script change.** `create_hrosm_reference.py`: EMHROSM `nsamples`
+   from the new constant `HROSM_NSAMPLES = 10` (the D13 amendment);
+   every other namelist value and the entry-7 deviations (comment-free
+   namelists, `dpweighted .FALSE.`, EMDI-only `namelist` provenance,
+   own byte-stable zip writer, abnormal-end detection) unchanged. Bug
+   fixed after the run: the frozen-shape check passed `nGrains` as
+   int32 `()`, but the following `np.ascontiguousarray` returned shape
+   `(1,)`, so the files held `nGrains` of shape `(1,)` against the V14
+   table; now `np.array(array, order="C")`. The three scenario files
+   were rewritten from their own arrays with `nGrains` reshaped to `()`
+   by the script's writer (same key order; the writer reproduced the
+   bytes of all six files as written before the change), not rerun.
+2. **First attempt, failed, not shipped**: run directory
+   `EMsoftData/kikuchipy_hrosm/20261006-212406/`, free commit 11.84 of
+   38.87 GB before (C: 5.44 GB free). EMDI 1479.4 s (top-1 median
+   0.5880 deg), EMFitOrientation 102.2 s (0.3703 deg), EMgetOSM 0.1 s
+   (`OSM_10 == OSM` ok), EMHROSM `center` 198.9 s (43 grains, all
+   re-indexed; private bytes 920 -> 4,328 MB, ~79 MB per grain at
+   nsamples 10). EMHROSM `center_dilate` died at grain 18 of 43 after
+   118.9 s: `CLinit_PDCCQ:clCreateContext: CL_OUT_OF_RESOURCES ...
+   Progam ended abnormally`, exit code 0, caught by the abnormal-end
+   check. Cause: a `pytest -n 4` in the kikuchipy-hrebsd worktree
+   (another session, started 21:54:56, ~8 GB in four workers) took the
+   free commit to 0.37 GB while EMHROSM held 2.5 GB; not the leak
+   alone. Waited for it to exit (22:16:31, free commit 9.96 GB) and
+   reran the whole script once.
+3. **Shipped run**: run directory
+   `C:/Users/westraadt.1/Software/EMSOFT/EMsoftData/kikuchipy_hrosm/
+   20261006-221652/`. Free commit before 9.96 GB (lowest sampled 0.43
+   GB during EMDI; EMHROSM peak private bytes 5,718 MB), after 7.58 GB.
+   Wall times: EMDI preflight 5.1 s, EMDI 1382.6 s, EMFitOrientation
+   103.8 s, EMgetOSM 0.4 s, EMHROSM `center` 196.8 s, `center_dilate`
+   258.8 s, `wat` 189.0 s, EMsampleRFZ N 6 0.2 s and N 20 1.8 s; total
+   2148.8 s (35.8 min). `flipy .FALSE.`, no retry.
+4. **Acid bands and self-check**: top-1 median disorientation 0.5893 deg
+   (<= 1.5); refined median 0.3700 deg (<= 0.5); `OSM_10 == OSM`
+   bitwise, ok. Grains: 44 in each scenario, all 44 re-indexed in each
+   ("Indexing grain/total" lines); `npixels >= 10`: 31 (`center`), 42
+   (`center_dilate`), 31 (`wat`).
+5. **Files** (`src/kikuchipy/data/emsoft_hrosm/`, all < 250,000 B,
+   no layout change; total 918,408 B):
+
+   | file | bytes | md5 |
+   |---|---|---|
+   | `regression_hrosm_large_di.npz` | 242,474 | 6567b3e7d808f0b4b79052454c4eb843 |
+   | `regression_hrosm_large_refined.npz` | 126,586 | c052857723a3051173e26caca631abcf |
+   | `regression_hrosm_large_center.npz` | 132,636 | 1dc0ca4fbdae040fde174f573bdc9876 |
+   | `regression_hrosm_large_center_dilate.npz` | 132,688 | 646838357ab25dacd4a86ee864c0eef5 |
+   | `regression_hrosm_large_wat.npz` | 132,628 | 2ef24cd73dd8e4720b05233be97279f4 |
+   | `regression_hrosm_ball_n6.npz` | 151,396 | 669a794cc80175e9fb61fffda02fbb1c |
+
+   Rows added to `src/kikuchipy/data/_registry.py` after the last
+   emsphinx row. Provenance: `master_run_md5`
+   ee41b1da6c61420b8af39cbf161cb289, `patterns_md5`
+   6d07b0d2c0a783abd2b1773b2a59a1bd, PC 4.6044, 17.182, 240.996, 8.
+6. **`test_hrosm_emsoft_regression.py -n 0`**: 7 failed, 71 passed, 12
+   skipped, 2.51 s. All seven fail on seeds that the measurer pins
+   (MTP): `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF` (4 vs seed 0),
+   `test_shipped_osm_matches[osm-10]` / `[osm_05-5]` (79 / 87 vs
+   `SHIPPED_OSM_DIFF` 0, the folded edge points of entry 8 item 3),
+   `test_center_average_is_the_box_centre_pixel[center]` and
+   `[center_dilate]` (2 ulp vs `CENTER_AVOR_MAX_ULP` 0),
+   `test_watson_average_within_bands` (the first assertion: the set
+   of grains with `kappa != -1` differs from ours; bands not reached),
+   `test_each_file_within_budget` (total 918,408 B vs
+   `REFERENCE_TOTAL_BYTES` 841,000). The Watson valid-set mismatch may
+   be more than a seed and needs a look by the measurer.
+
+### 12. 2026-10-06 (Stage A measurement after the rerun)
+
+Measurer, Opus 5.5; the laptop of entry 8 (Windows 11 Enterprise
+10.0.26200, i7-13700H, 20 logical CPUs, 32 GB RAM, NVIDIA RTX 2000 Ada
+Generation Laptop GPU), `.venv` (orix 0.14.2, numpy 2.4.6), Git Bash.
+Inputs: the six references of entry 11 (run `20261006-221652`) and the
+working tree after the fix phase. Recipes: `uv run --no-sync pytest
+tests/test_indexing/test_hrosm_emsoft_regression.py -n 0 -q -p
+no:cacheprovider -o junit_family=legacy --junitxml=<scratchpad>` for
+the `record_property` values (the default `xunit2` family drops them);
+scratchpad scripts importing the test module and calling its own
+helpers; `h5py` diffs of the run directories.
+
+1. **Pinned in `test_hrosm_emsoft_regression.py`** (measured / pin /
+   mutants).
+   - `SHIPPED_KAM_NONDEGENERATE_DIFF` **0 kept**: 0 of 136
+     non-degenerate points (3,989 degenerate, 1,954 differ, max 90 deg,
+     recorded). M1/M5 unchanged.
+   - `SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF` 0 -> **4**: 4 of 4,110
+     non-degenerate points, each within `KAM_FALLBACK_MAX_ULP` 2 (the
+     arm's second assert passes); 15 degenerate, 0 differ. Exact
+     count pin; no mutant row names this arm.
+   - `SHIPPED_OSM_DIFF` 0 -> per-key mapping **`{"OSM": 79, "OSM_05":
+     87}`** (test now indexes it by `key`): the folded edge points of
+     entry 8 item 3, every one a straight-edge point at 1 ulp and
+     reproduced by the folded form (the arm's conditional asserts
+     pass). M24 (divided by `n`) emulated: 4,114 and 4,106 points
+     differ, dies.
+   - `SHIPPED_GRAIN_ID_FROM_EULER_DIFF` **0 kept**: 0 for `center`,
+     `center_dilate`, `wat`.
+   - `CENTER_AVOR_MAX_ULP` 0 -> **2**: EMsoft's `avor` vs the test's own
+     `eq_` oracle of the centre point 2.0 ulp, ours 2.0 ulp, both
+     scenarios (most components 0-1 ulp). This exceeds V12's stated
+     fallback (1 float64 ulp per component): recorded here as a
+     measured deviation of the oracle itself (the binary's libm), not
+     of the implementation. M15 emulated (`x0 + (w - 1) // 2`, 24 and
+     22 even-width boxes): max 1.8e15 and 2.0e16 ulp, dies.
+   - `WAT_AVOR_MAX_DEG` 0.01 -> **0.3**: max symmetry reduced angle
+     0.1356 deg at seed 0 (grain 5, six points, EMsoft kappa 1,439);
+     0.086-0.136 deg over our seeds 0-7; margin 2.2 x. No mutant row
+     names this arm.
+   - `REFERENCE_TOTAL_BYTES` 841,000 -> **920,000** (measured 918,408;
+     1,592 B for provenance string growth such as the version).
+   - `REGENERATION_RUNTIME_S` None -> **2148.8** (the complete script
+     run of entry 11; the V14 attempt below ran 2,086.8 s before it
+     stopped, so it is no complete measurement).
+   - `GPU_ARRAY_POLICY` (item 3): `TopMatchIndices` "tie swaps" ->
+     **"bitwise"**, `CI` **"bitwise"**, `EulerAngles`,
+     `RefinedEulerAngles`, `RefinedDotProducts`, `newOSM`, `newEuler`,
+     `newCI` "bitwise" -> **"recorded"**; `large_wat` keys unchanged.
+2. **Not pinned (cannot be pinned honestly).** `WAT_KAPPA_REL` (seed
+   0.01 kept; `test_watson_average_within_bands` stays RED). Both sides
+   keep all 44 grains (the valid-set assert now passes, entry 11's
+   mismatch was the `nGrains` shape), and 19 of 44 grains agree in
+   kappa within 1e-4, but the grains are tight (EMsoft kappa 927 to
+   7.4e13) and the EM lands in seed-dependent optima: relative kappa
+   up to 257 (grain 35: EMsoft 1,072, ours 2.77e5) at seed 0, and our
+   own seeds 0-7 give per-seed maxima 257-671; for 15 grains no seed of
+   0-7 comes within 0.01 of EMsoft. A band that holds (~700) tests
+   nothing. Needs a test/spec decision (e.g. an angle-only comparison
+   with kappa recorded, or a log-kappa band on grains whose EM is
+   stable across seeds).
+3. **V14 regenerate-and-diff, run once alone** (`KIKUCHIPY_EMSOFT_BIN=
+   C:/Users/westraadt.1/Software/EMSOFT/EMsoftOO/build-ifx-release/
+   Bin`, `KIKUCHIPY_EMSOFT_DATA=C:/Users/westraadt.1/Software/EMSOFT/
+   EMsoftData`, `-n 0`, started 23:00 after another session's pytest
+   exited, free commit 9.63 GB): **FAILED, no diff reached**. Run
+   directory `EMsoftData/kikuchipy_hrosm/20261006-230116/` (kept). EMDI
+   preflight 4.6 s, EMDI 1,337.5 s (top-1 median 0.5993 deg), EMFit
+   105.8 s (0.3755 deg), EMgetOSM 0.1 s, EMHROSM `center` 214.0 s,
+   `center_dilate` 258.5 s, `wat` died after 159.5 s at grain 31 of 45:
+   `CLinit_PDCCQ:clCreateContext: CL_OUT_OF_HOST_MEMORY ... Progam
+   ended abnormally` (exit 0; the script raised). Free commit sampled
+   down to 0.55 GB (other sessions' processes active). pytest 2,086.8
+   s, wall 2,095 s. Manual diff of the arrays the run did write
+   against the shipped files:
+   - bitwise: `TopMatchIndices` (and the full (4128, 20)
+     `TopMatchIndices` and `TopDotProductList` of `dp.h5`, identical
+     across all four EMDI runs `195203`, `212406`, `221652`,
+     `230116`), `CI`, `OSM`, `OSM_05`.
+   - not reproducible: EMDI's `DictionaryEulerAngles` (333,248 rows)
+     differ on 8,608-12,105 rows between any two of the four runs
+     (by ~1-8 deg per row), so `EulerAngles` and `RefinedEulerAngles`
+     differ on 125 of 4,125 points (up to 39 deg), `RefinedDotProducts`
+     on 128, and everything computed from them on the CPU: `KAM` 166
+     points, `kam` 215, and the segmentation (45 grains instead of 44:
+     `grainID` 2,394 / 3,509 points, `npixels`, `grainROI`, `avor`,
+     `kappa` change shape), `newOSM`/`newCI`/`newEuler` 350-1,917.
+   - **Spec contradiction (reported, test not weakened):** V14's
+     "CPU-only arrays bitwise" cannot hold with the `c127868` EMDI,
+     whose stored Euler table is not deterministic although its
+     matches are; the CPU arrays downstream of it (`KAM`, `kam`,
+     `grainID`, `npixels`, `grainROI`, `nGrains`) change, with shape
+     changes that `regeneration_differences` flags before any policy.
+     The arm will fail whatever `GPU_ARRAY_POLICY` says. Options for
+     the main session: compare bitwise only what is downstream of
+     `TopMatchIndices` (`TopMatchIndices`, `CI`, `OSM`, `OSM_05`, the
+     ball) and check the rest structurally, or regenerate the scenario
+     files from the shipped refined angles. A complete V14 run also
+     needs more free commit than this laptop had (two of three
+     attempts tonight died in EMHROSM on host memory).
+4. **Test summaries** (six HROSM modules, `-n 0 -q -p
+   no:cacheprovider`):
+   - default: 1 failed, 288 passed, 31 skipped, pytest 7.53 s, wall
+     15 s;
+   - `--weekly`: 1 failed, 305 passed, 14 skipped, 8.97 s, wall 15 s;
+   - `--weekly` with `KIKUCHIPY_EMSOFT_DATA` (local arms): 1 failed,
+     316 passed, 3 skipped (bin), 86.57 s, wall 95 s. Local values
+     unchanged from entry 8: Ni6 HROSM KAM 6 of 27,992, Ni6 DI 0 of
+     6,774, GRX810 0 of 4,182, Al 16 of 210,294 (degenerate 37/94,
+     7,079/21,312, 358/134,999, 9,838/291,298), Ni6 OSM 214;
+     `test_ni6_watson_average_within_bands` passes (tight grains 0.0086
+     deg, 2.17e-4);
+   - bin `-k EMsampleRFZ` (`test_hrosm_sampling.py`): 3 passed, 2.77 s.
+   The one failure in every run is
+   `TestClusterStage::test_watson_average_within_bands` (item 2).
+   `ruff check` and `ruff format --check` clean on the edited test
+   module.
+5. **Files changed by this entry**: `tests/test_indexing/
+   test_hrosm_emsoft_regression.py` (the constants of item 1 with
+   measured values in comments, `SHIPPED_OSM_DIFF[key]` in
+   `test_shipped_osm_matches`), this entry.
+
+### 13. 2026-10-06 (Stage A build gates after the rerun)
+
+Gate runner, Opus 5.5; the laptop of entry 8, `.venv`, Git Bash;
+working tree = commit 1e9471e1 + the uncommitted Stage A
+implementation, the six shipped `.npz` references of entry 11 and the
+entry-12 pins. No gate variable set (default suite). Code not changed
+by this entry (no lint or format fix was needed). Run 2026-10-06 23:40
+to 2026-10-07 00:40. Machine load: another session's `kikuchipy-hrebsd`
+`pytest -k hrebsd -n 4` restarted in a loop (23:35, 23:57, ~00:17,
+~00:25; ~10 GB commit while up; free commit 3.3 GB during it, 8-9 GB
+between). xdist runs started while it was up died at worker start-up
+(`MemoryError` importing scipy in `conftest.py`, "node down: Not
+properly terminated", "no tests ran"); every number below is from a
+run that completed, and the timing runs name the load they saw.
+
+1. **HROSM selection (`$A_TESTS`).** `-n 0`: 1 failed, 288 passed, 31
+   skipped, pytest 7.43 s, wall 14 s. `-n 4` (quiet machine, 00:17): 1
+   failed, 288 passed, 31 skipped, pytest 13.24 s, wall 20.7 s; same
+   result in two later runs (13.10 s and 17.43 s pytest). The red test,
+   re-run alone (`-n 0`): red, 1.21 s
+   (`TestClusterStage::test_watson_average_within_bands`, `assert
+   np.all(rel <= kappa_rel)`; relative kappa up to 8.01 in the full-
+   suite traceback, band 0.01; entry 12 item 2: kappa band cannot be
+   pinned honestly, needs a test or spec decision). Skips: 19 weekly, 3
+   `KIKUCHIPY_EMSOFT_BIN`, 9 `KIKUCHIPY_EMSOFT_DATA`.
+2. **Coverage** (`coverage run -m pytest $A_TESTS -n 0`, report on
+   `src/kikuchipy/indexing/_hrosm/*`): 1093 statements, 0 missed,
+   **100.00 %** in all ten files (`__init__` 0, `_averaging` 212,
+   `_directional_statistics` 200, `_emsoft_file` 133,
+   `_emsoft_quaternions` 70, `_grains` 76, `_kam` 130, `_osm` 53,
+   `_sampling` 122, `_segmentation` 97). Target met (entry 9: 98.35 %,
+   18 missed; the shipped-reference arms now reach them). Run: 1 failed,
+   288 passed, 31 skipped, pytest 9.72 s, wall 20 s.
+3. **Doctests** (`pytest src/kikuchipy/indexing/_hrosm
+   src/kikuchipy/data/emsoft_hrosm --doctest-modules`): 8 passed, 0.11
+   s, wall 6 s (<= 5 s budget on pytest's time).
+4. **Full default suite** (`pytest tests -n 2 -q -p no:cacheprovider`,
+   00:30, free commit 9.05 GB at start): **1 failed, 4797 passed, 1279
+   skipped, 3 rerun**, 176.85 s, wall 183 s. The one failure is the
+   HROSM Watson arm of item 1; no `MemoryError`, no node down. The 3
+   reruns are flaky-marked tests that passed on rerun (not named under
+   `-q`; not HROSM: the HROSM modules carry no rerun marker and the
+   failing arm failed once). Entry 9's 19 failed + 1 error from memory
+   pressure do not recur at `-n 2`.
+5. **pre-commit** (`SKIP=licenseheaders uvx pre-commit run --files`,
+   the 23 `.py`/`.rst`/`.toml`/`.pyi` files changed or new since
+   de27741a outside `specs/`: `CHANGELOG.rst`, `conftest.py`,
+   `pyproject.toml`, `data/_registry.py`, `data/emsoft_hrosm/__init__.py`,
+   `create_hrosm_reference.py`, `indexing/__init__.pyi`, the ten
+   `_hrosm/` files, the six test modules): ruff Passed, ruff format
+   Passed, black-jupyter and both licenseheaders skipped; 0 files
+   modified; wall 4 s.
+6. **Oldest matrix** (plan section 5 command, Python 3.10, numpy
+   1.23.0, orix 0.12.1, numba 0.57, ...; `$A_TESTS -n 0`): 1 failed,
+   288 passed, 31 skipped, pytest 9.36 s, wall 75 s; the same failing
+   node id as item 1.
+7. **Clean-replay grep** (plan section 5 pattern; src, tests, doc,
+   examples, benchmarks, conftest.py, CHANGELOG.rst, pyproject.toml;
+   notebooks excluded): `develop...HEAD` 0 lines; de27741a vs the
+   working tree (23 files, +11,373) 0 lines. No untracked file under
+   `src/` or `tests/` other than the six `.npz`.
+8. **Budget.**
+   - Serial (`-n 0 --durations=0`, the six modules): wall 15.28 s;
+     one-test run of the same selection (`test_hrosm_kam.py::
+     TestEMsoftQuaternions::test_operator_table_for_m3m_is_emsoft_
+     order`) 6.16 s; net **9.1 s** (<= 60 s: met). pytest 7.82 s;
+     summed reported durations 6.45 s over 119 entries. Slowest ten:
+     0.67 s `TestClusterStage::test_watson_average_within_bands`, 0.57
+     s `TestCompatEM::test_compat_model_is_right_sided[vmf]`, 0.53 s
+     `TestRecovery::test_right_scrambled_variants_are_not_recovered
+     [watson]`, 0.33 s the same `[vmf]`, 0.27 s
+     `TestEMsoftProgramLock::test_takes_over_a_stale_lock_heartbeats_
+     times_out_and_releases`, 0.19 s `TestCompatKAM::test_matches_the_
+     loop_transcription_on_duplicated_orientations`, 0.18 s
+     `test_degrees_output_rounds_through_float32_radians`, 0.18 s
+     `TestMisorientationBall::test_cube_to_ball_matches_orix_cu2ho`,
+     0.18 s `test_matches_the_loop_transcription_bitwise[(7, 9)]`, 0.15
+     s `TestBallSpacing::test_default_spacing_pin`.
+   - CI-style (`uv run --no-sync --with pytest-cov pytest $A_TESTS -n 4
+     -q -p no:cacheprovider --cov=kikuchipy --cov-branch
+     --cov-report=`), nine runs, eight completed (each 1 failed, 288
+     passed, 31 skipped).
+     Quiet machine (11 python processes before and after): **40.2 s
+     wall, 18.20 s pytest**. Under the other session's load: 38.5 /
+     52.9 / 110.3 / 82.7 / 38.6 / 40.6 / 76.9 s wall (pytest 17.7 /
+     27.3 / 61.5 / 28.5 / 17.6 / 19.3 / 38.5 s); one more died at worker
+     start-up. Median of the three runs of the last series (40.2 /
+     40.6 / 76.9 s wall; 18.2 / 19.3 / 38.5 s pytest): **40.6 s wall,
+     19.3 s pytest**. Against the binding 25 s: **exceeded on shell
+     wall time, met on pytest's time** (entry 8: 35.1 s / 15.8 s; the
+     measure the gate means is still not stated, entry 8 item 7). With
+     the shipped references present the selection now runs its full
+     default arms, so this is the real Stage A share. A trim decision
+     (the "CI budget" order) or a statement of the measure is for the
+     main session.
+9. **Hygiene.** Changed vs HEAD: `CHANGELOG.rst`, `plan.md`,
+   `requirements.md`, this file, `data/_registry.py` (+6 lines),
+   `create_hrosm_reference.py`, nine `_hrosm/` modules, six test
+   modules. Untracked: the six `regression_hrosm_*.npz` (918,408 bytes
+   in total, = `REFERENCE_TOTAL_BYTES` measured), plus
+   `AGH__Si_indent_1_512x672.h5oina` and
+   `specs/_research/plan-upstream-merge-0.13.1.md` (untouched, never
+   staged). Nothing staged. No notebook under `doc/` and no
+   `upstream-issue.md` change; `stash@{0}` present ("develop WIP:
+   spherical_indexing.ipynb kernelspec + constitution
+   upstream-issue.md"); `specs/roadmap.md` starts `# R` (no BOM).
+   Branches: develop de27741a, feat-spherical-indexing 6723aaf0,
+   feat-spherical-indexing-nlpar e49b3d85 unchanged; hrebsd-dic
+   49d8bbad (as entry 9). Line endings: LF in the working copy of the
+   `_hrosm/`, script and test files (git warns of LF to CRLF on
+   checkout; core.autocrlf true; no content effect).
+10. **Open at this gate:** (a) `test_watson_average_within_bands`
+    red (kappa band; entry 12 item 2); (b) the V14 regenerate-and-diff
+    contradiction (entry 12 item 3; bin arm, skipped here); (c)
+    CI-style budget 40.6 s wall over 25 s, 19.3 s pytest under it
+    (item 8). Everything else green: coverage 100 %, doctests,
+    full suite (only (a)), pre-commit, oldest matrix (only (a)),
+    clean-replay grep.
+
+### 14. 2026-10-06 (Stage A gate decisions, main loop, autonomous night run)
+
+Johan chose "Regenerate check only" (AskUserQuestion, after freeing disk):
+the shipped `nsamples 10` references stay; the regenerate-and-diff arm is
+run once more after its policy amendment. Recommended options taken for
+the three open gate items of entry 13: (1) V12 Watson kappa recorded, not
+gated (`WAT_KAPPA_REL` removed; angle band, valid set and gate outcome
+asserted); (2) V14 bitwise only for the arrays EMsoft reproduces (ball
+lists, `TopMatchIndices`, `TopDotProductList`, `CI`, `OSM`, `OSM_05`),
+structural checks for the rest (EMDI's `DictionaryEulerAngles` differ
+between runs); (3) the CI-style budget counts pytest's reported time
+(18.2-19.3 s, under 25 s), not the shell wall time (40 s, start-up
+included). `CENTER_AVOR_MAX_ULP` pinned 2 (also in EMsoft's own oracle).
+
+### 15. 2026-10-07 (Stage A regenerate-and-diff)
+
+Bin-gated arm run once, alone, after the entry 14 amendment:
+`KIKUCHIPY_EMSOFT_BIN=.../EMsoftOO/build-ifx-release/Bin uv run
+--no-sync pytest tests/test_indexing/test_hrosm_emsoft_regression.py
+-k "Regenerate" -n 0 -q -p no:cacheprovider`.
+
+1. **Before** (00:38 EDT): free commit 7.21 GB (above the 6 GB floor,
+   no wait), free physical 9.89 GB, commit limit 39.82 GB; C: free
+   39.38 GB; RTX 2000 Ada 0 MiB used, 0 % utilisation. After: free
+   commit 9.04 GB.
+2. **Outcome: 2 passed** (the stand-in diagnostic test and
+   `test_regenerated_references_are_bitwise`), 88 deselected, 3
+   orix/diffpy deprecation warnings. No memory or OpenCL failure.
+3. **Runtime:** pytest 2846.8 s (47:27) for the arm (pinned
+   `REGENERATION_RUNTIME_S` 2148.8 s; this run ~11 min longer, the
+   machine shared with another session's pytest).
+4. **Bitwise equal to the shipped run:** `TopMatchIndices` and
+   `TopDotProductList` of the raw `dp.h5`; ball files
+   `ball_n{6,20}_{qu,ro}.txt` (bytes); `large_di` `CI`, `OSM`,
+   `OSM_05`, `TopMatchIndices`; `ball_n6` `qu`, `ro`. Structural
+   (dtype, shape, layout) checks passed for every other array;
+   `newQuat` equals the float32 `eq_` of `newEuler` on re-indexed
+   points in all three scenarios. Data root unchanged, shipped `.npz`
+   md5 unchanged.
+5. **Acid bands** (run.log): top-1 median disorientation 0.5880 deg,
+   refined median 0.3700 deg (within the script's bands).
+6. **Grain counts:** 44 in each of center, center_dilate and wat
+   (shipped `nGrains` 44, 44, 44); within the 2-grain tolerance.
+7. **Run directory:**
+   `EMsoftData/kikuchipy_hrosm/20261007-003844` (program md5s in its
+   run.log: EMHROSM.exe 62eb0d1c..., EMDI.exe 1c51a207...,
+   EMOpenCLLib.dll 0bc1f12c...). Entry 13 item 10 (b) is closed.
+
+### 16. 2026-10-07 (Stage A bug injection)
+
+Every Stage A row of `plan.md` section 6 (M1-M26, M29, S1, S4, S6, S8,
+S9-S12, S15-S19, S21; the (B) rows and the (B) arms of S17 and S19
+skipped) applied ALONE in the main tree by a scratch driver: copy of
+the file kept, the exact replacement checked to match once, the named
+killers of "Mutant killers" run with `uv run --no-sync pytest -n 0 -q
+-p no:cacheprovider <node ids>`, the file restored from the copy and
+its sha256 checked equal. M13 run as its two arms (a) and (b). Batches
+of three; after each batch the touched modules' test files plus
+`test_hrosm_emsoft_regression.py` re-ran green at `-n 2` (14 batches,
+all green; last: 202 passed, 29 skipped). After the run all ten
+`_hrosm/*.py` files match their pre-run sha256. The EMsoft-gated arms
+(data root, Bin) were not set and are not counted. "(f/n)" = failing
+cases of that killer out of its collected cases.
+
+| mutant | file | killer(s) (fired / cases) | result |
+|---|---|---|---|
+| M1 | `_kam.py` | `kam::TestCompatKAM::test_vertical_pair_is_credited_one_column_right` (1/1); `kam::TestCompatKAM::test_matches_the_loop_transcription_bitwise` (5/8); `reg::TestCompatKAMOnEMsoftFiles::test_shipped_di_kam_on_nondegenerate_pixels` (1/1) | killed |
+| M2 | `_kam.py` | `kam::TestCompatKAM::test_first_row_last_column_is_compared_with_the_identity` (1/1) | killed |
+| M3 | `_kam.py` | `kam::TestCompatKAM::test_constant_pair_angle_field` (2/2) | killed |
+| M4 | `_kam.py` | `kam::TestCompatKAM::test_constant_pair_angle_field` (2/2); `kam::TestCompatKAM::test_first_row_last_column_is_compared_with_the_identity` (1/1) | killed |
+| M5 | `_kam.py` | `kam::TestCompatKAM::test_degrees_output_rounds_through_float32_radians` (1/1) | killed |
+| M6 | `_kam.py` | `kam::TestCorrectKAM::test_two_axis_gradient_field_is_exact` (4/5) | killed |
+| M7 | `_kam.py` | `kam::TestCorrectKAM::test_matches_orix_angle_with_on_scrambled_variants` (1/1) | killed |
+| M8 | `_segmentation.py` | `seg::TestSegmentationRule::test_diagonal_neighbours_join` (1/1); `seg::TestSegmentationRule::test_matches_the_flood_fill_transcription` (2/6) | killed |
+| M9 | `_segmentation.py` | `seg::TestSegmentationRule::test_criterion_is_chained_on_kam_differences` (1/1) | killed |
+| M10 | `_segmentation.py` | `seg::TestSegmentationRule::test_component_without_a_pixel_at_or_below_threshold_is_unassigned` (1/1) | killed |
+| M11 | `_segmentation.py` | `seg::TestSegmentationRule::test_singletons_are_unassigned` (1/1) | killed |
+| M12 | `_segmentation.py` | `seg::TestSegmentationRule::test_threshold_tie_is_decided_in_float32` (1/1) | killed |
+| M13a | `_segmentation.py` | `seg::TestDilateAndBoxes::test_compat_dilate_skips_the_first_row_and_column_and_overwrites` (1/1); `seg::TestDilateAndBoxes::test_compat_dilate_matches_the_emsoft_window_transcription` (4/4); `reg::TestClusterStage::test_center_average_is_the_box_centre_pixel` (0/2) | killed |
+| M13b | `_segmentation.py` | `seg::TestDilateAndBoxes::test_compat_dilate_skips_the_first_row_and_column_and_overwrites` (1/1); `seg::TestDilateAndBoxes::test_compat_dilate_matches_the_emsoft_window_transcription` (2/4); `reg::TestClusterStage::test_center_average_is_the_box_centre_pixel` (0/2) | killed |
+| M14 | `_segmentation.py` | `seg::TestDilateAndBoxes::test_correct_dilate_fills_only_unassigned_pixels` (1/1) | killed |
+| M15 | `_averaging.py` | `avg::TestCenterPixel::test_compat_center_is_the_box_centre_rounded_up` (1/1); `reg::TestClusterStage::test_center_average_is_the_box_centre_pixel` (2/2) | killed |
+| M16 | `_sampling.py` | `smp::TestMisorientationBall::test_count_order_and_shells` (4/4); `smp::TestEMsampleRFZ::test_shipped_n6_ball_matches_in_order` (1/1) | killed |
+| M17 | `_sampling.py` | `smp::TestMisorientationBall::test_composition_is_conj_ball_times_center` (1/1); `smp::TestEMsampleRFZ::test_shipped_n6_ball_matches_in_order` (1/1) | killed |
+| M18 | `_sampling.py` | `smp::TestMisorientationBall::test_outer_shell_is_exactly_max_angle` (4/4); `smp::TestEMsampleRFZ::test_shipped_n6_ball_matches_in_order` (1/1) | killed |
+| M19 | `_directional_statistics.py` | `avg::TestRecovery::test_recovers_left_scrambled_variants[vmf-alpha100-n300]` (1/1); `avg::TestRecovery::test_recovers_left_scrambled_variants[watson-alpha100-n300]` (1/1) | killed |
+| M20 | `_directional_statistics.py` | `avg::TestRecovery::test_watson_is_antipodally_symmetric` (1/1); `avg::TestRecovery::test_recovers_left_scrambled_variants[watson-alpha100-n300]` (1/1) | killed |
+| M21 | `_averaging.py` | `avg::TestCompatEM::test_kappa_gate_is_strict` (4/4) | killed |
+| M22 | `_directional_statistics.py` | `avg::TestCompatEM::test_watson_underflow_keeps_the_previous_q_and_exits_at_the_second_iteration` (1/1) | killed |
+| M23 | `_averaging.py` | `avg::TestRecovery::test_recovers_left_scrambled_variants[mean-alpha100-n300]` (1/1) | killed |
+| M24 | `_osm.py` | `osm::TestCompatOSM::test_compat_osm_is_not_divided_by_n` (2/2); `reg::TestCompatOSMOnEMsoftFiles::test_shipped_osm_matches` (2/2) | killed |
+| M25 | `_osm.py` | `osm::TestCompatOSM::test_edge_multiplier_follows_the_source_order` (1/1) | killed |
+| M26 | `_osm.py` | `osm::TestGrainAwareOSM::test_cross_grain_neighbours_are_excluded` (1/1) | killed |
+| M29 | `_emsoft_file.py` | `reg::TestEMsoftFileReader::test_euler_datasets_are_returned_in_radians` (1/1) | killed |
+| S1 | `_directional_statistics.py` | `avg::TestCompatEM::test_final_representative_side` (1/1); `avg::TestRecovery::test_recovers_left_scrambled_variants[vmf-alpha100-n300]` (1/1) | killed |
+| S4 | `_sampling.py` | `smp::TestMisorientationBall::test_compat_storage_is_float32_rodrigues` (2/2) | killed |
+| S6 | `_averaging.py` | `avg::TestGROD::test_warning_is_strict_at_max_angle` (1/1) | killed |
+| S8 | `_averaging.py` | `avg::TestRecovery::test_one_generator_is_consumed_across_grains_in_label_order` (1/1) | killed |
+| S9 | `_sampling.py` | `smp::TestBallSpacing::test_spacing_equals_brute_force_nearest_neighbour` (3/3); `smp::TestBallSpacing::test_default_spacing_pin` (1/1) | killed |
+| S10 | `_sampling.py` | `smp::TestBallSpacing::test_spacing_equals_brute_force_nearest_neighbour` (3/3); `smp::TestBallSpacing::test_spacing_decreases_with_n_steps_and_grows_with_max_angle` (1/1) | killed |
+| S11 | `_averaging.py` | `avg::TestGROD::test_variant_scrambled_pixels_have_the_same_grod` (2/2); `avg::TestGROD::test_max_grod_is_the_largest_angle_to_the_grain_reference` (0/8) | killed |
+| S12 | `_averaging.py` | `avg::TestGROD::test_compat_center_grod_is_measured_from_the_box_centre_pixel` (1/1) | killed |
+| S15 | `_emsoft_quaternions.py` | `kam::TestCompatKAM::test_matches_the_loop_transcription_on_duplicated_orientations` (1/1) | killed |
+| S16 | `_kam.py` | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan` (1/1) | killed |
+| S17 | `_kam.py` | `kam::TestCompatKAM::test_rejects_absent_points_and_several_phases` (1/1) | killed |
+| S18 | `_kam.py` | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan` (0/1); `avg::TestGROD::test_correct_center_pixel_has_zero_grod` (0/1) | SURVIVED |
+| S19 | `_grains.py` | `avg::TestGrainTable::test_map_grid_spans_points_not_in_the_data` (3/3) | killed |
+| S21 | `_directional_statistics.py` | `avg::TestRecovery::test_vmf_treats_q_and_minus_q_as_one_orientation` (1/1); `avg::TestRecovery::test_recovers_left_scrambled_variants[vmf-alpha100-n300]` (1/1) | killed |
+
+**Result: 41 of 42 arms killed; 1 survivor (S18).**
+
+1. **S18 survives** (snap replaced by `np.clip(d, 0, 1)` in
+   `_kam._dot_to_angle`): both named killers pass. They pick their
+   "below 1" rotation by a self dot product the tests compute
+   themselves (orix `ops * o` then `@` in `self_dot`; `einsum` in
+   `_below_one_rotation`), while the production pair angle sums
+   `emsoft_quaternion_multiply(s, a) * b` with `np.sum(axis=-1)`. For
+   the rotation the tests pick (`default_rng(13)` index 0 of the
+   below set, `[0.35318731, 0.29817927, -0.04550013, 0.88559448]`) the
+   test-side self dot is `0.9999999999999999` but the production one
+   is exactly `1.0`, so the clip is a no-op and the map stays 0.
+   Measured over the 1000 `default_rng(13)` rotations with the
+   production summation: 24 below 1, 636 equal, 340 above. The
+   above-1 arm still kills S16. Strengthening (for the fixer, not
+   done here): select the below-1 rotation with the production
+   summation (`_pair_angle`'s dot product, or the module function
+   itself), assert that its production `d < 1`, then keep the
+   `kam == 0.0` and `grod == 0.0` asserts; verify by re-injecting S18.
+2. Partial arms (mutant killed by its other named killers):
+   `reg::TestClusterStage::test_center_average_is_the_box_centre_pixel`
+   did not fire on M13a or M13b (cause not investigated);
+   `avg::TestGROD::test_max_grod_is_the_largest_angle_to_the_grain_reference`
+   did not fire on S11 (cause not investigated).
+   Neither is a sole killer.
+
+### 17. 2026-10-07 (Stage A close gate)
+
+Strengthener and close-gate run after entry 16. Memory rule: `-n 0`
+or `-n 2` except the budget runs (`-n 4`).
+
+1. **S18 strengthened and killed.** Cause of the survival, measured:
+   a crystal map never stores a rotation whose self dot product, as
+   the production sums it (`emsoft_quaternion_multiply(S_j, a) * b`
+   reduced by `np.sum`), rounds below 1. Over the 1000 float32-Euler
+   rotations of `default_rng(13)` (both generators of the two tests):
+   0 below straight from `Rotation.from_euler`; 24 below after one
+   `Rotation(...)` renormalisation (entry 16's count), but those are
+   not fixed points of the renormalisation, which the map applies
+   again; 0 below at the fixed points (uniform: 636 equal, 340-361
+   above; random: 303-328 above). The "below-1 rotation" self pair of
+   V3/V8 is therefore unreachable through `CrystalMap`; the snap is
+   reachable through a **symmetry-equivalent pair**: `a` and a stored
+   `S_k a` give production dot products below 1 for 213 (uniform) and
+   243 (random) of the 23,000 (rotation, operator) pairs.
+   Changes (tests only):
+   - `test_hrosm_kam.py`: `self_dot` replaced by `pair_dot` (the
+     production summation over m-3m's proper operators);
+     `TestCorrectKAM::test_identical_neighbours_give_zero_not_nan`
+     now builds two (1, 2) maps, picked by the stored data of the
+     built map: identical neighbours whose stored self dot rounds
+     above 1 (kills S16: NaN), and a symmetry-equivalent right
+     neighbour whose stored pair dot rounds below 1 (kills S18);
+     both maps assert finite and `== 0.0`. The duplicated-orientation
+     arm is unchanged.
+   - `test_hrosm_averaging.py`: `TestGROD::_pair_dot`,
+     `_grod_map_data`, `_below_one_map` (first candidate whose
+     stored copy at (0, 0) against the stored centre (1, 1) rounds
+     below 1 in the GROD summation);
+     `test_correct_center_pixel_has_zero_grod` keeps the centre-pixel
+     `== 0.0` asserts and adds `grod[0, 0] == 0.0` for the copy, the
+     reference equal to the stored centre, and the production dot
+     `< 1` asserted on the stored data; the tilted pixels stay
+     `> 0.4`.
+   - Clean code: both pass (0.14 s, 0.02 s).
+   - **S18 re-injected alone** (`_kam._dot_to_angle`: the snap line
+     and `2 * np.arccos(d)` replaced by `2 * np.arccos(np.clip(d, 0,
+     1))`): `kam::...::test_identical_neighbours_give_zero_not_nan`
+     (1/1, kam `1.7075473e-06` on the variant pair) and
+     `avg::TestGROD::test_correct_center_pixel_has_zero_grod` (1/1,
+     `grod[0, 0] = 2.9575588e-06`): **killed**. S16 re-injected alone
+     (snap line removed): KAM arm 1/1 (NaN), GROD arm 1/1: **still
+     killed**. `_kam.py` restored from a copy after each, sha256
+     `c3fe62d3...131a1` equal before and after.
+   - **Spec wording to amend (main loop):** V3, V8, the D10 mapping row
+     and the S18 killer row describe the S18 arm as "the rotation whose
+     self dot rounds below 1"; the arm is now the symmetry-equivalent
+     pair (the self pair cannot reach the snap's lower side).
+   **Bug injection total: 42 of 42 Stage A arms killed.**
+2. **Coverage gap found and partly closed.** The code-review fix F3
+   (compat Rodrigues round trip, `_emsoft_rodrigues_round_trip`) came
+   after entry 13's 100 % and left lines 511-512, 521, 523, 529 of
+   `_directional_statistics.py` uncovered (97.80 %). Added
+   `TestCompatEM::test_compat_final_representative_round_trip_edges`
+   (3 cases: half turn, half turn with scalar 5e-11, tangent rounding
+   to 0; bitwise against the test-local `_emsoft_qr_rq` transcription
+   and within 1e-15 of the expected quaternion). Remaining: **line 529
+   is unreachable** (after the `abs(t) < 1e-12` return, `angle = 2
+   arctan(t) >= 2e-12 > 1e-12`, and NaN fails the comparison). Needs a
+   source decision (main loop): drop the dead branch, or let the
+   `t ~ 0` case fall through with angle 0 as EMsoft's `ra_` -> `aq_`
+   does, which covers it.
+3. **Gate numbers** (`$A_TESTS` = the six HROSM modules):
+   - `-n 0`: 296 passed, 31 skipped, pytest 7.11 s, wall 14 s (293
+     before item 2's 3 cases: 7.19 s).
+   - `-n 2`: 293 passed, 31 skipped, 9.99 s (before item 2's test).
+   - Coverage (`coverage run -m pytest $A_TESTS -n 0`, report on
+     `_hrosm/*`): 1121 statements, 1 missed, **99.91 %**
+     (`_directional_statistics` 227/1, line 529; the other nine files
+     100 %). Gate **not met** (item 2).
+   - Doctests (`_hrosm`, `_orientation_similarity_map.py`): 8 passed,
+     0.11 s.
+   - Full default suite (`pytest tests -n 2 -q -p no:cacheprovider`;
+     free physical 10.8 GB at start): 1 failed, 4804 passed, 1279
+     skipped, 5 rerun, 169.91 s, wall 178 s. The failure:
+     `test_kikuchi_pattern_simulator.py::TestCalculateMasterPattern::
+     test_shape` (`np.allclose(mp.data[0], mp.data[1], atol=1e-4)`),
+     re-run alone `-n 0`: red again after its 5 reruns. Classified:
+     the recorded upstream flake of the tech-stack numba-cache rule
+     paragraph (passes only through reruns); file not touched by this
+     branch; not HROSM.
+   - pre-commit (`SKIP=licenseheaders`, the 23 `.py`/`.rst`/`.toml`/
+     `.pyi` files changed since de27741a outside `specs/`): ruff,
+     ruff format Passed; 0 files modified.
+   - Oldest matrix (plan section 5 command, `$A_TESTS -n 0`): 296
+     passed, 31 skipped, 8.69 s.
+   - Clean-replay grep: `develop...HEAD` 0 lines; develop vs working
+     tree 0 lines; no `S<n>` IDs added in src, tests, conftest.py,
+     CHANGELOG.rst. Non-ASCII added: none (CHANGELOG's only
+     non-ASCII lines are upstream author names already on develop).
+   - Budget: CI-style (`--with pytest-cov ... -n 4 --cov=kikuchipy
+     --cov-branch --cov-report=`), three runs: pytest 11.81 / 12.33 /
+     11.71 s, **median 11.81 s** (<= 25 s on pytest's time, entry 14:
+     met). Serial `-n 0`: wall 14 s minus a one-test run 6 s = **8 s
+     net**, pytest 7.11 s (<= 60 s: met).
+   - Local + weekly, once (`KIKUCHIPY_EMSOFT_DATA=.../EMsoftData
+     --weekly -n 0 -rs`): 324 passed, 3 skipped (bin only), 87.96 s,
+     wall 95 s; the entry 14 amended Watson arm included. Bin
+     `-k EMsampleRFZ` (`test_hrosm_sampling.py`): 3 passed, 2.84 s.
+4. **Hygiene.** Nothing staged. Changed vs HEAD: `CHANGELOG.rst`,
+   `plan.md`, `requirements.md`, this file, `specs/roadmap.md` (item
+   5), `data/_registry.py`, `create_hrosm_reference.py`, nine
+   `_hrosm/` modules, six test modules. Untracked: the six
+   `regression_hrosm_*.npz`, `AGH__Si_indent_1_512x672.h5oina` and
+   `specs/_research/plan-upstream-merge-0.13.1.md` (untouched). No
+   notebook or `upstream-issue.md` change; `stash@{0}` present;
+   `specs/roadmap.md` starts `# R` (no BOM, CRLF kept). Branches:
+   develop de27741a, feat-spherical-indexing 6723aaf0,
+   feat-spherical-indexing-nlpar e49b3d85 unchanged; hrebsd-dic
+   f297867e (fast-forward descendant of b64cc18f and of entry 13's
+   49d8bbad by the other worktree, "Add Stage E failing tests: GPU
+   backend for the DIC engine", 2026-10-07 00:30; not HROSM work).
+5. **Roadmap** (HROSM block, Stage A): ticked the module box, the
+   EMsoft-references box (entries 7, 11, 15) and the tests box
+   (entries 12, 15 and item 3). These ticks go into the Stage A
+   implementation commit (plan section 5), which the roadmap's "ticks
+   only when committed" rule then satisfies. Not ticked: the
+   adversarial-review box (coverage 99.91 %, item 2) and the gates box
+   (CHANGELOG PR link, signed commits pushed).
+6. **Open at this gate:** line 529 (item 2) only; the spec wording of
+   item 1 for the main loop.
+
+### 18. 2026-10-07 (Stage A close, main loop)
+
+Close-gate follow-ups of entry 17: `_emsoft_rodrigues_round_trip`'s
+unreachable second near-identity return (line 529; after the `|t| <
+1e-12` return, `2 arctan(t) >= 2e-12`) restructured as EMsoft does it: a
+near-zero tangent sets angle 0 about z and the axis-angle step returns
+the identity (output unchanged). Coverage of `_hrosm/*` 100.00 % (1122
+of 1122 statements; 296 passed, 31 skipped, `-n 0`); ruff clean. S18
+rows in plan section 6 and the killer table amended to the
+symmetry-equivalent-pair wording. Roadmap Stage A boxes 4 (review + bug
+injection 42/42 + fixes + coverage) and 5 (gates) ticked: entry 17's
+gate table (oldest matrix 296 passed; full suite 4804 passed, the one
+red `TestCalculateMasterPattern::test_shape` is the recorded flake
+outside this branch's files; budget median 11.81 s pytest at `-n 4`
+with coverage vs 25 s; serial 7.11 s vs 60 s; clean-replay grep empty),
+the CHANGELOG bullet with the #20 link, and commit 3 signed and pushed
+with commits 1-2. Stage B is NOT started: Johan, 2026-10-07 ~02:00,
+"Stop at beginning of Stage B for now".

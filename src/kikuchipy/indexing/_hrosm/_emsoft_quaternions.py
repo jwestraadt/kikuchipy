@@ -199,7 +199,18 @@ def emsoft_symmetry_operators(pgnum: int) -> np.ndarray:
         If ``pgnum`` is not an EMsoft crystallographic point group
         number.
     """
-    raise NotImplementedError
+    if (
+        isinstance(pgnum, bool)
+        or not isinstance(pgnum, (int, np.integer))
+        or not 1 <= pgnum <= len(_EMSOFT_POINT_GROUP_NAMES)
+    ):
+        raise ValueError(
+            f"EMsoft point group number {pgnum!r} must be an integer in "
+            f"[1, {len(_EMSOFT_POINT_GROUP_NAMES)}]"
+        )
+    prot = PGROT[int(pgnum) - 1]
+    columns = np.asarray(_QSYM_INIT_COLUMNS[prot], dtype=np.int64)
+    return SYM_Qsymop[columns - 1].copy()
 
 
 def emsoft_point_group_number(point_group: Symmetry) -> int:
@@ -223,7 +234,33 @@ def emsoft_point_group_number(point_group: Symmetry) -> int:
         together with its negative, differs from the point group's
         proper subgroup (message contains "point group").
     """
-    raise NotImplementedError
+    name = getattr(point_group, "name", None)
+    if name not in _EMSOFT_POINT_GROUP_NAMES:
+        raise ValueError(f"The point group {name!r} has no EMsoft number")
+    pgnum = _EMSOFT_POINT_GROUP_NAMES.index(name) + 1
+
+    # Compare the operators as sets of orientations: q and -q are the
+    # same rotation
+    emsoft_ops = emsoft_symmetry_operators(pgnum)
+    orix_ops = np.asarray(point_group.proper_subgroup.data, dtype=np.float64)
+    orix_ops = orix_ops.reshape(-1, 4)
+    atol = 1e-12
+
+    def contained(a: np.ndarray, b: np.ndarray) -> bool:
+        diff = np.minimum(
+            np.abs(a[:, None] - b[None]).max(axis=-1),
+            np.abs(a[:, None] + b[None]).max(axis=-1),
+        )
+        return bool(np.all(diff.min(axis=1) <= atol))
+
+    if emsoft_ops.shape[0] != orix_ops.shape[0] or not (
+        contained(emsoft_ops, orix_ops) and contained(orix_ops, emsoft_ops)
+    ):
+        raise ValueError(
+            f"EMsoft's symmetry operators of point group {name!r} differ "
+            "from orix' proper subgroup of that point group"
+        )
+    return pgnum
 
 
 def emsoft_euler_to_quaternion(euler: np.ndarray) -> np.ndarray:
@@ -247,7 +284,15 @@ def emsoft_euler_to_quaternion(euler: np.ndarray) -> np.ndarray:
         Quaternions of shape (..., 4) of float64 with a non-negative
         scalar part.
     """
-    raise NotImplementedError
+    e = np.asarray(euler, dtype=np.float64)
+    c_phi = np.cos(e[..., 1] * 0.5)
+    s_phi = np.sin(e[..., 1] * 0.5)
+    cm = np.cos((e[..., 0] - e[..., 2]) * 0.5)
+    sm = np.sin((e[..., 0] - e[..., 2]) * 0.5)
+    cp = np.cos((e[..., 0] + e[..., 2]) * 0.5)
+    sp = np.sin((e[..., 0] + e[..., 2]) * 0.5)
+    q = np.stack([c_phi * cp, -s_phi * cm, -s_phi * sm, -c_phi * sp], axis=-1)
+    return np.where(q[..., :1] < 0, -q, q)
 
 
 def emsoft_quaternion_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -268,7 +313,19 @@ def emsoft_quaternion_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     product
         Quaternions of the broadcast shape (..., 4) of float64.
     """
-    raise NotImplementedError
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    a0, a1, a2, a3 = np.moveaxis(a, -1, 0)
+    b0, b1, b2, b3 = np.moveaxis(b, -1, 0)
+    return np.stack(
+        [
+            (a0 * b0 - a1 * b1) - (a2 * b2 + a3 * b3),
+            (a0 * b1 + a1 * b0) + (a2 * b3 - a3 * b2),
+            (a0 * b2 + a2 * b0) + (a3 * b1 - a1 * b3),
+            (a0 * b3 + a3 * b0) + (a1 * b2 - a2 * b1),
+        ],
+        axis=-1,
+    )
 
 
 def emsoft_disorientation_angle(
@@ -296,4 +353,33 @@ def emsoft_disorientation_angle(
     angle
         Disorientation angles in radians of shape (n,) of float64.
     """
-    raise NotImplementedError
+    a = np.asarray(a, dtype=np.float64).reshape(-1, 4)
+    b = np.asarray(b, dtype=np.float64).reshape(-1, 4)
+    operators = np.asarray(operators, dtype=np.float64).reshape(-1, 4)
+    n = a.shape[0]
+    conj = np.array([1.0, -1.0, -1.0, -1.0])
+    angle_min = np.full(n, 1000.0)
+    # Pairs in chunks, so that the operator products stay in cache
+    chunk = 8192
+    with np.errstate(invalid="ignore"):
+        for start in range(0, n, chunk):
+            stop = min(start + chunk, n)
+            # The operators applied to both quaternions once, the
+            # second one conjugated, as contiguous components of shape
+            # (m, 4, chunk); a sign flip of either factor changes no
+            # absolute scalar part
+            sa = emsoft_quaternion_multiply(operators[:, None], a[None, start:stop])
+            sa = np.ascontiguousarray(np.moveaxis(sa, -1, 1))
+            sb = emsoft_quaternion_multiply(operators[:, None], b[None, start:stop])
+            sb = np.ascontiguousarray(np.moveaxis(sb * conj, -1, 1))
+            ac = angle_min[start:stop]
+            for m0, m1, m2, m3 in sa:
+                for c0, c1, c2, c3 in sb:
+                    # The scalar part of the product in EMsoft's term
+                    # order
+                    x = np.abs((m0 * c0 - m1 * c1) - (m2 * c2 + m3 * c3))
+                    angle = 2.0 * np.arccos(x)
+                    # NaN compares False, so it is never selected
+                    ac = np.where(angle < ac, angle, ac)
+            angle_min[start:stop] = ac
+    return angle_min

@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from orix.quaternion import Rotation
 
+from kikuchipy.indexing._hrosm._segmentation import grain_bounding_boxes
+
 if TYPE_CHECKING:  # pragma: no cover
     from orix.crystal_map import CrystalMap
 
@@ -51,7 +53,30 @@ def _map_grid(xmap: CrystalMap) -> tuple[np.ndarray, tuple[int, int]]:
     shape
         ``(ny, nx)``.
     """
-    raise NotImplementedError
+    # orix' shape over all points, set from the coordinates at
+    # construction; xmap.shape counts only the points in the data
+    orig_shape = tuple(int(i) for i in xmap._original_shape)
+    if len(orig_shape) == 2:
+        ny, nx = orig_shape
+    elif len(orig_shape) == 1:
+        n = orig_shape[0]
+        # orix drops a constant coordinate: no x means one column
+        ny, nx = (n, 1) if xmap.x is None else (1, n)
+    else:
+        ny, nx = 1, 1
+    grid = np.full(ny * nx, -1, dtype=np.int64)
+    grid[np.asarray(xmap.is_in_data, dtype=bool)] = np.arange(xmap.size, dtype=np.int64)
+    return grid.reshape(ny, nx), (ny, nx)
+
+
+def _rotation_from_data(data: np.ndarray) -> Rotation:
+    """Return rotations holding the quaternions ``data`` of shape (n,
+    4) bit for bit, without orix' renormalisation.
+    """
+    data = np.asarray(data, dtype=np.float64).reshape(-1, 4)
+    rotation = Rotation(data)
+    rotation.data = data
+    return rotation
 
 
 @dataclass(frozen=True, eq=False)
@@ -75,8 +100,10 @@ class GrainTable:
         Phase ID of the grain's points, shape (n,) of int32; -1 for a
         label without points.
     kappa
-        Concentration per grain, shape (n,) of float64: -1.0 where
-        rejected, 1.0 for the "center" method.
+        Concentration per grain, shape (n,) of float64: the von
+        Mises-Fisher concentration of the mean resultant length for
+        the "mean" method, the expectation maximisation estimate for
+        "vmf" and "watson", 1.0 for "center", and -1.0 where rejected.
     max_grod
         Largest grain reference orientation deviation (GROD) per grain
         in degrees, shape (n,) of float32; NaN where not ``valid``.
@@ -105,7 +132,7 @@ class GrainTable:
     @property
     def n_grains(self) -> int:
         """Return the number of grain labels in the table."""
-        raise NotImplementedError
+        return int(np.asarray(self.n_pixels).shape[0])
 
     @classmethod
     def from_crystal_map(cls, xmap: CrystalMap) -> GrainTable:
@@ -116,7 +143,9 @@ class GrainTable:
         xmap
             Crystal map with the properties ``"grain_id"``,
             ``"grain_orientation"``, ``"grain_kappa"`` and
-            ``"grain_max_grod"``, as returned by ``EBSD.hrosm()``.
+            ``"grain_max_grod"``: each point's grain label, and its
+            grain's orientation (quaternion), concentration and
+            largest GROD in degrees.
 
         Returns
         -------
@@ -128,10 +157,84 @@ class GrainTable:
             points gets 0 points, the box (0, 0, 0, 0), the identity
             rotation, phase ID -1, ``kappa`` -1.0, ``max_grod`` NaN and
             ``valid`` False.
+
+        Examples
+        --------
+        A table rebuilt from the grain properties of a 2 x 3 map of two
+        grains
+
+        >>> import numpy as np
+        >>> from orix.crystal_map import (
+        ...     CrystalMap, Phase, PhaseList, create_coordinate_arrays
+        ... )
+        >>> from orix.quaternion import Rotation
+        >>> from kikuchipy.indexing import GrainTable
+        >>> coords, n = create_coordinate_arrays((2, 3), (1, 1))
+        >>> grain_id = np.array([1, 1, 2, 1, 2, 2], dtype=np.int32)
+        >>> orientation = np.tile([1.0, 0.0, 0.0, 0.0], (n, 1))
+        >>> xmap = CrystalMap(
+        ...     Rotation.identity((n,)),
+        ...     x=coords["x"],
+        ...     y=coords["y"],
+        ...     phase_list=PhaseList(Phase(point_group="m-3m")),
+        ...     prop={
+        ...         "grain_id": grain_id,
+        ...         "grain_orientation": orientation,
+        ...         "grain_kappa": np.ones(n),
+        ...         "grain_max_grod": np.zeros(n, dtype=np.float32),
+        ...     },
+        ... )
+        >>> grains = GrainTable.from_crystal_map(xmap)
+        >>> grains.n_grains
+        2
+        >>> grains.n_pixels
+        array([3, 3])
+        >>> grains.bounding_box
+        array([[0, 0, 2, 2],
+               [0, 1, 2, 2]])
         """
-        # TODO: add a runnable Examples section once the implementation
-        # exists
-        raise NotImplementedError
+        grid, shape = _map_grid(xmap)
+        in_data = grid >= 0
+        labels_in_data = np.asarray(xmap.prop["grain_id"]).astype(np.int64).ravel()
+        labels = np.zeros(shape, dtype=np.int64)
+        labels[in_data] = labels_in_data[grid[in_data]]
+        labels = np.where(labels > 0, labels, 0)
+        n = int(labels.max(initial=0))
+
+        orientation = np.asarray(xmap.prop["grain_orientation"], dtype=np.float64)
+        orientation = orientation.reshape(-1, 4)
+        kappa_in_data = np.asarray(xmap.prop["grain_kappa"], dtype=np.float64)
+        max_grod_in_data = np.asarray(xmap.prop["grain_max_grod"], dtype=np.float32)
+        phase_id_in_data = np.asarray(xmap.phase_id).ravel()
+
+        n_pixels = np.bincount(labels.ravel(), minlength=n + 1)[1:].astype(np.int64)
+        rotation = np.tile([1.0, 0.0, 0.0, 0.0], (n, 1))
+        phase_id = np.full(n, -1, dtype=np.int32)
+        kappa = np.full(n, -1.0, dtype=np.float64)
+        max_grod = np.full(n, np.nan, dtype=np.float32)
+
+        # The first point of each label in raster order carries the
+        # grain's values
+        flat = labels.ravel()
+        present = np.flatnonzero(flat > 0)
+        first_label, first_index = np.unique(flat[present], return_index=True)
+        first_point = grid.ravel()[present[first_index]]
+        g = first_label - 1
+        rotation[g] = orientation[first_point]
+        phase_id[g] = phase_id_in_data[first_point]
+        kappa[g] = kappa_in_data[first_point]
+        max_grod[g] = max_grod_in_data[first_point]
+
+        return cls(
+            n_pixels=n_pixels,
+            bounding_box=grain_bounding_boxes(labels),
+            rotation=_rotation_from_data(rotation),
+            phase_id=phase_id,
+            kappa=kappa,
+            max_grod=max_grod,
+            valid=kappa != -1,
+            method=None,
+        )
 
 
 def _broadcast_grain_props(
@@ -142,4 +245,20 @@ def _broadcast_grain_props(
     ((n,) float32) of a grain table, NaN outside grains, flat over the
     labels ``grain_id`` of the in-data points.
     """
-    raise NotImplementedError
+    grain_id = np.asarray(grain_id).astype(np.int64).ravel()
+    n = grain_id.size
+    orientation = np.full((n, 4), np.nan, dtype=np.float64)
+    kappa = np.full(n, np.nan, dtype=np.float64)
+    max_grod = np.full(n, np.nan, dtype=np.float32)
+    inside = (grain_id > 0) & (grain_id <= table.n_grains)
+    g = grain_id[inside] - 1
+    orientation[inside] = np.asarray(table.rotation.data, dtype=np.float64).reshape(
+        -1, 4
+    )[g]
+    kappa[inside] = np.asarray(table.kappa, dtype=np.float64)[g]
+    max_grod[inside] = np.asarray(table.max_grod, dtype=np.float32)[g]
+    return {
+        "grain_orientation": orientation,
+        "grain_kappa": kappa,
+        "grain_max_grod": max_grod,
+    }

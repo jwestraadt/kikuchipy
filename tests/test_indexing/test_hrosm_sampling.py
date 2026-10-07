@@ -44,10 +44,10 @@ from kikuchipy.indexing._hrosm._sampling import (
 )
 
 # Mean nearest-neighbour angle in degrees of the ball at 5 degrees and
-# 20 steps (the defaults), 10 steps and 2 steps; measured, then pinned
-BALL_SPACING_DEFAULT_DEG = 0.15918
-BALL_SPACING_N10_DEG = 0.31765
-BALL_SPACING_N2_DEG = 1.60130
+# 20 steps (the defaults), 10 steps and 2 steps; measured 2026-10-06
+BALL_SPACING_DEFAULT_DEG = 0.159176
+BALL_SPACING_N10_DEG = 0.317654
+BALL_SPACING_N2_DEG = 1.601304
 
 # Centre of the balls compared with EMsoft: Rodrigues vector along the
 # unit axis (1, 2, 3) / sqrt(14) with magnitude tan(omega / 2) = 0.1

@@ -68,6 +68,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
+from orix.quaternion import Rotation
+from orix.quaternion.symmetry import C1
+
+from kikuchipy.indexing._hrosm._emsoft_quaternions import (
+    emsoft_disorientation_angle,
+    emsoft_euler_to_quaternion,
+    emsoft_point_group_number,
+    emsoft_quaternion_multiply,
+    emsoft_symmetry_operators,
+)
+from kikuchipy.indexing._hrosm._grains import _map_grid
 
 if TYPE_CHECKING:  # pragma: no cover
     from orix.crystal_map import CrystalMap
@@ -135,10 +146,92 @@ def kernel_average_misorientation_map(
     point group, computed in float64. A ``d`` within four machine
     epsilons of one is set to one, so identical orientations give an
     angle of exactly 0.
+
+    Examples
+    --------
+    A map of 3 x 4 points rotated about [001] by 0.5 degrees more per
+    column, so that every horizontal neighbour pair is disoriented by
+    0.5 degrees and every vertical pair by 0 degrees
+
+    >>> import numpy as np
+    >>> from orix.crystal_map import (
+    ...     CrystalMap, Phase, PhaseList, create_coordinate_arrays
+    ... )
+    >>> from orix.quaternion import Rotation
+    >>> import kikuchipy as kp
+    >>> coords, n = create_coordinate_arrays((3, 4), step_sizes=(1, 1))
+    >>> rot = Rotation.from_axes_angles(
+    ...     [0, 0, 1], np.deg2rad(0.5 * coords["x"])
+    ... )
+    >>> xmap = CrystalMap(
+    ...     rot,
+    ...     x=coords["x"],
+    ...     y=coords["y"],
+    ...     phase_list=PhaseList(Phase(point_group="m-3m")),
+    ... )
+    >>> kam = kp.indexing.kernel_average_misorientation_map(xmap)
+    >>> kam.shape
+    (3, 4)
+    >>> print(kam.round(2))
+    [[0.25 0.33 0.33 0.25]
+     [0.17 0.25 0.25 0.17]
+     [0.25 0.33 0.33 0.25]]
     """
-    # TODO: add a runnable Examples section on a small synthetic map
-    # once the implementation exists
-    raise NotImplementedError
+    grid, (ny, nx) = _map_grid(xmap)
+    in_data = grid >= 0
+
+    # The first rotation per point, of the points in the data
+    data = np.asarray(xmap.rotations.data, dtype=np.float64)
+    if data.ndim > 2:
+        data = data[:, 0]
+    data = data.reshape(-1, 4)
+
+    phase_id = np.full((ny, nx), -1, dtype=np.int64)
+    phase_id[in_data] = np.asarray(xmap.phase_id).ravel()[grid[in_data]]
+    # Points not indexed (phase ID -1) count as not in the data
+    present = in_data & (phase_id >= 0)
+
+    if emsoft_compatible:
+        if not np.all(present):
+            raise ValueError(
+                "emsoft_compatible requires every map point to be in the "
+                "data and indexed"
+            )
+        ids = np.unique(phase_id)
+        if ids.size > 1:
+            raise ValueError(
+                "emsoft_compatible requires one phase, but the map has "
+                f"{ids.size} phases"
+            )
+        # A phase without a point group has no EMsoft number either
+        point_group = xmap.phases[int(ids[0])].point_group
+        operators = emsoft_symmetry_operators(emsoft_point_group_number(point_group))
+        # EMsoft reads float32 Euler angles and promotes them to
+        # float64 before its own conversion to quaternions
+        euler = Rotation(data[grid.ravel()]).to_euler().astype(np.float32)
+        q = emsoft_euler_to_quaternion(euler.astype(np.float64))
+        q = q.reshape(ny, nx, 4)
+        pair_h, pair_v, spurious = _emsoft_pair_angles(q, operators)
+        acc = _emsoft_neighbour_sum(pair_h, pair_v, spurious, ny, nx, np.float64)
+        acc = _emsoft_edge_multipliers(acc, ny, nx, _third_float64)
+        kam = acc.astype(np.float32).reshape(ny, nx)
+    else:
+        q = np.zeros((ny, nx, 4), dtype=np.float64)
+        q[..., 0] = 1
+        q[in_data] = data[grid[in_data]]
+        operators_by_phase = {}
+        for i in np.unique(phase_id[present]):
+            point_group = xmap.phases[int(i)].point_group
+            # A phase without a point group has only the identity
+            point_group = C1 if point_group is None else point_group
+            operators = point_group.proper_subgroup.data.reshape(-1, 4)
+            operators_by_phase[int(i)] = np.asarray(operators, dtype=np.float64)
+        kam = _correct_kam(q, present, phase_id, operators_by_phase)
+        kam = kam.astype(np.float32)
+
+    if degrees:
+        kam = (kam.astype(np.float64) * RTOD).astype(np.float32)
+    return kam
 
 
 def _dot_to_angle(d: np.ndarray) -> np.ndarray:
@@ -149,7 +242,9 @@ def _dot_to_angle(d: np.ndarray) -> np.ndarray:
     Shared by the correct KAM and the grain reference orientation
     deviation.
     """
-    raise NotImplementedError
+    d = np.asarray(d, dtype=np.float64)
+    d = np.where(d >= 1 - 4 * np.finfo(np.float64).eps, 1.0, d)
+    return 2 * np.arccos(d)
 
 
 def _correct_kam(
@@ -179,7 +274,33 @@ def _correct_kam(
         of shape (ny, nx) of float64; NaN without such a neighbour or
         where not present.
     """
-    raise NotImplementedError
+    ny, nx = present.shape
+    total = np.zeros((ny, nx), dtype=np.float64)
+    count = np.zeros((ny, nx), dtype=np.int64)
+    every = slice(None)
+    # Vertical pairs, then horizontal pairs
+    for a, b in [
+        ((slice(None, -1), every), (slice(1, None), every)),
+        ((every, slice(None, -1)), (every, slice(1, None))),
+    ]:
+        valid = present[a] & present[b] & (phase_id[a] == phase_id[b])
+        qa = q[a][valid]
+        qb = q[b][valid]
+        pair_phase = phase_id[a][valid]
+        angle_valid = np.zeros(qa.shape[0], dtype=np.float64)
+        for i, operators in operators_by_phase.items():
+            is_phase = pair_phase == i
+            angle_valid[is_phase] = _pair_angle(qa[is_phase], qb[is_phase], operators)
+        angle = np.zeros(valid.shape, dtype=np.float64)
+        angle[valid] = angle_valid
+        total[a] += angle
+        total[b] += angle
+        count[a] += valid
+        count[b] += valid
+    kam = np.full((ny, nx), np.nan, dtype=np.float64)
+    has_neighbour = present & (count > 0)
+    kam[has_neighbour] = total[has_neighbour] / count[has_neighbour]
+    return kam
 
 
 def _emsoft_pair_angles(
@@ -205,7 +326,21 @@ def _emsoft_pair_angles(
     spurious
         Angle between the identity quaternion and ``q[0, W - 1]``.
     """
-    raise NotImplementedError
+    H, W = q.shape[:2]
+    identity = emsoft_euler_to_quaternion(np.zeros(3)).reshape(1, 4)
+    # All pairs in one call: horizontal, vertical, then the last pixel
+    # of the first row against the identity
+    a = np.concatenate([q[:, :-1].reshape(-1, 4), q[:-1].reshape(-1, 4), identity])
+    b = np.concatenate(
+        [q[:, 1:].reshape(-1, 4), q[1:].reshape(-1, 4), q[0, W - 1].reshape(1, 4)]
+    )
+    angle = emsoft_disorientation_angle(a, b, operators)
+    n_h = H * (W - 1)
+    n_v = (H - 1) * W
+    pair_h = angle[:n_h].reshape(H, W - 1)
+    pair_v = angle[n_h : n_h + n_v].reshape(H - 1, W)
+    spurious = float(angle[-1])
+    return pair_h, pair_v, spurious
 
 
 def _emsoft_neighbour_sum(
@@ -226,7 +361,31 @@ def _emsoft_neighbour_sum(
     pixels t - 1 and t, with pixel -1 the identity (KAM) or the empty
     list (OSM).
     """
-    raise NotImplementedError
+    n = H * W
+    if W == 1:
+        # Every pixel is the first of its row: it gets its pair with
+        # the pixel above twice, the first pixel its pair with the
+        # identity (the spurious value) twice
+        pair = np.zeros(n, dtype)
+        pair[0] = spurious
+        pair[1:] = np.asarray(pair_v).ravel()
+        return pair + pair
+    left = np.zeros((H, W), dtype)
+    left[:, 1:] = pair_h
+    up = np.zeros((H, W), dtype)
+    up[1:, :] = pair_v
+    up[0, W - 1] = spurious
+    right = np.zeros((H, W), dtype)
+    right[:, :-1] = pair_h
+    # The vertical pair of a pixel and the one below it goes to the
+    # next pixel in raster order
+    v = np.zeros(n, dtype)
+    v[: (H - 1) * W] = np.asarray(pair_v).ravel()
+    down = np.zeros(n, dtype)
+    down[1:] = v[:-1]
+    down[0] = spurious
+    # EMsoft's order of accumulation per pixel: left, up, right, down
+    return ((left + up) + right).ravel() + down
 
 
 def _emsoft_edge_multipliers(
@@ -251,4 +410,35 @@ def _emsoft_edge_multipliers(
         The function ``x -> (x * 4) / 3`` in the precision of the map:
         float64 for KAM, float32 for the orientation similarity map.
     """
-    raise NotImplementedError
+    acc = np.array(acc, copy=True)
+    n = H * W
+    acc *= 0.25
+    acc[1 : W - 1] = third(acc[1 : W - 1])
+    acc[n - W + 1 : n - 1] = third(acc[n - W + 1 : n - 1])
+    left = W * np.arange(1, H - 1)
+    acc[left] = third(acc[left])
+    right = W * np.arange(2, H) - 1
+    acc[right] = third(acc[right])
+    acc[0] *= 4.0
+    acc[W - 1] *= 2.0
+    acc[n - 1] *= 2.0
+    acc[n - W] = third(acc[n - W])
+    return acc
+
+
+def _pair_angle(a: np.ndarray, b: np.ndarray, operators: np.ndarray) -> np.ndarray:
+    """Return the symmetry-reduced angles in radians between pairs of
+    unit quaternions ``a`` and ``b`` of shape (n, 4): the largest
+    absolute dot product of ``b`` with ``a`` multiplied from the left
+    by each operator of shape (m, 4), through :func:`_dot_to_angle`.
+    """
+    d = np.zeros(a.shape[0], dtype=np.float64)
+    for s in operators:
+        sa = emsoft_quaternion_multiply(s, a)
+        d = np.maximum(d, np.abs(np.sum(sa * b, axis=-1)))
+    return _dot_to_angle(d)
+
+
+def _third_float64(x: np.ndarray) -> np.ndarray:
+    """Return ``(x * 4) / 3`` in float64, EMsoft's edge multiplier."""
+    return (x * 4.0) / 3.0

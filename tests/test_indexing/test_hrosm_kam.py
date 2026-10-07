@@ -440,14 +440,20 @@ def gradient_mean_rad(
     return out
 
 
-def self_dot(rotation_data: np.ndarray) -> float:
-    """Return the float64 ``max_j |<S_j o, o>|`` over m-3m's proper
-    operators.
+def pair_dot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Return the float64 ``max_j |<S_j a, b>|`` over m-3m's proper
+    operators of quaternions of shape (n, 4), summed as the correct KAM
+    sums its pair dot products: ``emsoft_quaternion_multiply(S_j, a) *
+    b`` reduced by ``np.sum`` over the last axis. Another summation
+    order (orix products and ``@``, or ``einsum``) rounds differently.
     """
-    o = Rotation(rotation_data.reshape(1, 4))
-    ops = Rotation(Oh.proper_subgroup.data)
-    products = (ops * o).data.reshape(-1, 4)
-    return float(np.abs(products @ rotation_data.reshape(4)).max())
+    a = np.asarray(a, dtype=np.float64).reshape(-1, 4)
+    b = np.asarray(b, dtype=np.float64).reshape(-1, 4)
+    d = np.zeros(a.shape[0], dtype=np.float64)
+    for s in np.asarray(Oh.proper_subgroup.data, dtype=np.float64):
+        sa = emsoft_quaternion_multiply(s, a)
+        d = np.maximum(d, np.abs(np.sum(sa * b, axis=-1)))
+    return d
 
 
 # Tests
@@ -833,22 +839,37 @@ class TestCorrectKAM:
                 rng.uniform(0, 2 * np.pi, n),
             ]
         ).astype(np.float32)
-        rot = Rotation.from_euler(euler32.astype(np.float64)).data
-        below = above = None
-        for q in rot:
-            d = self_dot(q)
-            if below is None and d < 1:
-                below = q
-            if above is None and d > 1:
-                above = q
-            if below is not None and above is not None:
-                break
-        assert below is not None and self_dot(below) < 1
-        assert above is not None and self_dot(above) > 1
+        rot = Rotation(Rotation.from_euler(euler32.astype(np.float64))).data
+        operators = np.asarray(Oh.proper_subgroup.data, dtype=np.float64)
 
-        shape = (3, 4)
-        for q in (below, above):
-            xmap = crystal_map(Rotation(np.tile(q, (12, 1))), shape)
+        def first_stored_pair(left, right, rounds_below):
+            """Return the map of the first candidate pair whose stored
+            dot product, as the correct KAM sums it, rounds below
+            (above) 1.
+            """
+            d = pair_dot(left, right)
+            for i in np.flatnonzero(d < 1 if rounds_below else d > 1):
+                xmap = crystal_map(Rotation(np.stack([left[i], right[i]])), (1, 2))
+                stored = np.asarray(xmap.rotations.data, dtype=np.float64)
+                d_stored = pair_dot(stored[:1], stored[1:])[0]
+                if (d_stored < 1) if rounds_below else (d_stored > 1):
+                    return xmap
+            return None
+
+        # Identical neighbours whose self dot product rounds above 1:
+        # the snap, not a plain arccos, gives 0
+        above = first_stored_pair(rot, rot, False)
+        # A symmetry-equivalent right neighbour whose dot product rounds
+        # below 1: the snap, not a clip to [0, 1], gives 0
+        below = None
+        for k in range(1, operators.shape[0]):
+            variants = Rotation(emsoft_quaternion_multiply(operators[k], rot)).data
+            below = first_stored_pair(rot, variants, True)
+            if below is not None:
+                break
+        assert above is not None and below is not None
+
+        for xmap in (above, below):
             kam = kernel_average_misorientation_map(xmap)
             assert np.all(np.isfinite(kam))
             assert np.all(kam == 0.0)
@@ -871,3 +892,10 @@ class TestCorrectKAM:
                 all_identical[y, x] = all(same)
         assert all_identical.any()
         assert np.all(kam[all_identical] == 0.0)
+
+
+class TestOperatorTableValidation:
+    @pytest.mark.parametrize("pgnum", [0, 33, True, 2.0])
+    def test_rejects_invalid_point_group_numbers(self, pgnum):
+        with pytest.raises(ValueError, match="EMsoft point group number"):
+            emsoft_symmetry_operators(pgnum)

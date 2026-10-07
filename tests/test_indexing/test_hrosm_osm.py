@@ -98,7 +98,8 @@ def emsoft_osm_loop(top: np.ndarray, n: int, H: int, W: int) -> np.ndarray:
             lp = cp
             cp = top[t - 1, :n]
             pstore[ii - 1] = cp
-            d = np.float32(vectormatch(lp, cp))
+            # vectormatch(lnm, cp, lp): the current list first
+            d = np.float32(vectormatch(cp, lp))
             acc[t - 2] = acc[t - 2] + d
             acc[t - 1] = acc[t - 1] + d
         if jj > 1:
@@ -187,6 +188,30 @@ class TestCompatOSM:
         assert osm[0, 1] == source_order
         assert np.array_equal(osm, emsoft_osm_loop(top, n, H, W))
 
+    def test_pair_order_follows_the_source_with_duplicates(self):
+        # vectormatch counts entries of its first list found in the
+        # second, which is not symmetric when a list holds duplicates:
+        # EMsoft passes the right list first in a horizontal pair and
+        # the upper list first in a vertical pair
+        assert vectormatch(np.array([1, 1, 2]), np.array([1, 3, 4])) == 2
+        assert vectormatch(np.array([1, 3, 4]), np.array([1, 1, 2])) == 1
+        n = 3
+        top = np.array([[1, 1, 2], [1, 3, 4]], dtype=np.int32)
+        osm = _osm_emsoft(top, 1, 2, n)
+        assert np.array_equal(osm, emsoft_osm_loop(top, n, 1, 2))
+        # One shared entry (two in the reversed order, which doubles
+        # the map)
+        assert np.array_equal(osm, np.array([[4 / 3, 1.0]], dtype=np.float32))
+
+        top = np.array([[1, 1, 2], [5, 6, 7], [1, 3, 4], [8, 9, 10]], np.int32)
+        osm = _osm_emsoft(top, 2, 2, n)
+        assert np.array_equal(osm, emsoft_osm_loop(top, n, 2, 2))
+        # The vertical pair (0, 0)-(1, 0) counts 2 entries of the
+        # upper list (1 in the reversed order); EMsoft credits it to
+        # (1, 0) and, one column to the right, to (0, 1)
+        expected = np.array([[0.0, 1.0], [2 / 3, 0.0]], dtype=np.float32)
+        assert np.array_equal(osm, expected)
+
     @pytest.mark.parametrize("shape", [(5, 7), (4, 6)], ids=shape_id)
     def test_compat_osm_is_not_divided_by_n(self, shape):
         H, W = shape
@@ -271,3 +296,16 @@ class TestGrainAwareOSM:
         identical = np.tile(np.arange(1, n + 1, dtype=np.int32), (H * W, 1))
         osm = _osm_grain_aware(identical, grain_id, reindexed, n)
         assert np.array_equal(osm, np.full((H, W), n, dtype=np.float32))
+
+    def test_one_row_map_has_only_horizontal_neighbours(self):
+        # a single row has no vertical pair, and no point re-indexed
+        # leaves no pair at all
+        H, W, n = 1, 4, 5
+        grain_id = np.ones((H, W), dtype=np.int32)
+        identical = np.tile(np.arange(1, n + 1, dtype=np.int32), (H * W, 1))
+        osm = _osm_grain_aware(identical, grain_id, np.ones((H, W), dtype=bool), n)
+        assert np.array_equal(osm, np.full((H, W), n, dtype=np.float32))
+
+        osm = _osm_grain_aware(identical, grain_id, np.zeros((H, W), dtype=bool), n)
+        assert osm.dtype == np.float32
+        assert np.all(np.isnan(osm))

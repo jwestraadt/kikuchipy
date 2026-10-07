@@ -67,33 +67,56 @@ from kikuchipy.indexing._hrosm._directional_statistics import (
     _kappa_from_y,
     _log_cp,
 )
+from kikuchipy.indexing._hrosm._emsoft_quaternions import (
+    emsoft_quaternion_multiply,
+    emsoft_symmetry_operators,
+)
 from kikuchipy.indexing._hrosm._grains import _broadcast_grain_props, _map_grid
 
 # Recovery band of the mean orientation: this factor times 2 /
-# sqrt(8 alpha N) radians; measured, then pinned
+# sqrt(8 alpha N) radians (measured 2026-10-06: at most 1.25 times
+# 2 / sqrt(8 alpha N) on the default arms, 2.36 on the full grid)
 RECOVERY_ANGLE_FACTOR = 4.0
 # Band [1 / b, b] of the estimated over the sampled concentration for
-# 300 and 30 samples; measured, then pinned
+# 300 and 30 samples (measured 2026-10-06: 0.985-0.987 for 300
+# samples, 1.473-1.477 for 30)
 KAPPA_RATIO_BAND_N300 = 1.25
 KAPPA_RATIO_BAND_N30 = 1.6
 # Largest ratio of the concentration estimated on samples scrambled on
 # the side the model does not handle over the one estimated on the same
-# samples scrambled on the model's side; measured, then pinned
-WRONG_SIDE_MAX_KAPPA_RATIO = 0.2
+# samples scrambled on the model's side (measured 2026-10-06: at most
+# 0.042)
+WRONG_SIDE_MAX_KAPPA_RATIO = 0.1
 # Seed of the unscrambled Watson samples at kappa 1e4 of which one
 # initial guess underflows at its second iteration in EMsoft's
-# expectation maximisation; the first seed from 80 up that does,
-# measured, then pinned
+# expectation maximisation; the first seed from 80 up that does
+# (measured 2026-10-06: 80 itself)
 WATSON_UNDERFLOW_SEED = 80
 
 # Mean orientation of the synthetic grains, Euler angles in degrees
 MU_EULER_DEG = (37.0, 51.0, 113.0)
 # Proper rotations of m-3m in orix' order
 OPERATORS = Oh.proper_subgroup.data
+# EMsoft's proper m-3m operators (point group 32) in EMsoft's order and
+# with EMsoft's signs, as the EMsoft-compatible path uses them
+EMSOFT_OPERATORS = emsoft_symmetry_operators(32)
 # Initial guesses of the fast expectation maximisation arms
 N_EM_FAST = 3
+# Initial guesses of the EMsoft-compatible von Mises-Fisher arm of the
+# side test: the default (EMsoft's 25). EMsoft's mixture has one centre
+# mu * S_j per operator and no negated one, so of the 24 symmetry
+# representatives the estimate can converge to, only those whose
+# signed products with the table reproduce every sampled variant with
+# its sign fit the samples (2 of 24 for the sign-safe subset below);
+# the others converge to concentrations near 0.1 of the sampled one.
+# Measured 2026-10-06 on sample seeds 70-79: 3 and 10 initial guesses
+# never reach a fitting representative, 25 always do (seeds 0-4 of the
+# expectation maximisation; kappa ratio 0.938-1.062, wrong-side ratio
+# at most 0.045)
+N_EM_VMF_COMPAT = 25
 # Smallest scalar part of the variants S_j * mu (equal to that of mu *
-# S_j) whose operators scramble von Mises-Fisher samples for EMsoft's
+# S_j), S_j taken from EMsoft's operator table with EMsoft's signs,
+# whose operators scramble von Mises-Fisher samples for EMsoft's
 # expectation maximisation only. The von Mises-Fisher density is not
 # antipodally symmetric, and EMsoft's mixture has one component per
 # operator: samples around a variant whose scalar part is near 0 or
@@ -202,26 +225,33 @@ def _sample_s3(
     return mu * Rotation(data)
 
 
-def _operator_indices(sign_safe: bool = False) -> np.ndarray:
-    """Return the indices of the proper m-3m operators that scramble
-    samples: every operator, or, if ``sign_safe``, those whose variant
-    ``S_j * mu`` has a scalar part of at least
-    ``VMF_MIN_VARIANT_SCALAR``, so that no scrambled von Mises-Fisher
-    sample changes sign when its scalar part is made non-negative.
+def _operator_indices(
+    sign_safe: bool = False, operators: np.ndarray = OPERATORS
+) -> np.ndarray:
+    """Return the indices into ``operators`` (proper m-3m operators,
+    orix' by default) of those that scramble samples: every operator,
+    or, if ``sign_safe``, those whose variant ``S_j * mu`` has a scalar
+    part of at least ``VMF_MIN_VARIANT_SCALAR``, so that no scrambled
+    von Mises-Fisher sample changes sign when its scalar part is made
+    non-negative. The subset depends on the signs of the operators, so
+    it must be taken from the operators the model uses.
     """
     if not sign_safe:
-        return np.arange(OPERATORS.shape[0])
-    scalar = _qmul(OPERATORS, _mu().data.reshape(1, 4))[:, 0]
+        return np.arange(operators.shape[0])
+    scalar = _qmul(operators, _mu().data.reshape(1, 4))[:, 0]
     return np.flatnonzero(scalar >= VMF_MIN_VARIANT_SCALAR)
 
 
 def _draw_operators(
-    n: int, rng: np.random.Generator, sign_safe: bool = False
+    n: int,
+    rng: np.random.Generator,
+    sign_safe: bool = False,
+    operators: np.ndarray = OPERATORS,
 ) -> np.ndarray:
     """Return ``n`` random operator indices drawn uniformly from
-    ``_operator_indices(sign_safe)``.
+    ``_operator_indices(sign_safe, operators)``.
     """
-    indices = _operator_indices(sign_safe)
+    indices = _operator_indices(sign_safe, operators)
     return indices[rng.integers(indices.size, size=n)]
 
 
@@ -544,7 +574,46 @@ def _emsoft_em(x, operators, kind, n_em, n_iter, rng, trace=None):
     mu_final = variants[k]
     if mu_final[0] < 0:
         mu_final = -mu_final
+    # EMsoft returns it as rod%rq() of rod = qu%qr()
+    mu_final = _emsoft_qr_rq(mu_final)
     return mu_final, float(kappa_all[best]), l_all, n_iterations, best
+
+
+def _emsoft_qr_rq(q: np.ndarray) -> np.ndarray:
+    """Return EMsoft's double precision qr_ then rq_ (ra_, aq_ and
+    the normalisation) of a quaternion with q0 >= 0, line by line.
+    """
+    q = np.asarray(q, dtype=np.float64)
+    # qr_
+    rd = np.array([q[1], q[2], q[3], 0.0])
+    if q[0] < 1e-10:
+        rd[3] = np.inf
+    else:
+        sd = np.sqrt(np.sum(rd[:3] * rd[:3]))
+        if sd < 1e-10:
+            rd = np.array([0.0, 0.0, 1.0, 0.0])
+        else:
+            td = np.tan(np.arccos(q[0]))
+            rd = np.array([rd[0] / sd, rd[1] / sd, rd[2] / sd, td])
+    # ra_
+    tad = rd[3]
+    if abs(tad - 0.0) < 1e-12:
+        ad = np.array([0.0, 0.0, 1.0, 0.0])
+    elif tad == np.inf:
+        ad = np.array([rd[0], rd[1], rd[2], np.pi])
+    else:
+        angled = 2.0 * np.arctan(tad)
+        tad = 1.0 / np.sqrt(np.sum(rd[:3] * rd[:3]))
+        ad = np.array([rd[0] * tad, rd[1] * tad, rd[2] * tad, angled])
+    # aq_
+    if abs(ad[3] - 0.0) < 1e-12:
+        qd = np.array([1.0, 0.0, 0.0, 0.0])
+    else:
+        cd = np.cos(ad[3] * 0.5)
+        sd = np.sin(ad[3] * 0.5)
+        qd = np.array([cd, ad[0] * sd, ad[1] * sd, ad[2] * sd])
+    # rq_ normalisation
+    return qd / np.sqrt(np.sum(qd**2))
 
 
 def _assert_em_result_equals(result, expected):
@@ -708,6 +777,18 @@ class TestCenterPixel:
             assert np.all(table.kappa != -1.0)
             if method == "center":
                 assert np.all(table.kappa == 1.0)
+
+    def test_mean_is_identical_in_both_modes(self, hrosm_grain_xmap):
+        # "mean" has no EMsoft counterpart, so the EMsoft compatible
+        # mode must not change it
+        xmap, truth = hrosm_grain_xmap((6, 8))
+        correct = average_grain_orientations(xmap, truth, method="mean")
+        compat = average_grain_orientations(
+            xmap, truth, method="mean", emsoft_compatible=True
+        )
+        assert np.array_equal(compat.rotation.data, correct.rotation.data)
+        assert np.array_equal(compat.kappa, correct.kappa)
+        assert np.array_equal(compat.max_grod, correct.max_grod, equal_nan=True)
 
 
 class TestRecovery:
@@ -1105,50 +1186,85 @@ class TestGROD:
         assert len(_ball_warnings(record)) == 1
 
     @staticmethod
-    def _below_one_rotation() -> np.ndarray:
-        """Return the first rotation of float32 Euler triples of
-        ``default_rng(13)`` whose float64 self dot product, the largest
-        ``|<S_j o, o>|`` over the proper m-3m operators, is below 1.
+    def _pair_dot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """Return the float64 ``max_j |<S_j a, b>|`` over the proper
+        m-3m operators of quaternions of shape (n, 4), summed as the
+        GROD sums them: ``emsoft_quaternion_multiply(S_j, a) * b``
+        reduced by ``np.sum`` over the last axis.
+        """
+        a = np.asarray(a, dtype=np.float64).reshape(-1, 4)
+        b = np.asarray(b, dtype=np.float64).reshape(-1, 4)
+        d = np.zeros(a.shape[0], dtype=np.float64)
+        for s in np.asarray(OPERATORS, dtype=np.float64):
+            sa = emsoft_quaternion_multiply(s, a)
+            d = np.maximum(d, np.abs(np.sum(sa * b, axis=-1)))
+        return d
+
+    def _grod_map_data(self, centre: np.ndarray, copy: np.ndarray) -> np.ndarray:
+        """Return the (3, 5, 4) quaternions of two grains: a 3 x 3 block
+        tilted 0.5 rad about z from ``centre`` with ``centre`` at (1, 1)
+        and ``copy`` at (0, 0), and a 3 x 2 block.
+        """
+        tilted = _qmul(_axis_angle((0, 0, 1), 0.5).data.reshape(4), centre)
+        other = Rotation.from_euler(np.deg2rad((80.0, 40.0, 10.0))).data.reshape(4)
+        other_tilted = _qmul(_axis_angle((0, 0, 1), 0.3).data.reshape(4), other)
+        data = np.zeros((3, 5, 4))
+        data[:, :3] = tilted
+        data[1, 1] = centre
+        data[0, 0] = copy
+        data[:, 3:] = other_tilted
+        data[1, 3] = other
+        return data
+
+    def _below_one_map(self) -> CrystalMap:
+        """Return the map of :meth:`_grod_map_data` for the first
+        rotation of float32 Euler triples of ``default_rng(13)`` and a
+        symmetry-equivalent copy of it whose stored dot product with the
+        stored centre, summed as the GROD sums it with the copy as the
+        point and the centre as the reference, is below 1.
         """
         rng = np.random.default_rng(13)
         scale = np.array([2 * np.pi, np.pi, 2 * np.pi])
         eu32 = (rng.random((1000, 3)) * scale).astype(np.float32)
-        q = Rotation.from_euler(eu32.astype(np.float64)).data
-        variants = _qmul(OPERATORS[None, :, :], q[:, None, :])
-        # Summed by einsum: about 5 % of these rotations round below 1
-        # and a third above
-        self_dot = np.abs(np.einsum("njk,nk->nj", variants, q)).max(axis=1)
-        below = np.flatnonzero(self_dot < 1)
-        assert below.size > 0
-        return q[below[0]]
+        q = Rotation(Rotation.from_euler(eu32.astype(np.float64))).data
+        operators = np.asarray(OPERATORS, dtype=np.float64)
+        for k in range(1, operators.shape[0]):
+            variants = Rotation(emsoft_quaternion_multiply(operators[k], q)).data
+            for i in np.flatnonzero(self._pair_dot(variants, q) < 1):
+                data = self._grod_map_data(q[i], variants[i])
+                xmap = _crystal_map(data.reshape(-1, 4), (3, 5))
+                stored = np.asarray(xmap.rotations.data, dtype=np.float64)
+                if self._pair_dot(stored[0], stored[1 * 5 + 1])[0] < 1:
+                    return xmap
+        raise AssertionError("no stored copy rounds below 1")
 
     def test_correct_center_pixel_has_zero_grod(self):
-        below = self._below_one_rotation()
-        tilted = _qmul(_axis_angle((0, 0, 1), 0.5).data.reshape(4), below)
-        other = Rotation.from_euler(np.deg2rad((80.0, 40.0, 10.0))).data.reshape(4)
-        other_tilted = _qmul(_axis_angle((0, 0, 1), 0.3).data.reshape(4), other)
-
-        data = np.zeros((3, 5, 4))
-        data[:, :3] = tilted
-        data[1, 1] = below
-        data[:, 3:] = other_tilted
-        data[1, 3] = other
-        xmap = _crystal_map(data.reshape(-1, 4), (3, 5))
+        xmap = self._below_one_map()
         grain_id = np.ones((3, 5), dtype=np.int32)
         grain_id[:, 3:] = 2
 
         table = average_grain_orientations(xmap, grain_id, method="center")
+        stored = np.asarray(xmap.rotations.data, dtype=np.float64)
+        centre = stored[1 * 5 + 1]
         np.testing.assert_array_equal(
-            _with_positive_scalar(table.rotation.data[0]), _with_positive_scalar(below)
+            _with_positive_scalar(table.rotation.data[0]),
+            _with_positive_scalar(centre),
         )
+        # The copy at (0, 0) against the grain reference rounds below
+        # 1, so the snap (not a clip to [0, 1]) gives the 0.0 below
+        assert self._pair_dot(stored[0], table.rotation.data[0])[0] < 1
         grod = grain_reference_orientation_deviation_map(xmap, grain_id, table)
         assert grod.dtype == np.float32
         assert grod.shape == (3, 5)
-        # Grain 1: the centre of the 3 x 3 block; grain 2: the 3 x 2
-        # block's centroid ties (1, 3) and (1, 4), the first wins
+        # Grain 1: the centre of the 3 x 3 block and its copy; grain 2:
+        # the 3 x 2 block's centroid ties (1, 3) and (1, 4), the first
+        # wins
         assert grod[1, 1] == 0.0
+        assert grod[0, 0] == 0.0
         assert grod[1, 3] == 0.0
-        assert np.all(grod[grain_id == 1][np.arange(9) != 4] > 0.4)
+        tilted_pixels = np.ones((3, 5), dtype=bool)
+        tilted_pixels[1, 1] = tilted_pixels[0, 0] = False
+        assert np.all(grod[(grain_id == 1) & tilted_pixels] > 0.4)
 
     def test_compat_center_grod_is_measured_from_the_box_centre_pixel(
         self, hrosm_gradient_xmap
@@ -1424,6 +1540,108 @@ class TestGrainTable:
         assert np.isfinite(kam[2, 1])
 
 
+class TestInputs:
+    @staticmethod
+    def _row_map(phase_id, rotations=None, n_phases=1) -> CrystalMap:
+        """Return a (1, n) map with the given phase IDs (-1 not
+        indexed) and m-3m phases 0 to ``n_phases - 1``.
+        """
+        phase_id = np.asarray(phase_id, dtype=np.int32)
+        n = phase_id.size
+        if rotations is None:
+            rotations = Rotation.from_axes_angles(
+                [0, 0, 1], np.deg2rad(np.arange(n, dtype=np.float64))
+            )
+        coords, _ = create_coordinate_arrays((1, n), step_sizes=(1, 1))
+        phases = [Phase(f"ni{i}", point_group="m-3m") for i in range(n_phases)]
+        return CrystalMap(
+            rotations=rotations,
+            phase_id=phase_id,
+            x=coords["x"],
+            y=coords["y"],
+            phase_list=PhaseList(phases=phases, ids=list(range(n_phases))),
+            scan_unit="um",
+        )
+
+    def test_grain_id_of_another_shape_raises(self):
+        xmap = self._row_map([0, 0, 0, 0])
+        grain_id = np.ones((2, 2), dtype=np.int32)
+        with pytest.raises(ValueError, match=r"grain_id shape \(2, 2\)"):
+            average_grain_orientations(xmap, grain_id)
+        table = average_grain_orientations(xmap, np.ones((1, 4), dtype=np.int32))
+        with pytest.raises(ValueError, match=r"grain_id shape \(2, 2\)"):
+            grain_reference_orientation_deviation_map(xmap, grain_id, table)
+
+    @pytest.mark.parametrize(
+        "kwargs, match",
+        [
+            ({"method": "median"}, "method 'median'"),
+            ({"max_angle": 0.0}, "max_angle 0.0"),
+            ({"max_angle": 180.0}, "max_angle 180.0"),
+            ({"max_angle": True}, "max_angle True"),
+            ({"n_em": 0}, "n_em 0"),
+            ({"n_em": 1.5}, "n_em 1.5"),
+            ({"n_iter": True}, "n_iter True"),
+            ({"min_kappa": -1.0}, "min_kappa -1.0"),
+            ({"min_kappa": np.nan}, "min_kappa nan"),
+            ({"min_kappa": True}, "min_kappa True"),
+        ],
+    )
+    def test_invalid_arguments_raise(self, kwargs, match):
+        xmap = self._row_map([0, 0, 0, 0])
+        grain_id = np.ones((1, 4), dtype=np.int32)
+        with pytest.raises(ValueError, match=match):
+            average_grain_orientations(xmap, grain_id, **kwargs)
+
+    def test_emsoft_compatible_requires_every_point_indexed(self):
+        xmap = self._row_map([0, 0, -1, 0])
+        grain_id = np.ones((1, 4), dtype=np.int32)
+        with pytest.raises(ValueError, match="every map point to be in the data"):
+            average_grain_orientations(
+                xmap, grain_id, method="center", emsoft_compatible=True
+            )
+
+    def test_emsoft_compatible_requires_one_phase(self):
+        xmap = self._row_map([0, 0, 1, 1], n_phases=2)
+        grain_id = np.ones((1, 4), dtype=np.int32)
+        with pytest.raises(ValueError, match="one phase, but the map has 2 phases"):
+            average_grain_orientations(
+                xmap, grain_id, method="center", emsoft_compatible=True
+            )
+
+    def test_grain_of_only_not_indexed_points_is_invalid(self):
+        # Grain 2, the largest label, has only a not indexed point, so
+        # no bounding box is found for it
+        xmap = self._row_map([0, 0, 0, -1])
+        assert -1 in xmap.phases.ids
+        grain_id = np.array([[1, 1, 0, 2]], dtype=np.int32)
+        table = average_grain_orientations(xmap, grain_id, method="mean")
+        assert table.n_grains == 2
+        np.testing.assert_array_equal(table.n_pixels, [2, 0])
+        np.testing.assert_array_equal(table.bounding_box[1], [0, 0, 0, 0])
+        np.testing.assert_array_equal(table.valid, [True, False])
+        np.testing.assert_array_equal(table.phase_id, [0, -1])
+        assert table.kappa[1] == -1.0
+        np.testing.assert_array_equal(table.rotation.data[1], [1.0, 0.0, 0.0, 0.0])
+        assert np.isnan(table.max_grod[1])
+
+    def test_first_of_several_rotations_per_point_is_averaged(self):
+        angles = np.deg2rad([[0.0, 40.0], [1.0, 50.0], [2.0, 60.0]])
+        several = Rotation.from_axes_angles([0, 0, 1], angles)
+        assert several.shape == (3, 2)
+        first = Rotation(several.data[:, 0])
+        grain_id = np.ones((1, 3), dtype=np.int32)
+
+        xmap = self._row_map([0, 0, 0], rotations=several)
+        assert xmap.rotations_per_point == 2
+        table = average_grain_orientations(xmap, grain_id, method="mean")
+        expected = average_grain_orientations(
+            self._row_map([0, 0, 0], rotations=first), grain_id, method="mean"
+        )
+        np.testing.assert_array_equal(table.rotation.data, expected.rotation.data)
+        np.testing.assert_allclose(np.rad2deg(table.rotation.angle), [1.0])
+
+
 class TestCompatEM:
     @pytest.mark.parametrize("kind, alpha, n, n_em", _compat_em_params())
     def test_matches_the_seeded_transcription(self, kind, alpha, n, n_em):
@@ -1442,13 +1660,17 @@ class TestCompatEM:
         mu = _mu()
         samples = _sample_s3(mu, kappa, 300, kind, rng)
         # EMsoft's von Mises-Fisher mixture has no component per negated
-        # operator, so its samples use the sign-safe operator subset;
-        # the scalar part of mu * S_j equals that of S_j * mu, so the
-        # subset keeps the signs on both sides
-        j = _draw_operators(300, rng, sign_safe=kind == "vmf")
+        # operator, so its samples use the sign-safe subset of EMsoft's
+        # own operators (the compatible path's table and signs); the
+        # scalar part of mu * S_j equals that of S_j * mu, so the subset
+        # keeps the signs on both sides
+        j = _draw_operators(
+            300, rng, sign_safe=kind == "vmf", operators=EMSOFT_OPERATORS
+        )
+        n_em = N_EM_VMF_COMPAT if kind == "vmf" else N_EM_FAST
         x = samples.data.reshape(-1, 4)
-        right = Rotation(_qmul(x, OPERATORS[j]))
-        left = Rotation(_qmul(OPERATORS[j], x))
+        right = Rotation(_qmul(x, EMSOFT_OPERATORS[j]))
+        left = Rotation(_qmul(EMSOFT_OPERATORS[j], x))
 
         tables = {}
         for side, rotations in (("right", right), ("left", left)):
@@ -1458,7 +1680,7 @@ class TestCompatEM:
                 grain_id,
                 method=kind,
                 max_angle=90.0,
-                n_em=N_EM_FAST,
+                n_em=n_em,
                 min_kappa=0.0,
                 seed=0,
                 emsoft_compatible=True,
@@ -1555,8 +1777,11 @@ class TestCompatEM:
         left = _qmul(OPERATORS, mu[None, :])
         k_right = int(np.argmax(np.abs(right[:, 0])))
         k_left = int(np.argmax(np.abs(left[:, 0])))
+        np.testing.assert_array_equal(
+            compat, _emsoft_qr_rq(_with_positive_scalar(right[k_right]))
+        )
         np.testing.assert_allclose(
-            compat, _with_positive_scalar(right[k_right]), atol=1e-15, rtol=0
+            compat, _with_positive_scalar(right[k_right]), atol=1e-14, rtol=0
         )
         np.testing.assert_allclose(
             correct, _with_positive_scalar(left[k_left]), atol=1e-15, rtol=0
@@ -1564,6 +1789,49 @@ class TestCompatEM:
         assert compat[0] >= 0
         assert correct[0] >= 0
         assert np.max(np.abs(compat - correct)) > 1e-3
+
+    def test_compat_final_representative_round_trips_rodrigues(self):
+        # EMsoft returns its variant as a Rodrigues vector converted
+        # back to a quaternion, which changes the last bits near the
+        # identity and snaps a tiny vector part to the identity
+        identity = np.array([[1.0, 0.0, 0.0, 0.0]])
+        rng = np.random.default_rng(71)
+        changed = 0
+        for angle_deg in (0.01, 0.1, 0.5, 1.0):
+            axis = rng.normal(size=3)
+            axis /= np.linalg.norm(axis)
+            half = np.deg2rad(angle_deg) / 2
+            mu = np.concatenate([[np.cos(half)], np.sin(half) * axis])
+            compat = _final_representative(mu, identity, True)
+            np.testing.assert_array_equal(compat, _emsoft_qr_rq(mu))
+            changed += int(np.any(compat != mu))
+        assert changed > 0
+
+        tiny = np.array([1.0, 3e-11, -2e-11, 1e-11])
+        np.testing.assert_array_equal(
+            _final_representative(tiny, identity, True), identity[0]
+        )
+        assert np.any(_final_representative(tiny, identity, False) != identity[0])
+
+    @pytest.mark.parametrize(
+        "mu, expected",
+        [
+            # A half turn (scalar part below 1e-10): an infinite
+            # Rodrigues vector, back as the half turn about v
+            ([0.0, 0.6, 0.8, 0.0], [0.0, 0.6, 0.8, 0.0]),
+            ([5e-11, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]),
+            # A vector part above 1e-10 whose tangent rounds to 0: the
+            # identity
+            ([1.0, 2e-10, -1e-10, 1e-10], [1.0, 0.0, 0.0, 0.0]),
+        ],
+        ids=["half_turn", "half_turn_tiny_scalar", "tangent_zero"],
+    )
+    def test_compat_final_representative_round_trip_edges(self, mu, expected):
+        identity = np.array([[1.0, 0.0, 0.0, 0.0]])
+        mu = np.array(mu)
+        compat = _final_representative(mu, identity, True)
+        np.testing.assert_array_equal(compat, _emsoft_qr_rq(mu))
+        np.testing.assert_allclose(compat, expected, atol=1e-15, rtol=0)
 
     @pytest.mark.parametrize("kind", ["vmf", "watson"])
     @pytest.mark.parametrize(
