@@ -41,8 +41,10 @@ is two-stage and fixed-order: a fixed shared-memory tree per block,
 then a sequential pass over the block partials of one pattern.  The
 launch layout is :func:`~kikuchipy.indexing._hrebsd._batched.\
 _launch_layout` of the subregion pixel count only, never of B
-(D21.7.3).  Compiled without fast math (D21.4): the B-spline weights
-multiply by the reciprocal constant ``1/6`` written in the source.
+(D21.7.3).  Compiled without fast math and with ``--fmad`` at the NVRTC
+default (D21.4): the mixed build's B-spline weights multiply by the
+reciprocal constant ``1/6`` written in the source, the float64 build's
+divide by 6 as the CPU does.
 
 CuPy is imported inside :func:`make_cupy_kernel_namespace` only (after
 the gate), never at module scope (D21.13); every kernel is CONSTRUCTED
@@ -56,7 +58,9 @@ import numpy as np
 
 from kikuchipy.indexing._hrebsd import _batched
 
-# NVRTC options: the C++ dialect only; never fast math (D21.4)
+# NVRTC options of every kernel, the spline prefilter included: the
+# C++ dialect only, so ``--fmad`` stays at the NVRTC default and fast
+# math is never on (D21.4)
 _KERNEL_OPTIONS: tuple[str, ...] = ("--std=c++14",)
 
 # The per-precision preambles: the pixel type of the per-pixel
@@ -89,16 +93,27 @@ __device__ __forceinline__ int fold_index(int k, int n) {
     return k;
 }
 
+// The cubic B-spline weights.  The mixed build multiplies by the
+// reciprocal constant 1/6 in place of the eight f32 divisions (D21.4);
+// the float64 build, the parity and debug mode, divides by 6 as the
+// CPU's ``_bicubic_evaluate`` does
 template <typename T>
 __device__ __forceinline__ void basis(T t, T *w) {
-    const T sixth = (T)(1.0 / 6.0);
     const T one_minus = (T)1 - t;
     const T t2 = t * t;
     const T t3 = t2 * t;
+#if HREBSD_MIXED
+    const T sixth = (T)(1.0 / 6.0);
     w[0] = one_minus * one_minus * one_minus * sixth;
     w[1] = ((T)3 * t3 - (T)6 * t2 + (T)4) * sixth;
     w[2] = ((T)-3 * t3 + (T)3 * t2 + (T)3 * t + (T)1) * sixth;
     w[3] = t3 * sixth;
+#else
+    w[0] = one_minus * one_minus * one_minus / (T)6;
+    w[1] = ((T)3 * t3 - (T)6 * t2 + (T)4) / (T)6;
+    w[2] = ((T)-3 * t3 + (T)3 * t2 + (T)3 * t + (T)1) / (T)6;
+    w[3] = t3 / (T)6;
+#endif
 }
 
 // The cubic B-spline at the cell (ix, iy) with fractions (tx, ty)
@@ -417,15 +432,18 @@ _KERNEL_NAMES: tuple[str, ...] = (
 )
 
 
-# The order-3 B-spline prefilter of the device targets (D21.3): the
-# pole, the gain and the recursion of ``scipy.ndimage.spline_filter1d``
-# in mirror mode (scipy's ``ni_splines.c``), one thread per line, in
-# float64 with the host's order of operations: fused multiply-add
-# contraction disabled for this kernel only
+# The order-3 B-spline prefilter of the device targets (D21.3), one
+# thread per line in float64: the algebraic mirror-mode recursion (the
+# pole, the gain, the causal and the anticausal initialisation) of
+# ``scipy.ndimage.spline_filter1d``, NOT scipy's order of operations.
+# It equals scipy's coefficients up to f64 rounding (RMS about 7e-14;
+# about 1 in 1e7 of the f32-cast coefficients differs by one ulp),
+# measured with and without fused multiply-add contraction alike
+# (validation.md V9 ledger 108), so it compiles with the NVRTC default
+# ``--fmad`` like every other kernel (D21.4)
 _SPLINE_POLE = math.sqrt(3.0) - 2.0
 _SPLINE_GAIN = (1.0 - _SPLINE_POLE) * (1.0 - 1.0 / _SPLINE_POLE)
 _SPLINE_THREADS = 128
-_SPLINE_OPTIONS: tuple[str, ...] = _KERNEL_OPTIONS + ("--fmad=false",)
 _SPLINE_SOURCE = r"""
 extern "C" __global__ void hrebsd_spline_prefilter(
     double *data, const int n_lines, const int length,
@@ -473,7 +491,7 @@ def make_cupy_kernel_namespace(device_precision: str):
         for name in _KERNEL_NAMES
     }
     spline_kernel = cupy.RawKernel(
-        _SPLINE_SOURCE, "hrebsd_spline_prefilter", options=_SPLINE_OPTIONS
+        _SPLINE_SOURCE, "hrebsd_spline_prefilter", options=_KERNEL_OPTIONS
     )
 
     def layout(resident):

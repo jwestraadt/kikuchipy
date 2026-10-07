@@ -112,12 +112,17 @@ _GATE_DEVICE_MESSAGE = (
     "that an NVIDIA GPU is present and that the NVIDIA driver is installed "
     "and current, or use backend='cpu'"
 )
+# The wheel set: the verified overlay's five (D21.2) plus NVRTC and the
+# CUDA runtime headers, which a wheel-only machine needs to compile the
+# kernels (plan open question E6, validation.md V9 ledger 105)
 _GATE_LIBRARY_MESSAGE = (
     f"{_GATE_PREFIX} that cupy can load cuFFT, cuBLAS and NVRTC, but a probe "
     "of a complex128 and a complex64 FFT, a matrix product and a compiled "
     "kernel failed ({detail}); 'pip install nvidia-cufft-cu12 "
     "nvidia-cublas-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 "
-    "nvidia-nvjitlink-cu12', or install the full CUDA Toolkit and put its "
+    "nvidia-nvjitlink-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12' "
+    "(NVRTC and the CUDA headers the kernels compile against), or install "
+    "the full CUDA Toolkit and put its "
     "'bin' directory on PATH (on Windows kikuchipy registers the nvidia "
     "wheel DLL directories itself), or use backend='cpu'"
 )
@@ -923,7 +928,7 @@ class _OrderedDevice:
     def packed(self, n_batches: int) -> np.ndarray:
         """Return the rows of every batch in batch order, which is the
         fit order."""
-        if self.next_batch != n_batches:  # pragma: no cover
+        if self.next_batch != n_batches:
             raise RuntimeError(
                 f"only {self.next_batch} of {n_batches} device batches ran"
             )
@@ -946,7 +951,7 @@ class _OrderedDevice:
             for cache in caches:
                 try:
                     cache.clear()
-                except Exception:  # pragma: no cover
+                except Exception:
                     pass
 
     def __dask_tokenize__(self) -> tuple:
@@ -989,12 +994,13 @@ def _device_batch(
     held and outside every per-pattern scope (D21.9.2, D21.9.4)."""
     n = int(patterns_block.shape[0])
     grain = int(state_index_block[0])
-    if np.any(state_index_block != grain):  # pragma: no cover
+    if np.any(state_index_block != grain):
         raise RuntimeError("a device batch straddles grains (D21.9.3)")
     batch_size = session.batch_size
     # Padded to the fixed B on the host, in the stored data type, with
-    # zero patterns; the padded slots are computed and discarded
-    # (D21.7.3)
+    # zero patterns; the padded slots of a sub-batch holding a real
+    # pattern are computed and discarded (D21.7.3), sub-batches of
+    # padded slots only are skipped (:func:`_fit_batch`)
     raw = np.zeros((batch_size, *patterns_block.shape[1:]), dtype=patterns_block.dtype)
     raw[:n] = patterns_block
     pattern_index = np.full(batch_size, -1, dtype=np.int64)
@@ -1029,8 +1035,9 @@ def _prepare_sub_batch(session: _GpuSession, state, resident, raw: np.ndarray):
     -ed) transfer function -- a permutation of the host's ``fftshift``,
     product and ``ifftshift``, so every product is the host's -- and
     prefiltered along the two pattern axes by the cupy namespace's
-    ``spline_prefilter`` (``_cuda.py``), the recursion of
-    ``scipy.ndimage.spline_filter`` in mirror mode.
+    ``spline_prefilter`` (``_cuda.py``), the algebraic mirror-mode
+    recursion of ``scipy.ndimage.spline_filter``, equal to the host's
+    coefficients up to f64 rounding (not its order of operations).
     """
     if session.namespace == "numpy":
         targets = np.stack(
@@ -1072,7 +1079,9 @@ def _fit_batch(
     options: dict,
     row_slots: dict,
 ) -> np.ndarray:
-    """Return the ``(B, width)`` host rows of one padded device batch.
+    """Return the ``(m, width)`` host rows of the first *m* slots of one
+    padded device batch, *m* the slots of the sub-batches that hold a
+    real pattern.
 
     Per sub-batch of P slots (D21.7.3), the tail padded to P with zero
     patterns and ``-1`` indices: the preprocessing of
@@ -1084,17 +1093,31 @@ def _fit_batch(
     initial shifts ``_batched.initial_shifts`` (D21.4), while the f64
     targets are alive.  The targets and spectra die with their
     sub-batch (D21.5(ii)).  Then ``_batched.run_lockstep``, the
-    lockstep IC-GN of D21.6 over all B slots with its packing, and one
-    copy of the ``(B, width)`` rows to the host.
+    lockstep IC-GN of D21.6 over the *m* slots with its packing, and
+    one copy of the ``(m, width)`` rows to the host.
+
+    The real patterns lead the batch, so a sub-batch of padded slots
+    only follows every real one.  Such sub-batches are never
+    preprocessed, seeded, passed to the seam or iterated: *m* is the
+    smallest multiple of P (at most B) covering the last real slot.  A
+    slot's fit is independent of every other slot's and of the slot
+    count, which the bitwise batch-size invariance pins (D21.7.3,
+    validation.md V9 ledger 105 (ii)), so no result bit changes.  This
+    is the review-gate deviation of D21.7.3 for open question E5 (plan
+    11.6), where padding each grain's last batch to B cost 2x to 2.6x
+    on maps of small grains.
     """
     xp = session.xp
     batch_size = session.batch_size
     sub_batch_size = session.sub_batch_size
     ctx = session.context
+    real = np.flatnonzero(np.asarray(pattern_index) >= 0)
+    last = int(real[-1]) + 1 if real.size else 1
+    n_run = min(batch_size, -(-last // sub_batch_size) * sub_batch_size)
     coefficient_parts = []
     seed_parts = []
     shift_parts = []
-    for start in range(0, batch_size, sub_batch_size):
+    for start in range(0, n_run, sub_batch_size):
         stop = start + sub_batch_size
         part = raw[start:stop]
         index = pattern_index[start:stop]
@@ -1111,7 +1134,7 @@ def _fit_batch(
         target_spectra = _batched.seed_spectra(ctx, batch, seed_state)
         h0 = _batched.seed_homographies(ctx, batch, target_spectra, seed_state)
         shifts = _batched.initial_shifts(ctx, resident, batch)
-        keep = min(sub_batch_size, batch_size - start)
+        keep = min(sub_batch_size, n_run - start)
         coefficient_parts.append(coefficients[:keep])
         seed_parts.append(xp.asarray(h0, dtype=xp.float64)[:keep])
         shift_parts.append(shifts[:keep])
@@ -1126,7 +1149,7 @@ def _fit_batch(
         coefficients,
         h0,
         shifts,
-        pattern_index >= 0,
+        np.asarray(pattern_index[:n_run]) >= 0,
         options,
         row_slots,
     )

@@ -236,6 +236,7 @@ from kikuchipy.indexing._hrebsd._preprocessing import (
     preprocess,
     subregion_bounds,
     subregion_mask,
+    zero_mean_normalize,
 )
 from kikuchipy.indexing._spherical import _gpu as _spherical_gpu
 from kikuchipy.signals.util._master_pattern import (
@@ -345,6 +346,12 @@ GATE_WHEELS = (
     "nvidia-cusolver-cu12",
     "nvidia-cusparse-cu12",
     "nvidia-nvjitlink-cu12",
+    # Added 2026-10-07 (implementation gate, E6, validation.md V9 ledger
+    # 105): a wheel-only machine (no CUDA Toolkit on PATH, no CUDA_PATH)
+    # fails the kernel compile with the five wheels above ("Failed to
+    # find CUDA headers") and passes once these two are installed
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cuda-runtime-cu12",
 )
 
 # The frozen structural values of D21.7.3, D21.9.3 and D21.10.3
@@ -504,7 +511,9 @@ GPU_SEED_EQUAL_COUNT = {
         for upsample_factor in (16, 2, 1)
     },
     ("F1 dimmed", 16): 12,
-    ("F1 runner", 16): 13,
+    # F1 tiled to 40 points since 2026-10-07 (review gate, RC-R1):
+    # MEASURED 2026-10-07, 40 of 40 (validation.md V9 ledger 108)
+    ("F1 runner", 16): 40,
 }
 GPU_SEED_C64_DIFF_COUNT = 0
 
@@ -740,6 +749,13 @@ GPU_BATCH_INVARIANCE_TOL = 0.0
 # (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
 # validation.md V9 ledger 104
 GPU_LEAK_RESIDUE_BYTES = 0
+# The pool's total bytes (cached free blocks included) as each halved
+# session is built in window (b) of the out-of-memory loop.  ADDED
+# 2026-10-07 (review gate, the M20 survivors of validation.md V9
+# ledger 107).  MEASURED 2026-10-07 on machine A, recipe as above: 0
+# bytes at every rebuild on F1 and F7; pinned 0.  Recorded in ledger
+# 108
+GPU_REBUILD_POOL_BYTES = 0
 
 # --- (o) VRAM calibration, bytes, at 512x622 (pattern pixels) ---
 # MEASURED 2026-10-07 (Stage E implementation gate) [V9(o)], g, p and r
@@ -1304,6 +1320,22 @@ def f3_batch() -> dict:
     return _batch_fixture(reference, targets, exact, detector, SHAPE_RECT)
 
 
+@functools.lru_cache(maxsize=4)
+def f3_prefix_batch(n_points: int) -> dict:
+    """Return the first *n_points* map points of F3 (GATED ONLY): its
+    reference and its first ``n_points - 1`` targets, the V9(o)
+    calibration's one-batch maps."""
+    f3 = f3_batch()
+    n = int(n_points) - 1
+    return _batch_fixture(
+        np.asarray(f3["reference"]),
+        np.asarray(f3["targets"])[:n],
+        np.asarray(f3["exact"])[:n],
+        f3["detector"],
+        SHAPE_RECT,
+    )
+
+
 @functools.lru_cache(maxsize=1)
 def f3s_batch() -> dict:
     """Return F3s, the first eight patterns of F3 (bitwise the same
@@ -1808,6 +1840,16 @@ SPY_MAP_SIZE = 40
 # 1e-13 does (5.3e-16), and the CPU seeds at that scale still equal
 # the undimmed ones.  The premise is re-asserted in the test
 DIM_SCALE = 1e-13
+
+# The M15 spectra arm (added 2026-10-07, review gate): F4's targets
+# scaled and offset, so that no crop is zero mean or unit norm before
+# the seam normalises it; and the per-precision unit roundoff which,
+# times sqrt(crop pixels), bounds the difference from the host's
+# ``fft2`` of the zero-mean unit-norm crop (an un-normalised crop is
+# off by its mean times the pixel count in the DC bin alone)
+SEED_SPECTRA_SCALE = 3.5
+SEED_SPECTRA_OFFSET = 250.0
+SEED_SPECTRA_TOL = {"complex128": 1e-14, "complex64": 1e-6}
 
 # The planted-row types of V9(e), ONE set for both suites (critic
 # finding F1): the exact imposed homography; it composed with a 0.5
@@ -2370,6 +2412,35 @@ def seed_case(name: str) -> tuple:
     data = np.asarray(signal.data, dtype=np.float64).reshape(-1, *SHAPE_60)
     reference = data[NI_REFERENCE[0] * NI_NAVIGATION_SHAPE[1] + NI_REFERENCE[1]]
     return make_state(reference, pc_pixels_of(detector)), data
+
+
+def zmn_crop_spectra(state, preprocessed) -> np.ndarray:
+    """Return the host ``(N, sr, sc)`` complex128 ``fft2`` of every
+    *preprocessed* target's D5 crop made zero-mean unit-norm by the
+    CPU's ``zero_mean_normalize``, the frozen meaning of the seam's
+    ``target_spectra`` (D21.5)."""
+    r0, r1, c0, c1 = state.bounds
+    spectra = []
+    for target in preprocessed:
+        crop = np.asarray(target[r0:r1, c0:c1], dtype=np.float64)
+        zmn, _ = zero_mean_normalize(crop.ravel())
+        spectra.append(np.fft.fft2(zmn.reshape(crop.shape)))
+    return np.stack(spectra)
+
+
+def assert_zmn_spectra(spectra, expected, precision) -> None:
+    """Assert seam *spectra* equal *expected* (:func:`zmn_crop_spectra`)
+    to the rounding of *precision*, with the DC bin zero and the
+    Parseval norm one (a unit-norm crop)."""
+    spectra = np.asarray(spectra)
+    assert spectra.shape == expected.shape
+    assert spectra.dtype == np.dtype(precision)
+    n = expected.shape[1] * expected.shape[2]
+    tolerance = SEED_SPECTRA_TOL[precision] * np.sqrt(n)
+    assert np.abs(spectra - expected).max() <= tolerance
+    assert np.abs(spectra[:, 0, 0]).max() <= tolerance
+    parseval = (np.abs(spectra.astype(np.complex128)) ** 2).sum(axis=(1, 2)) / n
+    assert np.abs(parseval - 1.0).max() <= 100 * SEED_SPECTRA_TOL[precision]
 
 
 def numpy_seed_rows(state, targets, *, upsample_factor=16, precision="complex128"):
@@ -3122,6 +3193,19 @@ class TestSeedSeamContract:
         assert np.array_equal(expected, cpu_seed_rows(fixture_state(f1), f1["targets"]))
         rows, _, _ = numpy_seed_rows(state, targets)
         assert np.array_equal(rows, expected)
+
+    @pytest.mark.parametrize("precision", FROZEN_SEED_PRECISIONS)
+    def test_the_spectra_are_those_of_the_zmn_crops(self, precision):
+        # M15 (added 2026-10-07, review gate: crops left un-normalised
+        # keep the ROWS, validation.md V9 ledger 107): the seam's
+        # spectra are ``fft2`` of each target's zero-mean unit-norm
+        # crop, on an offset and scaled copy of F4 so that no crop is
+        # zero mean or unit norm before the normalisation
+        state, targets = seed_case("F4")
+        targets = SEED_SPECTRA_SCALE * np.asarray(targets) + SEED_SPECTRA_OFFSET
+        _, spectra, _ = numpy_seed_rows(state, targets, precision=precision)
+        preprocessed, _ = preprocessed_targets(state, targets)
+        assert_zmn_spectra(spectra, zmn_crop_spectra(state, preprocessed), precision)
 
     @pytest.mark.parametrize("chunksize", [40, 8, 12])
     def test_the_runner_calls_the_seam_once_per_sub_batch(self, monkeypatch, chunksize):
@@ -4129,6 +4213,18 @@ class TestCudaSourcePins:
             pattern = r"""["']-{1,2}use_fast_math["']"""
             assert re.search(pattern, text) is None, name
 
+    def test_fmad_stays_at_the_nvrtc_default(self):
+        # Added 2026-10-07 (review gate, findings RF-E1 and RC-R3,
+        # validation.md V9 ledger 108): D21.4 records "--fmad stays at
+        # the NVRTC default" for EVERY kernel, the spline prefilter
+        # included; no ``--fmad=...`` option literal anywhere
+        for name, text in cuda_source_texts().items():
+            assert re.search(r"""["']-{1,2}fmad""", text) is None, name
+        from kikuchipy.indexing._hrebsd import _cuda
+
+        assert _cuda._KERNEL_OPTIONS == ("--std=c++14",)
+        assert not hasattr(_cuda, "_SPLINE_OPTIONS")
+
 
 class TestBatchModel:
     """V9(o), D21.10: the pure-math VRAM model, the default B chooser,
@@ -4298,9 +4394,13 @@ class TestBatchModel:
         assert recorder.built == [expected_b]
         sub_batch = min(FROZEN_SUB_BATCH_SIZE, expected_b)
         rows_calls = [r for r in records if r["call"] == "seed_homographies"]
-        assert len(rows_calls) == math.ceil(expected_b / sub_batch)
+        # CHANGED 2026-10-07 (review gate, finding RC-R1, plan 11.6): a
+        # sub-batch of padded slots only is skipped, so the three points
+        # reach the seam in ONE padded sub-batch of P, not ceil(B / P)
+        assert expected_b > sub_batch
+        assert len(rows_calls) == 1
         indices = np.concatenate([r["pattern_index"] for r in rows_calls])
-        assert indices.size == expected_b
+        assert indices.size == sub_batch
         assert indices[:3].tolist() == [0, 1, 2]
         assert np.all(indices[3:] == -1)
 
@@ -4329,6 +4429,25 @@ class TestBatchModel:
         assert re.search(r"\b40\b", out)
         assert re.search(r"\b32\b", out)
         assert "exceed" not in out.lower()
+
+    def test_the_information_message_counts_grain_pure_batches(
+        self, monkeypatch, capsys
+    ):
+        # Added 2026-10-07 (review gate, finding RC-R4): F5's seven
+        # fitted points in two grains (3 and 4) at B = 8 run TWO
+        # grain-pure device batches, not ceil(7 / 8) = 1 (D21.9.3)
+        install_numpy_session(monkeypatch)
+        run_fixture(
+            f5_map(),
+            backend="gpu",
+            device_precision="float64",
+            chunksize=8,
+            verbose=1,
+        )
+        out = capsys.readouterr().out
+        assert math.ceil(F5_FIT_INDICES.size / 8) == 1
+        assert len(_gpu._batch_chunks(F5_STATE_OF_POINT, 8)) == 2
+        assert "Chunking: 2 chunk(s) of up to 8 pattern(s)" in out
 
     def test_the_information_message_warns_above_free_vram(self, monkeypatch, capsys):
         f4 = f4_batch()
@@ -4379,6 +4498,246 @@ class TestDriftTripwireCpuHalf:
             ]
         )
         assert np.all(np.abs(errors - CPU_DRIFT_RECOVERY_PX) <= CPU_DRIFT_TRIPWIRE_PX)
+
+
+def _bicubic_reference(coefficients, x, y) -> np.ndarray:
+    """Return the cubic B-spline of *coefficients* at ``(x, y)``: an
+    independent scalar transcription, in Python floats, of the CPU's
+    ``_bicubic_evaluate`` as frozen before Stage E (the whole-sample
+    mirror fold, the basis weights DIVIDED by 6, the row-wise inner
+    sums in column order, then the 64-bit accumulation over rows)."""
+    n_rows, n_cols = coefficients.shape
+    period_rows = 2 * n_rows - 2
+    period_cols = 2 * n_cols - 2
+
+    def fold(c, n, period):
+        c = -c if c < 0.0 else c
+        c = math.fmod(c, period)
+        return period - c if c > n - 1 else c
+
+    def fold_index(k, n, period):
+        k = -k if k < 0 else k
+        k = k % period
+        return period - k if k > n - 1 else k
+
+    def weights(t):
+        one_minus = 1.0 - t
+        t2 = t * t
+        t3 = t2 * t
+        return (
+            one_minus * one_minus * one_minus / 6.0,
+            (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0,
+            (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0,
+            t3 / 6.0,
+        )
+
+    out = np.empty(len(x), dtype=np.float64)
+    for i, (cx, cy) in enumerate(zip(x.tolist(), y.tolist())):
+        cx = fold(cx, n_cols, period_cols)
+        cy = fold(cy, n_rows, period_rows)
+        ix, iy = math.floor(cx), math.floor(cy)
+        wx, wy = weights(cx - ix), weights(cy - iy)
+        columns = [fold_index(ix - 1 + k, n_cols, period_cols) for k in range(4)]
+        rows = [fold_index(iy - 1 + k, n_rows, period_rows) for k in range(4)]
+        value = 0.0
+        for a in range(4):
+            r = coefficients[rows[a]]
+            inner = (
+                wx[0] * float(r[columns[0]])
+                + wx[1] * float(r[columns[1]])
+                + wx[2] * float(r[columns[2]])
+                + wx[3] * float(r[columns[3]])
+            )
+            value += wy[a] * inner
+        out[i] = value
+    return out
+
+
+class TestCpuHelpersBitwise:
+    """The CPU default path stays BITWISE unchanged (D21.14, plan 11):
+    the two shared helpers the device build mirrors, against
+    independent transcriptions of their pre-Stage-E form, to the bit.
+    Added 2026-10-07 at the review gate (validation.md V9 ledgers 107
+    and 108): the drift tripwire's 1e-9 px literals did not see a
+    one-ulp perturbation of either helper.
+
+    Mutant: M27 (a shared helper perturbed: ``/ 6.0`` to ``* (1.0 /
+    6.0)`` in the B-spline weights, ``/ norm`` to ``* (1.0 / norm)`` in
+    the zero-mean normalisation)."""
+
+    def test_the_bicubic_evaluation_is_the_frozen_formula(self):
+        from kikuchipy.indexing._hrebsd._interpolation import _bicubic_evaluate
+
+        rng = np.random.default_rng(2026_10_07)
+        coefficients = rng.normal(100.0, 30.0, size=(19, 23)).astype(np.float32)
+        # inside the frame, on both sides of every edge, and far out
+        x = np.concatenate([rng.uniform(-30.0, 52.0, 400), [0.0, 22.0, -1.25, 23.5]])
+        y = np.concatenate([rng.uniform(-25.0, 44.0, 400), [0.0, 18.0, 19.75, -0.5]])
+        out = np.empty(x.size, dtype=np.float64)
+        _bicubic_evaluate(coefficients, x, y, out)
+        assert np.array_equal(out, _bicubic_reference(coefficients, x, y))
+        assert np.array_equal(
+            evaluate(coefficients, x, y), _bicubic_reference(coefficients, x, y)
+        )
+
+    def test_the_zero_mean_normalisation_is_the_frozen_formula(self):
+        rng = np.random.default_rng(2026_10_07)
+        values = rng.normal(250.0, 40.0, size=10_000)
+        normalized, norm = zero_mean_normalize(values)
+        centred = values - values.mean()
+        expected_norm = float(np.linalg.norm(centred))
+        assert norm == expected_norm
+        assert np.array_equal(normalized, centred / expected_norm)
+
+
+class _Uncopyable(Exception):
+    """An exception whose type cannot be rebuilt from its ``args``."""
+
+    def __init__(self, first, second):
+        super().__init__(f"{first} {second}")
+
+
+class TestRunnerEdgesNumpy:
+    """D21.14.4 (100 % coverage from the default and gated runs
+    combined), added 2026-10-07 at the review gate (finding RC-R2,
+    validation.md V9 ledger 108): the runner's and the session's
+    defensive branches on the numpy namespace, each with its contract.
+
+    - A device section submitted after a failed compute's ``clear``
+      never runs (D21.9.4, D21.10.4), and ``packed`` refuses a map
+      whose batches did not all run.
+    - ``clear`` survives a plan cache that cannot be cleared.
+    - A batch straddling grains raises (D21.9.3).
+    - The gate's cached failure is re-raised as is when its type
+      cannot be rebuilt from its ``args`` (D21.2).
+    - The session refuses B < 1 and an unknown namespace; the numpy
+      namespace describes itself; the B = 1 out-of-memory message
+      survives an unreadable free VRAM (D21.10.4, D21.10.5).
+    - The runner returns no rows for an empty fit list, refuses a
+      ``chunksize`` below 1, and chooses B itself when given none
+      (D21.10.1, D21.10.3).
+    - The engine's coefficient check refuses a value that is no data
+      type at all under ``backend="gpu"`` (D21.1)."""
+
+    @staticmethod
+    def session(batch_size=2):
+        return _gpu._make_session(
+            "numpy",
+            batch_size,
+            device_precision="float64",
+            seed_precision="complex128",
+        )
+
+    def test_a_section_after_clear_never_runs(self):
+        device = _gpu._OrderedDevice(self.session(), (), {}, dict(ROW_SLOTS))
+        device.clear()
+        block = np.zeros((1, *SHAPE_60))
+        device.submit(0, block, np.zeros(1, dtype=np.int64), np.zeros(1, np.int64))
+        assert device.closed
+        assert device.pending == {} and device.rows == {}
+        assert device.next_batch == 0
+
+    def test_packed_refuses_a_batch_that_never_ran(self):
+        device = _gpu._OrderedDevice(self.session(), (), {}, dict(ROW_SLOTS))
+        with pytest.raises(RuntimeError, match="only 0 of 1 device batches ran"):
+            device.packed(1)
+
+    def test_clear_survives_a_plan_cache_that_raises(self):
+        class Cache:
+            cleared = 0
+
+            def clear(self):
+                Cache.cleared += 1
+                raise RuntimeError("no plan cache here")
+
+        device = _gpu._OrderedDevice(self.session(), (), {}, dict(ROW_SLOTS))
+        device.plan_caches = {1: Cache(), 2: Cache()}
+        device.clear()
+        assert Cache.cleared == 2
+        assert device.plan_caches == {}
+
+    def test_a_batch_straddling_grains_raises(self):
+        with pytest.raises(RuntimeError, match="straddles grains"):
+            _gpu._device_batch(
+                self.session(),
+                (),
+                dict(DEFAULT_FIT_OPTIONS),
+                dict(ROW_SLOTS),
+                np.zeros((2, *SHAPE_60)),
+                np.array([0, 1]),
+                np.array([0, 1]),
+            )
+
+    def test_an_uncopyable_cached_gate_failure_is_reraised(self, monkeypatch):
+        cached = _Uncopyable("no", "device")
+        monkeypatch.setattr(_gpu, "_gate_result", cached)
+        with pytest.raises(_Uncopyable) as info:
+            _gpu._verify_gpu_or_raise()
+        assert info.value is cached
+
+    def test_the_session_refuses_a_batch_below_one(self):
+        with pytest.raises(ValueError, match="device batch size must be >= 1"):
+            self.session(0)
+
+    def test_the_session_refuses_an_unknown_namespace(self):
+        with pytest.raises(ValueError, match="namespace must be 'cupy' or 'numpy'"):
+            _gpu._GpuSession(
+                "torch",
+                2,
+                device_precision="float64",
+                seed_precision="complex128",
+            )
+
+    def test_the_numpy_namespace_describes_itself(self):
+        assert _gpu._device_description("numpy") == ("numpy namespace", None)
+
+    def test_the_floor_message_survives_unreadable_free_vram(self, monkeypatch):
+        def unreadable(namespace):
+            raise RuntimeError("no device")
+
+        monkeypatch.setattr(_gpu, "_free_device_bytes", unreadable)
+        error = _gpu._out_of_memory_error(SHAPE_60, "mixed", "complex128")
+        assert isinstance(error, MemoryError)
+        assert "against an unknown amount of free VRAM" in str(error)
+
+    def test_the_runner_returns_no_rows_for_no_points(self, monkeypatch):
+        recorder = install_numpy_session(monkeypatch)
+        f5 = f5_map()
+        rows = run_direct(np.asarray(f5["patterns"]), [], [], f5_states(), 8)
+        assert rows.shape == (0, ROW_SLOTS["width"])
+        assert rows.dtype == np.float64
+        assert recorder.built == []
+
+    def test_the_runner_refuses_a_chunksize_below_one(self, monkeypatch):
+        recorder = install_numpy_session(monkeypatch)
+        f5 = f5_map()
+        with pytest.raises(ValueError, match="chunksize must be >= 1"):
+            run_direct(
+                np.asarray(f5["patterns"]),
+                F5_FIT_INDICES,
+                F5_STATE_OF_POINT,
+                f5_states(),
+                0,
+            )
+        assert recorder.built == []
+
+    def test_the_runner_chooses_b_when_given_none(self, monkeypatch):
+        f5 = f5_map()
+        patterns = np.asarray(f5["patterns"])
+        n_pixels = int(np.prod(patterns.shape[1:]))
+        # free VRAM at which the chooser's largest fitting B is 2
+        free = 2 * _gpu._vram_model_bytes(2, n_pixels, "float64", "complex128")
+        assert _gpu._default_batch_size(free, n_pixels, "float64", "complex128") == 2
+        recorder = install_numpy_session(monkeypatch, free_bytes=free)
+        args = (patterns, F5_FIT_INDICES, F5_STATE_OF_POINT, f5_states())
+        chosen = run_direct(*args, None)
+        assert recorder.built == [2]
+        assert np.array_equal(chosen, run_direct(*args, 2), equal_nan=True)
+
+    def test_a_value_that_is_no_dtype_is_refused_under_gpu(self, monkeypatch):
+        TestBackendSwitch.forbid_gate(monkeypatch)
+        with pytest.raises(ValueError, match="coefficient_dtype must be numpy.float32"):
+            TestBackendSwitch.f4_call(backend="gpu", coefficient_dtype="not a dtype")
 
 
 class TestFixtureGating:
@@ -5229,6 +5588,21 @@ class TestGatedSeedParity:
             "GPU_SEED_EQUAL_COUNT['F1 dimmed', 16]",
         )
 
+    @pytest.mark.parametrize("precision", FROZEN_SEED_PRECISIONS)
+    def test_the_spectra_are_those_of_the_zmn_crops(self, cupy_gpu, precision):
+        # M15 on the device (added 2026-10-07, review gate, validation.md
+        # V9 ledgers 107 and 108): the default arm's recipe
+        state, targets = seed_case("F4")
+        targets = SEED_SPECTRA_SCALE * np.asarray(targets) + SEED_SPECTRA_OFFSET
+        preprocessed, coefficients = preprocessed_targets(state, targets)
+        _, _, spectra, _ = _device_seed(
+            cupy_gpu, state, preprocessed, coefficients, precision=precision
+        )
+        assert issubclass(type(spectra), cupy_gpu.ndarray)
+        assert_zmn_spectra(
+            cupy_gpu.asnumpy(spectra), zmn_crop_spectra(state, preprocessed), precision
+        )
+
     @pytest.mark.parametrize("name", GATED_SEED_FIXTURES)
     def test_complex64_differences_are_counted(self, cupy_gpu, name, record_property):
         fixture = fixture_of(name)
@@ -5255,12 +5629,15 @@ class TestGatedSeedParity:
     def test_the_runner_reaches_the_seam_per_padded_sub_batch(
         self, cupy_gpu, monkeypatch
     ):
-        # M11, M50, M52, M53: B = 40 on F1's 13 points is one batch of
-        # 40 slots, so P = 32 and ceil(40 / 32) = 2 sub-batches of 32
-        # rows each, the tail padded; slots in fit order, -1 padded
+        # M11, M50, M52, M53: B = 40 on F1 tiled to 40 points is one
+        # batch of 40 slots, so P = 32 and ceil(40 / 32) = 2 sub-batches
+        # of 32 rows each, the tail padded; slots in fit order, -1
+        # padded.  CHANGED 2026-10-07 (review gate, finding RC-R1, plan
+        # 11.6): F1's own 13 points left the tail sub-batch padding
+        # only, which the runner now skips, so the map is F1 tiled to 40
         cp = cupy_gpu
         records = spy_seam(monkeypatch, keep_states=False)
-        fixture = f1_batch()
+        fixture = f1_tail_batch()
         run_fixture(fixture, chunksize=40, **_gpu_kwargs())
         p = FROZEN_SUB_BATCH_SIZE
         seeds_calls = [r for r in records if r["call"] == "seed_homographies"]
@@ -5627,6 +6004,68 @@ class TestGatedKernelAB:
                 GPU_KERNEL_AB_TOL_F64,
                 f"GPU_KERNEL_AB_TOL_F64 (reduce_solve_update, {name})",
             )
+
+    def test_reduce_solve_update_takes_a_host_lockstep(self, cupy_gpu):
+        # Added 2026-10-07 (review gate, finding RC-R2, D21.14.4): a
+        # lockstep state of HOST arrays (and a non-contiguous matrix
+        # stack) is converted in place to C-contiguous device arrays of
+        # the kernel's dtypes, and updates exactly as a device one does
+        cp = cupy_gpu
+        state, coefficients, matrices = _ab_inputs()
+        _, _, cp_ctx, cp_resident = self._residents(cp, state)
+        values, _ = cp_ctx.kernels.gather(
+            cp_resident, cp.asarray(coefficients), cp.asarray(matrices)
+        )
+        shifts = cp.asnumpy(values).astype(np.float64).mean(axis=1)
+        sums = cp_ctx.kernels.pixel_sums(cp_resident, values, cp.asarray(shifts))
+        options = {
+            "min_step": DEFAULT_FIT_OPTIONS["min_step"],
+            "step_scale": DEFAULT_FIT_OPTIONS["step_scale"],
+            "max_iterations": DEFAULT_FIT_OPTIONS["max_iterations"],
+        }
+        on_device = _lockstep(cp, matrices)
+        on_device.shifts = cp.asarray(shifts)
+        on_host = _lockstep(np, matrices)
+        on_host.shifts = shifts.copy()
+        on_host.matrices = np.asfortranarray(on_host.matrices)
+        on_host.iterations = on_host.iterations.astype(np.int32)
+        cp_ctx.kernels.reduce_solve_update(cp_resident, sums, on_device, options)
+        cp_ctx.kernels.reduce_solve_update(cp_resident, sums, on_host, options)
+        expected = _lockstep_to_host(cp, on_device)
+        for name, dtype in (
+            ("matrices", np.float64),
+            ("shifts", np.float64),
+            ("iterations", np.int64),
+            ("norm_dp", np.float64),
+            ("active", np.bool_),
+            ("converged", np.bool_),
+            ("failed", np.bool_),
+        ):
+            array = getattr(on_host, name)
+            assert isinstance(array, cp.ndarray), name
+            assert array.dtype == dtype and array.flags.c_contiguous, name
+            assert np.array_equal(cp.asnumpy(array), expected[name], equal_nan=True)
+
+    def test_the_spline_prefilter_leaves_a_length_one_axis(self, cupy_gpu):
+        # Added 2026-10-07 (review gate, finding RC-R2, D21.14.4): along
+        # an axis of length 1 the prefilter is the identity (scipy's
+        # ``spline_filter1d`` returns such a line unchanged), and the
+        # other axis is still filtered
+        from scipy.ndimage import spline_filter1d
+
+        cp = cupy_gpu
+        kernels = _batched.make_kernel_namespace("cupy", "mixed")
+        rng = np.random.default_rng(7)
+        host = rng.normal(100.0, 20.0, size=(3, 1, 9))
+        data = cp.asarray(host)
+        kernels.spline_prefilter(data, 1)
+        assert np.array_equal(cp.asnumpy(data), host)
+        kernels.spline_prefilter(data, 2)
+        expected = spline_filter1d(host, order=3, axis=2, mode="mirror")
+        assert np.abs(cp.asnumpy(data) - expected).max() <= 1e-10
+        np.testing.assert_array_equal(
+            spline_filter1d(host, order=3, axis=1, mode="mirror"), host
+        )
 
     def test_the_mixed_build_dtypes(self, cupy_gpu):
         # D21.4: f32 per-pixel values, f64 sums, f64 criterion
@@ -6482,20 +6921,39 @@ class TestGatedRobustness:
         pool = cp.get_default_memory_pool()
         limit = _gpu._vram_model_bytes(limit_batch, n_pixels, "mixed", "complex128")
         record_property("limit_bytes", int(limit))
-        built = _spy_sessions(monkeypatch)
+        # M20 (strengthened 2026-10-07, review gate: the pool-freeing
+        # variants survived a used-bytes-only pin, validation.md V9
+        # ledgers 107 and 108): the pool's TOTAL bytes, cached free
+        # blocks included, read as every halved session is built
+        # (window (b) must have collected and freed the failed attempt)
+        # and after the run (the session's close must free the pool)
+        rebuild_bytes = []
+
+        def at_build(attempt, batch_size):
+            if attempt > 1:
+                rebuild_bytes.append(int(pool.total_bytes()))
+
+        built = _spy_sessions(monkeypatch, on_build=at_build)
         pool.free_all_blocks()
         cp.fft.config.get_plan_cache().clear()
         pool.set_limit(size=int(limit))
         try:
             limited = run_fixture(fixture, chunksize=None, **_gpu_kwargs())
             residue = int(pool.used_bytes())
+            held = int(pool.total_bytes())
         finally:
             pool.set_limit(size=0)
             pool.free_all_blocks()
         record_property("built", list(built))
         record_property("residue_bytes", residue)
+        record_property("held_bytes", held)
+        record_property("rebuild_bytes", list(rebuild_bytes))
         assert len(built) >= 2, "the limit did not force a halving"
         assert_within(residue, GPU_LEAK_RESIDUE_BYTES, "GPU_LEAK_RESIDUE_BYTES")
+        assert_within(held, GPU_LEAK_RESIDUE_BYTES, "GPU_LEAK_RESIDUE_BYTES (total)")
+        assert len(rebuild_bytes) == len(built) - 1
+        for k, total in enumerate(rebuild_bytes):
+            assert_within(total, GPU_REBUILD_POOL_BYTES, f"GPU_REBUILD_POOL_BYTES[{k}]")
         monkeypatch.undo()
         assert_properties_bitwise(limited, self._clean(fixture, built[-1]))
 
@@ -6614,10 +7072,16 @@ class TestGatedVramCalibration:
         cp = cupy_gpu
         n_pixels = SHAPE_RECT[0] * SHAPE_RECT[1]
         peaks = {}
+        # The first B points of F3, ONE batch full of real patterns per
+        # run, not F3s (9 points): since 2026-10-07 (review gate, finding
+        # RC-R1) a sub-batch of padded slots only is never allocated, so
+        # the per-slot term needs batches of real patterns; one batch
+        # (one worker thread, one cuFFT plan cache) keeps the marks
+        # deterministic, which the 65 points of F3 are not
         for batch_size in (8, 16, 32, 64):
             with _PoolHighWater(cp) as tracker:
                 run_fixture(
-                    f3s_batch(),
+                    f3_prefix_batch(batch_size),
                     chunksize=batch_size,
                     **_gpu_kwargs(device_precision),
                 )

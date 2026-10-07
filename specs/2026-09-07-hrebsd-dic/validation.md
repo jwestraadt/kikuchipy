@@ -5854,3 +5854,634 @@ plumbing of the parallel implementer).
     complex128) is still below the mixed complex128 mark, and
     `test_batch_size_invariance[float64]` reports that its pool limit
     did not force a halving. Both belong to the calibration step.
+
+104. **The device-side MTP pins (requirements D21.4 to D21.8,
+    D21.10; V9(d) to (o); integrator).** Every device pin in
+    `test_hrebsd_gpu.py` that cites "ledger 104" was measured by the
+    first integrator on 2026-10-07 (before the 717f0c15 checkpoint)
+    with the gated suite run once under recording assert helpers
+    (scratch `recpins.py`, the test bodies unchanged; `--weekly`,
+    `-n 0`, the pinned overlay of D21.15, `KIKUCHIPY_EXPECT_GPU=1`,
+    `nvidia-smi` idle). That integrator was stopped before writing
+    this entry, so it is written here, and every value was RE-READ
+    from the 2026-10-07 04:24 `--weekly` gated run of entry 106
+    (junit `record_property` values; `nvidia-smi` 0 %, 0 MiB, no
+    compute process before and after). The values agree with the pins'
+    comments.
+    (i) Seeds, V9(d): complex128 device seeds equal to `initial_guess`
+    bitwise on every row: F1 12, F2-0, F2-1 and F3 64 each, F4 3, at
+    upsample 16, 2 and 1, plus the dimmed F1 arm (12) and the runner
+    arm (13) -> `GPU_SEED_EQUAL_COUNT` pinned AT the counts; complex64
+    seeds differ on 0 rows of every fixture (max shift difference 0.0
+    px) -> `GPU_SEED_C64_DIFF_COUNT = 0`.
+    (ii) Seam, V9(e): planted rows on F1, F2-0, F2-1 and F3 at both
+    device precisions and all four finite row types: 0
+    iteration-count differences, 0 `converged` flips, every point
+    converged on both (13 on F1, 65 on each 64-pattern set, the
+    reference included) -> `GPU_SEAM_*` pinned AT the counts.
+    Discriminating counts (CPU side, `SEAM_DISCRIMINATING_MIN`): F1
+    12, 9, 12, 13; F2-0 64, 39, 63, 62; F2-1 64, 39, 65, 64; F3 64,
+    47, 61, 62 (exact, translate_rotate, rotate_1p5, perspective).
+    (iii) Bands, V9(f), each the worst over every gated use, pinned at
+    about 2x: h band mixed 1.256e-6 px (the DC-offset arm, no
+    band-pass; the parity fixtures at most 5.22e-7 px on F3) ->
+    `GPU_PARITY_H_TOL_MIXED = 2.5e-6`; float64 3.19e-12 px (F2-1) ->
+    `7e-12`. First step mixed 5.05e-7 px (the planted F3
+    "perspective" seam row; 1.20e-7 px on F1 parity) -> `1e-6`;
+    float64 1.58e-11 px (F3) -> `3.2e-11`. Residual relative 2.24e-6
+    (DC offset, mixed) -> rtol `4.5e-6`, absolute 2.6e-14 on
+    near-zero criteria -> atol `6e-14`. Fe 1.20e-9 (F6, mixed) ->
+    `2.4e-9`. Kernel A/B at float64, scale-free relative: worst
+    1.469e-14 (gather) -> `GPU_KERNEL_AB_TOL_F64 = 3e-14`. FLAGGED
+    FOR THE REVIEW GATE: the mixed first-step pin (1e-6 px) sits above
+    the spec gate's 5.3e-7 px measurement of M3 (f32 reductions),
+    because the seam's one-iteration arm shares it; M3's kill must be
+    verified by re-injection.
+    (iv) Counts, V9(g): 0 iteration differences and 0 flips on every
+    key (F1 to F4 and F6 at both device and seed precisions, the Ni
+    map, the F4 knob arms, padded F4, F5, F7, DC offset) ->
+    `GPU_ITERATION_DIFF_COUNT = GPU_CONVERGED_FLIP_COUNT = 0`.
+    (v) Intensity scale, V9(j): 2.147e-8 px mixed, 3.058e-9 px
+    float64 -> `4.3e-8`, `6.1e-9`. Update rule, V9(k): 9.06e-8 px mixed
+    (one iteration), 1.025e-13 px float64 (0 after one iteration) ->
+    `1.8e-7`, `2e-13`, about 450x under the 8.2e-5 px mutant
+    separation of ledger 93.
+    (vi) Drift tripwire, V9(l): the twelve F1 recovery literals per
+    device precision, `GPU_DRIFT_RECOVERY_PX_MIXED` and `_F64`; the
+    worst case moves from the CPU's 0.012439859 px by 5.7e-8 px
+    (mixed) and 2.8e-14 px (float64); band frozen at the CPU half's
+    1e-9 px. These literals also hold under NVRTC 12.9 (entry 105
+    (iii)), so they are not specific to the compiler that measured
+    them.
+    (vii) Determinism, V9(m): B = 32, 40 and the default (64) equal
+    B = 8 bitwise on F1 at both device precisions ->
+    `GPU_BATCH_INVARIANCE_TOL = 0.0` (the F2 to F4 arms are entry 105
+    (ii)). The launch-dimension spy passes at B = 8 and 32: every
+    kernel's grid is (256,) or (1,) or (10,) blocks per pattern, a
+    function of the pattern geometry only.
+    (viii) Robustness, V9(n): under a real `set_limit` the runner
+    builds B = 64, 32, 16, 8, 4 and recovers with a 0-byte pool
+    residue on F1 (limit 92,422,144 B) and F7 (2,582,016 B) ->
+    `GPU_LEAK_RESIDUE_BYTES = 0`.
+    (ix) VRAM, V9(o): the calibration is entry 105 (i).
+
+105. **The implementation gate's measurement debt (plan 11 item 3;
+    E3, E4, E5, E6, E13 and the V9(o) calibration; integrator).**
+    Machine A (i7-13700H, RTX 2000 Ada Laptop GPU 8 GB, driver
+    595.71, Windows 11, on AC power, High performance scheme), the
+    pinned overlay of D21.15 at `-n 0` unless stated. Scratch
+    scripts `vram_calib.py`, `e_debt.py` (items E3, E4, E5, E13),
+    `e5_rect.py`, `e6.py`, `e6c.py`, driven by `run_debt.sh`, which
+    logs `nvidia-smi` (utilisation, memory, compute processes) before
+    and after each item. Every `nvidia-smi` read between 04:39 and
+    04:59 showed 0 %, 0 MiB and no compute process, so no GPU-side
+    contamination. The host was NOT idle: a VS Code process took
+    about one core and total CPU sat at 24 to 36 % with no job of
+    ours running, and end-to-end times moved by up to 1.6x between
+    sessions (the first integrator's runs at 02:13 to 02:40 against
+    these). So every timing below is quoted as a range over the
+    sessions, and only ratios taken within one session are used for a
+    decision.
+    (i) **VRAM model terms, calibrated SEPARATELY (V9(o)).**
+    RECIPE: `vram_calib.py`; the pool high-water marks at 512x622
+    (F3s; 318,464 pattern pixels, subregion and crop 257,600) through
+    `_PoolHighWater`, (r) `build_resident` alone, `build_seed_state`
+    alone and both; (g, p) whole F3s runs at B = 8, 16, 32 and 64,
+    with g = (peak(64) - peak(32)) / 32 and p = (peak(16) - peak(8))
+    / 8 - g, the test's recipe. 04:39, deterministic: identical to
+    the byte with the 02:10 run and with the gated run's
+    `record_property` values.
+
+    | term | measured | model (`_vram_model_terms`) | pinned bounds |
+    |---|---|---|---|
+    | r, mixed, complex128 | 23,159,296 B peak (resident 10,794,496 + seed 12,364,800 peak; 19,037,696 held) | 30,638,080 B | (11.5e6, 46e6) |
+    | r, float64, complex128 | 26,248,704 B (resident 13,883,904) | 38,281,216 B | (13e6, 52e6) |
+    | r, mixed, complex64 | 16,978,432 B | 22,994,944 B | -- |
+    | r, float64, complex64 | 20,067,840 B | 30,638,080 B | -- |
+    | g, both precisions | 1,273,936 B | 2,613,248 (mixed), 3,887,104 (float64) | (0.6e6, 8e6) |
+    | p, both precisions | 21,094,832 B | 30,572,544 B (complex128) | (10.5e6, 42e6) |
+
+    Every model term is at least its measured mark, so ledger 103's
+    open point (the old `r` model of 20.4 MB below the 23.2 MB mark)
+    is closed, and every measured term sits inside its pinned (o)
+    bounds: the bounds are CONFIRMED. The whole model bounds every
+    whole run: peaks 197,988,864, 376,939,008, 734,839,296 and
+    775,605,248 B (mixed, B = 8 to 64) against 326,762,496,
+    592,248,832, 1,123,221,504 and 1,206,845,440 B. The `float64`
+    arm of `test_batch_size_invariance` (103's other open point)
+    passes in entry 106. RECORDED, not a defect: the E3 sweep below
+    took pool peaks inside its timing loops (cuFFT plan caches alive),
+    and there the peak came within 3 % of the model once (548.1 MB
+    against 564.8 MB, mixed, B = 16, 260 points). The default B
+    budgets the model against HALF the free VRAM, so that run still
+    had about 2x headroom.
+    (ii) **B invariance across B, E4 (D21.7.3).** RECIPE: `e_debt.py
+    E4`: `run_fixture` at `chunksize` 8, 32, 40 and None (the default,
+    64 here, read from a `_make_session` spy) on F1, F2-0, F2-1, F3
+    and F4 at both device precisions (complex128 seeds), compared by
+    `assert_properties_bitwise` against B = 8 and among B >= 32.
+    04:40: BITWISE on all 10 fixture-precision pairs (max |h| difference
+    0.0 at every B), and the same at 02:2x. E4 RESOLVED: bitwise, and
+    `GPU_BATCH_INVARIANCE_TOL = 0.0` stands with no deviation. The
+    alternative, a constant P = 32 at every B (11.4 item 23), is not
+    needed.
+    (iii) **NVRTC provenance and a wheel-only compile, E6 (D21.2).**
+    RECIPE: `e6.py` (the HREBSD gate, then `make_kernel_namespace`,
+    an FFT and a matmul, then the process module list through
+    `EnumProcessModules`), and `e6c.py` (`RawKernel.compile()` of all
+    five kernels at both precisions plus the spline prefilter: 11
+    kernels).
+    - On the pinned overlay as the gated suite runs it, NVRTC is
+      NOT a wheel. The process loads `nvrtc64_130_0.dll` and
+      `nvrtc-builtins64_131.dll` (NVRTC 13.1) from the CUDA Toolkit
+      v13.1 on PATH (`C:\Program Files\NVIDIA GPU Computing
+      Toolkit\CUDA\v13.1\bin\x64`), and the toolkit's `cufft64_12.dll`,
+      `cublas64_13.dll` and `cublasLt64_13.dll` load beside the
+      overlay wheels' `cufft64_11.dll`, `cublas64_12.dll` and
+      `cublasLt64_12.dll`, which cupy's own `.pyd` modules use. The
+      user-level `CUDA_PATH` points at the `nvidia\cuda_runtime`
+      folder of another venv (`venvs\kikuchipy-gpu`, read only, never
+      modified); cupy finds the CUDA headers there. Under `uv run
+      --with`, `cuda.pathfinder` does not search the overlay's
+      `site-packages`, so the overlay's own `nvidia-cuda-nvrtc-cu12`
+      12.9.86 (installed transitively through `nvidia-cublas-cu12`)
+      is never loaded. Every device pin in entry 104 was therefore
+      measured with NVRTC 13.1.
+    - Wheel-only, in a scratch venv (`uv venv`, kikuchipy installed
+      from this worktree, every package pinned to the worktree
+      `.venv`'s versions, cupy-cuda12x 14.2.0 and the five wheels of
+      D21.15), with every PATH entry naming CUDA removed and
+      `CUDA_PATH` unset: the gate FAILS at stage (c) with "Failed to
+      find CUDA headers. Please install CUDA toolkit headers (e.g.,
+      pip install cupy-cuda12x[ctk]) or specify CUDA_PATH". NVRTC
+      itself came from the transitive `nvidia-cuda-nvrtc-cu12`; the
+      missing piece is the headers. cupy 14.2.0 cannot derive a CUDA
+      root from the CUDA 12 split wheel layout (`_get_cuda_path`
+      returns None).
+    - Adding `nvidia-cuda-runtime-cu12==12.9.79` (which ships
+      `include/`) fixes it, with nothing else set: the gate passes,
+      all 11 kernels compile, and the process loads only wheel DLLs
+      (`nvrtc64_120_0.dll`, NVRTC 12.9, and `nvrtc-builtins64_129.dll`
+      from `nvidia\cuda_nvrtc\bin`, `cufft64_11.dll`, `cublas64_12.dll`
+      and `cublasLt64_12.dll`).
+    - Compiler independence: the whole gated suite with `--weekly` in
+      that wheel-only venv (NVRTC 12.9, `KIKUCHIPY_EXPECT_GPU=1`,
+      `-n 0`, `nvidia-smi` idle) gives **457 passed, 0 failed, 0
+      skipped** in 828 s. Every device pin of entry 104, the bitwise B
+      invariance and the 1e-9 px drift literals included, holds under
+      NVRTC 12.9 as well as 13.1.
+    - FIX (D21.2's conditional: "the message gains
+      `nvidia-cuda-nvrtc-cu12` if a wheel-only machine needs it
+      named"): the stage-(c) message `_gpu._GATE_LIBRARY_MESSAGE`
+      and the `backend` entry of the `hrebsd_dic` docstring now also
+      name `nvidia-cuda-nvrtc-cu12` and `nvidia-cuda-runtime-cu12`
+      ("NVRTC and the CUDA headers the kernels compile against"), and
+      the test pin `GATE_WHEELS` gains both (a dated comment). DATED
+      DEVIATION, 2026-10-07, for the review gate: D21.2 authorised
+      only the NVRTC wheel; the runtime-headers wheel is added because
+      the measurement shows it is the one a wheel-only machine
+      actually lacks. The D21.15 overlay itself is unchanged.
+      Re-pinning it with `nvidia-cuda-runtime-cu12` and running the
+      gated suite with the toolkit off PATH would make the pins
+      toolkit-independent by construction. That is a review-gate
+      proposal, not done here (the overlay is frozen).
+    (iv) **Default B sweep, E3 (D21.10.3).** RECIPE: `e_debt.py E3`:
+    F3 tiled 4x (260 points, 512x622, synthetic, one grain), best of
+    2 after a warm-up at B in {8, 16, 32, 64, 128}, complex128 seeds,
+    with the pool peak of one more run. Free VRAM 7,426,015,232 B, so
+    the chooser returns 64 at both precisions (model at 64: 1151 MB
+    mixed, 1243 MB float64). Patterns/s over three sessions (02:2x,
+    04:42, 04:53):
+
+    | B | mixed | float64 | pool peak MB (mixed) | model MB (mixed) |
+    |---|---|---|---|---|
+    | 8 | 89, 56, 67 | 73, 56, 53 | 189 to 220 | 312 |
+    | 16 | 92, 70, 69 | 74, 58, 58 | 485 to 548 | 565 |
+    | 32 | 99, 83, 96 | 78, 69, 70 | 701 to 952 | 1071 |
+    | 64 | **102, 89, 99** | **78, 70, 73** | 740 to 991 | 1151 |
+    | 128 | 94, 84, 84 | 72, 66, 65 | 817 to 943 | 1310 |
+
+    B = 64 is the fastest at both precisions in all three sessions,
+    and B = 128 (above the frozen cap) is slower. E3 RESOLVED on
+    synthetic data: the in-force rule and the cap of 64 stand. The
+    sweep on far256 and patch C that E3 names is NOT run here. The
+    Si-indent file sits only in the main checkout, which this
+    integrator must not touch, so it moves to the D21.16 performance
+    record (plan 11 item 7), where that data is read anyway.
+    (v) **Grain-pure batching and the `R_MAX` bound, E5 (D21.9.3,
+    D21.10.2).** RECIPE: `e_debt.py E5` (spies on
+    `_GpuSession.residents` and `_batched.build_resident`) and
+    `e5_rect.py`. F7 (18 grains of 4 points, 60 px) at B = 4, 8 and the
+    default: at most **2** residents alive at any time, and **18**
+    resident uploads, one per grain, with no re-upload, in both
+    sessions. The `R_MAX = 2` bound holds. Many-grain against one-grain
+    maps of the same size, best of 3, mixed, complex128:
+
+    | map | default B (64) | B = 32 | B = 16 |
+    |---|---|---|---|
+    | 60 px, 20 grains x 20 points | 1.01, 1.72, 1.89 s | -- | 1.27, 1.71, 2.23 s |
+    | 60 px, 1 grain x 400 points | 0.52, 0.82, 0.92 s | -- | 1.25, 2.03, 2.13 s |
+    | 512x622, 8 grains x 20 points | 4.84 s | 3.93 s | 4.29 s |
+    | 512x622, 1 grain x 160 points | 1.83 s | 1.84 s | 2.21 s |
+
+    (Iteration totals agree: 1270 against 1287 and 748 against 754;
+    all points converge.) Same-session ratio, many-grain over
+    one-grain, at the default B: 1.96x, 2.10x and 2.05x at 60 px, and
+    **2.64x at 512x622**. Even at the best B for the many-grain map
+    (32) it is 2.1x. **E5 TRIGGER FIRED**: grain-pure batching with
+    per-grain padding costs far more than the 20 % threshold on a map
+    of 20-point grains. Two sources, both by design (D21.7.3): each
+    grain runs at least one batch padded to B, and the padded slots
+    go through the upload, preprocessing, spline prefilter and seed
+    FFTs before being discarded; and each grain builds its own
+    residents and seed state. Not changed here: multi-grain batches,
+    skipping all-padding sub-batches, or a B per grain would each
+    change frozen D21.7.3 and D21.9.3 behaviour and the V9(h)
+    sub-batch-count pins. The decision goes to the review gate and
+    Johan. Context: the Si-indent map (ledger 82) has few grains of
+    thousands of points each, where this overhead is a few batches
+    per grain against hundreds.
+    (vi) **The complex64 seed's end-to-end gain, E13 (D21.1, D21.5).**
+    RECIPE: `e_debt.py E13`: F3 tiled 4x (260 points, 512x622) and F2-0
+    tiled 4x (260 points, 480 px) at the default B (64), best of 3
+    after a warm-up; plus the seed stage alone (`seed_spectra` then
+    `seed_homographies`) on one 32-slot sub-batch at 512x622, best of
+    5. complex128 over complex64 time, three sessions:
+
+    | case | mixed | float64 |
+    |---|---|---|
+    | F3 x4, 512x622 | 1.19x, 1.20x, 1.19x | 1.14x, 1.13x, 1.17x |
+    | F2-0 x4, 480 px | 1.24x, 1.22x, 1.16x | 1.13x, 1.05x, 1.08x |
+    | seed stage only, 32 slots 512x622 | 59.5, 58.6, 57.9 ms against 11.8, 11.7, 12.6 ms (about 5.0x) | -- |
+
+    The seed stage alone is 5x faster at complex64, but end to end the
+    gain on the synthetic 512x622 batch at the default B is **1.19x
+    to 1.20x**, below the 1.5x of E13, so the public `seed_precision`
+    rule does NOT fire and no public keyword is proposed on this
+    record. The IC-GN loop dominates: about 2.1 s of 2.5 to 2.9 s on
+    F3 x4. Mixed over float64 (complex128): 1.21x to 1.30x on F3 x4,
+    1.30x to 1.53x on F2-0 x4. The synthetic batches run 90 to 100
+    patterns/s mixed against the prototype's 395 on far256 (ledger
+    97, device only), so the real-data figures and E13's whole-map
+    record belong to the D21.16 performance record (plan 11 item 7),
+    which may change this verdict.
+
+106. **The implementation gate's runs and the CPU default path
+    (D21.14, D21.15; plan 11 items 3 and 6; integrator).** Machine A,
+    2026-10-07, worktree at 3146b82e plus the uncommitted
+    integrator edits (entry 105 (iii)).
+    (i) Default suite: `uv run pytest
+    tests/test_indexing/test_hrebsd_gpu.py -n 0 -q -p no:cacheprovider`
+    gives **186 passed, 0 failed, 271 skipped** in 291.3 s as pytest
+    reports it, 5 min 4.9 s wall with `uv` start-up (04:03). A repeat
+    with `--durations=12` (04:59, while the wheel-only gated run used
+    the GPU and some CPU) gives 186 passed, 271 skipped in 315.1 s.
+    **Default-suite wall time (D21.14.3, re-recorded as ledger 101
+    asked): 291 s**, against 46.9 s for the failing-tests skeleton.
+    The cost is the numpy twin at float64 on the 512x622 F3s: the
+    slowest tests are the F3s and F1 seam arms (`TestSeedSeamHonours
+    ArbitraryH0Numpy::test_planted_rows_reproduce_the_cpu_fit`, 9.8 to
+    25.0 s each), `test_a_last_sub_batch_slot_equals_alone` (19.6
+    s) and the F3s and F1 parity tests (18.5 and 13.1 s). Recorded for
+    CI cost, with no budget in force. The 271 skips are the gated
+    classes, skipped at stage (a) because cupy is absent from the
+    CPU `.venv`, plus the canary.
+    (ii) Gated suite: `KIKUCHIPY_EXPECT_GPU=1 uv run --with
+    <the D21.15 overlay> pytest tests/test_indexing/test_hrebsd_gpu.py
+    -n 0 -p no:cacheprovider -q -rs` gives **391 passed, 0 failed, 66
+    skipped** (the 66 are "Needs --weekly") in 649.5 s, 11 min 33 s
+    wall (04:12 to 04:24; `nvidia-smi` 0 %, 0 MiB, no compute
+    process before and after).
+    (iii) Gated with `--weekly` (same command plus `--weekly`, junit
+    with `junit_family=legacy` for the `record_property` values):
+    **457 passed, 0 failed, 0 skipped** in 816.4 s, 14 min 20 s wall
+    (04:24 to 04:39; `nvidia-smi` idle before and after). The
+    recorded throughput, best of 3 (D21.16, information only;
+    patterns/s mixed c128 / mixed c64 / float64 c128 / float64 c64):
+    F2-0 (65 points, 480 px) 91.1 / 99.1 / 74.2 / 83.8, F3 (65 points,
+    512x622) 54.5 / 68.4 / 48.2 / 44.9. The same `--weekly` suite under
+    the wheel-only NVRTC 12.9 venv: 457 passed (entry 105 (iii)).
+    (iv) `uv run pytest tests -k hrebsd -n 2 -q -p no:cacheprovider`:
+    **882 passed, 0 failed, 280 skipped** in 393.0 s (6 min 42 s wall).
+    `-n 2`, not the `-n 4` of plan 11 item 6: the machine is shared
+    and memory constrained, and xdist workers have died with
+    `MemoryError` at `-n 4`. The skips are the gated classes under
+    xdist (the structural `-n 0` rule) and the weekly arms.
+    (v) **CPU default path bitwise unchanged.** The pre-Stage-D
+    literal pins (`test_hrebsd_seeding.py`, `PRE_STAGE_D_PIN_TOL`)
+    and the drift tripwire's CPU half pass in (iv), and
+    `TestBackendSwitch::test_cpu_equals_no_keyword_bitwise_on_f6` and
+    `..._on_the_ni_map` (`backend="cpu"` against no keyword, bitwise)
+    pass in (i). By inspection of `git diff 49d8bbad -- _engine.py`,
+    the only CPU-path change is that the unchanged chunksize lines
+    (`estimate_chunksize`, the clamp, the information message) now
+    sit in the `else` branch of `if use_gpu`, and the `_run_chunks`
+    dispatch in the `else` branch of `elif use_gpu`.
+    (vi) Fixes at this step: one, the E6 message and docstring wheel
+    set (entry 105 (iii)); `TestAvailabilityGate` and the docstring
+    test re-run green after it (28 passed, `-k "Gate or docstring or
+    Message"`), the default suite re-runs green after it (186
+    passed, 271 skipped in 198.0 s), and so do the gated classes it
+    touches on the overlay (`-k "Gate or Canary or docstring"`: 227
+    passed, 66 weekly skips, `nvidia-smi` idle at 05:21). No other implementation bug and no test bug was found:
+    every red seen at this step was zero. `uv run ruff check` and
+    `uv run ruff format --check` are clean on `_gpu.py`, `_batched.py`,
+    `_cuda.py`, `_engine.py`, `signals/ebsd.py` and
+    `test_hrebsd_gpu.py`.
+    Still open for the review gate (plan 11 items 4 to 7), not
+    measured here: the real-data parity on far256 and patch C (V9(q),
+    E12), the D21.16 performance record with the go/no-go floor (E7),
+    the E8 device-wait fraction, E11 (`--use_fast_math`), the
+    combined coverage figure, and the `--fmad=false` option of the
+    spline prefilter (`_cuda._SPLINE_OPTIONS`), a departure from a
+    recorded default that the review must settle.
+
+#### V9 recorded results, review gate (2026-10-07)
+
+107. **Bug injection, M1 to M27 (plan 11 item 4; injector, run
+    ALONE).** Machine A, 2026-10-07 05:50 to 06:55, worktree at
+    3146b82e plus the uncommitted integrator edits of entry 106. Every
+    touched file was backed up to the scratchpad with its md5 before
+    the run; each mutant is the smallest edit realising its plan
+    definition, applied by a harness that asserts the edit matches
+    exactly, runs ONLY the designed killers, then restores the file
+    from the backup and verifies its md5 before the next mutant (no
+    git operation). Default killers: `uv run pytest <nodes> -n 0 -x`;
+    gated killers: the D21.15 overlay with `KIKUCHIPY_EXPECT_GPU=1 -n
+    0 -x --weekly`, `nvidia-smi` checked before every gated run (no
+    compute process at any point). Baselines before injection: the
+    40 default killer nodes 102 passed; the 30 gated killer nodes 155
+    passed with `--weekly`. 42 variants, then 13 re-injections or
+    re-checks.
+    (i) **Killed (23 of 27 ids):** M1 (atomicAdd in the block write:
+    `test_no_atomic_anywhere`; a cupy `.add.at` cross-block pass:
+    `test_no_atomic_scatter_through_cupy`); M2 (definition:
+    `test_the_signature_takes_the_pixel_count_only`; call site,
+    blocks x max(1, B // 8): `test_launch_dimensions_do_not_depend_
+    on_batch_size[mixed]`; a first call-site variant scaling by 8 // B
+    was inert at the spy's B = 8 and 32, an injection flaw, not a
+    survivor); M3 (f32 block tree and cross-block pass:
+    `test_first_step_band[F1-mixed]`, 1.22e-6 > 1e-6, a THIN margin);
+    M4 (`test_reduce_solve_update`, 5.5e-9 > 3e-14); M5 (twin:
+    `test_own_iteration_counts_on_f5`, 4 != 0; device, converged slots
+    left active: see (iv)); M6 (twin `test_parity_with_the_cpu[F1]`
+    9.3e-4; device `test_converged_parity[F1-mixed-complex128]`
+    9.3e-4); M7 (twin and device residual-is-final-criterion, 3.26e-5);
+    M8 (twin `[nan]` flag; device, `bad = 1` removed:
+    `test_planted_non_finite_coordinates_are_flagged[mixed]`); M10
+    (seam called, rows discarded for an import-time copy: twin and
+    device one-iteration arms, 6.24 px); M11 (the spy count 0 == 2 in
+    both); M12, M13 (seed equal count 0 != 12 in both); M14 (target
+    spectra c64: `test_spectra_and_rows_layout[complex128]`, device
+    `test_device_output_contract[complex128]`; reference spectrum c64:
+    `test_the_seed_state[complex128]`); M16 (the LAST n rows of the
+    padded batch returned: device `test_padded_slots_never_reach_the_
+    output[mixed]`; see (iv) for the twin); M17 (twin F7 map order
+    0.187 px; device F7 h band 1.64); M18 (LRU entry popped whatever
+    the grain: the twin identity spy, the device F5 contract); M19
+    (DID NOT RAISE, both); M20 halving and floor variants (B - 1 at
+    build: [8, 7, 6, 5, 4] and device [8, 7]; B - 1 mid-compute: [8,
+    7] both; no B = 1 floor: [8, 4, 2, 1, 0] both); M21 (shim after
+    (c), and shim before (a): the stage-order pin); M22 (FFT-only
+    probe: twin and device stage-(c) records lack matmul); M23 (lock
+    dropped: the twin's held-lock flags; default scheduler: the twin
+    spy and the device `{None} == {'threads'}`); M24 (guarded
+    module-scope import: the AST pin); M25 (raise after the gate and
+    after reference resolution: "gate ran before the D21.12 raise");
+    M26 (fallback: `test_gate_failure_raises_with_no_cpu_fallback`).
+    (ii) **Reviewed-equivalent (1): M9**, the zero-norm guard dropped
+    in the twin `solve_update` (M9a), the twin final criterion (M9b)
+    and both device sites (M9dev); designed killers and the next ones
+    (the F5 failure contract, the band-passed constant, the NaN-step
+    test, the warning count, F1/F3s parity, `TestGatedBatchedSemantics`
+    whole, the kernel A/B) all pass. Argument: a norm of exactly 0
+    means every centred value squares to 0, so `centred / norm` is
+    0/0 = NaN (or +-inf), the gradient is non-finite in every
+    component, the triangular solves keep it non-finite (no finite
+    value is recovered from a NaN or inf operand without a 0 * inf,
+    itself NaN), and `bad_step` fails the slot through the same
+    branch with the same flags and NaN `norm_dp`; in the criterion
+    0/0 gives a NaN residual, which `run_lockstep` (and the device
+    path) already fails through `~isfinite(residual)`. The explicit
+    `norm > 0` guards are redundant belt and braces, kept.
+    (iii) **Survived (3):**
+    M15 (target crops not ZMN'd in `seed_spectra`): the dimmed arm
+    passes in both namespaces and so do the seed-row tests. With a
+    ZMN'd reference the cross-power DC bin is 0 whatever the target,
+    and a positive scale cancels in `X / max(|X|, 100 eps)` up to
+    ulps and the guard, so the ROWS are equal on these fixtures; but
+    the SEAM OUTPUT is not (DC bin and Parseval norm differ), and the
+    frozen contract says the spectra are `fft2` of the ZMN crop.
+    Killer for the fixer: assert `seed_spectra` against `fft2` of a
+    host ZMN crop (DC bin 0, unit Parseval norm) on an offset, scaled
+    target, in both namespaces.
+    M20 (pools not freed): `_free_pools()` removed from window (b)
+    (M20c) and `free_all_blocks()` removed from `_GpuSession.close`
+    (M20e) both pass `test_real_pool_limit_recovers_without_leak` and
+    all of `TestGatedRobustness` (13 passed). Cause: the leak pin
+    reads `pool.used_bytes()`, which `free_all_blocks` never changes
+    (it releases CACHED free blocks, counted in `total_bytes()`), and
+    in window (b) the `finally: session.close()` already freed the
+    pool before `_free_pools`, so M20c alone is near equivalent.
+    Killer for the fixer: after a run (plan caches cleared, no
+    references held), assert `pool.total_bytes()` within the residue
+    pin, which M20e fails.
+    M27 (a shared helper perturbed): `x / 6.0` -> `x * (1.0 / 6.0)`
+    in the x weights of `_bicubic_evaluate` and its gradient twin
+    (M27a, the device's own form) and `centred / norm` -> `centred *
+    (1.0 / norm)` in `zero_mean_normalize` (M27b; 2931 of 10 000
+    values change by an ulp) survive the designed killers
+    (`TestDriftTripwireCpuHalf`, `TestBackendSwitch::test_cpu_equals_
+    no_keyword_bitwise_*`, `TestDefaultOffIsBitwiseUnchanged`) AND the
+    whole of `test_hrebsd_interpolation.py`, `test_hrebsd_engine.py`
+    and `test_hrebsd_seeding.py` (208 and 178 passed). Yet the CPU
+    path moves: F1's twelve CPU fits differ from the unmutated ones
+    in 20 (M27a) and 19 (M27b) of 96 homography entries, max 1.8e-15
+    and 6.7e-16, while the recovery-error literals stay bitwise
+    equal. Every CPU pin is at 1e-9 (`CPU_DRIFT_TRIPWIRE_PX`,
+    `PRE_STAGE_D_PIN_TOL`) or compares the mutated path with itself,
+    so "the CPU default path is BITWISE unchanged" is enforced only
+    to 1e-9. Killer for the fixer: a bitwise literal pin of the F1 (or
+    F6) CPU homographies (`np.array_equal` on float64 literals,
+    measured at this commit).
+    (iv) **Mutation-map corrections** (the killer named in the map is
+    not the one that sees the mutant): M5 on the device: converged
+    slots left active pass `test_alone_equals_batched_on_f5` (alone
+    and batched are both mutated) and die at
+    `TestGatedParity::test_converged_parity[F1-mixed-complex128]`
+    (1.04e-5 > 2.5e-6). M16 in the twin: the designed
+    `test_padded_slots_never_reach_the_output` passes because a
+    padded zero pattern always fails the final criterion, so the
+    leaked rows are NaN in both the clean and the planted (both
+    mutated) runs; `test_a_last_sub_batch_slot_equals_alone` kills it.
+    Gated arms that cannot fire, the default-suite killer standing:
+    M21a gated (`test_gate_passes_and_caches` SKIPS, the gate failing
+    on Windows when the probe precedes the DLL shim; only the canary
+    would turn it red), M23a (`test_four_worker_lock_stress` passes
+    without the lock), M26 (the gate passes on a real device).
+    (v) Integrity: after the run all 20 recorded files (the 16
+    `_hrebsd` modules, `signals/ebsd.py`, `test_hrebsd_gpu.py`,
+    `validation.md`, `plan.md`) match their pre-run md5, and `git
+    status` lists only the four files entry 106 left modified. The
+    default suite (`uv run pytest tests/test_indexing/
+    test_hrebsd_gpu.py -n 0 -q -p no:cacheprovider`, 06:50): **186
+    passed, 0 failed, 271 skipped** in 191.6 s.
+
+108. **Review-gate fixes, survivor killers and the closing runs (plan
+    11 item 5; fixer).** Machine A, 2026-10-07 07:03 to 08:25,
+    worktree at 3146b82e plus the uncommitted edits of entries 105,
+    106 and this one. `nvidia-smi` showed 0 %, 0 MiB and no compute
+    process before and after every GPU run below. Scratch under
+    `scratchpad\fix\`. Disposition of every finding and survivor:
+    plan 11.6.
+    (i) **`--fmad=false` reverted (RF-E1, RC-R3).** The spline
+    prefilter now compiles with `_KERNEL_OPTIONS` (`--std=c++14`
+    only), so `--fmad` is at the NVRTC default for every kernel as
+    D21.4 records; `_SPLINE_OPTIONS` is deleted and the comments say
+    the kernel is the algebraic mirror-mode recursion, equal to
+    scipy's coefficients up to f64 rounding. The reviewer's device
+    measurement (`rev\fmad.py`, 32 random patterns each at 512x622,
+    60x60 and 480x480 against host `spline_filter`): with the flag
+    10.56 to 10.59 % of f64 values bitwise equal, RMS 6.86 to 6.94e-14,
+    2 / 0 / 2 f32-cast mismatches in about 1e7 values; NVRTC default
+    10.49 to 10.57 %, RMS 6.84 to 6.92e-14, 0 / 0 / 1. The flag bought
+    no parity. Pin: `TestCudaSourcePins::test_fmad_stays_at_the_nvrtc_
+    default` (no `--fmad` option literal in any `_hrebsd` source,
+    `_KERNEL_OPTIONS == ("--std=c++14",)`, no `_SPLINE_OPTIONS`).
+    (ii) **The float64 build divides by 6 (RF-E2).** `basis<T>`
+    multiplies by the reciprocal `1/6` under `HREBSD_MIXED` only and
+    divides by 6 in the float64 build, as `_bicubic_evaluate` does.
+    (iii) **Sub-batches of padding only are skipped (RC-R1, E5;
+    DATED DEVIATION of D21.7.3, plan 11.6).** `_gpu._fit_batch` runs
+    the preprocessing, the seed seam and the lockstep over the first
+    m slots only, m the smallest multiple of P (at most B) covering
+    the last real slot. RECIPE `fix\e5_skip.py` (the entry 105 (v)
+    maps; the pre-fix `_fit_batch` loaded from a copy of `_gpu.py` and
+    swapped in; default B = 64; best of 3 after a warm-up; mixed and
+    float64, complex128 seeds), times in s, pre-fix / post-fix:
+
+    | map | mixed | float64 |
+    |---|---|---|
+    | 512x622, 8 grains x 20 points | 4.17 / 2.85 | 4.95 / 3.39 |
+    | 512x622, 1 grain x 160 points | 1.63 / 1.50 | 2.38 / 2.18 |
+    | 60 px, 8 grains x 20 points | 0.55 / 0.57 | 0.58 / 0.57 |
+    | 60 px, 1 grain x 160 points | 0.27 / 0.29 | 0.28 / 0.30 |
+
+    Every output (homography, residual, iterations, norm_dp,
+    converged, Fe) is BITWISE equal pre-fix against post-fix on all
+    eight runs. Many-grain over one-grain at 512x622: 2.56x to 1.91x
+    (mixed), 2.08x to 1.56x (float64); at 60 px about 2x either way
+    (per-grain resident and seed-state builds and per-batch launch
+    overhead dominate). The E5 rule (20 %) is still exceeded; the
+    remaining options (multi-grain batches, a B from the grain-size
+    distribution) change D21.9.3 or D21.10.3 and go to Johan. Tests
+    re-pinned for it: `TestBatchModel::test_a_small_map_runs_one_
+    padded_batch` (three points at B = 64 reach the seam in ONE
+    sub-batch of P = 32); the gated seam spy on F1 tiled to 40 points
+    (`f1_tail_batch`), `GPU_SEED_EQUAL_COUNT['F1 runner', 16]` 13 ->
+    **40** (40 of 40 measured); the V9(o) g and p calibration on
+    one-batch prefixes of F3 (`f3_prefix_batch(B)`, B points at B)
+    instead of F3s, whose padded slots are no longer allocated. A
+    first try on the whole of F3 (65 points, several batches) gave
+    run-to-run varying peaks (p 12.9 to 33.5 MB; one run failed
+    `p_model >= p` at float64), the multi-thread cuFFT plan caches of
+    entry 103; the one-batch prefixes give, twice, peaks IDENTICAL to
+    the byte to entry 105 (i): mixed 197,988,864 / 376,939,008 /
+    734,839,296 / 775,605,248 B, float64 201,078,272 / 380,028,416 /
+    737,928,704 / 778,694,656 B, g 1,273,936 B and p 21,094,832 B at
+    both precisions. The pinned (o) bounds stand.
+    (iv) **The information message (RC-R4).** `get_info_message`
+    gains `n_chunks` (CPU output unchanged); under `"gpu"` it is the
+    grain-pure batch count `len(_gpu._batch_chunks(state_of_point,
+    B))`. Test: F5 at B = 8 prints 2 chunks, not ceil(7 / 8) = 1.
+    (v) **The public Notes (RC-R6)** now read "a few 1e-6 binned
+    pixels of corner displacement on converged points of synthetic
+    test patterns" (pinned band 2.5e-6 px, worst measured 1.256e-6);
+    revisit after the V9(q) real-data parity.
+    (vi) **Coverage tests (RC-R2).** Default: `TestRunnerEdgesNumpy`
+    (13 tests, listed in plan 11.6) and the information-message test;
+    gated: `TestGatedKernelAB::test_reduce_solve_update_takes_a_host_
+    lockstep` (host and Fortran-order lockstep arrays converted in
+    place, bitwise equal to the device-array update) and
+    `::test_the_spline_prefilter_leaves_a_length_one_axis`. The three
+    non-import-guard pragmas of `_gpu.py` are removed.
+    (vii) **Survivor killers, re-injected (plan 11 item 4).** Harness
+    `fix\inject_fix.py` (fresh backup with md5, the ledger 107
+    mutant edits from `mutants.py`, ONLY the new killers, restore and
+    md5 check; no git operation), 07:27 to 07:30; every restored file
+    matched its md5.
+    - M15 (crops not ZMN'd): KILLED by `TestSeedSeamContract::test_
+      the_spectra_are_those_of_the_zmn_crops[complex128, complex64]`
+      and its gated twin in `TestGatedSeedParity` (spectra against
+      host `fft2` of the CPU-ZMN crop of F4 scaled by 3.5 plus 250;
+      tolerance `SEED_SPECTRA_TOL * sqrt(n)`, 5.4e-13 and 5.4e-5):
+      max difference 2.5e4 in all four.
+    - M20c (window (b) pools not freed): KILLED by `TestGatedRobustness
+      ::test_real_pool_limit_recovers_without_leak`, which now reads
+      `pool.total_bytes()` as each halved session is built
+      (`GPU_REBUILD_POOL_BYTES`, MEASURED 0 at all four rebuilds on F1
+      and F7, pinned 0): 10,802,688 B (F1) and 1,093,632 B (F7) at the
+      first rebuild. M20c is therefore not equivalent, as ledger 107
+      thought: without `_free_pools` (its `gc.collect` and
+      `free_all_blocks` after the traceback is dropped) the failed
+      attempt's memory is still in the pool when B / 2 is built.
+    - M20e (`close` never frees the default pool): KILLED by the same
+      test's `pool.total_bytes()` after the run within
+      `GPU_LEAK_RESIDUE_BYTES` = 0 (measured 0): 89,195,520 B (F1) and
+      1,630,208 B (F7).
+    - M27a, M27b: KILLED by `TestCpuHelpersBitwise` (default suite):
+      `_bicubic_evaluate` and `evaluate` against an independent
+      scalar transcription of the pre-Stage-E formula on 404 points
+      (inside, on and far outside every edge), and
+      `zero_mean_normalize` against `centred / norm`, both
+      `np.array_equal`. Platform independent by construction (no
+      literals).
+    (viii) **Decision-critical numbers re-measured** (RECIPE: the gated
+    `--weekly` suite with the `recpins` plugin of entry 104, 07:31 to
+    07:44, 480 passed, `fix\rec_fix.jsonl`, compared pin by pin with
+    `rec_gated.jsonl`): every `assert_within` measurement is inside
+    its pin and every count equals its pin. The mixed bands are
+    unchanged (the `--fmad` revert moved no mixed figure); the
+    float64 bands narrowed with RF-E2, e.g. F2-1 h band 3.19e-12 ->
+    0.86e-12 px, F2-1 first step 3.31e-12 -> 1.34e-12, the seam
+    F2-1 float64 bands about 3.1e-12 -> 0.8e-12 (pins 7e-12 and
+    3.2e-11 stand); the f64 gather A/B 1.47e-14 against 3e-14.
+    `test_batch_size_invariance` passes (bitwise across B, both
+    precisions), so E4 stands with the skip of (iii); the precision
+    verdict (D17 amendment, mixed default) is unchanged.
+    (ix) **Closing runs.**
+    - Default: `uv run pytest tests/test_indexing/test_hrebsd_gpu.py
+      -n 0 -q -p no:cacheprovider --cov=kikuchipy.indexing._hrebsd`:
+      **205 passed, 0 failed, 275 skipped** in 203.8 s (186 + 19 new).
+    - Gated: the D21.15 overlay, `KIKUCHIPY_EXPECT_GPU=1 -n 0
+      --weekly`, `--cov-append`: **480 passed, 0 failed, 0 skipped**
+      in 630.7 s (07:45 to 07:56).
+    - `uv run pytest tests -k hrebsd -n 2 -q` (with `--cov-append`):
+      **901 passed, 0 failed, 284 skipped** in 256.8 s; and at `-n 0`:
+      901 passed, 284 skipped in 373.0 s.
+    - Coverage, default + gated + `-k hrebsd` combined: every
+      `_hrebsd` module **100.00 %** (`_gpu` 407, `_batched` 406,
+      `_cuda` 88, `_engine` 397 statements; package 2423 / 2423), no
+      `# pragma: no cover` left in `_gpu.py`, `_batched.py` or
+      `_cuda.py` beyond import guards.
+    - Oldest matrix (the entry 87 recipe, Python 3.10, numpy 1.23.0,
+      numba 0.57, orix 0.12.1, scikit-image 0.21.0):
+      **901 passed, 0 failed, 284 skipped** in 399.4 s; the gated
+      classes skip at stage (a) there.
+    - Full suite `uv run pytest tests -n 2 -q -p no:cacheprovider`:
+      **5422 passed, 1 failed, 1531 skipped** in 741.8 s. The one
+      failure is `tests/test_simulations/test_kikuchi_pattern_
+      simulator.py::TestCalculateMasterPattern::test_shape` (an
+      `np.allclose` of two master patterns, after 5 reruns), in code
+      this work does not touch; re-run alone it passes (after 5
+      reruns again), so it is a pre-existing flake, recorded, not a
+      Stage E defect.
+    - `uv run ruff check` and `ruff format --check` clean on the
+      `_hrebsd` package, `signals/ebsd.py` and `test_hrebsd_gpu.py`.
+    DEVIATION (dated, plan 11.6): `-n 2` in place of the `-n 4` of
+    plan 11 item 6 for `-k hrebsd` and the full suite (shared,
+    memory-constrained machine; `MemoryError` in xdist workers at
+    `-n 4`). Not run here and still open: the hermetic overlay of
+    RC-R5 (a D21.15 amendment for Johan), the second injection half
+    (M28 to M53), V9(q)/E12 real-data parity, the D21.16 performance
+    record with E7 and E8, E11, and the CHANGELOG and tutorial note.

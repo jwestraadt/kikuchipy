@@ -1251,8 +1251,15 @@ def run_hrebsd_dic(
             )
         chunksize = int(chunksize)
         if verbose >= 1:
+            # The device batches are grain pure (D21.9.3): one grain's
+            # points never share a batch with another's, so the count
+            # is the sum over grains of ceil(n_g / B)
             message = get_info_message(
-                n_fit, signal_shape, len(states), chunksize=chunksize
+                n_fit,
+                signal_shape,
+                len(states),
+                chunksize=chunksize,
+                n_chunks=len(_gpu._batch_chunks(state_of_point, chunksize)),
             )
             device_block = _gpu._info_lines(
                 chunksize, signal_shape, device_precision, seed_precision, free_bytes
@@ -1722,6 +1729,7 @@ def get_info_message(
     signal_shape: tuple[int, int],
     n_grains: int,
     chunksize: int | None = None,
+    n_chunks: int | None = None,
 ) -> str:
     """Return the information message printed at ``verbose >= 1``.
 
@@ -1740,6 +1748,10 @@ def get_info_message(
         Number of grain references.
     chunksize
         Number of patterns per chunk, or ``None`` when estimated.
+    n_chunks
+        Number of chunks, or ``None`` for ``ceil(n_patterns /
+        chunksize)``.  The GPU backend passes its grain-pure device
+        batch count (requirements D21.9.3, D21.10.5).
 
     Returns
     -------
@@ -1753,7 +1765,8 @@ def get_info_message(
     if chunksize is None:
         chunksize = estimate_chunksize(n_patterns)
     chunksize = max(1, int(chunksize))
-    n_chunks = math.ceil(n_patterns / chunksize) if n_patterns else 0
+    if n_chunks is None:
+        n_chunks = math.ceil(n_patterns / chunksize) if n_patterns else 0
     # The model, not a measurement, exactly as the spherical
     # information message states its own: the eight 64-bit
     # steepest-descent columns, the 32-bit coefficient plane and the

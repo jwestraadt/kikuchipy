@@ -3183,8 +3183,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             ``cupy-cuda12x``
             and the wheels ``nvidia-cufft-cu12``,
             ``nvidia-cublas-cu12``, ``nvidia-cusolver-cu12``,
-            ``nvidia-cusparse-cu12`` and ``nvidia-nvjitlink-cu12``, or
-            the full CUDA Toolkit. See the notes below.
+            ``nvidia-cusparse-cu12``, ``nvidia-nvjitlink-cu12``,
+            ``nvidia-cuda-nvrtc-cu12`` and ``nvidia-cuda-runtime-cu12``,
+            or the full CUDA Toolkit. See the notes below.
         chunksize
             Number of patterns to correlate per chunk. If not given,
             it is estimated from the pattern shape, the number of
@@ -3375,8 +3376,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         by a per-pattern constant, and every reduction, the linear
         solve and the homography update run in 64-bit floats. The
         result therefore agrees with ``backend="cpu"`` to within a
-        small measured band, about 1e-6 binned pixels of corner
-        displacement on converged points, rather than bitwise, and an
+        small measured band, a few 1e-6 binned pixels of corner
+        displacement on converged points of synthetic test patterns,
+        rather than bitwise, and an
         iteration count or a ``"converged"`` flag at the
         ``max_iterations`` cap may differ on a few points. Results
         are deterministic, bitwise run to run, on one device with
