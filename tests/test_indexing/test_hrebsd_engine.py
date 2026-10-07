@@ -2571,6 +2571,15 @@ class TestOrchestration:
             "chunksize": None,
             "verbose": 1,
             "correct_pc_shift": True,
+            # EXTENDED 2026-10-06 at the Stage E failing-tests gate
+            # (requirements D21.1, D21.4, D21.5): the public ``backend``
+            # and the two ENGINE-ONLY device knobs.  ``"mixed"`` is the
+            # device precision IN FORCE since the D17 amendment was
+            # approved on 2026-10-06 (plan 11.4 approval record), and
+            # ``"complex128"`` the approved seed precision
+            "backend": "cpu",
+            "device_precision": "mixed",
+            "seed_precision": "complex128",
         }
         for name, default in expected.items():
             assert parameters[name].default == default, name
@@ -3060,9 +3069,43 @@ class TestImportAudit:
             for node in ast.walk(deferred[0])
         )
 
+    def test_cupy_is_never_imported_at_module_scope(self):
+        # ADDED 2026-10-06 at the Stage E failing-tests gate
+        # (requirements D21.13, the dated D18 amendment): cupy is an
+        # OPTIONAL dependency, imported only inside the function that
+        # uses it, after the availability gate.  ``signals/ebsd.py``
+        # imports ``_engine`` at module scope and ``_engine`` imports
+        # ``_gpu`` there, so a hoisted cupy import would tax, and on a
+        # machine without cupy break, ``import kikuchipy`` -- and the
+        # allowed-tuple arm below would still pass, since ``cupy`` is
+        # an ALLOWED top-level name.  The AST pattern of the
+        # scikit-image arm above
+        for name, source in self.module_sources():
+            tree = ast.parse(source)
+            for node in tree.body:  # module scope only
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                for module in names:
+                    assert module.split(".")[0] != "cupy", (
+                        f"{name}: cupy must be imported INSIDE the function "
+                        "that uses it (requirements D21.13)"
+                    )
+
     def test_no_new_required_dependency(self):
         # everything the engine imports is already required:
-        # numpy/scipy/numba/dask, scikit-image and orix
+        # numpy/scipy/numba/dask, scikit-image and orix.
+        # EXTENDED 2026-10-06 at the Stage E failing-tests gate
+        # (requirements D21.13, the dated D18 amendment) by EXACTLY
+        # two names: ``cupy``, the optional GPU dependency, imported
+        # inside functions only (pinned by the module-scope arm
+        # above), and ``gc``, the standard-library collector the
+        # out-of-memory recovery of D21.10.4 calls.  ``os`` and
+        # ``threading`` are NOT added (the DLL shim and the device lock
+        # are imported from ``_spherical/_gpu.py``), nor are ``typing``
+        # and ``__future__`` (the ``_hrebsd`` convention uses neither)
         allowed = (
             "numpy",
             "scipy",
@@ -3075,6 +3118,8 @@ class TestImportAudit:
             "sys",
             "time",
             "math",
+            "cupy",
+            "gc",
         )
         for name, source in self.module_sources():
             for line in source.splitlines():

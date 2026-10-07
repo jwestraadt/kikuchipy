@@ -5410,3 +5410,337 @@ or a decision on the real implementation.
     rounding level on the measured inputs, or on inputs the
     prototype never met; the implementation gate re-measures every
     band on the frozen design.
+
+#### V9 recorded results, failing-tests gate (2026-10-06)
+
+Measured on machine A (ledger 89) by the Stage E failing-tests gate,
+CPU only (no GPU work), on the worktree `.venv` (CPython 3.13.12,
+numpy 2.4.6, scipy 1.17.1, numba 0.65.1, scikit-image 0.26.0), on
+commit 49d8bbad plus the Stage E skeleton (`_hrebsd/_gpu.py` and
+`_hrebsd/_batched.py` stubs; `backend`, `device_precision` and
+`seed_precision` added to `run_hrebsd_dic` and `backend` to
+`EBSD.hrebsd_dic`, where `backend="cpu"` passes straight through to
+the unchanged CPU path). Script: session scratchpad
+`measure_e100.py`, which loads the scaffold
+`tests/test_indexing/test_hrebsd_gpu.py` by path and calls its own
+fixture builders and helpers, so the numbers are those of the
+scaffold's own recipe; run twice (by the interrupted skeleton agent
+and again by the finishing agent), with identical numbers.
+
+100. **The drift tripwire's CPU half and the default-suite fixtures
+    (requirements D21.8(h), D21.14.3; V9(l), fixtures F1 to F7).**
+    (i) The CPU half of (l). RECIPE: `drift_recovery_cpu()` of the
+    scaffold -- F1 (`f1_batch()`: the V2 480 px reference at
+    `PC_480`, warped by `random_small_homographies(n=6, seed=s)` for
+    s = 0, 1 with the independent skimage warper) as a `(1, 13)` map
+    with the same projection centre at every point, through
+    `run_hrebsd_dic(backend="cpu", reference=(0, 0), verbose=0)` at
+    every other default, then per case the V2 recovery metric
+    against the EXACT imposed homography. In F1 order, px:
+
+    | seed 0 | 0.007831707107991194 | 0.004932800467962715 | 0.001150689518357858 | 0.0029205924994070817 | 0.0028893302430281925 | 0.008199674743814368 |
+    |---|---|---|---|---|---|---|
+    | seed 1 | 0.012439859159007909 | 0.003212421044706529 | 0.0022442932279219748 | 0.0024240622676751796 | 0.002017307940207109 | 0.009035331439900308 |
+
+    Iterations 4, 5, 6, 6, 5, 6 and 4, 7, 5, 6, 4, 4; 12 of 12
+    converged. The worst, 0.012439859 px, is the 0.01244 px that
+    `WARP_REFIT_TOL_480` was pinned on at the Stage A gate. Two runs
+    are BITWISE equal, and `fit_pattern` on the same reference state
+    gives the same twelve numbers to the bit. Shared-code sensitivity
+    on the same recipe, the largest per-case move: 2.13e-9 px with
+    `coefficient_dtype=np.float64`, 2.25e-7 px with
+    `upsample_factor=8`, 5.74e-5 px with `min_step=1e-2`. PINNED in
+    the scaffold as `CPU_DRIFT_RECOVERY_PX` (the twelve literals),
+    `CPU_DRIFT_NUM_ITERATIONS` (exact) and `CPU_DRIFT_TRIPWIRE_PX =
+    1e-9` px. RECORDED DEVIATION from the letter of D21.8(h), which
+    names one MTP band `GPU_DRIFT_TRIPWIRE_PX` for both halves: the
+    CPU half gets its own FROZEN float-noise band now (the
+    `PRE_STAGE_D_PIN_TOL = 1e-9` precedent of
+    `test_hrebsd_seeding.py`), because the CPU path is deterministic
+    and its half must run green in the default suite from this gate
+    on; `GPU_DRIFT_TRIPWIRE_PX` and the device literals stay
+    `FIXME-pin` until the implementation gate.
+    (ii) Fixture premises, measured with the same builders. F5
+    (`f5_map()`, two grains of 60 px patterns, references at flat 0
+    and 4, default `max_iterations=50`), at `(None, None)` and at
+    the default `(0.05, None)` alike: references converge in 1
+    iteration, the easy points in 4 (grain A) and 3 (grain B); the
+    masked point, the integer-constant target (7.0) and the target
+    with one NaN pixel give the D2.6 failure contract with truthful
+    `grain_id` and `reference_index`; the capped point (a 25 degree
+    in-plane rotation of B, V3 deformed master) exhausts the 50
+    iterations with a finite last iterate 22.2 px from its imposed
+    homography, residual 1.777 at `(None, None)`. F6 (`f6_map()`)
+    reproduces the pre-Stage-D counts 1, 5, 10, 200 and flags True,
+    True, True, False. F7 (`f7_map()`, 18 grains of 2 by 2 points at
+    60 px): 72 of 72 converge, at most 4 iterations.
+    F6 also reproduces `PRE_STAGE_D_HOMOGRAPHY` of
+    `test_hrebsd_seeding.py` to 5.7e-14 px (the metric's floor), its
+    residuals and iteration counts exactly, and `backend="cpu"` equals
+    the call without the keyword bitwise on F6 (script
+    `check_f6.py`). Build times over the two runs: F1 1.4 to 1.5 s,
+    F3s 0.26 to 0.34 s, F4 0.10 to 0.12 s, F6 0.19 to 0.32 s, F5 and
+    F7 under 0.05 s each (the Ni master cached); the F6 run 3.2 to
+    4.6 s, the F7 run 0.17 to 0.24 s, each F5 run 0.03 s.
+    (iii) The default-suite wall time of D21.14.3 is recorded when the
+    test classes are in place, later at this gate.
+
+101. **The failing-tests gate tally and the default-suite wall time
+    (requirements D21.14.3; V9(a) to (p); plan 11 items 1 and 4).**
+    The default-suite fragment (15 classes) and the gated fragment
+    (12 classes) were spliced into
+    `tests/test_indexing/test_hrebsd_gpu.py` (6700 lines with the
+    plan 11 item 4 mutation map at its foot), imports merged at the
+    module top; `ruff check` and `ruff format --check` are clean on
+    every touched `.py` file.
+    (i) Default suite, CPU `.venv` (pytest 9.0.3), command
+    `uv run pytest tests/test_indexing/test_hrebsd_gpu.py -n 0 -q -p
+    no:cacheprovider`: **154 failed, 29 passed, 271 skipped** (no
+    errors, nothing collected wrongly). Every failure is for the
+    right reason: 129 raise `NotImplementedError: Stage E: not
+    implemented yet` from the skeleton, 17 assert behaviour the
+    skeleton lacks (gate
+    messages, the cached-failure copy, the frozen Stage D raise
+    literal, the D21.17 docstring entry, the CUDA source file, the
+    precision values and planted exceptions reaching the gate or the
+    seam, and the numpy session in a subprocess, all pre-empted by
+    the skeleton's `NotImplementedError`), and 8 are the
+    unfilled `SEAM_DISCRIMINATING_MIN` `FIXME-pin` placeholders of
+    V9(e) (CPU-side counts measured as F1 12, 8, 11, 12 and F3s 8, 5,
+    6, 8 for the exact, shift_rotate, rotate_1_5 and perspective
+    rows; left unpinned because the gated suite reads the same table
+    under ("F1", "exact") and ("F1", "perspective") with a different
+    perspective row, a key collision the review gate resolves). The
+    29 that pass now do so by design: the `backend="cpu"` bitwise
+    arms on F6 and the Ni map and the never-touches-the-gate spy,
+    the signature and forwarding pins, the existing argument checks
+    coming first, the precision knobs read under `"gpu"` only, the
+    Stage D CPU cascade, the three spherical names by identity, the
+    frozen constants and structural values, the launch-layout
+    signature, the two CUDA source pins (no atomics, no fast math;
+    `test_the_cuda_source_exists` keeps them from passing
+    vacuously), the drift tripwire's CPU half (3), five fixture-gating
+    tests, and six of the seven import-hygiene tests. Skipped: 204
+    gated tests with the gate's `NotImplementedError` text as the
+    reason, 66 F2 and F3 seam arms needing `--weekly`, and the canary
+    (`KIKUCHIPY_EXPECT_GPU` unset). **Default-suite wall time
+    (D21.14.3): 46.9 s as pytest reports it, 54.6 s wall including
+    `uv` start-up**, at `-n 0` on machine A; two earlier runs of the
+    same file at the same gate took 76.0 s and 85.2 s while the
+    machine was shared with an EMHROSM CPU job, so the figure is
+    load dependent.
+    (ii) Gated run through the PINNED overlay of D21.15 with
+    `KIKUCHIPY_EXPECT_GPU=1` at `-n 0` (`nvidia-smi`: 0 MiB, 0 %
+    before the run): **155 failed, 29 passed, 270 skipped** in 45.7 s
+    (66 s wall). Collection is clean; the 270 gated tests are 204
+    skips on the gate's `NotImplementedError` reason plus the same 66
+    weekly skips; the extra failure is the canary, failing for the
+    right reason ("would skip here: Stage E: not implemented yet").
+    (iii) ONE WRONG-REASON CASE found and fixed: in the overlay,
+    `TestNoModuleScopeCupy::test_importing_kikuchipy_imports_no_cupy`
+    failed because `dask.array.chunk_types` try-imports cupy at module
+    scope, so any process importing `dask.array` holds cupy whenever
+    it is installed; the bare "`'cupy' not in sys.modules`" check
+    was therefore wrong outside the CPU `.venv`. Both subprocess tests
+    now run `CUPY_IMPORTER_PROBE` first, which records every cupy
+    import whose importing code is a `kikuchipy` module (through
+    `builtins.__import__`, cached or not, and
+    `importlib.import_module`). Checked on both environments: no
+    false positive from dask, and a planted kikuchipy-scope `import
+    cupy` and `importlib.import_module("cupy.fft")` are both caught
+    with cupy already cached (scratch `probe_check.py`).
+    (iv) The existing suites: `uv run pytest tests -k hrebsd -n 4 -q`
+    gives 154 failed, 725 passed, 280 skipped in 112.9 s, every
+    failure in `test_hrebsd_gpu.py`; the CPU path is unchanged.
+    (v) Mutation map: every M1 to M53 names at least one designed
+    killer (D: default suite, G: gated); M3, M4 and M36 have gated
+    killers only; M1's gated determinism test is noted as not a
+    reliable killer; M15 is flagged possibly equivalent. None of the
+    kills is verified yet (the plan 11 bug-injection pass).
+
+102. **Test-critic disposition at the failing-tests gate
+    (2026-10-06/07; V9(a) to (p); plan 11 items 1 and 4).** The test
+    critic raised 13 findings (1 blocker, 4 major, 8 minor). Each was
+    checked against the file before acting: **12 accepted** (one of
+    them, F4, in part), **1 rejected in part** (F4's plan.md mirror),
+    and F11 accepted as a record only. Edits are confined to
+    `tests/test_indexing/test_hrebsd_gpu.py` and the docstrings of
+    `_batched.py` and `_gpu.py`; no CPU code moved.
+    (i) **F1 (blocker), accepted.** The V9(e) pin tables were shared
+    by the two fragments with incompatible keys and meanings, and the
+    two row builders differed. There is now ONE builder,
+    `seam_table(name, row_type)`, with the row types `exact`,
+    `translate_rotate`, `rotate_1p5`, `perspective` and `nan`. It plants
+    every map point, the reference included, and the perspective step
+    `d` moves the subregion corners by `SEAM_PERSPECTIVE_PX = 0.5` px
+    (2.7505e-6 per px at 480, 1.9628e-6 at 512x622). There is also ONE
+    packed CPU oracle, `seam_cpu(name, row_type, max_iterations)`,
+    where `None` is the translation seed. Both suites compare over the
+    same map points. The pins are split: `NUMPY_SEAM_BOTH_CONVERGED_MIN`,
+    `NUMPY_SEAM_ITERATION_DIFF_COUNT` and `NUMPY_SEAM_CONVERGED_FLIP_COUNT`
+    are keyed `(fixture, row_type)`, while the `GPU_SEAM_*` tables are
+    keyed `(fixture, device_precision, row_type)`.
+    `SEAM_DISCRIMINATING_MIN` is now a CPU-side literal keyed
+    `(fixture, row_type)` and **MEASURED and PINNED at this gate**,
+    from the scratch script `measure_seam.py` on machine A's CPU,
+    worktree `.venv`. Each value counts the map points whose CPU
+    iteration count from the planted row differs from the
+    translation seed's, at `max_iterations=50`, listed as exact,
+    translate_rotate, rotate_1p5, perspective:
+
+    | fixture (points) | exact | translate_rotate | rotate_1p5 | perspective |
+    | --- | --- | --- | --- | --- |
+    | F1 (13) | 12 | 9 | 12 | 13 |
+    | F3s (9) | 8 | 6 | 7 | 9 |
+    | F2-0 (65) | 64 | 39 | 63 | 62 |
+    | F2-1 (65) | 64 | 39 | 65 | 64 |
+    | F3 (65) | 64 | 47 | 61 | 62 |
+
+    A second fit of every planted row was bitwise equal. Every planted
+    finite row converges on the CPU at every point. The CPU iteration
+    counts from the planted rows are 1 or 2 for exact, 4 or 5 for
+    translate_rotate, 6 or 7 for rotate_1p5 and 3 for perspective. The
+    NaN row gives the D2.6 failure contract at every point, and
+    `max_iterations=1` gives exactly 1 iteration everywhere. The
+    measurement took 21 s (F1), 20 s (F3s), 91 s and 87 s (F2-0, F2-1)
+    and 141 s (F3). The 8 default tests that ledger 101 recorded red on
+    this placeholder now pass.
+    (ii) **F2 (major), accepted.** On F5 and on the single-grain
+    fixtures the fit order equals the map order, so M17 and M52's
+    map-order half had no default killer. Two tests were added to
+    `TestRunBatchesNumpySession`:
+    - `test_the_map_order_on_f7` runs the twin against the CPU at
+      chunksize 4. It asserts a coarse 1e-3 px per-point bound
+      independent of every pin, then `assert_twin_parity` under the
+      key "F7". This kills M17.
+    - `test_the_seam_carries_the_fit_order_on_f7` is a seam spy
+      through the new helper `assert_seam_fit_order`. Every
+      `SeedBatch.pattern_index` must be a contiguous run of
+      `grain_fit_order(fixture)`, with the real slots first and the
+      -1 padding after. The runs must tile the fit list once, in any
+      batch order the threaded scheduler picks. Each slot's targets
+      and coefficients must equal its own pattern's. This kills M52.
+    Premises checked: F7's grain order is not sorted (it starts 0, 1,
+    12, 13, 2, 3, ...), `grain_fit_order(F5)` equals
+    `F5_FIT_INDICES`, and the CPU F7 run converges 72 of 72. A planted
+    map-order record set fails the helper, while the fit order and a
+    reversed batch order pass (scratch `check_order.py`). The same
+    fit-order assert was added to the gated
+    `TestGatedBatchedSemantics::test_many_grain_map_order`.
+    (iii) **F3 (major), accepted.** The gated M15 arm now uses
+    `DIM_SCALE` (1e-13) and the default recipe: dim the raw reference
+    and targets, then preprocess. It re-asserts the `100 * eps` floor
+    premise and that the dimmed CPU seeds equal the undimmed ones.
+    (iv) **F4 (major), accepted except one part.** The module docstring
+    of the test file gains "The call-time seams this commit freezes",
+    which lists every patched or spied name:
+    - `_engine` reaches `_verify_gpu_or_raise`, `_gpu._run_chunks_gpu`,
+      `ReferenceState` and `resolve_reference`.
+    - `_gpu` reaches `_make_session`, `_free_device_bytes` and
+      `_default_batch_size`.
+    - `_batched` exposes `build_resident`, `build_seed_state`,
+      `seed_spectra` and `seed_homographies` through the module
+      object.
+    - `session.kernels.gather`, `.pixel_sums`, `.reduce_solve_update`
+      and `.final_criterion` are reached by attribute in every
+      lockstep iteration. `KernelNamespace` is mutable. Fusion is
+      allowed only inside one entry point.
+    The same section restates the gate-probe API surface that the fake
+    cupy provides. The `_batched` and `_gpu` module docstrings and the
+    `make_kernel_namespace` docstring now say the same. **Rejected:**
+    mirroring this into plan 11 item 2. Plan.md is outside this phase's
+    allowed edits, so the reconciliation is recorded here instead: the
+    plan's "fused pixel kernel" means the fused kernel BEHIND
+    `pixel_sums` (or behind `gather`), never a fusion across the two
+    entry points.
+    (v) **F5 (major), accepted (the freeze option).** Every kernel,
+    the gate probe's included, is constructed through the attribute
+    `cupy.RawKernel` inside the call that uses it, once per call. A
+    `cupy.RawModule` is not allowed, and neither is a Python-level
+    cache of kernel objects across calls; CuPy's own compile cache is
+    fine. This is stated in the module docstring, in
+    `make_kernel_namespace` and in `_spy_raw_kernels`.
+    (vi) **F6 (minor), accepted.** The comments of both M43 tests and
+    the M43 map line now say that they plant NaN sums or values, not a
+    NaN corner displacement from a finite step. They kill M43 only in
+    an implementation without a separate non-finite-step flag;
+    otherwise M43 is reviewed-equivalent at the review gate, because it
+    needs an exact 0/0 projective corner. No helper was added.
+    (vii) **F7 (minor), accepted.** The F7 residency spy now asserts at
+    most `R_MAX - 1` live residents and seed states on entry to every
+    upload (D21.9.3: evict BEFORE upload).
+    (viii) **F8 (minor), accepted.** The information-message test runs
+    at chunksize 40, so B = 40 and P = 32, and asserts both `\b40\b`
+    and `\b32\b`.
+    (ix) **F9 (minor), accepted.** A new
+    `TestCudaSourcePins::test_no_atomic_scatter_through_cupy` forbids
+    `scatter_add` and `.add.at(` in every `_hrebsd` `.py` file. It
+    passes on the skeleton by design, like the two existing source
+    pins.
+    (x) **F10 (minor), accepted.** In the mutation map, M37 to M42 and
+    M44 now carry "D*": the mutation lives in the CUDA source, and a
+    default-suite kill counts only for the numpy-twin variant of the
+    injection. The bug-injection pass injects both, and M42 is
+    mixed-only.
+    (xi) **F11 (minor), accepted as a record.** Ledger 101(i)'s 46.9 s
+    is the SKELETON-stage time: 129 to 131 tests stop at the stub, so
+    it says nothing of the twin's 480 px fits after implementation. The
+    implementation gate must re-record the D21.14.3 default-suite wall
+    time as a dated entry. If it is large, the heaviest arms move to
+    `weekly` with a recorded deviation, with the F1tail last-sub-batch
+    arm first in line. Ledger 101 is not edited; it is append-only.
+    (xii) **F12 (minor), accepted (the comment option).** The bitwise
+    B >= 32 assert stays, with a comment: a measured non-bitwise result
+    needs a dated deviation and a move to `GPU_BATCH_INVARIANCE_TOL`.
+    (xiii) **F13 (minor), accepted.** The splice markers are gone. The
+    helper pairs are merged into one each:
+    - `ROW_SLOTS` and `DEFAULT_FIT_OPTIONS`.
+    - `assert_at_least`, `assert_failure_contract` and `_pin` (which
+      replaces `_pinned`).
+    - `cpu_run`, now one cache, with `FIXTURE_BUILDERS` and
+      `fixture_of` covering F2-0, F2-1 and F3.
+    - `spy_seam`, now xp-agnostic through `to_host`.
+    - `plant_seam(monkeypatch, rows_of, *, call_original=True)` with
+      `plant_table(monkeypatch, table)`.
+    - `in_plane_matrix`.
+    - `run_direct(..., device_precision=, seed_precision=, **options)`,
+      which replaces `_run_rows`.
+    - `packed`, `h_band` and `perspective_step`.
+    - `F5_FIT_INDICES` and `F5_STATE_OF_POINT`.
+    - `assert_device_residual_band`, which wraps
+      `assert_residual_band`.
+    The DC offset is now `F4_DC_OFFSET = 1000` in both suites; the
+    gated DC arm uses `f4_dc_batch` and `cpu_run("F4dc", ...)`. The
+    numpy-twin and device pin names stay separate.
+    (xiv) **Re-runs.**
+    - Default suite (`uv run pytest tests/test_indexing/test_hrebsd_gpu.py
+      -n 0 -q -p no:cacheprovider`): **148 failed, 38 passed, 271
+      skipped** (457 collected). All failures are for the right
+      reason: 131 `NotImplementedError: Stage E: not implemented yet`,
+      and the same 17 skeleton-behaviour asserts as ledger 101. No
+      FIXME-pin failure remains in the default suite. Wall time
+      (D21.14.3, skeleton stage) was **82.1 s and 44.3 s** as pytest
+      reports it, on two runs minutes apart, while the machine was
+      shared with the HROSM session. The figure depends on load.
+    - Gated (pinned overlay, `KIKUCHIPY_EXPECT_GPU=1`, `-n 0`;
+      `nvidia-smi` 83 MiB, 3 % before the run): **149 failed, 38
+      passed, 270 skipped** (457 collected) in 43.3 s. The extra
+      failure is the canary, for the right reason. The skips are 204
+      on the gate's `NotImplementedError` reason and 66 weekly F2 and
+      F3 seam arms.
+    - `uv run pytest tests -k hrebsd -n 4 -q`: **148 failed, 734 passed,
+      280 skipped** in 202.2 s. Every failure is in
+      `test_hrebsd_gpu.py`; the other suites are unchanged.
+    Two earlier `-n 4` attempts lost their xdist workers to
+    `MemoryError` during import. Commit memory sat at 38 to 39 GB of a
+    39.4 GB commit limit, under the concurrent HROSM job. This was
+    environmental, not code: `-n 2` on a small file passed at the same
+    moment, and the third attempt was clean.
+    `ruff check` and `ruff format` are clean on every touched file.
+    (xv) **Mutation map.** Every M1 to M53 still names at least one
+    designed killer. M17 now points at the F7 tests, and M52 at the F7
+    seam spy and the gated F7 fit-order assert. M1 adds the scatter
+    pin, M51 the `R_MAX - 1` bound, M15's gated killer uses the
+    `DIM_SCALE` recipe, M43 carries its caveat, and M37 to M42 and M44
+    are marked D*. None of the kills has been verified yet; that is the
+    bug-injection pass.

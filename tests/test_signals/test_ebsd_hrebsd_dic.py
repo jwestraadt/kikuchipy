@@ -89,7 +89,15 @@ from kikuchipy.indexing._hrebsd._engine import (
 # Its default ``False`` is the whole of D20.1: the default path stays
 # bitwise what it was, which
 # ``TestSeedFromNeighbors::test_explicit_false_is_bitwise_the_call
-# _without_it`` pins on this very map
+# _without_it`` pins on this very map.
+#
+# EXTENDED 2026-10-06 at the Stage E failing-tests gate by the ONE new
+# keyword requirements D21.1 freezes (the dated D15.4 amendment),
+# ``backend="cpu"``, placed after ``navigation_mask`` and immediately
+# before ``chunksize``, the slot ``EBSD.spherical_indexing`` gives the
+# same keyword.  Its default is the bitwise-unchanged CPU path; the
+# engine-only ``device_precision`` and ``seed_precision`` are NOT
+# public, so the public signature changes exactly once
 FROZEN_SIGNATURE = [
     ("self", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
     ("xmap", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
@@ -112,6 +120,7 @@ FROZEN_SIGNATURE = [
     ("step_scale", inspect.Parameter.KEYWORD_ONLY, 1.0),
     ("seed_from_neighbors", inspect.Parameter.KEYWORD_ONLY, False),
     ("navigation_mask", inspect.Parameter.KEYWORD_ONLY, None),
+    ("backend", inspect.Parameter.KEYWORD_ONLY, "cpu"),
     ("chunksize", inspect.Parameter.KEYWORD_ONLY, None),
     ("verbose", inspect.Parameter.KEYWORD_ONLY, 1),
 ]

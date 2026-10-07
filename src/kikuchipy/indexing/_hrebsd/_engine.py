@@ -76,7 +76,15 @@ from dask.system import CPU_COUNT
 import numpy as np
 from scipy.linalg import cho_factor, cho_solve
 
+from kikuchipy.indexing._hrebsd import _gpu as _gpu
 from kikuchipy.indexing._hrebsd._geometry import fe_from_homography, per_point_pc_pixels
+
+# The availability gate of requirements D21.2, imported INTO this
+# namespace on purpose: ``run_hrebsd_dic`` calls it under
+# ``backend="gpu"`` and the tests patch it here (the Phase 12 seam)
+from kikuchipy.indexing._hrebsd._gpu import (
+    _verify_gpu_or_raise as _verify_gpu_or_raise,
+)
 from kikuchipy.indexing._hrebsd._homography import (
     N_HOMOGRAPHY_PARAMETERS,
     corner_norm,
@@ -906,11 +914,14 @@ def run_hrebsd_dic(
     step_scale: float = 1.0,
     seed_from_neighbors: bool = False,
     navigation_mask: np.ndarray | None = None,
+    backend: str = "cpu",
     chunksize: int | None = None,
     verbose: int = 1,
     step_sizes: tuple[float, float] = (1.0, 1.0),
     correct_pc_shift: bool = True,
     coefficient_dtype: np.dtype | type = np.float32,
+    device_precision: str = "mixed",
+    seed_precision: str = "complex128",
 ) -> dict:
     """Run the engine over a whole map and return the properties.
 
@@ -979,8 +990,12 @@ def run_hrebsd_dic(
     navigation_mask
         Boolean mask of *navigation_shape* in kikuchipy polarity,
         where only patterns equal to ``False`` are fitted.
+    backend
+        ``"cpu"`` (default), the bitwise-unchanged path, or ``"gpu"``,
+        the optional CuPy device path of requirements D21.
     chunksize
         Number of patterns per dask chunk, estimated when not given.
+        Under ``backend="gpu"`` it is the device batch size.
     verbose
         0 for no output, 1 for the information message, progress bar
         and timing.
@@ -1002,6 +1017,14 @@ def run_hrebsd_dic(
     coefficient_dtype
         Bulk storage data type of the spline coefficients, 32-bit
         float by default, provisional per requirements D17.
+    device_precision
+        ``"mixed"`` (default) or ``"float64"``, the device arithmetic
+        of requirements D21.4. Read under ``backend="gpu"`` only; an
+        engine-only knob the public method never passes.
+    seed_precision
+        ``"complex128"`` (default) or ``"complex64"``, the precision
+        of the device phase cross-correlation seed of requirements
+        D21.5. Read under ``backend="gpu"`` only; engine-only.
 
     Returns
     -------
@@ -1084,6 +1107,14 @@ def run_hrebsd_dic(
                 "The navigation mask must allow for correlation of at least one "
                 "pattern (at least one value equal to `False`)"
             )
+
+    # Requirements D21.1: the backend checks sit HERE, after every
+    # existing argument check and before reference resolution.  The
+    # default ``"cpu"`` path passes straight through, bitwise unchanged
+    # and never touching the gate or cupy.  Stage E failing-tests
+    # skeleton: every other value raises until the implementation gate
+    if backend != "cpu":
+        raise NotImplementedError("Stage E: not implemented yet")
 
     # The mask reaches the reference resolution and not only the fit
     # list: a masked-out point is one the caller does not trust, and

@@ -3064,6 +3064,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         step_scale: float = 1.0,
         seed_from_neighbors: bool = False,
         navigation_mask: np.ndarray | None = None,
+        backend: str = "cpu",
         chunksize: int | None = None,
         verbose: int = 1,
     ) -> CrystalMap:
@@ -3171,6 +3172,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             pattern the caller does not trust; it keeps its
             ``"grain_id"`` and its grain's ``"reference_index"`` so
             that what was skipped stays readable.
+        backend
+            Where to correlate. Options are ``"cpu"`` (default) and
+            ``"gpu"``, the latter on a CUDA device through CuPy.
         chunksize
             Number of patterns to correlate per chunk. If not given,
             it is estimated from the pattern shape, the number of
@@ -3472,6 +3476,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             step_scale=step_scale,
             seed_from_neighbors=seed_from_neighbors,
             navigation_mask=engine_mask,
+            backend=backend,
             chunksize=chunksize,
             verbose=verbose,
             step_sizes=step_sizes,
