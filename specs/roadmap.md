@@ -204,7 +204,7 @@ and keeps the CHANGELOG gate (it ships a tutorial).
 - [x] CHANGELOG tutorial bullet; the three spec documents re-submitted to review and the amendments folded in (definition of done); then the signed commit pushed
 
 ## Fan-out (plan section 1; after the merge)
-- [ ] Fork PR `feat-HROSM -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #20); roadmap tick commit "Tick HROSM boxes in roadmap (jwestraadt/kikuchipy#20)"
+- [x] Fork PR `feat-HROSM -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #20); roadmap tick commit "Tick HROSM boxes in roadmap (jwestraadt/kikuchipy#20)" -- opened as jwestraadt/kikuchipy#20 (2026-10-07); number confirmed, CHANGELOG links unchanged
 - [ ] PR merged on Johan's go (merge commit; ubuntu/windows CI green); merge sha M recorded here
 - [ ] `hrebsd-dic`: `git merge --no-ff develop`; the stub imports and `__all__` resolved in sorted order, the other append-type conflicts HREBSD first then HROSM; `segment_grains`/`segment_grains_kam` See Also cross-references added on `hrebsd-dic` only; the HROSM tests, `-k hrebsd`, then the full suite green; nbval on `hrosm.ipynb`; pushed; still never merged into `develop`
 - [ ] `feat-spherical-indexing-hrosm`: new branch off `feat-spherical-indexing-nlpar` (e49b3d85, untouched), clean replay of M with `pick.ps1`/`gate.ps1` as two commits ("Add high angular resolution orientation similarity maps (HROSM)", "Add HROSM tutorial"; `Staged-from:` trailers), equivalence gate and the clean-replay grep clean, worktree suite == baseline + HROSM tests; pushed, no PR; `feat-spherical-indexing` stays at 6723aaf0
