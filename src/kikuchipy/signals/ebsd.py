@@ -3096,7 +3096,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             consumes
             :attr:`~kikuchipy.detectors.EBSDDetector.px_size` and
             :attr:`~kikuchipy.detectors.EBSDDetector.binning`; see
-            the ``Notes`` on units.
+            the notes below on units.
         reference
             Which pattern each point is correlated with. ``"auto"``
             (default) segments the map into grains with
@@ -3127,7 +3127,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             in-engine band-pass filter, as fractions of the pattern
             width, either of which may be ``None``. Default is
             ``(0.05, None)``. It changes the rotation capture range,
-            see the ``Notes``.
+            see the notes below.
         window
             Whether to weight the correlation residual by a Hann
             window over the subregion. Default is ``False``.
@@ -3162,7 +3162,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             independently and is bitwise the behaviour of every
             release before this keyword existed. With ``True`` the
             returned map carries one further property,
-            ``"seed_round"``; see the ``Notes``.
+            ``"seed_round"``; see the notes below.
         navigation_mask
             A boolean mask equal to the signal's navigation (map)
             shape, where only patterns equal to ``False`` are
@@ -3174,11 +3174,24 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             that what was skipped stays readable.
         backend
             Where to correlate. Options are ``"cpu"`` (default) and
-            ``"gpu"``, the latter on a CUDA device through CuPy.
+            ``"gpu"``, the latter on a CUDA device through CuPy, with
+            the reference precompute, the grain bookkeeping and the
+            deformation gradient conversion still on the CPU.
+            Requires that :mod:`cupy` is installed, which is an
+            optional dependency of kikuchipy, if ``"gpu"`` is chosen,
+            together with the CUDA libraries it loads: install e.g.
+            ``cupy-cuda12x``
+            and the wheels ``nvidia-cufft-cu12``,
+            ``nvidia-cublas-cu12``, ``nvidia-cusolver-cu12``,
+            ``nvidia-cusparse-cu12`` and ``nvidia-nvjitlink-cu12``, or
+            the full CUDA Toolkit. See the notes below.
         chunksize
             Number of patterns to correlate per chunk. If not given,
             it is estimated from the pattern shape, the number of
-            patterns and the number of Dask workers.
+            patterns and the number of Dask workers. With
+            ``backend="gpu"`` it is the number of patterns correlated
+            together on the device, which must be at least 1, and if
+            not given it is chosen from the free device memory.
         verbose
             Which information to print. Options are 0 - no output,
             1 - information, progress bar and timing (default).
@@ -3191,7 +3204,7 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             ``"Fe"`` (n, 9), ``"residual"`` (n,),
             ``"num_iterations"`` (n,), ``"norm_dp"`` (n,),
             ``"converged"`` (n,), ``"grain_id"`` (n,) and
-            ``"reference_index"`` (n,), see the ``Notes``. With
+            ``"reference_index"`` (n,), see the notes below. With
             ``seed_from_neighbors=True`` it also carries
             ``"seed_round"`` (n,).
 
@@ -3206,8 +3219,23 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             entry; if the detector carries neither one projection
             center nor one per map point; if the detector carries a
             single projection center and a navigation axis has no
-            readable length unit; or for any invalid correlation
+            readable length unit; if *backend* is not one of
+            ``"cpu"`` and ``"gpu"``; if ``chunksize`` is below 1 with
+            ``backend="gpu"``; or for any invalid correlation
             parameter.
+        NotImplementedError
+            If ``backend="gpu"`` is combined with
+            ``seed_from_neighbors=True``, which is supported with
+            ``backend="cpu"`` only; raised before any work is done.
+        ImportError
+            If ``backend="gpu"`` and :mod:`cupy` is not installed or
+            is too old.
+        RuntimeError
+            If ``backend="gpu"`` and no CUDA device is found or the
+            CUDA libraries cupy needs cannot be loaded.
+        MemoryError
+            If ``backend="gpu"`` and the device runs out of memory
+            even when correlating one pattern at a time.
 
         Warns
         -----
@@ -3334,6 +3362,38 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         rescue pass re-fitted, ``"num_iterations"`` counts only that
         final fit, the one which produced the stored homography, not
         the capped first pass before it.
+
+        **Correlating on a GPU.** With ``backend="gpu"`` the
+        per-pattern work, the band-pass filter, the spline prefilter,
+        the phase cross-correlation guess and the Gauss-Newton loop,
+        runs on a CUDA device through CuPy, in batches of
+        ``chunksize`` patterns of one grain each, while the reference
+        precompute, the grain bookkeeping and the conversion to
+        ``"Fe"`` stay on the CPU and are shared with
+        ``backend="cpu"``. The device precision is mixed: the
+        per-pixel arithmetic runs in 32-bit floats on values shifted
+        by a per-pattern constant, and every reduction, the linear
+        solve and the homography update run in 64-bit floats. The
+        result therefore agrees with ``backend="cpu"`` to within a
+        small measured band, about 1e-6 binned pixels of corner
+        displacement on converged points, rather than bitwise, and an
+        iteration count or a ``"converged"`` flag at the
+        ``max_iterations`` cap may differ on a few points. Results
+        are deterministic, bitwise run to run, on one device with
+        fixed driver, CuPy and CUDA library versions and a fixed
+        ``chunksize``; lazy and eager input give the same result.
+        When ``chunksize`` is not given, the batch is the largest
+        power of two up to 64 whose modelled VRAM use, the per-pattern
+        planes, the preprocessing workspace and the resident data of
+        at most two grain references, fits in half of the free VRAM;
+        the information message prints the model and warns when it
+        exceeds the free VRAM. An out-of-memory error halves the
+        batch and re-runs the map, and raises ``MemoryError`` at a
+        batch of one. There is no silent fallback to the CPU: a
+        missing cupy, device or CUDA library raises with the remedy
+        in the message. ``seed_from_neighbors=True`` is not supported
+        with ``backend="gpu"`` and raises ``NotImplementedError``;
+        use ``backend="cpu"`` for neighbour-seeded propagation.
 
         **Limitations of this release, each documented rather than
         silently absorbed.** Optical and radial distortion of the

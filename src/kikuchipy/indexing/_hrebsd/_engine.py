@@ -209,6 +209,21 @@ SEED_ROUND_PASS1: int = 0
 SEED_ROUND_RESCUE: int = -2
 SEED_ROUND_NONE: int = -1
 
+# ------------------ Stage E, the optional GPU backend --------------- #
+
+# The accepted values of ``backend`` (requirements D21.1),
+# case-sensitive; there is no "auto" and no silent fallback
+SUPPORTED_BACKENDS: tuple[str, ...] = ("cpu", "gpu")
+
+# The frozen message of requirements D21.12, raised under
+# ``backend="gpu"`` with ``seed_from_neighbors=True`` before the gate
+# and before any work; no roadmap stage letter in public text
+SEED_FROM_NEIGHBORS_GPU_MESSAGE: str = (
+    "seed_from_neighbors=True is not supported with backend='gpu'; use "
+    "backend='cpu' for neighbour-seeded propagation (a Fourier-Mellin "
+    "rotation seed covering the same regime is planned)"
+)
+
 
 class ReferenceState:
     """Per-reference precomputed state of the IC-GN loop.
@@ -1045,7 +1060,17 @@ def run_hrebsd_dic(
     Raises
     ------
     ValueError
-        For any invalid argument, each naming the offending one.
+        For any invalid argument, each naming the offending one, an
+        unsupported *backend* included (requirements D21.1).
+    NotImplementedError
+        With ``backend="gpu"`` and ``seed_from_neighbors=True``
+        (requirements D21.12), before the gate and any work.
+    ImportError, RuntimeError
+        With ``backend="gpu"`` when the availability gate of
+        requirements D21.2 fails; there is no CPU fallback.
+    MemoryError
+        With ``backend="gpu"`` when the device runs out of memory even
+        at a device batch size of one (requirements D21.10.4).
 
     Notes
     -----
@@ -1109,12 +1134,27 @@ def run_hrebsd_dic(
             )
 
     # Requirements D21.1: the backend checks sit HERE, after every
-    # existing argument check and before reference resolution.  The
-    # default ``"cpu"`` path passes straight through, bitwise unchanged
-    # and never touching the gate or cupy.  Stage E failing-tests
-    # skeleton: every other value raises until the implementation gate
-    if backend != "cpu":
-        raise NotImplementedError("Stage E: not implemented yet")
+    # existing argument check and before reference resolution, in the
+    # frozen order: the backend string; under "gpu" only the two
+    # precisions, the coefficient data type and the batch size; the
+    # D21.12 raise; the D21.2 gate.  So a missing GPU costs nothing.
+    # The default "cpu" path passes straight through, bitwise
+    # unchanged and never touching the gate or cupy
+    if backend not in SUPPORTED_BACKENDS:
+        raise ValueError(
+            f"Backend {backend!r} not in the list of supported backends "
+            f"{list(SUPPORTED_BACKENDS)}"
+        )
+    use_gpu = backend == "gpu"
+    if use_gpu:
+        _check_gpu_arguments(
+            device_precision, seed_precision, coefficient_dtype, chunksize
+        )
+        if seed_from_neighbors:
+            raise NotImplementedError(SEED_FROM_NEIGHBORS_GPU_MESSAGE)
+        # Looked up in this module's namespace at call time, where the
+        # tests patch it (the Phase 12 seam)
+        _verify_gpu_or_raise()
 
     # The mask reaches the reference resolution and not only the fit
     # list: a masked-out point is one the caller does not trust, and
@@ -1195,12 +1235,38 @@ def run_hrebsd_dic(
     state_of_point = np.ascontiguousarray(state_of_point[order].astype(np.int64))
 
     n_fit = int(fit_indices.size)
-    if chunksize is None:
-        chunksize = estimate_chunksize(n_fit)
-    chunksize = max(1, min(int(chunksize), n_fit))
+    if use_gpu:
+        # Requirements D21.10.1: ``chunksize`` IS the device batch size,
+        # never clamped to the number of fitted points, and the default
+        # is the VRAM-model chooser on the queried free VRAM (D21.10.3)
+        free_bytes = None
+        if chunksize is None or verbose >= 1:
+            free_bytes = _gpu._free_device_bytes("cupy")
+        if chunksize is None:
+            chunksize = _gpu._default_batch_size(
+                free_bytes,
+                signal_shape[0] * signal_shape[1],
+                device_precision,
+                seed_precision,
+            )
+        chunksize = int(chunksize)
+        if verbose >= 1:
+            message = get_info_message(
+                n_fit, signal_shape, len(states), chunksize=chunksize
+            )
+            device_block = _gpu._info_lines(
+                chunksize, signal_shape, device_precision, seed_precision, free_bytes
+            )
+            print("\n".join([message, *device_block]))
+    else:
+        if chunksize is None:
+            chunksize = estimate_chunksize(n_fit)
+        chunksize = max(1, min(int(chunksize), n_fit))
 
-    if verbose >= 1:
-        print(get_info_message(n_fit, signal_shape, len(states), chunksize=chunksize))
+        if verbose >= 1:
+            print(
+                get_info_message(n_fit, signal_shape, len(states), chunksize=chunksize)
+            )
 
     homography = np.full((map_size, HOMOGRAPHY_PROP_SIZE), np.nan, dtype=np.float64)
     fe = np.full((map_size, FE_PROP_SIZE), np.nan, dtype=np.float64)
@@ -1259,6 +1325,30 @@ def run_hrebsd_dic(
         # cascade rounds and the rescue pass below re-fit every point
         # it leaves unconverged at the FULL budget
         fit_phase(fit_indices, min(int(max_iterations), PASS1_CAP))
+    elif use_gpu:
+        # Requirements D21.9: the dispatch point is ``_run_chunks``;
+        # the device runner reproduces its contract, so everything
+        # upstream and downstream is shared code.  Reached through the
+        # module object at call time, where the tests spy on it
+        packed = _gpu._run_chunks_gpu(
+            patterns,
+            fit_indices,
+            state_of_point,
+            states,
+            chunksize,
+            progressbar=verbose >= 1,
+            options=fit_options,
+            device_precision=device_precision,
+            seed_precision=seed_precision,
+            row_slots={
+                "width": _ROW_WIDTH,
+                "residual": _SLOT_RESIDUAL,
+                "iterations": _SLOT_ITERATIONS,
+                "norm_dp": _SLOT_NORM_DP,
+                "converged": _SLOT_CONVERGED,
+            },
+        )
+        store(fit_indices, packed)
     else:
         packed = _run_chunks(
             patterns,
@@ -1384,6 +1474,52 @@ def run_hrebsd_dic(
     if seed_round is not None:
         properties[SEED_ROUND_PROP_NAME] = seed_round
     return properties
+
+
+def _check_gpu_arguments(
+    device_precision: str,
+    seed_precision: str,
+    coefficient_dtype,
+    chunksize: int | None,
+) -> None:
+    """Check the arguments only ``backend="gpu"`` reads, in the frozen
+    order of requirements D21.1: *device_precision* (D21.4),
+    *seed_precision* (D21.5), *coefficient_dtype* (the device
+    coefficients are 32-bit under both precisions, D21.4), and then
+    *chunksize*, the device batch size, which must be at least 1
+    (D21.10.1; the CPU path keeps its silent clamp).
+
+    Raises
+    ------
+    ValueError
+        Naming the offending argument.
+    """
+    device_precisions = _gpu._batched.DEVICE_PRECISIONS
+    if device_precision not in device_precisions:
+        raise ValueError(
+            f"device_precision must be one of {list(device_precisions)} under "
+            f"backend='gpu', not {device_precision!r}"
+        )
+    seed_precisions = _gpu._batched.SEED_PRECISIONS
+    if seed_precision not in seed_precisions:
+        raise ValueError(
+            f"seed_precision must be one of {list(seed_precisions)} under "
+            f"backend='gpu', not {seed_precision!r}"
+        )
+    try:
+        is_float32 = np.dtype(coefficient_dtype) == np.float32
+    except TypeError:
+        is_float32 = False
+    if not is_float32:
+        raise ValueError(
+            "coefficient_dtype must be numpy.float32 under backend='gpu', not "
+            f"{coefficient_dtype!r}: the device coefficients are 32-bit floats"
+        )
+    if chunksize is not None and int(chunksize) < 1:
+        raise ValueError(
+            f"chunksize, the device batch size under backend='gpu', must be at "
+            f"least 1, not {chunksize}"
+        )
 
 
 def _gather(patterns, indices: np.ndarray) -> np.ndarray:

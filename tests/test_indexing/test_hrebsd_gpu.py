@@ -453,8 +453,8 @@ SEAM_DISCRIMINATING_MIN = {
 
 # ------------------ MEASURED-THEN-PINNED (MTP) ---------------------- #
 #
-# Every value below is a ``FIXME-pin`` placeholder (``None``) until
-# the Stage E implementation gate, which measures it on the frozen
+# Every value below was a ``FIXME-pin`` placeholder (``None``) until
+# the Stage E implementation gate (2026-10-07), which measured it on the frozen
 # design and pins it at about 2x margin with the recipe and the
 # machine ID beside it, recorded in validation.md.  The spec-gate
 # numbers quoted are the SCALES a correct implementation should
@@ -463,19 +463,50 @@ SEAM_DISCRIMINATING_MIN = {
 # asserts, and the CPU's pinned bands never stand in for either.
 
 # --- (d) seeds ---
-# FIXME-pin [V9(d)]: numpy-namespace seeds equal to ``initial_guess``
-# on F1, F3s, F4, F6 and the Ni map, at upsample 16, 2 and 1;
-# expected "all equal" (the Stage F gate for routing the CPU through
-# the seam).  A dict keyed by (fixture, upsample_factor) once measured
-NUMPY_SEED_EQUAL_COUNT = None  # FIXME-pin
-# FIXME-pin [V9(d)]: complex128 device seeds equal to
-# ``initial_guess``, per fixture F1 to F4 and the 2 and 1 arms; spec
-# gate 256 of 256 at the default 16 (ledger 94)
-GPU_SEED_EQUAL_COUNT = None  # FIXME-pin
-# FIXME-pin [V9(d)]: complex64 device seeds differing from
-# ``initial_guess``, per fixture; spec gate 0 or 1 per 64-pattern set,
-# each off by 1/16 px (ledger 94)
-GPU_SEED_C64_DIFF_COUNT = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(d)]: the
+# numpy-namespace seeds equal to ``initial_guess`` row for row
+# (bitwise, NaN equal to NaN), keyed (fixture, upsample_factor).
+# RECIPE: :meth:`TestSeedSeamContract.test_rows_equal_initial_guess`,
+# i.e. :func:`numpy_seed_rows` (one sub-batch of every target, the
+# complex128 seed) against :func:`cpu_seed_rows` on the same host
+# preprocessed targets, on machine A's CPU (worktree .venv, CPython
+# 3.13.12, numpy 2.4.6, scipy 1.17.1, scikit-image 0.26.0).  ALL
+# EQUAL on every fixture and arm (12 of 12 on F1, 8 of 8 on F3s, 3 of
+# 3 on F4, 4 of 4 on F6, 9 of 9 on the Ni map), the "all equal"
+# expected; pinned AT the measured count (validation.md V9 ledger 103)
+NUMPY_SEED_EQUAL_COUNT = {
+    (name, upsample_factor): count
+    for name, count in (("F1", 12), ("F3s", 8), ("F4", 3), ("F6", 4), ("Ni", 9))
+    for upsample_factor in (16, 2, 1)
+}
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(d)]: complex128
+# device seeds equal to ``initial_guess`` row for row (bitwise), keyed
+# (fixture, upsample_factor): ALL EQUAL on F1 (12), F2-0, F2-1 and F3
+# (64 each) and F4 (3) at upsample 16, 2 and 1, the dimmed F1 arm (12)
+# and the runner arm (13 rows, the reference included); complex64
+# seeds differ from ``initial_guess`` on 0 rows of every fixture (the
+# spec gate allowed 0 or 1 per 64).  Pinned AT the measured counts.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_SEED_EQUAL_COUNT = {
+    **{
+        (name, upsample_factor): count
+        for name, count in (
+            ("F1", 12),
+            ("F2-0", 64),
+            ("F2-1", 64),
+            ("F3", 64),
+            ("F4", 3),
+        )
+        for upsample_factor in (16, 2, 1)
+    },
+    ("F1 dimmed", 16): 12,
+    ("F1 runner", 16): 13,
+}
+GPU_SEED_C64_DIFF_COUNT = 0
 
 # --- (e) the seam h0 oracle ---
 # Key conventions (2026-10-06, critic finding F1): every DEVICE table
@@ -484,99 +515,259 @@ GPU_SEED_C64_DIFF_COUNT = None  # FIXME-pin
 # :data:`SEAM_DISCRIMINATING_MIN` ``(fixture, row_type)``, read by both
 # suites over the SAME planted rows (:func:`seam_table`) and the SAME
 # map points (the reference included)
-# FIXME-pin [V9(e)]: device COUNT budgets per planted-row type
-GPU_SEAM_ITERATION_DIFF_COUNT = None  # FIXME-pin
-GPU_SEAM_CONVERGED_FLIP_COUNT = None  # FIXME-pin
-# FIXME-pin [V9(e)]: the device's minimum both-converged count per row
-# type, so the oracle cannot go vacuous
-GPU_SEAM_BOTH_CONVERGED_MIN = None  # FIXME-pin
-# FIXME-pin [V9(e)]: the numpy twin's own budgets and minimum at
-# float64 (never mixed with the device pins above)
-NUMPY_SEAM_ITERATION_DIFF_COUNT = None  # FIXME-pin
-NUMPY_SEAM_CONVERGED_FLIP_COUNT = None  # FIXME-pin
-NUMPY_SEAM_BOTH_CONVERGED_MIN = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(e)]: on F1,
+# F2-0, F2-1 and F3 at both device precisions and every finite planted
+# row type, 0 iteration-count differences and 0 ``converged`` flips
+# against the CPU ``fit_pattern(h0=row)`` (scalars, every key), and
+# every map point converged on both (13 on F1, 65 on each 64-pattern
+# set, the reference included); pinned AT the measured counts.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_SEAM_ITERATION_DIFF_COUNT = 0
+GPU_SEAM_CONVERGED_FLIP_COUNT = 0
+GPU_SEAM_BOTH_CONVERGED_MIN = {
+    (name, device_precision, row_type): count
+    for name, count in (("F1", 13), ("F2-0", 65), ("F2-1", 65), ("F3", 65))
+    for device_precision in ("mixed", "float64")
+    for row_type in ("exact", "translate_rotate", "rotate_1p5", "perspective")
+}
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(e)]: the
+# numpy twin's own budgets and minimum at float64 (never mixed with
+# the device pins above), keyed (fixture, row_type) or one scalar for
+# every key.  RECIPE: the default-suite test bodies run unchanged under recording
+# assert helpers (scratch ``measure_numpy_pins.py``), i.e. the numpy
+# twin through ``run_hrebsd_dic(backend="gpu",
+# device_precision="float64")`` on a numpy session against the CPU
+# oracle, on machine A's CPU (worktree .venv, CPython 3.13.12, numpy
+# 2.4.6, scipy 1.17.1, numba 0.65.1).  The seam planted with
+# :func:`seam_table` on F1 and F3s at every finite row type: 0
+# iteration-count differences and 0 ``converged`` flips on every key,
+# and every map point converged on both (13 of 13 on F1, 9 of 9 on
+# F3s); pinned AT the measured counts (validation.md V9 ledger 103)
+NUMPY_SEAM_ITERATION_DIFF_COUNT = 0
+NUMPY_SEAM_CONVERGED_FLIP_COUNT = 0
+NUMPY_SEAM_BOTH_CONVERGED_MIN = {
+    (name, row_type): count
+    for name, count in (("F1", 13), ("F3s", 9))
+    for row_type in ("exact", "translate_rotate", "rotate_1p5", "perspective")
+}
 
 # --- (f) per-point parity bands, corner displacement in px ---
-# FIXME-pin [V9(f)]: spec gate at most 6.6e-7 px on the synthetic
-# sets and 1.3e-6 px on the Si rim set (ledger 93)
-GPU_PARITY_H_TOL_MIXED = None  # FIXME-pin
-# FIXME-pin [V9(f)]: spec gate at most 2.1e-12 px (ledger 93)
-GPU_PARITY_H_TOL_F64 = None  # FIXME-pin
-# FIXME-pin [V9(f)]: the iteration-1 increment; spec gate 1.0e-7 px at
-# 480 (pure-f32 reductions measured 5.3e-7, the M3 killer)
-GPU_FIRST_STEP_TOL_MIXED = None  # FIXME-pin
-# FIXME-pin [V9(f)]: the float64 build's first step; spec gate 1.4e-13
-GPU_FIRST_STEP_TOL_F64 = None  # FIXME-pin
-# FIXME-pin [V9(f)]: spec gate at most 2.7e-7 relative (ledger 93)
-GPU_PARITY_RESIDUAL_RTOL = None  # FIXME-pin
-# FIXME-pin [V9(f)]: the absolute floor for near-zero criteria (the
-# reference point's own fit sits near 1e-16)
-GPU_PARITY_RESIDUAL_ATOL = None  # FIXME-pin
-# FIXME-pin [V9(f)]: Fe through the shared host conversion
-GPU_PARITY_FE_TOL = None  # FIXME-pin
-# FIXME-pin [V9(f)]: the per-kernel numpy-twin against CUDA A/B at
-# float64 on identical inputs
-GPU_KERNEL_AB_TOL_F64 = None  # FIXME-pin
-# FIXME-pin [V9(f)]: the numpy twin's OWN bands at float64 against
-# the CPU on F1, F3s and F4 (never reused for a device assert)
-NUMPY_PARITY_H_TOL_F64 = None  # FIXME-pin
-NUMPY_FIRST_STEP_TOL_F64 = None  # FIXME-pin
-NUMPY_PARITY_RESIDUAL_RTOL = None  # FIXME-pin
-NUMPY_PARITY_RESIDUAL_ATOL = None  # FIXME-pin
-NUMPY_PARITY_FE_TOL = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(f)]: the
+# DEVICE bands against the CPU, each the worst over EVERY gated use
+# (parity on F1 to F4 and F6 at both seed precisions, the Ni map, the
+# planted seam arms on F1 to F3, the V9(h) knob arms, padded F4, F5,
+# F7, the DC-offset arm and the max_iterations arms), pinned at about
+# 2x.  h band, mixed: worst 1.256e-6 px (the DC-offset arm without a
+# band-pass: f32 values at a large offset), the rest at most 5.22e-7
+# px (F3) -> 2.5e-6; float64: worst 3.19e-12 px (F2-1) -> 7e-12.  First
+# step, mixed: worst 5.05e-7 px (the planted F3 "perspective" seam
+# row; 1.20e-7 px on F1 parity, above the spec gate's 1.0e-7) -> 1e-6;
+# float64: worst 1.58e-11 px (F3) -> 3.2e-11.  NOTE (review gate): the
+# mixed first-step pin sits above the spec gate's 5.3e-7 px M3 (f32
+# reductions) measurement because the seam's one-iteration arm shares
+# it; M3's kill must be verified at the bug-injection pass.  Residual
+# band ``atol + rtol * |cpu|``: worst relative 2.24e-6 (DC offset,
+# mixed; at most 6.1e-7 elsewhere) -> rtol 4.5e-6; worst absolute on
+# near-zero criteria 2.6e-14 -> atol 6e-14.  Fe: worst 1.20e-9 (F6,
+# mixed; 5.4e-15 float64) -> 2.4e-9.  Kernel A/B at float64
+# (scale-free relative): worst 1.469e-14 (gather; pixel_sums 8.7e-16,
+# final criterion 4.9e-16, the update 1.1e-16, far coordinates at most
+# 1.5e-16) -> 3e-14.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_PARITY_H_TOL_MIXED = 2.5e-6
+GPU_PARITY_H_TOL_F64 = 7e-12
+GPU_FIRST_STEP_TOL_MIXED = 1e-6
+GPU_FIRST_STEP_TOL_F64 = 3.2e-11
+GPU_PARITY_RESIDUAL_RTOL = 4.5e-6
+GPU_PARITY_RESIDUAL_ATOL = 6e-14
+GPU_PARITY_FE_TOL = 2.4e-9
+GPU_KERNEL_AB_TOL_F64 = 3e-14
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(f)]: the
+# numpy twin's OWN bands at float64 against the CPU (never reused for
+# a device assert), each the worst over EVERY default-suite use: the
+# F1, F3s and F4 parity and first-step tests, every V9(h) knob arm, the
+# F5 and F7 map-order runs and the V9(e) seam arms.  RECIPE: the default-suite test bodies run unchanged under recording
+# assert helpers (scratch ``measure_numpy_pins.py``), i.e. the numpy
+# twin through ``run_hrebsd_dic(backend="gpu",
+# device_precision="float64")`` on a numpy session against the CPU
+# oracle, on machine A's CPU (worktree .venv, CPython 3.13.12, numpy
+# 2.4.6, scipy 1.17.1, numba 0.65.1).
+# Worst h band 2.344e-13 px (seam F1 "perspective"), pinned 5e-13 px;
+# worst first step 1.798e-13 px (seam F3s "translate_rotate"), pinned
+# 4e-13 px; residuals: every compared criterion but one sits near
+# 1e-16 (synthetic exact recoveries) with absolute differences of at
+# most 2.498e-16 (F7), so the absolute floor is pinned 5e-16, and the
+# one large criterion (F5's capped point, 1.777) differs by 2.5e-16
+# relative, so the relative band is pinned 5e-16; worst Fe difference
+# 5.551e-16 (the low-pass arm), pinned 1.2e-15 (validation.md V9
+# ledger 103)
+NUMPY_PARITY_H_TOL_F64 = 5e-13
+NUMPY_FIRST_STEP_TOL_F64 = 4e-13
+NUMPY_PARITY_RESIDUAL_RTOL = 5e-16
+NUMPY_PARITY_RESIDUAL_ATOL = 5e-16
+NUMPY_PARITY_FE_TOL = 1.2e-15
 
 # --- (g) iteration and convergence COUNT budgets, per fixture ---
-# FIXME-pin [V9(g)]: spec gate 0 differences in 320 compared patterns
-GPU_ITERATION_DIFF_COUNT = None  # FIXME-pin
-GPU_CONVERGED_FLIP_COUNT = None  # FIXME-pin
-# FIXME-pin [V9(f)/(g)]: the numpy twin's budgets at float64
-NUMPY_ITERATION_DIFF_COUNT = None  # FIXME-pin
-NUMPY_CONVERGED_FLIP_COUNT = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(g)]: 0
+# iteration-count differences and 0 ``converged`` flips on every key
+# (F1 to F4 and F6 at both device and seed precisions, the Ni map, the
+# F4 knob arms, padded F4, F5, F7, DC offset); pinned AT the measured
+# counts, one scalar for every key.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_ITERATION_DIFF_COUNT = 0
+GPU_CONVERGED_FLIP_COUNT = 0
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(f)/(g)]: the
+# numpy twin's budgets at float64, one scalar for every key (F1, F3s,
+# F4, every F4 knob arm, F5 and F7): 0 iteration-count differences and
+# 0 ``converged`` flips on every key, by the recipe of the bands above;
+# pinned AT the measured counts (validation.md V9 ledger 103)
+NUMPY_ITERATION_DIFF_COUNT = 0
+NUMPY_CONVERGED_FLIP_COUNT = 0
 
 # --- (j) intensity scale ---
-# FIXME-pin [V9(j)]: spec gate 3.2e-8 px mixed, 3.6e-9 px float64
-GPU_INTENSITY_SCALE_GENERIC_TOL_MIXED = None  # FIXME-pin
-GPU_INTENSITY_SCALE_GENERIC_TOL_F64 = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(j)]: worst
+# 2.147e-8 px mixed and 3.058e-9 px float64 (spec gate 3.2e-8 and
+# 3.6e-9), pinned at about 2x.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_INTENSITY_SCALE_GENERIC_TOL_MIXED = 4.3e-8
+GPU_INTENSITY_SCALE_GENERIC_TOL_F64 = 6.1e-9
 
 # --- (k) update-rule analogue ---
-# FIXME-pin [V9(k)]: spec gate 1.4e-13 to 1.6e-11 px float64 and
+# [V9(k)] the spec-gate scale: 1.4e-13 to 1.6e-11 px float64 and
 # 9.2e-7 px mixed (so about 2e-6), 40x under the 8.2e-5 px tightest
 # mutant separation (ledger 93)
-GPU_UPDATE_RULE_TOL_F64 = None  # FIXME-pin
-GPU_UPDATE_RULE_TOL_MIXED = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate): worst 1.025e-13
+# px float64 (0 after one iteration) and 9.06e-8 px mixed, pinned at
+# about 2x, still about 450x under the 8.2e-5 px mutant separation.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_UPDATE_RULE_TOL_F64 = 2e-13
+GPU_UPDATE_RULE_TOL_MIXED = 1.8e-7
 
 # --- (l) the drift tripwire's device half ---
-# FIXME-pin [V9(l)]: the device recovery literals on F1 per device
+# [V9(l)] the device recovery literals on F1 per device
 # precision, the device half of :data:`CPU_DRIFT_RECOVERY_PX`; spec
 # gate: the mixed recovery maximum moved by 3.4e-7 px from the CPU's
 # on the prototype's 64-pattern 480 set
-GPU_DRIFT_RECOVERY_PX_MIXED = None  # FIXME-pin
-GPU_DRIFT_RECOVERY_PX_F64 = None  # FIXME-pin
-# FIXME-pin [V9(l)]: the band the device literals are held to
-GPU_DRIFT_TRIPWIRE_PX = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate): the recovery
+# metric of the CPU half per F1 case, from the device run at each
+# device precision (default B, complex128 seeds); the worst case moves
+# from the CPU's 0.012439859 px by 5.7e-8 px (mixed) and 2.8e-14 px
+# (float64).  The device is bitwise deterministic run to run at a
+# fixed B and B invariant (V9(m)), so the band is a float-noise band
+# FROZEN at the CPU half's 1e-9 px, below the smallest demonstrated
+# shared-code regression (2.13e-9 px).
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_DRIFT_RECOVERY_PX_MIXED = np.array(
+    [
+        0.007831716823155942,
+        0.004932840998911446,
+        0.0011508283167937412,
+        0.002920500320123324,
+        0.002889366834162639,
+        0.00819946258668157,
+        0.012439915755084598,
+        0.0032123659913164465,
+        0.0022441218966642845,
+        0.002424294268855096,
+        0.002017255717508676,
+        0.009035342830673431,
+    ]
+)
+GPU_DRIFT_RECOVERY_PX_F64 = np.array(
+    [
+        0.007831707108041115,
+        0.004932800467882851,
+        0.001150689518357858,
+        0.002920592499459284,
+        0.0028893302430839257,
+        0.008199674743774109,
+        0.012439859159036198,
+        0.0032124210447276235,
+        0.002244293227945333,
+        0.0024240622677309683,
+        0.002017307940207109,
+        0.009035331439850204,
+    ]
+)
+GPU_DRIFT_TRIPWIRE_PX = 1e-9
 
 # --- (m) determinism ---
-# FIXME-pin [V9(m)]: B invariance at B in {8, 32, 40, default},
+# [V9(m)] B invariance at B in {8, 32, 40, default},
 # possibly 0 (expected bitwise among the B >= 32 by construction)
-GPU_BATCH_INVARIANCE_TOL = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate): B = 32, 40 and
+# the default B (64 here) equal B = 8 BITWISE on F1 at both device
+# precisions (and on F2-0, F2-1, F3 and F4, ledger 104 E4); pinned 0.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_BATCH_INVARIANCE_TOL = 0.0
 
 # --- (n) robustness ---
-# FIXME-pin [V9(n)]: the pool residue in bytes a recovered run may
+# [V9(n)] the pool residue in bytes a recovered run may
 # leave under a real ``set_limit``
-GPU_LEAK_RESIDUE_BYTES = None  # FIXME-pin
+# MEASURED 2026-10-07 (Stage E implementation gate): 0 bytes on F1
+# and F7 (built at B = 64, 32, 16, 8, 4 under the limit), once the
+# runner empties the worker threads' cuFFT plan caches; pinned 0.
+# RECIPE: the gated suite (``--weekly``, ``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) run once with recording assert helpers
+# (scratch ``recpins.py``, the test bodies unchanged), on machine A
+# (see MACHINE_A; ``nvidia-smi`` idle before the run).  Recorded in
+# validation.md V9 ledger 104
+GPU_LEAK_RESIDUE_BYTES = 0
 
 # --- (o) VRAM calibration, bytes, at 512x622 (pattern pixels) ---
-# FIXME-pin [V9(o)]: g, p and r each calibrated SEPARATELY against
-# pool high-water marks; spec gate r = 14.2 MB mixed and 19.4 MB
-# float64 at 512x622 (10.3 and 14.0 MB at 480), g dominated by the
-# 1.27 MB coefficient plane, p about 29 MB per pattern (ledger 92)
-VRAM_G_BOUNDS_RECT = None  # FIXME-pin, (low, high)
-VRAM_P_BOUNDS_RECT = None  # FIXME-pin, (low, high)
-VRAM_R_BOUNDS_RECT_MIXED = None  # FIXME-pin, (low, high)
-VRAM_R_BOUNDS_RECT_F64 = None  # FIXME-pin, (low, high)
+# MEASURED 2026-10-07 (Stage E implementation gate) [V9(o)], g, p and r
+# each calibrated SEPARATELY against cupy pool high-water marks on F3s
+# (512x622), on machine A (see MACHINE_A).  RECIPE:
+# :meth:`TestGatedVramCalibration.test_resident_term` (r: the high-water
+# mark of ``build_resident`` plus ``build_seed_state``) and
+# ``::test_per_slot_and_transient_terms`` (g = (peak(64) - peak(32)) /
+# 32, p = (peak(16) - peak(8)) / 8 - g), deterministic run to run once
+# the runner empties the worker threads' cuFFT plan caches (scratch
+# ``vram_calib.py``).  Measured: g 1,273,936 B (the f32 coefficient
+# plane, both device precisions); p 21,094,832 B; r 23,159,296 B
+# (mixed) and 26,248,704 B (float64) at complex128.  The model's own
+# terms (the default suite reads the SAME bounds): g 2,613,248 B mixed
+# and 3,887,104 B float64, p 30,572,544 B, r 30,638,080 B mixed and
+# 38,281,216 B float64.  Pinned at about 2x around the measured marks,
+# low = measured / 2 and high = 2 x measured, except g's high, which is
+# 2 x the float64 model term the default suite checks (the model counts
+# the gather's value plane per slot, which the seed-stage peak does not
+# reach).  Recorded in validation.md V9 ledger 104
+VRAM_G_BOUNDS_RECT = (600_000, 8_000_000)
+VRAM_P_BOUNDS_RECT = (10_500_000, 42_000_000)
+VRAM_R_BOUNDS_RECT_MIXED = (11_500_000, 46_000_000)
+VRAM_R_BOUNDS_RECT_F64 = (13_000_000, 52_000_000)
 
 # --- the default-suite wall time (D21.14.3), recorded not asserted ---
-# FIXME-pin: recorded in validation.md at the failing-tests gate
+# Recorded in validation.md V9 ledger 101 (failing-tests gate) and
+# re-recorded at the implementation gate (ledger 104)
 
 
 # --------------------- The gated-suite fixture ---------------------- #

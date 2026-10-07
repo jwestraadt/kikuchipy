@@ -5744,3 +5744,113 @@ and again by the finishing agent), with identical numbers.
     `DIM_SCALE` recipe, M43 carries its caveat, and M37 to M42 and M44
     are marked D*. None of the kills has been verified yet; that is the
     bug-injection pass.
+
+#### V9 recorded results, implementation gate (2026-10-07)
+
+Measured on machine A (ledger 89) by the Stage E implementation gate,
+on the worktree `.venv` (CPython 3.13.12, numpy 2.4.6, scipy 1.17.1,
+numba 0.65.1, scikit-image 0.26.0) for the default suite, and on the
+pinned overlay of D21.15 (`-n 0`) for the gated runs quoted for
+information. Base commit f297867e plus the uncommitted Stage E
+implementation (`_hrebsd/_batched.py`, the new device-only
+`_hrebsd/_cuda.py`, and the `_gpu.py`/`_engine.py`/`ebsd.py`
+plumbing of the parallel implementer).
+
+103. **The xp-agnostic batched core and the numpy-twin pins
+    (implementer A; requirements D21.4 to D21.7, D21.9.5, D21.14.3;
+    V9(d), (e), (f), (g), (h), (i), (m)).**
+    (i) **What exists.** `_batched.py` holds the seed seam
+    (`SeedContext`, `SeedState`, `SeedBatch`, `build_seed_state`,
+    `seed_spectra`, `seed_homographies`: the batched transcription of
+    skimage's `phase_cross_correlation` on the zero-mean unit-norm
+    crops, complex128 by default and complex64 on request, NaN rows
+    for a zero or non-finite crop norm or a non-finite peak and for
+    every slot at `upsample_factor < 1`), `build_resident` (host f64
+    derivation, then upload at the pixel precision; the constants
+    `SD_w^T (w ref)` and `SD_w^T w` from the WEIGHTED block),
+    `initial_shifts` (K0, the subregion mean rounded to the pixel
+    precision), `run_lockstep` (the carried f64 matrix, padded slots
+    and non-finite seeds never active, the non-finite-coordinate flag
+    before the sums, retirement, the final criterion at the returned
+    homography, the 12-wide packing), `solve_update` (the shared f64
+    step algebra: NaN-propagating corner maximum, closed-form 3x3
+    inverse, flags for a zero or non-finite norm, step, determinant or
+    W33), `_launch_layout` (256 threads, about 16 pixels per thread,
+    a function of n only) and the numpy `KernelNamespace` twin at
+    float64 (the numba gather, the ten shifted sums of the module
+    docstring as per-row `add.reduce` along the pixel axis, never a
+    BLAS product over the batch, and a two-pass final criterion).
+    `_cuda.py` holds the CUDA build of the same four entry points for
+    both precisions (no atomics, fixed-order two-stage reductions, no
+    fast math, every kernel built through `cupy.RawKernel` per
+    `make_kernel_namespace` call; the gate is the parallel
+    implementer's).
+    (ii) **Seeds, V9(d).** RECIPE:
+    `TestSeedSeamContract::test_rows_equal_initial_guess`. The numpy
+    seed equals `initial_guess` bitwise on every row of F1 (12), F3s
+    (8), F4 (3), F6 (4) and the Ni map (9) at upsample 16, 2 and 1;
+    the dimmed arm is bitwise equal too. Pinned AT the counts
+    (`NUMPY_SEED_EQUAL_COUNT`).
+    (iii) **The numpy twin's bands and counts, V9(e), (f), (g).**
+    RECIPE: the default-suite test bodies run unchanged under recording
+    assert helpers (scratch `measure_numpy_pins.py`): the F1, F3s and
+    F4 parity and first-step tests, the eleven knob arms, F5 and F7 map
+    order, and the seam arms on F1 and F3s at every finite row type.
+    Every iteration-count difference and every `converged` flip is 0,
+    on every key; every planted seam row converged on both (13 of 13
+    on F1, 9 of 9 on F3s). Worst values against the CPU, pinned at
+    about 2x: h band 2.344e-13 px (seam F1 "perspective") ->
+    `NUMPY_PARITY_H_TOL_F64 = 5e-13`; first step 1.798e-13 px (seam F3s
+    "translate_rotate") -> `NUMPY_FIRST_STEP_TOL_F64 = 4e-13`;
+    residuals near 1e-16 differ by at most 2.498e-16 absolute (F7) and
+    the one large criterion (F5's capped point, 1.777) by 2.5e-16
+    relative -> `NUMPY_PARITY_RESIDUAL_ATOL = 5e-16`,
+    `NUMPY_PARITY_RESIDUAL_RTOL = 5e-16`; Fe 5.551e-16 (low-pass arm)
+    -> `NUMPY_PARITY_FE_TOL = 1.2e-15`; the counts
+    `NUMPY_ITERATION_DIFF_COUNT`, `NUMPY_CONVERGED_FLIP_COUNT`,
+    `NUMPY_SEAM_ITERATION_DIFF_COUNT` and
+    `NUMPY_SEAM_CONVERGED_FLIP_COUNT` = 0 (scalars, every key), and
+    `NUMPY_SEAM_BOTH_CONVERGED_MIN` = 13 (F1) and 9 (F3s) per row
+    type. Bitwise by construction and passing: batched equals alone on
+    F5 at B = 8, the B = 40 tail-sub-batch slot equals alone, and the
+    1e30 sentinel on padded slots leaves the output unchanged. The
+    gather's bitwise agreement with the CPU's `evaluate` on planted
+    NaN, +-inf and huge (3e9, 1e30, FLT_MAX) coordinates passes.
+    (iv) **Default-suite state.** `uv run pytest
+    tests/test_indexing/test_hrebsd_gpu.py -n 0 -q -k "Seed or
+    BatchedCoreNumpy or LaunchLayout or CudaSourcePins"`: 103 passed,
+    114 skipped. The whole default file at `-n 2`: 185 passed, 271
+    skipped, 1 failed (`TestBatchModel::
+    test_the_terms_sit_in_the_calibrated_bounds`, a VRAM calibration
+    pin of the parallel implementer). `_batched.py` default-suite line
+    coverage 97.8 %; the uncovered lines (the cupy branch of
+    `make_kernel_namespace`, the mixed resident, the mixed K rounding)
+    run in the gated suite. No test was changed except to fill the pins
+    named above.
+    (v) **Gated, for information only (no device pin filled here).**
+    `nvidia-smi` showed the HROSM session's `EMDI.exe` on the GPU (about
+    33 % utilisation) during these runs, so no timing was taken. Every
+    gated failure in `TestGatedSeedParity`, `TestGatedParity`,
+    `TestGatedKernelAB` and `TestGatedBatchedSemantics` is an unfilled
+    FIXME-pin placeholder. Measured on the way: per-kernel A/B at
+    float64 (scale-free relative difference) gather 1.47e-14, the far
+    coordinates 0 to 1.5e-16, `pixel_sums` 8.7e-16,
+    `reduce_solve_update` matrices 1.0e-16; complex128 device seeds
+    equal `initial_guess` on every row of F1, F2-0, F2-1, F3 and F4 at
+    upsample 16, 2 and 1 (and the dimmed and runner arms), complex64
+    differing on 0 rows; converged h bands mixed 5.7e-8 to 5.2e-7 px
+    and float64 1.6e-13 to 3.2e-12 px; first-step bands mixed 3.9e-8 to
+    1.2e-7 px and float64 1.6e-14 to 1.6e-11 px; the Ni map through the
+    public method 7.0e-8 px (mixed). The scales match ledger 93. The
+    launch-dimension spy passes once the solve kernel runs one
+    single-thread block per pattern (a grid of `ceil(B / 64)` blocks
+    failed it). The resident set holds one copy per plane at the pixel
+    precision, plus int32 pixel indices under `"mixed"` only, and the
+    seed state's zero-mean normalisation works in place. With that,
+    the resident high-water marks at 512x622 are 23.2 MB (mixed,
+    complex128) and 26.2 MB (float64, complex128). Before the trim they
+    were 27.3 and 30.4 MB, and mixed complex64 was 19.0 MB. Still open,
+    and not in the batched core: the VRAM `r` model (20.4 MB mixed
+    complex128) is still below the mixed complex128 mark, and
+    `test_batch_size_invariance[float64]` reports that its pool limit
+    did not force a halving. Both belong to the calibration step.
