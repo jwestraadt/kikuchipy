@@ -164,3 +164,47 @@ CHANGELOG gate (it ships a tutorial).
 - [x] PR merged on the user's go (merge commit; ubuntu/windows CI green); merge sha M recorded here -- merged 2026-10-06 as ef29024a (CI: ubuntu py3.13, windows py3.13/3.14, oldest and wheel green on run 37426647339 after the default suite was trimmed and the fork-only test timeout raised to 20 min; macOS only the pre-existing test_ni_proper_oh_count)
 - [x] `hrebsd-dic`: `git merge --no-ff develop`, append-type conflicts resolved HREBSD first then NLPAR; `-k "nlpar or hrebsd"` then the full suite green; nbval on `nlpar.ipynb`; pushed; still never merged into `develop` -- merged as 1532813d plus the comment fix 091b0cbf, pushed; full suite 5212 passed / 0 failed
 - [x] `feat-spherical-indexing-nlpar`: clean replay of M with `pick.ps1`/`gate.ps1` as two commits ("Add non-local pattern averaging (NLPAR)", "Add NLPAR tutorial"; `Staged-from:` trailers), equivalence gate and `specs/` grep clean, worktree suite == baseline + NLPAR tests; pushed, no PR; `feat-spherical-indexing` stays at 6723aaf0 -- 03c3ca47 + 8571c081 (Staged-from #17, ef29024a, with the comment fix 4ea4626f folded in; the fork-only tests.yml timeout excluded), pushed; equivalence 9577/9577 lines; worktree full suite 4515 passed / 1251 skipped (= baseline 4118 / 827 + NLPAR 397 / 424); nbval 18/18
+
+---
+
+# Feature path: HROSM (branch `feat-HROSM`; spec `2026-10-06-hrosm`)
+
+Not a Phase 13: HROSM is not in the EMSphInx dependency chain above.
+Base is fork `develop` (de27741a); one fork PR `feat-HROSM -> develop`
+(expected jwestraadt/kikuchipy#20, confirmed with `gh pr list` at PR
+time), merged only on Johan's go (no advance go for HROSM) with
+ubuntu/windows CI green; macOS known red on the pre-existing
+`test_ni_proper_oh_count` (`23 == 22`). Johan approves
+`specs/2026-10-06-hrosm/plan.md` before any test or code is written. A
+box ticks only when the work is committed on `feat-HROSM` (`git log`).
+Gate list per code stage: spec recorded -> failing tests committed ->
+implementation (Stage A: plus the EMsoft reference run) -> adversarial
+review + bug injection + fixes -> pre-commit clean -> CHANGELOG entry
+-> pushed. Stage C is documentation: it skips the failing-tests gate
+and keeps the CHANGELOG gate (it ships a tutorial).
+
+## Stage A -- orientation engine (no dictionary indexing)
+- [x] `src/kikuchipy/indexing/_hrosm/` (`_emsoft_quaternions`, `_kam`, `_segmentation`, `_grains`, `_averaging`, `_directional_statistics`, `_sampling`, `_osm` with both OSM forms as array functions, `_emsoft_file`); public `GrainTable`, `average_grain_orientations`, `grain_bounding_boxes`, `grain_reference_orientation_deviation_map`, `kernel_average_misorientation_map`, `misorientation_ball`, `misorientation_ball_spacing`, `segment_grains_kam` in `kikuchipy.indexing`; the EMsoftOO BSD-3 block in every EMsoft-derived module; no numba kernels
+- [x] EMsoft references: `src/kikuchipy/data/emsoft_hrosm/create_hrosm_reference.py` (import safe) run once on this machine (EMDI, EMFitOrientation, EMgetOSM, EMHROSM `center`/`center_dilate`/`wat`, EMsampleRFZ N 6 and 20; pre-flight and acid bands passed); the shipped `.npz` files with provenance (`program_md5` of every program and DLL), md5s in `_registry.py`
+- [x] Tests: `tests/test_indexing/test_hrosm_{kam,segmentation,averaging,sampling,osm,emsoft_regression}.py` (compat bitwise against literal transcriptions and the shipped references, correct mode against analytic fields and orix, recovery bands, reader on synthetic EMsoft-layout files, reference-file quad equality); the bin-gated arms (EMsampleRFZ N 20, regenerate-and-diff) and the local-gated arms (Ni6, GRX810, Al) run once and recorded; every tolerance measured then pinned in `validation.md`
+- [x] Adversarial review (fidelity vs EMsoftOO `mod_DIsupport`, `mod_cluster`, `mod_so3`, `mod_dirstats`, `mod_Lambert`, `mod_quaternions`; conventions/integration) + bug injection (plan section 6, Stage A rows) + fixes; coverage 100 % of the Stage A `_hrosm/` modules recorded
+- [x] Gates: `-n 0` then `-n 4` (red tests re-run alone), full suite, doctests, `SKIP=licenseheaders` pre-commit on explicit files, oldest-matrix recipe, clean-replay grep, default-suite budget measured; CHANGELOG "Added" bullet with the fork PR link; signed commits pushed (the failing-tests commit never alone)
+
+## Stage B -- per-grain re-indexing and `EBSD.hrosm()`
+- [x] `src/kikuchipy/indexing/_hrosm/_driver.py` and `EBSD.hrosm()` directly after `dictionary_indexing` in `signals/ebsd.py` (validation order, absent points, grains per phase, the ball composed per grain, eager experimental block, chunked lazy dictionary, `pc="grain"|"single"`, `verbose` 0/1/2, the GROD coverage warning before any simulation, warnings, one output `CrystalMap` with the documented props)
+- [x] Backwards-compatible upstream touches: `orientation_similarity_map(..., *, grain_id=None, emsoft_compatible=False)` (legacy path bitwise unchanged at the defaults) and `_dictionary_indexing(..., verbose=True)`
+- [x] Tests: `tests/test_signals/test_ebsd_hrosm.py` (contracts, masks, PC policy, skips, `n_per_iteration` and lazy/eager invariance, determinism, warnings, physics sanity on a synthetic sub-grain map, end-to-end tolerance against the EMHROSM references: one grain weekly, full map local + weekly) and additions to `test_orientation_similarity_map.py` and `test_dictionary_indexing.py`; performance baselines recorded as local ledger runs, never gated
+- [x] Adversarial review + bug injection (Stage B rows) + fixes; coverage 100 % of `_hrosm/` re-recorded
+- [x] Gates as Stage A; CHANGELOG bullet extended with `EBSD.hrosm()` and the two keywords; signed commits pushed
+
+## Stage C -- tutorial
+- [x] `doc/tutorials/hrosm.ipynb` (`nickel_ebsd_large`: dictionary indexing and refinement as in `pattern_matching.ipynb`, then `EBSD.hrosm()`; global OSM next to the HROSM OSM; KAM, grain map, GROD and its warning; synthetic sub-grain demonstration; parameter guidance and cost; differences from EMsoftOO's EMHROSM in words); `pattern_matching.ipynb` and `spherical_indexing.ipynb` linked, never edited
+- [x] Registration: `doc/tutorials/index.rst` after `pattern_matching`, `NOTEBOOKS` entry in `run_nbval.sh`, `tutorials_sanitize.cfg` sections (if any) numbered from `[regex20]`, stored outputs if > ~2 min on the RTD builder; gallery example `examples/indexing/hrosm.py` with the new section file `examples/indexing/README.rst`
+- [x] Validation matrix + failure-mode review (clean-kernel execute, nbval, html render inspection, linkcheck, name/spell pass) + fixes; `sphinx-build -b html` exit 0
+- [x] CHANGELOG tutorial bullet; the three spec documents re-submitted to review and the amendments folded in (definition of done); then the signed commit pushed
+
+## Fan-out (plan section 1; after the merge)
+- [x] Fork PR `feat-HROSM -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #20); roadmap tick commit "Tick HROSM boxes in roadmap (jwestraadt/kikuchipy#20)" -- opened as jwestraadt/kikuchipy#20 (2026-10-07); number confirmed, CHANGELOG links unchanged
+- [ ] PR merged on Johan's go (merge commit; ubuntu/windows CI green); merge sha M recorded here
+- [ ] `hrebsd-dic`: `git merge --no-ff develop`; the stub imports and `__all__` resolved in sorted order, the other append-type conflicts HREBSD first then HROSM; `segment_grains`/`segment_grains_kam` See Also cross-references added on `hrebsd-dic` only; the HROSM tests, `-k hrebsd`, then the full suite green; nbval on `hrosm.ipynb`; pushed; still never merged into `develop`
+- [ ] `feat-spherical-indexing-hrosm`: new branch off `feat-spherical-indexing-nlpar` (e49b3d85, untouched), clean replay of M with `pick.ps1`/`gate.ps1` as two commits ("Add high angular resolution orientation similarity maps (HROSM)", "Add HROSM tutorial"; `Staged-from:` trailers), equivalence gate and the clean-replay grep clean, worktree suite == baseline + HROSM tests; pushed, no PR; `feat-spherical-indexing` stays at 6723aaf0

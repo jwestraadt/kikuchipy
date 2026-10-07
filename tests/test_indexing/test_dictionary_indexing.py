@@ -15,12 +15,17 @@
 # You should have received a copy of the GNU General Public License
 # along with kikuchipy. If not, see <http://www.gnu.org/licenses/>.
 
+from __future__ import annotations
+
 import dask.array as da
 import numpy as np
 from orix.crystal_map import CrystalMap
+from orix.quaternion import Rotation
 import pytest
 
 import kikuchipy as kp
+from kikuchipy.indexing import NormalizedCrossCorrelationMetric
+from kikuchipy.indexing._dictionary_indexing import _dictionary_indexing
 
 
 class TestDictionaryIndexing:
@@ -178,3 +183,61 @@ class TestDictionaryIndexing:
         assert xmap1.rotations_per_point == 1
         assert xmap2.size == 1
         assert xmap2.rotations_per_point == s_dict.xmap.size
+
+    @pytest.mark.parametrize(
+        "n_per_iteration", [9, 2], ids=["one_iteration", "chunked"]
+    )
+    def test_verbose_false_silences_the_core_for_hrosm(
+        self, dummy_signal, capsys, monkeypatch, n_per_iteration
+    ):
+        """The private core prints nothing, shows no progress bar and
+        does not sleep with ``verbose=False``, and returns the same
+        results as with ``verbose=True``.
+        """
+        sleep_calls = []
+        monkeypatch.setattr(
+            "kikuchipy.indexing._dictionary_indexing.sleep",
+            lambda seconds: sleep_calls.append(seconds),
+        )
+        dict_size = 9
+        dictionary = dummy_signal.data.reshape(dict_size, 3, 3)
+        rng = np.random.default_rng(42)
+        quaternions = rng.normal(size=(dict_size, 4))
+        quaternions /= np.linalg.norm(quaternions, axis=1, keepdims=True)
+        dictionary_xmap = CrystalMap(rotations=Rotation(quaternions))
+
+        def run(verbose: bool) -> CrystalMap:
+            metric = NormalizedCrossCorrelationMetric()
+            metric.n_experimental_patterns = 9
+            metric.n_dictionary_patterns = dict_size
+            metric.raise_error_if_invalid()
+            return _dictionary_indexing(
+                experimental=dummy_signal.data,
+                experimental_nav_shape=(3, 3),
+                dictionary=dictionary,
+                step_sizes=(1, 1),
+                dictionary_xmap=dictionary_xmap,
+                metric=metric,
+                keep_n=4,
+                n_per_iteration=n_per_iteration,
+                verbose=verbose,
+            )
+
+        capsys.readouterr()
+        xmap_silent = run(verbose=False)
+        silent = capsys.readouterr()
+        assert silent.out == ""
+        assert silent.err == ""
+        assert sleep_calls == []
+
+        # The verbose run prints and sleeps (with the spy), so the
+        # capture above could have seen output
+        xmap_verbose = run(verbose=True)
+        verbose = capsys.readouterr()
+        assert "Indexing speed" in verbose.out
+        assert len(sleep_calls) == 1
+
+        for name in ("scores", "simulation_indices"):
+            assert xmap_silent.prop[name].dtype == xmap_verbose.prop[name].dtype
+            assert np.array_equal(xmap_silent.prop[name], xmap_verbose.prop[name])
+        assert np.array_equal(xmap_silent.rotations.data, xmap_verbose.rotations.data)

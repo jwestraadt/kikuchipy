@@ -36,6 +36,12 @@ _registry_hashes = {
     "emsphinx/regression_small_refined_emsoft_d500.npz":            "md5:4702f5ccc69c2814292fe286164fc8f2",
     "emsphinx/regression_large20_refined_nr10.npz":                 "md5:0a7a2de4f422d919a0683186d3ba1cba",
     "emsphinx/regression_large165_refined_nr10.npz":                "md5:7ffc32e0582c052aa16c724111d8141e",
+    "emsoft_hrosm/regression_hrosm_large_di.npz":                   "md5:6567b3e7d808f0b4b79052454c4eb843",
+    "emsoft_hrosm/regression_hrosm_large_refined.npz":              "md5:c052857723a3051173e26caca631abcf",
+    "emsoft_hrosm/regression_hrosm_large_center.npz":               "md5:1dc0ca4fbdae040fde174f573bdc9876",
+    "emsoft_hrosm/regression_hrosm_large_center_dilate.npz":        "md5:646838357ab25dacd4a86ee864c0eef5",
+    "emsoft_hrosm/regression_hrosm_large_wat.npz":                  "md5:2ef24cd73dd8e4720b05233be97279f4",
+    "emsoft_hrosm/regression_hrosm_ball_n6.npz":                    "md5:669a794cc80175e9fb61fffda02fbb1c",
     "nickel_ebsd_large/patterns.h5":                                "md5:51d6bc0f5ff23dcb0c1a8e1f4c52d4d4",
     # From GitHub
     "silicon_ebsd_moving_screen/si_in.h5":                          "md5:d8561736f6174e6520a45c3be19eb23a",

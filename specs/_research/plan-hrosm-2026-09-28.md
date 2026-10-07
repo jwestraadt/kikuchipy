@@ -1,20 +1,23 @@
 # PARKED PLAN: `feat-HROSM`: port EMsoftOO's EMHROSM (high angular resolution OSM) into the kikuchipy fork
 
-**Status (2026-09-28): designed, NOT approved, NOT started.** Johan parked it to be implemented **after
-the NLPAR implementation** ("Write it to a spec plan separate after NLPAR implementation"). The NLPAR
-plan is `specs/_research/plan-nlpar-2026-09-11.md`.
-
-Nothing below has been executed: there is no `feat-HROSM` branch, no commits and no spec folder.
-
-**To resume:**
-1. Check that `feat-NLPAR` has been merged into `feat-spherical-indexing`.
-2. Re-verify:
-   - the base sha (`git rev-parse feat-spherical-indexing`; it was `6723aaf0` before NLPAR);
-   - that `specs/` is tracked there;
-   - the EMsoft binaries, `EMsoftConfig.json` data path and cached master listed below;
-   - the orix version.
-3. Start at "Step 0". Step 1 still needs Johan's approval of the spec `plan.md`, and of the
-   "Recorded defaults" at the end of this file.
+**Status (2026-10-06): SUPERSEDED** by `specs/2026-10-06-hrosm/`
+(`requirements.md`, `plan.md`, `validation.md`), which carries this
+design into execution with these changes. The route changed (Johan,
+2026-10-06): `feat-HROSM` is cut from fork `develop` (de27741a), not
+from `feat-spherical-indexing`; it ends in one fork PR `feat-HROSM ->
+develop` and fans out by a merge into `hrebsd-dic` and a clean replay
+onto a new `feat-spherical-indexing-hrosm` stacked on
+`feat-spherical-indexing-nlpar`. Decisions 2 and 6 below are
+therefore superseded, and "Step 0" drops out because `develop` tracks
+`specs/`. The spec folder is re-dated from `2026-09-28-hrosm` to
+`2026-10-06-hrosm`. The "Process" section is replaced by the model
+rule of 2026-10-05: spec work on Opus 5.5 xhigh with ultracode; tests,
+implementation, review, bug injection and fixes as Workflow agents on
+`{model: 'opus', effort: 'medium'}`, at most 10 agents per workflow;
+Fable only as an escalation on repeated errors and an inconsistency.
+Design amendments made while drafting the spec are dated in
+`requirements.md`. The body below stays as the design record and is
+not edited.
 
 ## Context
 

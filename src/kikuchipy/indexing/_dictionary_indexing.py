@@ -42,6 +42,7 @@ def _dictionary_indexing(
     metric: SimilarityMetric,
     keep_n: int,
     n_per_iteration: int,
+    verbose: bool = True,
 ) -> CrystalMap:
     """Dictionary indexing matching experimental patterns to a
     dictionary of simulated patterns of known orientations.
@@ -58,6 +59,9 @@ def _dictionary_indexing(
     metric
     keep_n
     n_per_iteration
+    verbose
+        Whether to print information, progress bars and the indexing
+        speed. Default is True.
 
     Returns
     -------
@@ -73,23 +77,27 @@ def _dictionary_indexing(
     n_experimental_all = int(np.prod(experimental_nav_shape))
     n_experimental = experimental.shape[0]
 
-    phase_name = dictionary_xmap.phases.names[0]
-    print(
-        _dictionary_indexing_info_message(
-            metric=metric,
-            n_experimental_all=n_experimental_all,
-            n_experimental=n_experimental,
-            dictionary_size=dictionary_size,
-            phase_name=phase_name,
+    if verbose:
+        phase_name = dictionary_xmap.phases.names[0]
+        print(
+            _dictionary_indexing_info_message(
+                metric=metric,
+                n_experimental_all=n_experimental_all,
+                n_experimental=n_experimental,
+                dictionary_size=dictionary_size,
+                phase_name=phase_name,
+            )
         )
-    )
 
     time_start = time()
     if dictionary_size == n_per_iteration:
         simulation_indices, scores = _match_chunk(
             experimental, dictionary, keep_n=keep_n, metric=metric
         )
-        with ProgressBar():
+        if verbose:
+            with ProgressBar():
+                simulation_indices, scores = da.compute(simulation_indices, scores)
+        else:
             simulation_indices, scores = da.compute(simulation_indices, scores)
     else:
         negative_sign = -metric.sign
@@ -102,7 +110,9 @@ def _dictionary_indexing(
         chunk_starts = np.cumsum([0] + [n_per_iteration] * (n_iterations - 1))
         chunk_ends = np.cumsum([n_per_iteration] * n_iterations)
         chunk_ends[-1] = max(chunk_ends[-1], dictionary_size)
-        for start, end in tqdm(zip(chunk_starts, chunk_ends), total=n_iterations):
+        for start, end in tqdm(
+            zip(chunk_starts, chunk_ends), total=n_iterations, disable=not verbose
+        ):
             dictionary_chunk = dictionary[start:end]
             if dictionary_is_lazy:
                 dictionary_chunk = dictionary_chunk.compute()
@@ -127,16 +137,17 @@ def _dictionary_indexing(
                 all_simulation_indices, best_indices, axis=1
             )
 
-    total_time = time() - time_start
-    patterns_per_second = n_experimental / total_time
-    comparisons_per_second = n_experimental * dictionary_size / total_time
-    # Without this pause, a part of the red tqdm progressbar background
-    # is displayed below this print
-    sleep(0.2)
-    print(
-        f"  Indexing speed: {patterns_per_second:.5f} patterns/s, "
-        f"{comparisons_per_second:.5f} comparisons/s"
-    )
+    if verbose:
+        total_time = time() - time_start
+        patterns_per_second = n_experimental / total_time
+        comparisons_per_second = n_experimental * dictionary_size / total_time
+        # Without this pause, a part of the red tqdm progressbar
+        # background is displayed below this print
+        sleep(0.2)
+        print(
+            f"  Indexing speed: {patterns_per_second:.5f} patterns/s, "
+            f"{comparisons_per_second:.5f} comparisons/s"
+        )
 
     xmap_kw, _ = create_coordinate_arrays(experimental_nav_shape, step_sizes)
     if metric.navigation_mask is not None:
