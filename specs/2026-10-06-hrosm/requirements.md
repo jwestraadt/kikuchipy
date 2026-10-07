@@ -1,6 +1,13 @@
 # HROSM -- `feat-HROSM`: requirements
 
-Status (2026-10-06): spec drafted, NOT approved. Johan approves `plan.md`
+Status (2026-10-07, spec re-review after Stage C): APPROVED by Johan
+2026-10-06 (`plan.md` as written, every default of plan section 7, R1-R7
+included; validation ledger entry 4). Stages A and B are committed and
+pushed (d8b837a2, 05b9ee6c; on-push CI run 37614781838, entry 27). Stage C
+is built (entries 28-29). Amendments made during the build are dated in
+place, "Stage A ...", "Stage B ..." or "spec re-review after Stage C".
+
+(drafting status, superseded) Status (2026-10-06): spec drafted, NOT approved. Johan approves `plan.md`
 before any test or code is written (no waiver for HROSM); the seven
 recorded defaults of the parked plan are adopted provisionally as D19
 (R1-R7) and listed in `plan.md` section 7 as "pending Johan's approval with
@@ -261,8 +268,22 @@ ledger entry; (recorded, pending Johan's approval) = a parked default
    point group that has no EMsoft number or whose EMsoft operator set
    differs from orix's ("point group"; whether any orix proper group
    differs is recorded at Stage A from the operator-table comparison; the
-   branch is tested by patching the EMsoft table). The free functions apply
-   their subsets with the same fragments.
+   branch is tested by patching the EMsoft table); (7) (amended 2026-10-07, spec re-review; Stage B code review F3/C2) the
+   metric, as `dictionary_indexing` prepares it
+   (`self._prepare_metric(metric, None, signal_mask, None, False,
+   ball_size)`; an unknown metric raises its ValueError), and the master
+   pattern energy
+   (`master_pattern._get_master_pattern_arrays_from_energy(energy)`), both
+   before any KAM, segmentation or simulation, so an invalid metric raises
+   even when no grain is re-indexed. In check (6), a point with
+   `navigation_mask == True` counts as absent ("emsoft_compatible requires
+   every map point"). Tests: V16
+   `test_metric_and_energy_are_checked_before_any_work[metric, energy]`,
+   `test_compat_input_is_checked_before_any_work[absent, not_indexed,
+   masked, two_phases]` (spies assert that neither the KAM nor
+   `get_patterns` is called), and the `VALIDATION_CASES` rows
+   `metric_unknown`, `compat_before_metric`, `compat_masked_point`. The
+   free functions apply their subsets with the same fragments.
 6. **Warnings** (`UserWarning`, at most once per call): the GROD coverage
    warning (fragments "misorientation ball" and "max GROD"; D5.8, D20.3;
    in `EBSD.hrosm` issued by the driver after the skip decisions and before
@@ -574,6 +595,11 @@ orix `angle_with` bookkeeping).
    grain can vanish). Correct: unassigned present pixels take the largest
    same-phase 8-neighbour label (simultaneous); labels never overwritten.
    `n_pixels` and boxes after dilation in both modes (`:215-218`).
+   (Amended 2026-10-07, spec re-review; Stage A code review F2.) In
+   correct mode a pixel is present if `phase_id >= 0` when `phase_id` is
+   given (so a present pixel with a NaN KAM is still filled), and if its
+   KAM is finite when `phase_id` is None. An absent point stays 0. Killer:
+   `test_hrosm_segmentation.py::TestDilateAndBoxes::test_correct_dilate_fills_a_present_point_with_a_nan_kam`.
 6. **`grain_bounding_boxes`**: labels 1..max, (row0, col0, height, width)
    int64; a label without pixels (possible after compat dilate, where
    EMsoft's `getROI_` would return a negative width) gets the box `(0, 0,
@@ -602,6 +628,13 @@ references; local Ni6).
    N` through the VMF rule of D5.4, never gated. Why: orix
    `Quaternion.mean` (Markley) is not symmetry-aware: 49 deg off on
    scrambled variants, 0.23 deg after aligning (parked measurement).
+   (Amended 2026-10-07, spec re-review; Stage A code review F1.) `"mean"`
+   is identical in both modes. With `emsoft_compatible=True` it still uses
+   `xmap.rotations` (orix quaternions) and the phase's `proper_subgroup`
+   operators, not the `eq_` route or the EMsoft operator table, since
+   EMsoft has no mean method. Killer:
+   `test_hrosm_averaging.py::TestCenterPixel::test_mean_is_identical_in_both_modes`
+   (rotation, kappa and max_grod bitwise).
 3. **`center`**: correct, the grain pixel nearest the centroid (row, col),
    lowest flat index on ties, `kappa = 1.0`; compat (K4, `:228-241`), pixel
    `(x0 + w // 2, y0 + h // 2)` of the 1-based box, possibly outside the
@@ -696,6 +729,17 @@ references; local Ni6).
    S_i` with the largest `|q0|`, first index on ties (boundary ties
    measure-zero), q0 >= 0; correct takes `S_i * mu` (left, an equivalent
    orientation under EMsoft's own convention). No FZ test is ported.
+   (Amended 2026-10-07, spec re-review; Stage A code review F3 and ledger
+   entries 17-18.) Compat then passes the chosen `mu * S_i` through
+   EMsoft's float64 Rodrigues round trip (`mod_dirstats.f90:949-961`;
+   `qr_`, `ra_`, `aq_`, normalise; thresholds 1e-10 and 1e-12) in
+   `_directional_statistics._emsoft_rodrigues_round_trip`. A tangent below
+   1e-12 sets angle 0 about z and returns the identity, as EMsoft's `ra_`
+   -> `aq_` does. The effect is a last-bit change, plus the identity snap
+   below a vector norm of 1e-10. Killers:
+   `TestCompatEM::test_compat_final_representative_round_trips_rodrigues`,
+   `test_compat_final_representative_round_trip_edges` (half turn, scalar
+   5e-11, tangent rounding to 0). Correct mode is unchanged.
 7. **Gate**: `vmf`/`watson` keep a grain if `kappa > min_kappa` (strict;
    NaN fails, +Inf passes; `mod_cluster.f90:299-306`), else identity,
    `kappa = -1.0`, `valid = False`, skipped by the driver
@@ -823,6 +867,14 @@ shipped, N 20 bin-gated).
    records Ni6 as "bitwise except the straight-edge pixels, 1 ulp"; V14
    measures the chosen binary first (the 2026-04-13 Release/Bin build is
    expected to fold). For KAM both orders give the same float32 (measured).
+   (Measured 2026-10-06, ledger entries 8 and 12; recorded 2026-10-07,
+   spec re-review.) The c127868 build that wrote the shipped references
+   also folds: `OSM` differs from the source-order form on 79
+   straight-edge points and `OSM_05` on 87, each by 1 float32 ulp and each
+   reproduced by `x * float32(4/3)`. V10 pins `SHIPPED_OSM_DIFF = {"OSM":
+   79, "OSM_05": 87}`. Compat keeps `(x * 4) / 3`, so the folding binaries
+   (Ni6 6_0_20260411 and c127868) are reproduced except on those points,
+   and GRX810/Al bitwise.
 4. **Domain in the driver**: correct, the grain's re-indexed pixels;
    compat (K10), the whole bounding box in box raster order (pixels of
    other grains and unassigned pixels, matched against this ball, count as
@@ -874,6 +926,11 @@ absent points, `keep_n = 1`).
    (`EBSD._prepare_metric`, `ebsd.py:4459-4498`, sets the map size at
    `:4484`; the driver overrides it), `signal_mask` set, no navigation
    mask, `rechunk=False`.
+   (Amended 2026-10-07, spec re-review; Stage B code review F1.) After
+   `_prepare_metric`, the driver sets `metric.navigation_mask = None` and
+   `metric.n_experimental_patterns` to the block size, so a metric
+   instance passed with a map-sized mask never masks the block. Killer:
+   `TestContracts::test_stale_navigation_mask_of_a_metric_is_not_applied`.
 6. **Dictionary per grain**: `master_pattern.get_patterns(ball_g, det_g,
    energy, dtype_out="float32", compute=False, chunk_shape=...)`
    (`ebsd_master_pattern.py:99-331`, lazy, dictionary `xmap` at `:290`),
@@ -882,7 +939,18 @@ absent points, `keep_n = 1`).
    MB: 17,777 at 60 x 60, 4 iterations for 68,921; 277 at 480 x 480),
    computed by the private `_default_n_per_iteration(sig_size: int,
    ball_size: int) -> int` (named 2026-10-06, spec review; V16 tests it);
-   the exact `chunk_shape` form is checked at Stage B.
+   the `chunk_shape` (decided 2026-10-07, Stage B hot spot, ledger entry
+   22, and code review F2; spec re-review) is the tuple returned by the
+   private `_simulation_chunks(n_patterns, n_per_iteration)`. It tiles
+   every iteration chunk with at most `dask.system.CPU_COUNT` tasks of at
+   least `_SIMULATION_TASK_MIN = 1024` patterns each, of near-equal sizes,
+   so `n_per_iteration < 2048` gives one task per chunk. Each pattern is
+   projected independently, so the result is bitwise that of one task per
+   chunk. The defaults sped up 2.7x (499.4 s -> 186.3 s) and `n_steps=10`
+   3.1x (67.8 s -> 21.8 s). The module constant is
+   `_DICTIONARY_CHUNK_BYTES = 256e6`. Test:
+   `TestInvariance::test_simulation_tasks_tile_each_iteration_chunk`
+   (includes 68,921 / 17,777 at 16 CPUs).
 7. **`_dictionary_indexing(..., verbose: bool = True)`** (R7, backwards
    compatible): False suppresses its two `print`s (`:77-85, 136-139`), the
    `tqdm` bar (`:105`), the `ProgressBar` (`:92`) and the unconditional
@@ -938,6 +1006,17 @@ absent points, `keep_n = 1`).
     (~5 min), si_wafer (480 x 480) 7.9e13 (hours with simulation);
     simulation ~3 s per grain at 60 x 60; cost scales with `(2N + 1)^3`
     (`n_steps=10` is 7.4x cheaper); compat boxes add 20-50 % pixels.
+    Measured 2026-10-07 (local ledger runs, nickel_ebsd_large, 1001 px Ni
+    master, 20 logical CPUs; entries 21-22; recorded in the spec
+    re-review): after the hot-spot fix the defaults take 186.3 s (31-32
+    grains, about 2,600 points; peak 1.24 GB) and `n_steps=10` 21.8 s
+    (0.69 GB). Before the fix, the defaults took 273.2 s and `n_steps=10`
+    44.3 s. Simulation, not NCC, dominated. One standalone 68,921-pattern
+    `get_patterns` takes 1.8-3.0 s. The compat box adds +91 % pixels
+    (2,507 -> 4,791; seed 20-50 %) and +13 % time. `n_steps=10` measured
+    6.2x cheaper before the fix (seed 7.4x). The si_wafer and ni_gain runs
+    were not made (see `validation.md` Definition of done, Stage B, as
+    amended 2026-10-07).
 14. **Multi-phase v1 (R4)**: one master; grains segmented per phase; a
     single-phase map uses the master whatever the names; on a multi-phase
     map the master is matched to `xmap.phases` by `Phase.name`, other
@@ -1100,7 +1179,10 @@ section 6.
      (`EMEBSDDict_tmp.data`) and one GPU. **HROSM constants and heartbeat
      (amended 2026-10-06, spec review: the EMSphInx 600 s wait and 900 s
      stale age are sized for programs of seconds, while the reference run
-     holds the lock ~10-25 min and the EMSphInx lock never refreshes its
+     holds the lock ~36-48 min (measured 2026-10-06/07: 2,148.8 s for
+     the shipped run, 2,846.8 s for the regenerate arm on a shared
+     machine; ledger entries 11, 15; amended 2026-10-07, spec re-review), within the 3600 s
+     wait, and the EMSphInx lock never refreshes its
      mtime, so a second run would take it over):** `_EMSOFT_LOCK_TIMEOUT =
      3600.0` s; while held, a daemon thread touches the lock file
      (`os.utime`) every 30 s and stops on release; a lock whose mtime is
@@ -1228,6 +1310,17 @@ section 6.
       axis (1, 2, 3)/sqrt(14), magnitude 0.1), `quoutname`, `euoutname`,
       `rooutname` (text, 9 decimals; `ro` writes the UNSHIFTED grid, `qu`
       and `eu` the moved ball; `mod_so3.f90:2513-2635`).
+
+   (Amended 2026-10-07, spec re-review; ledger entries 7, 11, 15.)
+   Measured acid bands (the bands are kept): top-1 median disorientation
+   0.5880-0.5993 deg over four EMDI runs (<= 1.5); refined median
+   0.3700-0.3755 deg (<= 0.5); `flipy .FALSE.` with no retry. Namelists
+   are the EMsoftOO templates with comment and blank lines removed, since
+   the template comments hold example paths that the path check rejects.
+   EMgetOSM sets `dpweighted = .FALSE.` unquoted (the template's quoted
+   `.FALSE.` exits 64 in `mod_OSM.f90:169`). The script's own constant
+   `HROSM_NSAMPLES = 10`. Progress goes to `logging` and `run.log`, never
+   `print`.
 3. **Shipped files** (uncompressed `np.savez`, no timestamps, byte-stable;
    md5s in `src/kikuchipy/data/_registry.py`, no URL; package
    `emsoft_hrosm/__init__.py` with a docstring). **Layout (amended
@@ -1257,7 +1350,18 @@ section 6.
    from `test_spherical_emsphinx_regression.py:920-1062`, NOT its module
    docstring, which on `develop` names a `specs/` path (`:21-24`; fixed
    only on the staging branch).
-4. **Binary choice (recorded; open in `plan.md` section 7).** Two Windows
+   (Amended 2026-10-07, spec re-review; ledger entries 7, 11, 12.) Writer:
+   the script's own uncompressed zip writer (`allow_pickle=False` arrays,
+   member dates fixed at 1980-01-01), since `np.savez` stamps the current
+   time; equal arrays give equal bytes. Provenance `namelist` is the
+   comment-free EMDI namelist only; each scenario file adds
+   `hrosm_namelist`. Measured sizes: large_di 242,474 B, large_refined
+   126,586 B, center 132,636 B, center_dilate 132,688 B, wat 132,628 B,
+   ball_n6 151,396 B; total 918,408 B, pinned as `REFERENCE_TOTAL_BYTES =
+   920_000`. `nGrains` is stored as int32 shape () (the first run's (1,)
+   was a script bug, fixed in entry 11).
+4. **Binary choice (decided 2026-10-06 at approval; plan 7.2 item 8;
+   amended 2026-10-07, spec re-review).** Two Windows
    ifx builds: `C:/Users/westraadt.1/EMSOFT/EMsoftOOBuild/Release/Bin/`
    (DLL version `6_0_20260413_0`, commit `975a1fc`, no `newQuat`;
    `EMsoftOOLib.dll` md5 `da007b873434bbaaf0a25ecda49b2725`,
@@ -1267,6 +1371,12 @@ section 6.
    `newQuat`, built 2026-05-25; `EMsoftConfig.json`'s
    `EMsoftLibraryLocation` points there). Recommended: the `c127868` build
    (it is the source the K-table cites); provenance records which ran.
+   Used: build-ifx-release/Bin, 6_0_20260525_0, commit c127868. md5s:
+   EMDI.exe 1c51a207..., EMFitOrientation.exe 7fea908a..., EMHROSM.exe
+   62eb0d1c..., EMgetOSM.exe da80ec33..., EMsampleRFZ.exe e6dac338...,
+   EMsoftOOLib.dll 67f3e7f5..., EMOpenCLLib.dll 0bc1f12c... (ledger entry
+   7). Measured: this build folds the OSM edge multiplier (`x *
+   float32(4/3)`; see D7.3 as amended 2026-10-07).
 5. **Historical files (local gate; read-only)** under
    `C:/Users/westraadt.1/Software/EMSOFT/EMsoftData`:
 
@@ -1304,6 +1414,20 @@ section 6.
    `avor`/`kappa`) measured at the first regeneration and pinned (bitwise
    or a band); a mismatch names `program_md5` per exe and DLL. Run time
    ~10-15 min (MTP).
+   (Amended 2026-10-06/07, Stage A gates; Johan "Regenerate check only",
+   ledger entries 12, 14, 15; recorded here in the spec re-review.) The
+   c127868 EMDI stores `DictionaryEulerAngles` that differ on 8,608-12,105
+   of 333,248 rows between any two runs, so `EulerAngles`,
+   `RefinedEulerAngles` and everything downstream (`KAM`, `kam`, `grainID`
+   (44 vs 45 grains), `npixels`, `grainROI`, `avor`, `kappa`, the `new*`
+   arrays) are not reproducible. Bitwise: the ball lists,
+   `TopMatchIndices`, `TopDotProductList`, `CI`, `OSM`, `OSM_05`.
+   Structural (keys, dtypes, layout) for the rest; the grain count within
+   +-2 of the shipped one (`REGENERATION_GRAIN_COUNT_TOLERANCE`); acid
+   bands; the shipped md5s unchanged; `newQuat` equal to the float32 `eq_`
+   of `newEuler`. Passed once on 2026-10-07 (entry 15). Runtime: 2,148.8 s
+   for one script run (`REGENERATION_RUNTIME_S`), 2,846.8 s for the arm on
+   a shared machine; not ~10-15 min.
 
 Pins: V2, V7, V10, V12-V14, `TestReferenceFiles`, the local arms.
 
@@ -1335,13 +1459,18 @@ Supersedes the parked plan's decisions 2 and 6.
        `indexing/__init__.pyi` (imports at `:16`, `__all__` at `:55`,
        where `segment_grains` and `segment_grains_kam` are adjacent);
        `ebsd.py` import block (hrebsd's `_hrebsd` imports at `:59-64` vs
-       HROSM's after `_hough_indexing`); `CHANGELOG.rst` Unreleased
+       HROSM's three `kikuchipy.indexing._hrosm` import statements at
+       `:59-63`, as built; `hrosm` at `:2564`; amended 2026-10-07, spec re-review); `CHANGELOG.rst` Unreleased
        (hrebsd +55 lines at `:18`); `run_nbval.sh` (`hrebsd_dic`,
        `hrebsd_si_indent`, `hrosm` all between `hough_indexing` and
        `hybrid_indexing`; hrebsd also rewrote the header);
-       `tutorials_sanitize.cfg` (EOF, only if HROSM adds sections);
-       `bibliography.bib` (if HROSM adds a key: one alphabetical
-       resolution in the `chen2015dictionary`..`foden2019indexing` gap).
+       `tutorials_sanitize.cfg` (EOF: HROSM added `[regex20]`, `[regex21]`
+       in Stage C; keep both, HREBSD's `[regex10]`-`[regex13]` first, then
+       `[regex20]`-`[regex21]`, no renumbering; amended 2026-10-07, spec
+       re-review); `bibliography.bib` not touched as built, so no conflict
+       (only the open item of D16.4, option (i), would add a key: one
+       alphabetical resolution in the
+       `chen2015dictionary`..`foden2019indexing` gap).
        None expected in `conftest.py`, `pyproject.toml`, `_registry.py`,
        `_orientation_similarity_map.py`, `_dictionary_indexing.py`,
        `doc/tutorials/index.rst` (hrebsd adds a section after Indexing;
@@ -1427,10 +1556,15 @@ log origin/feat-HROSM..feat-HROSM` empty, CI state recorded).
    oldest), 16 min 55 s (windows py3.13) and 14 min 48 s (ubuntu py3.13);
    NLPAR's trimmed default suite costs ~43 worker-s and 22.0-25.8 s
    CI-style wall here (NLPAR ledger entry 20). HROSM's default-suite
-   additions are gated by (a) the CI-style wall time (`uv run --no-sync
+   additions are gated by (a) the CI-style time as pytest reports it
+   (amended 2026-10-06, Stage A gates, ledger entry 14: the shell wall
+   time includes xdist and coverage start-up, which the whole suite
+   pays once) (`uv run --no-sync
    --with pytest-cov pytest <the HROSM test selection> -n 4 -q -p
    no:cacheprovider --cov=kikuchipy --cov-branch --cov-report=`, this
-   machine) <= 25 s (MTP; the NLPAR-measured equivalent) and (b) the A5
+   machine) <= 25 s (the NLPAR-measured equivalent; measured medians:
+   Stage A 11.81 s (entry 17), Stage B 17.78 s (entry 26); serial net
+   8 s and 16.40 s; amended 2026-10-07, spec re-review) and (b) the A5
    ceiling of 60 s serial (`-n 0`, warm caches), both measured at every
    stage gate and pinned in the ledger; the summed worker-seconds are
    recorded. The on-push CI run of each stage push (the Stage B push at
@@ -1451,6 +1585,9 @@ log origin/feat-HROSM..feat-HROSM` empty, CI state recorded).
    never a gate; the 5 min line of the earlier draft is kept as the
    estimate's target. Re-enabling the workflow is Johan's choice
    (`plan.md` 7.4 item 26).
+   On-push CI of the Stage B push (run 37614781838, entry 27; recorded
+   2026-10-07, spec re-review): longest job windows py3.13 at 15 min 37 s,
+   ubuntu py3.10 oldest 15 min 11 s, all under 18 min; no trim applied.
 2. **Default suite**: Stage A unit tests on synthetic maps and the shipped
    references (KAM, segmentation, dilate/centre, ball N <= 6, averaging at
    small N, OSM both modes, reader), reference integrity, Stage B contracts
@@ -1507,12 +1644,21 @@ log origin/feat-HROSM..feat-HROSM` empty, CI state recorded).
    links to `pattern_matching.ipynb` and `spherical_indexing.ipynb` (never
    edited). Rules (`tech-stack.md:52`): hidden first cell, thumbnail tag,
    black at 77, `dask.config.set(num_workers=8)` before verbose cells,
-   stored outputs (over ~2 min on Read the Docs, MTP), no bare reprs with
-   memory addresses.
+   stored outputs (decided 2026-10-07, Stage C, ledger entry 28; spec
+   re-review: nbval 62-66 s pytest time here on a quiet machine, Read the
+   Docs estimate about 4-11 min, above ~2 min; `nbsphinx_execute = "auto"`
+   renders them); the real-map `hrosm` cell runs `max_angle=5, n_steps=10`
+   and quotes the default N 20 cost in words (about three minutes on 20
+   cores); the synthetic demonstration runs the defaults; no bare reprs
+   with memory addresses.
 2. **Registration**: `doc/tutorials/index.rst` Indexing gallery after
    `pattern_matching` (`:44`); `run_nbval.sh` `NOTEBOOKS` between
    `"hough_indexing.ipynb"` and `"hybrid_indexing.ipynb"` (`:9-10`);
-   `tutorials_sanitize.cfg` regexes only as nbval needs (9 exist).
+   `tutorials_sanitize.cfg` regexes only as nbval needs (9 existed; Stage
+   C added `[regex20]` `^(Grains: )?100%\|.*(s/it|it/s)\]$` ->
+   TQDM_PROGRESSBAR and `[regex21]` `(?<=Re-indexing time: )\d+\.\d+(?=
+   s)` -> TIME at EOF, CRLF kept; ledger entry 28; amended 2026-10-07,
+   spec re-review).
 3. **Gallery example** `examples/indexing/hrosm.py` + new
    `examples/indexing/README.rst` ("Indexing") (amended 2026-10-06:
    `examples/pattern_matching/` does not exist on `develop`; sections are
@@ -1533,11 +1679,27 @@ log origin/feat-HROSM..feat-HROSM` empty, CI state recorded).
    `chen2015dictionary`, `bibliography.bib:54`, not at EOF, so it does not
    conflict on the replay and needs one alphabetical resolution on the
    `hrebsd-dic` merge; amended 2026-10-06, spec review).
+   **Open discrepancy (recorded 2026-10-07, spec re-review).** The
+   approved default of `plan.md` 7.2 item 12 was to add
+   `chen2015parameter` and cite it in `average_grain_orientations`; the
+   built tree has neither (`git diff develop` does not touch
+   `doc/user/bibliography.bib`, and `_hrosm/` holds no Chen citation), and
+   no ledger entry records the change. The main loop resolves it before
+   commit 6, either (i) by implementing the default (DOI verified, the
+   entry after `chen2015dictionary`, `:cite:` in the
+   `average_grain_orientations` Notes), keeping this text, or (ii) by
+   recording here and in 7.2 item 12: "Not added (decided 2026-10-07,
+   <who>): the method is credited through EMsoftOO only (the item 12
+   alternative)", in which case the bibliography rows of `plan.md` 1.1-1.3
+   and D14.4(a)/(b) read "not touched; no conflict". A ledger entry
+   records the choice.
 5. **CHANGELOG** `Unreleased -> Added`: one API bullet (method, the eight
    public functions/class, the two keywords, EMsoftOO acknowledgement) and
    one tutorial bullet, each ending with the fork PR link (eight since
    D20, 2026-10-06).
 6. **API reference**: generated from `__all__` and the `EBSD` class.
+
+**Resolved 2026-10-07 (main loop, before commit 6): option (i)**: `chen2015parameter` (Chen, Wei, Newstadt, De Graef, Simmons, Hero, IEEE Signal Process. Lett. 22(8), 1152-1155, 2015, DOI 10.1109/LSP.2014.2387206, verified) added after `chen2015dictionary` and cited in `average_grain_orientations`; the bibliography is therefore touched: no conflict on the clean replay, one alphabetical conflict expected on the `hrebsd-dic` merge (its entries sit in the same `chen2015dictionary`..`foden2019indexing` gap).
 
 ### D17 -- Measurement policy (recorded)
 
@@ -1572,7 +1734,7 @@ Replaces the parked "Process" section.
    commit; no gold-plating.
 5. Gate: Johan approves `plan.md` before any test or code (A9, no waiver).
 
-### D19 -- The seven recorded defaults (recorded, pending Johan's approval)
+### D19 -- The seven recorded defaults (approved by Johan 2026-10-06 with plan.md; R2 and R3 confirmed explicitly; ledger entry 4)
 
 | R | default adopted | where | alternative | consequence of switching |
 |---|---|---|---|---|
@@ -1609,7 +1771,8 @@ D1.2, D1.3, D1.6, D5.8, D6 and D8.2; where they differ, D20 wins.
      monotone in the angle and `angle = 4 arcsin(d / 2)` (from `<qa, qb> =
      1 - d^2 / 2` and `angle = 2 arccos|<qa, qb>|`).
    - Validation as `misorientation_ball` (same fragments). Cost at the
-     defaults (68,921 points): well under 1 s (MTP), so it runs inside the
+     defaults (68,921 points): well under 1 s (measured: the
+     default-spacing test takes 0.15 s, entry 13), so it runs inside the
      default suite and inside every `EBSD.hrosm` call.
    - Measured 2026-10-06 (main loop; grid of D6.1 through orix `cu2ho` and
      `Rotation.from_homochoric`, equal to the ported conversion at 1e-12 per
@@ -1621,8 +1784,10 @@ D1.2, D1.3, D1.6, D5.8, D6 and D8.2; where they differ, D20 wins.
      `max_angle / n_steps`, smaller than the radial shell step `max_angle /
      n_steps` (0.25 deg at the defaults) because neighbours within a shell
      are closer than neighbours across shells. The docstring states both
-     numbers. Pinned values: re-measured through the ported conversion at
-     Stage A (expected identical to these digits).
+     numbers. Pinned values (measured 2026-10-06, Stage A, ledger entry 8,
+     through the ported conversion; amended 2026-10-07, spec re-review): 5
+     deg / N 20 0.159176 (0.15917641697102608), 5 deg / N 10 0.317654, 5
+     deg / N 2 1.601304, each at rel=1e-4 (`BALL_SPACING_*_DEG`).
    - `misorientation_ball` and `EBSD.hrosm` name it under See Also; the
      `verbose >= 1` info message of `EBSD.hrosm` prints the ball size
      `(2N + 1)^3`, the radius `max_angle` and this spacing before the grain

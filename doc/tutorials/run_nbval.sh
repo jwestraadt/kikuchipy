@@ -7,6 +7,7 @@
 # List notebooks that nbval should run
 declare -a NOTEBOOKS=(\
   "hough_indexing.ipynb"\
+  "hrosm.ipynb"\
   "hybrid_indexing.ipynb"\
   "mandm2021_sunday_short_course.ipynb"\
   "nlpar.ipynb"\

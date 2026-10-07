@@ -15,6 +15,12 @@ design, with a recorded fallback (an ulp band plus a pinned count)
 used only if a platform or a compiler difference is measured, so that
 it is recorded rather than silently loosened.
 
+**Status (2026-10-07, spec re-review after Stage C):** every MTP
+placeholder has been measured and pinned, or removed by a recorded
+decision (ledger entries 8, 12, 14, 19, 21, 24). The V-sections below
+carry the pinned values as "pin (measured)" next to their seeds. No test
+carries a None placeholder.
+
 Branch and PR policy: requirements D14 (one fork PR `feat-HROSM ->
 develop`, expected #20, merge on Johan's go, fan-out after the merge).
 Pushes trigger the fork's on-push CI (`.github/workflows/tests.yml`,
@@ -67,6 +73,12 @@ root `conftest.py` autouse fixture `_keep_numba_cache_dir_per_worker`
 `NUMBA_CACHE_DIR`). A red test under `-n 4` is re-run alone before it
 counts (numba-cache flake rule, D15.5).
 
+(Amended 2026-10-07, spec re-review.) The recorded gates use the
+explicit `$A_TESTS` / `$B_TESTS` selections of `plan.md` section 5, a
+superset of `-k hrosm`, and the oldest matrix runs `$B_TESTS -n 0`
+(Stage B: 440 passed, 34 skipped, entry 26). Full suite and selections
+at `-n 2` under memory pressure (plan section 5 as amended).
+
 Gated runs (each also with `-n 0` first):
 
 ```
@@ -117,7 +129,11 @@ holds the one reference loader and the degenerate-pixel helper):
 
 **Root-conftest generators** (plain functions, each exposed by a
 same-named fixture returning the callable, the `dummy_signal`
-precedent; all phases `Phase("ni", point_group="m-3m")`, step 1 um,
+precedent; as built (amended 2026-10-07, spec re-review): the plain functions are private,
+named with a leading underscore (`_hrosm_gradient_xmap`, ...,
+`_write_emsoft_layout_file`, `_hrosm_synthetic_signal`), and each
+fixture carries the name without the underscore; the conftest also
+holds `_EMSOFT_LOCK_NAME` and the `emsoft_program_lock` fixture; all phases `Phase("ni", point_group="m-3m")`, step 1 um,
 `CrystalMap` built with `create_coordinate_arrays`; rotations composed
 with orix `Rotation.__mul__`, angles in radians via `np.deg2rad`):
 
@@ -201,7 +217,34 @@ local: `NI6_KAM_NONDEGENERATE_DIFF`, `NI6_KAM_MAX_ULP`,
 `SUBGRAIN_STEP_TOL_DEG`, `CHUNK_INVARIANCE` (the "bitwise" or
 fallback decision of D8.12). Stage C adds none.
 
-Budget (D15.1 as amended 2026-10-06): CI-style wall time of the HROSM
+**Pinned values (2026-10-07, spec re-review; entries 8, 12, 14, 19, 21,
+24).** test_hrosm_emsoft_regression.py: SHIPPED_KAM_NONDEGENERATE_DIFF
+0; SHIPPED_REFINED_KAM_NONDEGENERATE_DIFF 8 (upper bound, each <= 2 ulp;
+4 Windows, 6 Linux oldest); SHIPPED_OSM_DIFF {OSM: 79, OSM_05: 87};
+SHIPPED_GRAIN_ID_FROM_EULER_DIFF 0; CENTER_AVOR_MAX_ULP 4;
+WAT_AVOR_MAX_DEG 0.3; REFERENCE_TOTAL_BYTES 920,000;
+REGENERATION_RUNTIME_S 2148.8 (recorded); REGENERATION_BITWISE_KEYS,
+REGENERATION_BITWISE_DOT_PRODUCT_KEYS, REGENERATION_BALL_FILES,
+REGENERATION_GRAIN_COUNT_TOLERANCE 2 (these replace GPU_ARRAY_POLICY,
+entry 14); local NI6_KAM_NONDEGENERATE_DIFF 6, NI6_KAM_MAX_ULP 2,
+NI6_DI_KAM_NONDEGENERATE_DIFF 0, GRX810_KAM_NONDEGENERATE_DIFF 0,
+AL_KAM_NONDEGENERATE_DIFF 16 / AL_KAM_MAX_ULP 2, NI6_OSM_EDGE_PIXELS
+214, NI6_WAT_TIGHT_MIN_KAPPA 50.0, NI6_WAT_AVOR_MAX_DEG 0.02,
+NI6_WAT_KAPPA_REL 5e-4, NI6_WAT_LOOSE_GRAIN_COUNT 23,
+NI6_WAT_SEED_DEPENDENT_GRAINS (1,); E2E_ONE_GRAIN median 0.3 / p99 1.0,
+E2E_FULL_MAP OSM r 0.7, median 0.3, p99 1.2, CI r 0.9. Removed:
+WAT_KAPPA_REL, GPU_ARRAY_POLICY. test_hrosm_averaging.py:
+RECOVERY_ANGLE_FACTOR 4.0, KAPPA_RATIO_BAND_N300 1.25,
+KAPPA_RATIO_BAND_N30 1.6, WRONG_SIDE_MAX_KAPPA_RATIO 0.1,
+WATSON_UNDERFLOW_SEED 80. test_hrosm_sampling.py: 0.159176, 0.317654,
+1.601304. test_hrosm_kam.py: CONSTANT_PAIR_RTOL 3e-5.
+test_ebsd_hrosm.py: SUBGRAIN_CONTRAST_MIN 1.5, RATIO 1.5, MEDIAN_ERROR
+0.15, STEP_TOL 0.15; FULL 1.75 / 1.5 / 0.15 / 0.15;
+TRUTH_MEDIAN_TOLERANCE_DEG 0.15; CHUNK_INVARIANCE "fallback" with
+CHUNK_FALLBACK_MAX_ULP 16.
+
+Budget (D15.1 as amended 2026-10-06): CI-style time (as pytest reports
+it, entry 14) of the HROSM
 selection <= 25 s (binding) and default-suite additions <= 60 s
 serial (ceiling), per-file seeds in "CI budget" below; weekly
 additions: local serial seconds recorded per stage with a scaled CI
@@ -533,6 +576,13 @@ to `(i + 1, j + 1)` when non-zero, simultaneous). CI; < 1 s.
   broken by the lowest flat index.
 - `test_center_kappa_is_one_and_never_gated`: `min_kappa=1e9` keeps
   every grain with `method="center"` and `"mean"`.
+- `test_correct_dilate_fills_a_present_point_with_a_nan_kam`
+  (`TestDilateAndBoxes`; as built, Stage A code review F2; amended 2026-10-07, spec re-review):
+  a present pixel (`phase_id >= 0`) with a NaN KAM is filled; an
+  absent point stays 0.
+- `test_mean_is_identical_in_both_modes` (`TestCenterPixel`; Stage A
+  code review F1): `"mean"` gives the same rotation, kappa and
+  max_grod bitwise with and without `emsoft_compatible`.
 
 ### V7 -- Misorientation ball (`test_hrosm_sampling.py`, `TestMisorientationBall`, `TestEMsampleRFZ`) -- Stage A
 
@@ -584,10 +634,11 @@ Pins D6, K8. CI; < 3 s (N 20 grid built twice).
   n_steps=2)` for a random centre (`default_rng(61)`) equals
   `misorientation_ball_spacing(5, 2)` within 1e-9 deg.
 - `test_default_spacing_pin`: `misorientation_ball_spacing()` ==
-  `BALL_SPACING_DEFAULT_DEG` (MTP, seed 0.15918 at 5 deg / N 20),
-  `misorientation_ball_spacing(5, 10)` == `BALL_SPACING_N10_DEG` (seed
-  0.31765), `(5, 2)` == `BALL_SPACING_N2_DEG` (seed 1.60130), each
-  `rel=1e-4`; float return type.
+  `BALL_SPACING_DEFAULT_DEG` (5 deg / N 20),
+  `misorientation_ball_spacing(5, 10)` == `BALL_SPACING_N10_DEG`,
+  `(5, 2)` == `BALL_SPACING_N2_DEG`, pinned 0.159176, 0.317654,
+  1.601304 (measured 2026-10-06, entry 8; rel=1e-4; amended 2026-10-07, spec re-review);
+  float return type.
 - `test_spacing_decreases_with_n_steps_and_grows_with_max_angle`:
   strictly decreasing over N in {2, 3, 4, 6} at 5 deg; strictly
   increasing over `max_angle` in {1, 2, 5, 10} at N 4.
@@ -634,10 +685,10 @@ the recovered mean to `mu`. `mu` = Euler `(37, 51, 113)` deg.
 
 | quantity | seed | pin |
 |---|---|---|
-| `RECOVERY_ANGLE_FACTOR` (band = factor x `2 / sqrt(8 alpha N)` rad) | 4 | MTP |
-| `KAPPA_RATIO_BAND_N300` (`kappa_hat / kappa` in `[1/b, b]`) | 1.25 | MTP |
-| `KAPPA_RATIO_BAND_N30` | 1.6 | MTP |
-| `WRONG_SIDE_MAX_KAPPA_RATIO` (`kappa_hat` on wrong-side samples / `kappa_hat` on the same samples scrambled on the model's side) | 0.2 | MTP |
+| `RECOVERY_ANGLE_FACTOR` (band = factor x `2 / sqrt(8 alpha N)` rad) | 4 | 4.0 (max 1.248 on default arms) |
+| `KAPPA_RATIO_BAND_N300` (`kappa_hat / kappa` in `[1/b, b]`) | 1.25 | 1.25 (0.9854-0.9864) |
+| `KAPPA_RATIO_BAND_N30` | 1.6 | 1.6 (1.4727-1.4769) |
+| `WRONG_SIDE_MAX_KAPPA_RATIO` (`kappa_hat` on wrong-side samples / `kappa_hat` on the same samples scrambled on the model's side) | 0.2 | 0.1 (tightened from the 0.2 seed; measured right/left 0.036-0.042; amended 2026-10-07, spec re-review) |
 
 `TestRecovery` (seed `default_rng(70)`, `n_em=25`, `n_iter=40`,
 `seed=0` for the method):
@@ -802,9 +853,11 @@ run `n_em=3` (`n_iter=40`), the `n_em=25` arms are weekly. CI; < 3 s.
   same samples scrambled LEFT gives `kappa_hat` <=
   `WRONG_SIDE_MAX_KAPPA_RATIO` x the right-scrambled value; correct
   mode is the mirror image (V8).
-- `test_vmf_at_realistic_kappa_runs_every_iteration_and_keeps_the_first_init`:
-  VMF `kappa = 1e4` (alpha 1250), N 50: every init runs `n_iter`
-  iterations, `Q` is non-finite, the chosen init index is 0.
+- ~~`test_vmf_at_realistic_kappa_runs_every_iteration_and_keeps_the_first_init`~~
+  (struck 2026-10-07, spec re-review: the name and the refuted
+  assertion "every init runs `n_iter`, init 0 wins" are replaced by
+  the amendment paragraph below,
+  `test_vmf_at_realistic_kappa_runs_every_iteration_once_q_is_not_finite`).
 - `test_watson_underflow_keeps_the_previous_q_and_exits_at_the_second_iteration`
   (rewritten 2026-10-06, spec review round 2; D5.5): Watson `kappa =
   1e4`, N 50, samples NOT scrambled (`sample_s3` with `default_rng(80)`;
@@ -850,6 +903,12 @@ run `n_em=3` (`n_iter=40`), the `n_em=25` arms are weekly. CI; < 3 s.
   (`C = -3.675754132818690967`, `C2 = 4.1746562059854348688`, `C2W =
   5.4243952068443172530`) on both sides of `kappa = 30` (VMF) and 20
   (Watson) within 1e-12 relative.
+- `test_compat_final_representative_round_trips_rodrigues` and
+  `test_compat_final_representative_round_trip_edges` (as built,
+  Stage A code review F3, entries 17-18; amended 2026-10-07, spec re-review): the compat
+  representative passes EMsoft's float64 `qr_` -> `ra_` -> `aq_` ->
+  normalise round trip (half turn, scalar 5e-11, tangent rounding to
+  0 gives the identity).
 
 **Amendment (2026-10-06, Stage A failing-tests gate; requirements D5.5
 as amended).** The realistic-kappa VMF arm is
@@ -861,6 +920,12 @@ compat right-sided VMF arm scrambles with the sign-safe operator subset
 (`VMF_MIN_VARIANT_SCALAR`), because compat VMF keeps EMsoft's |G|
 operators and cannot align sign-flipped samples (the failing-tests
 critic's T2: even the transcription misses the bands otherwise).
+(2026-10-06, Stage A build gate, entry 10; recorded 2026-10-07, spec
+re-review.) The sign-safe subset of
+`test_compat_model_is_right_sided[vmf]` is selected from
+`emsoft_symmetry_operators(32)` (`EMSOFT_OPERATORS`), the operators
+compat uses, not from orix's m-3m (their signs differ on 9 of 24), with
+`N_EM_VMF_COMPAT = 25`.
 
 ### V10 -- Compat OSM (`test_hrosm_osm.py`, `TestCompatOSM`; `test_hrosm_emsoft_regression.py`, `TestCompatOSMOnEMsoftFiles`) -- Stage A
 
@@ -898,6 +963,10 @@ the namelist):
 "`third` pixels": those the D3.4 sequence passes through `third`
 (top and bottom row interior, left and right column interior, and
 `acc[n - W]`).
+- `test_pair_order_follows_the_source_with_duplicates`
+  (`TestCompatOSM`; as built, Stage A code review F4; amended 2026-10-07, spec re-review):
+  the K1/K2 neighbour-pair order follows the Fortran source,
+  duplicates included.
 
 ### V11 -- Grain-aware correct OSM and the public routing (`test_hrosm_osm.py`, `TestGrainAwareOSM` [A]; `test_orientation_similarity_map.py`, `TestHROSMKeywords` [B])
 
@@ -993,6 +1062,15 @@ Local (Ni6 HROSM run of 2026-04-11: `gangle 10.0`, `dilate .TRUE.`,
 - `test_ni6_watson_average_within_bands`: `NI6_WAT_AVOR_MAX_DEG`
   (seed 0.01), `NI6_WAT_KAPPA_REL` (seed 0.01); kappa range
   8.19-34,896, none rejected.
+  (Amended 2026-10-06, Stage A gates, ledger entries 10, 12; recorded
+  2026-10-07, spec re-review.) EMHROSM seeds from the clock, so diffuse
+  grains reach other local optima (grain 12: 53.7 deg apart). Grains with
+  EMsoft kappa >= `NI6_WAT_TIGHT_MIN_KAPPA` (50) are compared within
+  `NI6_WAT_AVOR_MAX_DEG` 0.02 deg and `NI6_WAT_KAPPA_REL` 5e-4 (measured
+  0.0086 deg, 2.2e-4). The others, plus grain 1
+  (`NI6_WAT_SEED_DEPENDENT_GRAINS`; kappa 26,617-37,155 over seeds), are
+  only required to be kept by both sides, and their count is pinned at
+  `NI6_WAT_LOOSE_GRAIN_COUNT` 23.
 - `test_ni6_small_grains_are_not_reindexed`: grains 35 and 62 have
   fewer than 10 pixels and only zero `newOSM`, `newEuler`, `newCI`.
 
@@ -1018,12 +1096,18 @@ tolerances differ.
 
 | quantity | seed | pin |
 |---|---|---|
-| `E2E_ONE_GRAIN_DISORIENTATION_MEDIAN_DEG` | 0.3 | MTP (weekly) |
-| `E2E_ONE_GRAIN_DISORIENTATION_P99_DEG` | 1.0 | MTP (weekly) |
-| `E2E_FULL_MAP_OSM_PEARSON_MIN` (r of our `osm` vs `newOSM` over `P`) | 0.8 | MTP (local + weekly) |
-| `E2E_FULL_MAP_DISORIENTATION_MEDIAN_DEG` | 0.3 | MTP (local + weekly) |
-| `E2E_FULL_MAP_DISORIENTATION_P99_DEG` | 1.0 | MTP (local + weekly) |
-| `E2E_FULL_MAP_CI_PEARSON_MIN` (r of our `scores[:, 0]` vs `newCI`) | 0.5 | MTP (local + weekly) |
+| `E2E_ONE_GRAIN_DISORIENTATION_MEDIAN_DEG` | 0.3 | 0.3 (measured 0.0, label 23, 20 points; weekly) |
+| `E2E_ONE_GRAIN_DISORIENTATION_P99_DEG` | 1.0 | 1.0 (0.4999; weekly) |
+| `E2E_FULL_MAP_OSM_PEARSON_MIN` (r of our `osm` vs `newOSM` over `P`) | 0.8 | 0.7 (0.774: an independent dictionary stage, ours higher by 0.32 on average, top-1 agrees; local + weekly) |
+| `E2E_FULL_MAP_DISORIENTATION_MEDIAN_DEG` | 0.3 | 0.3 (1.7e-6; local + weekly) |
+| `E2E_FULL_MAP_DISORIENTATION_P99_DEG` | 1.0 | 1.2 (0.866; local + weekly) |
+| `E2E_FULL_MAP_CI_PEARSON_MIN` (r of our `scores[:, 0]` vs `newCI`) | 0.5 | 0.9 (0.987; local + weekly) |
+
+Pins measured 2026-10-07 (entry 21) and accepted (entry 24); amended
+2026-10-07, spec re-review. Full map: 30 grains and 2,497 points
+compared; 74 % of points within 0.01 deg of EMHROSM's ball orientation.
+Runtimes 1.9-2.6 s (one grain) and 21.9-37.5 s (full map), entries
+21-26.
 
 - `test_one_grain_against_emhrosm` (weekly, [download]; moved out of
   the default suite 2026-10-06, spec review, for the CI budget):
@@ -1045,7 +1129,8 @@ tolerances differ.
 Pins D12, D13.2-D13.6. `TestReferenceFiles` is cloned from
 `test_spherical_emsphinx_regression.py:920-1061` (not its module
 docstring, which names a `specs/` path). Frozen key table (arrays
-uncompressed `np.savez`, `allow_pickle=False`; N = 4,125; `n` = grain
+written by the script's own uncompressed byte-stable zip writer, amended 2026-10-07, spec re-review;
+`allow_pickle=False`; N = 4,125; `n` = grain
 count):
 
 | file | arrays |
@@ -1064,6 +1149,9 @@ cap); `EulerAngles` lives in the refined file (DI 231,000 B, refined
 each) and the ball file ships `qu` and `ro` only (140,600 B; `eu` is
 checked by the bin arm). Total seed ~841,000 B, pinned as measured in
 `REFERENCE_TOTAL_BYTES`; every file < 250,000 B.
+Measured 2026-10-06 (entry 11): 242,474 / 126,586 / 132,636 / 132,688
+/ 132,628 / 151,396 B; total 918,408 B; `REFERENCE_TOTAL_BYTES` pinned
+920,000 (amended 2026-10-07, spec re-review).
 
 Provenance in every file (0-d unless stated): `program_md5` str
 (`name=md5` pairs joined by `;`, sorted, exactly `EMDI.exe`,
@@ -1101,7 +1189,7 @@ review), `patterns_md5` str, `pc` float64 (4,), `namelist` str,
   rounded through `.6g`, equals the stored `pc` (measured 2026-10-06:
   4.6044, 17.182, 240.996, 8.0).
 - `test_each_file_within_budget`: every file `< 250_000` B; total
-  recorded and `<= REFERENCE_TOTAL_BYTES` (MTP, seed 841,000).
+  recorded and `<= REFERENCE_TOTAL_BYTES` (920,000).
 - `test_script_is_import_safe`: with both environment variables
   deleted (`monkeypatch.delenv`) and `builtins.open` patched to raise,
   `import kikuchipy.data.emsoft_hrosm.create_hrosm_reference`
@@ -1136,7 +1224,8 @@ removed on release.
   a stand-in file (one array dropped, one changed, one widened) makes
   the diff helper's message name `program_md5`, "the contract is
   bitwise", the changed array and the dtype change.
-- `test_regenerated_references_are_bitwise` (bin, runtime ~10-25 min,
+- `test_regenerated_references_are_bitwise` (bin, runtime measured
+  2,846.8 s on a shared machine, entry 15; one script run 2,148.8 s,
   `REGENERATION_RUNTIME_S` recorded): `create_hrosm_reference.main(
   output_dir=tmp_path, bin_dir=emsoft_bin_dir)` (never the default
   output directory, which is the package's own; amended 2026-10-06,
@@ -1156,17 +1245,24 @@ removed on release.
   (identical across all four EMDI runs). Structural for the rest: same
   keys, dtypes and per-file layout; the acid bands of the new run; the
   grain count within +-2 of the shipped one; and the shipped files'
-  md5s unchanged after the run. (Superseded text follows.) CPU-only arrays (`KAM`, `OSM`,
-  `OSM_05`, `grainID`, `kam`, `npixels`, `grainROI`, ball lists)
-  bitwise; GPU-derived arrays (`TopMatchIndices`, `EulerAngles`,
-  `RefinedEulerAngles`, `RefinedDotProducts`, `CI`, `newOSM`,
-  `newEuler`, `newCI`, `wat` `avor`/`kappa`) per `GPU_ARRAY_POLICY`
-  (MTP: each array "bitwise" or a band, decided at the first
-  regeneration; seeds: bitwise except `TopMatchIndices` tie swaps,
-  counted, and `wat` within the V12 bands). The script's acid bands
-  (top-1 median <= ~1.5 deg, refined median <= 0.5 deg vs the stored
-  `xmap`) and the `OSM_10 == OSM` self-check abort it before writing;
-  no new entry appears in the `EMdatapathname` root.
+  md5s unchanged after the run. Constants (amended 2026-10-07, spec re-review):
+  `REGENERATION_BITWISE_KEYS`, `REGENERATION_BITWISE_DOT_PRODUCT_KEYS`,
+  `REGENERATION_BALL_FILES`, `REGENERATION_GRAIN_COUNT_TOLERANCE = 2`,
+  `RUN_DIRECTORY_PATTERN` and `RECORDED_ONLY_KEYS =
+  ("kikuchipy_version",)`. Passed once 2026-10-07 (entry 15). The
+  script's acid bands (top-1 median <= ~1.5 deg, refined median <=
+  0.5 deg vs the stored `xmap`) and the `OSM_10 == OSM` self-check
+  abort it before writing; no new entry appears in the
+  `EMdatapathname` root.
+  *History note (drafted 2026-10-06 text, superseded by the amendment
+  above):* CPU-only arrays (`KAM`, `OSM`, `OSM_05`, `grainID`, `kam`,
+  `npixels`, `grainROI`, ball lists) bitwise; GPU-derived arrays
+  (`TopMatchIndices`, `EulerAngles`, `RefinedEulerAngles`,
+  `RefinedDotProducts`, `CI`, `newOSM`, `newEuler`, `newCI`, `wat`
+  `avor`/`kappa`) per `GPU_ARRAY_POLICY` (MTP: each array "bitwise"
+  or a band, decided at the first regeneration; seeds: bitwise except
+  `TopMatchIndices` tie swaps, counted, and `wat` within the V12
+  bands).
 
 ### V15 -- Physics sanity: a sub-grain boundary (`test_signals/test_ebsd_hrosm.py`, `TestSubgrainContrast`) -- Stage B
 
@@ -1190,10 +1286,16 @@ ignored. Contrast `c(osm)` = median over rows 1-8 of columns 1, 2, 5,
 
 | quantity | seed | pin |
 |---|---|---|
-| `SUBGRAIN_CONTRAST_MIN` (HROSM `c`, of 10) | 3.0 | MTP |
-| `SUBGRAIN_CONTRAST_RATIO` (HROSM `c` / max(global `c`, 0.5)) | 2.0 | MTP |
-| `SUBGRAIN_MEDIAN_ERROR_DEG` (HROSM rotation vs truth, grain A non-boundary pixels) | 0.15 | MTP |
-| `SUBGRAIN_STEP_TOL_DEG` (median angle between columns 2 and 5 minus 0.5) | 0.15 | MTP |
+| `SUBGRAIN_CONTRAST_MIN` (HROSM `c`, of 10) | 3.0 | 1.5 (measured 2.25; global 1.125); full size 1.75 (2.625) |
+| `SUBGRAIN_CONTRAST_RATIO` (HROSM `c` / max(global `c`, 0.5)) | 2.0 | 1.5 (2.0); full size 1.5 (2.1) |
+| `SUBGRAIN_MEDIAN_ERROR_DEG` (HROSM rotation vs truth, grain A non-boundary pixels) | 0.15 | 0.15 (0.0857); full size 0.15 (0.0856) |
+| `SUBGRAIN_STEP_TOL_DEG` (median angle between columns 2 and 5 minus 0.5) | 0.15 | 0.15 (step 0.4916; global top-1 step 0.0); full size 0.15 (0.4915) |
+
+Pinned 2026-10-07 (entry 21; amended 2026-10-07, spec re-review). Two
+contrast pins were lowered from their seeds: the 0.25 deg shells show
+the step as a dip from about 9.25 to 7 of 10. The step pin, not the
+contrast ratio, is the sharp separator from the global dictionary (entry
+21).
 
 - `test_grains_are_segmented_without_splitting_the_subgrain`: the
   interior of A (columns 0-6) holds one label, B another.
@@ -1203,8 +1305,8 @@ ignored. Contrast `c(osm)` = median over rows 1-8 of columns 1, 2, 5,
   global top-1 step is recorded.
 - `test_full_size_subgrain_demonstration` (weekly): map `(20, 30)`,
   60 x 60 px, sub-boundary between columns 7 and 8, grain B columns
-  15-29, `max_angle=5`, `n_steps=20`; the same four pins (separate MTP
-  values recorded), runtime recorded.
+  15-29, `max_angle=5`, `n_steps=20`; the same four pins (separate
+  values, pinned 1.75 / 1.5 / 0.15 / 0.15, entry 21), runtime recorded.
 
 ### V16 -- API, output and driver contracts (`test_signals/test_ebsd_hrosm.py`, `TestValidation`, `TestOutput`, `TestContracts`, `TestInvariance`, `TestMessages`; `test_dictionary_indexing.py`) -- Stage B
 
@@ -1236,6 +1338,14 @@ cached `hrosm` result per mode (`run_correct`, `run_compat` with
   `ValueError`, never `TypeError`; a case violating two checks reports
   the earlier one; a one-row EBSD signal with a one-row map passes the
   "xmap shape" check (D1.9).
+- As built (amended 2026-10-07, spec re-review; entries 20, 23-26, plan sections 11-12):
+  `test_metric_and_energy_are_checked_before_any_work[metric, energy]`
+  (D1.5 check 7, before any KAM or `get_patterns`);
+  `test_compat_input_is_checked_before_any_work[absent, not_indexed,
+  masked, two_phases]` (spies on the KAM and `get_patterns`; S17, S22);
+  `test_compat_point_group_without_emsoft_operators_raises` ("point
+  group"); `test_master_pattern_must_be_in_the_lambert_projection`;
+  `test_one_row_or_column_map_passes_the_xmap_shape_check` (D1.9).
 
 `TestOutput`:
 - `test_one_crystal_map_with_the_input_frame`: same shape, `x`/`y`,
@@ -1269,6 +1379,10 @@ cached `hrosm` result per mode (`run_correct`, `run_compat` with
   no version gate).
 - `test_default_average_is_mean`: the default call's `grain_kappa`
   equals the `mean` table's.
+- As built (amended 2026-10-07, spec re-review):
+  `test_osm_equals_the_osm_of_the_kept_best_matches[correct, compat]`
+  (the `osm` prop recomputed from the kept `simulation_indices`; second
+  S2 killer); `test_grod_props_of_a_grain_skipped_by_min_pixels`.
 
 `TestContracts`:
 - `test_each_grain_is_matched_against_its_own_ball[mode]`: every
@@ -1325,6 +1439,10 @@ cached `hrosm` result per mode (`run_correct`, `run_compat` with
 - `test_compat_dilate_vanished_grain_is_not_reindexed`: a map whose
   compat dilate removes a grain runs without error; that label has
   `valid` False.
+- As built (amended 2026-10-07, spec re-review):
+  `test_stale_navigation_mask_of_a_metric_is_not_applied` (D8.5,
+  Stage B code review F1); `test_grains_subset_reindexes_only_the_chosen_grains`
+  (the test-only `grains` subset of D8.15).
 
 `TestInvariance`:
 - `test_results_do_not_depend_on_n_per_iteration`: `n_per_iteration`
@@ -1342,6 +1460,10 @@ cached `hrosm` result per mode (`run_correct`, `run_compat` with
   480 x 480, the ball size when the floor exceeds it, and at least 1.
 - `test_simulation_indices_are_int32_on_both_paths`: single-pass and
   chunked runs give int32.
+- `test_simulation_tasks_tile_each_iteration_chunk` (as built, D8.6,
+  Stage B hot spot and code review F2; amended 2026-10-07, spec re-review):
+  `_simulation_chunks` tiles each iteration chunk with at most one task
+  per CPU of >= 1,024 patterns (68,921 / 17,777 at 16 CPUs included).
 
 `TestMessages`:
 - `test_verbose_levels`: `verbose=0`: `capsys` out and err empty;
@@ -1439,7 +1561,9 @@ fixture (`max_angle = 0.5 * grain_A_max_grod`, read from an
   "numpy==1.23.0" --with "orix==0.12.1" --with "pooch==1.3.0" --with
   "pyebsdindex==0.3.9.2" --with "scikit-image==0.21.0" pytest
   tests/test_indexing tests/test_signals -k hrosm -n 0 -q -p
-  no:cacheprovider`; expected all default arms green (APIs verified
+  no:cacheprovider` (amended 2026-10-07, spec re-review: the recorded runs use `$B_TESTS -n
+  0` of `plan.md` section 5, a superset; Stage B 440 passed, 34
+  skipped, entry 26); expected all default arms green (APIs verified
   present in orix 0.12.1, D15.4, incl. `Rotation.angle_with_outer`,
   `scipy.spatial.cKDTree` and the `orix.io` round trip of bool and 2-D
   props, re-verified 2026-10-06, spec review); the arms to watch: the
@@ -1469,14 +1593,14 @@ fixture (`max_angle = 0.5 * grain_A_max_grod`, read from an
 
 | Decision | Requirement (short) | Killer / evidence | Stage |
 |---|---|---|---|
-| D1 | package layout, eight public names + `EBSD.hrosm`, frozen signatures, validation order and fragments, warnings, style, test modules, the map grid (D1.9) | V16 `test_signatures_are_frozen`, `test_arguments_are_validated_in_order`, `test_warnings_are_issued_once_per_call`; V0 style arms and `test_public_docstrings_link_no_private_name_and_no_spec_id` (no mutant; the docstring rule); V1 `test_point_group_number_rejects_unmapped_or_mismatched_groups`; V8 `test_map_grid_restores_one_row_one_column_and_one_point_maps`, `test_map_grid_spans_points_not_in_the_data` (S19); V16 `test_navigation_masked_dictionary_indexing_map_keeps_its_grid`; V11 `TestHROSMKeywords`; `__all__` read by the conventions reviewer | A/B |
+| D1 | package layout, eight public names + `EBSD.hrosm`, frozen signatures, validation order and fragments, warnings, style, test modules, the map grid (D1.9) | V16 `test_signatures_are_frozen`, `test_arguments_are_validated_in_order`, `test_warnings_are_issued_once_per_call`; V0 style arms and `test_public_docstrings_link_no_private_name_and_no_spec_id` (no mutant; the docstring rule); V1 `test_point_group_number_rejects_unmapped_or_mismatched_groups`; V8 `test_map_grid_restores_one_row_one_column_and_one_point_maps`, `test_map_grid_spans_points_not_in_the_data` (S19); V16 `test_navigation_masked_dictionary_indexing_map_keeps_its_grid`; V11 `TestHROSMKeywords`; `__all__` read by the conventions reviewer; as built (amended 2026-10-07, spec re-review): V16 `test_metric_and_energy_are_checked_before_any_work`, `test_compat_input_is_checked_before_any_work`, `test_compat_point_group_without_emsoft_operators_raises`, `test_master_pattern_must_be_in_the_lambert_projection`, `test_one_row_or_column_map_passes_the_xmap_shape_check` | A/B |
 | D2 | `GrainTable` fields (incl. the defaults of a label without pixels, round 2), one `CrystalMap` output, props, fills, grain-local indices | V8 `TestGrainTable`; V16 `TestOutput` (all) | A/B |
 | D3 | KAM correct mode, compat loop, vectorised form, multipliers, parity policy, inputs | V1 all; V2 all; V3 all | A |
-| D4 | segmentation rule, csgraph closed form, threshold dtype, not-reproduced items, dilate both modes, boxes, leakage | V4 all; V5 all; V6 `TestDilateAndBoxes`; V12 grain-id arms | A |
-| D5 | methods, `mean`, `center`, correct EM, compat EM, final representative, gate, GROD, seeds | V6 `TestCenterPixel`; V8 `TestRecovery`, `TestGROD`; V9 all; V12 average arms | A |
+| D4 | segmentation rule, csgraph closed form, threshold dtype, not-reproduced items, dilate both modes, boxes, leakage | V4 all; V5 all; V6 `TestDilateAndBoxes` (incl. `test_correct_dilate_fills_a_present_point_with_a_nan_kam`, Stage A F2, amended 2026-10-07, spec re-review); V12 grain-id arms | A |
+| D5 | methods, `mean`, `center`, correct EM, compat EM, final representative, gate, GROD, seeds | V6 `TestCenterPixel` (incl. `test_mean_is_identical_in_both_modes`, Stage A F1); V8 `TestRecovery`, `TestGROD`; V9 all (incl. `test_compat_final_representative_round_trips_rodrigues`, `test_compat_final_representative_round_trip_edges`, Stage A F3; amended 2026-10-07, spec re-review); V12 average arms | A |
 | D6 | grid, cube-to-ball port, composition side, float32 Rodrigues storage, once per call | V7 all; V16 `test_simulation_indices_are_local_to_the_grain_ball` | A/B |
-| D7 | grain-aware correct OSM, compat table, multiplier order, driver domain, public routing | V10 all; V11 all; V16 `test_compat_domain_is_the_bounding_box` | A/B |
-| D8 | absent points (incl. a navigation-masked `dictionary_indexing` map, round 2), orientation stage, ball per grain, domain, eager block, chunked dictionary, `verbose` (incl. no `sleep`), PC, skips, no thinning, results, determinism, multi-phase | V13; V15; V16 `TestContracts`, `TestInvariance`, `TestMessages`; `test_verbose_false_silences_the_core_for_hrosm` (S5, S20) | B |
+| D7 | grain-aware correct OSM, compat table, multiplier order, driver domain, public routing | V10 all (incl. `test_pair_order_follows_the_source_with_duplicates`, Stage A F4, amended 2026-10-07, spec re-review); V11 all; V16 `test_compat_domain_is_the_bounding_box` | A/B |
+| D8 | absent points (incl. a navigation-masked `dictionary_indexing` map, round 2), orientation stage, ball per grain, domain, eager block, chunked dictionary, `verbose` (incl. no `sleep`), PC, skips, no thinning, results, determinism, multi-phase | V13; V15; V16 `TestContracts`, `TestInvariance`, `TestMessages`; `test_verbose_false_silences_the_core_for_hrosm` (S5, S20); as built (amended 2026-10-07, spec re-review): `test_stale_navigation_mask_of_a_metric_is_not_applied`, `test_grains_subset_reindexes_only_the_chosen_grains`, `test_simulation_tasks_tile_each_iteration_chunk`, `test_osm_equals_the_osm_of_the_kept_best_matches`, `test_grod_props_of_a_grain_skipped_by_min_pixels` | B |
 | D9 | the twelve switches | K1: V1, V2; K2: V1 (incl. `test_matches_the_loop_transcription_on_duplicated_orientations`), V2, V3 `test_identical_neighbours_give_zero_not_nan` (correct side); K3: V6, V12; K4: V6, V12; K5-K7: V9, V12 `wat`; K8: V7, V16; K9: V10; K10: V13, V16 `test_compat_domain_is_the_bounding_box`; K11: V1 `test_rejects_absent_points_and_several_phases`, `test_point_group_number_rejects_unmapped_or_mismatched_groups`, V16 `test_arguments_are_validated_in_order`; K12: V12 `test_unprocessed_pixels_are_zero_filled`, V16 fills | A/B |
 | D10 | dtypes, compat precision, no numba, the near-one snap (round 2) | V0 `test_hrosm_package_imports_no_numba`; V1 `test_degrees_output_rounds_through_float32_radians`; V3 dtype arms, `test_identical_neighbours_give_zero_not_nan` (S16, S18); V16 dtypes | A/B |
 | D11 | no new dependency, BSD block, nothing LGPL ported | V0 licence and LGPL arms; oldest-matrix run; `pyproject.toml` diff shows no new dependency | A |
@@ -1553,11 +1677,12 @@ Supplementary mutants (`plan.md` section 6, S1-S21):
 | S14 | driver coverage warning `>=` instead of `>` | `sig::TestMessages::test_coverage_warning_is_silent_at_equality` | warns at `max_angle == max_grod` |
 | S15 | compat `arccos` clipped to [0, 1] | `kam::TestCompatKAM::test_matches_the_loop_transcription_on_duplicated_orientations` | the guaranteed non-zero duplicated pair becomes 0 |
 | S16 | correct-mode near-one snap dropped (redefined 2026-10-06, spec review round 2) | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan` | NaN on the rotation whose self-dot rounds above 1 |
-| S17 | compat K11 checks removed (absent points, several phases) | `kam::TestCompatKAM::test_rejects_absent_points_and_several_phases`; (B) `sig::TestValidation::test_arguments_are_validated_in_order` | no `ValueError` |
+| S17 | compat K11 checks removed (absent points, several phases) | `kam::TestCompatKAM::test_rejects_absent_points_and_several_phases`; (B) `sig::TestValidation::test_arguments_are_validated_in_order`; (B) `sig::TestValidation::test_compat_input_is_checked_before_any_work[absent, not_indexed, masked, two_phases]` (added 2026-10-07, Stage B close gate: the variant without the "one phase" raise survived the order arm alone; amended 2026-10-07, spec re-review) | no `ValueError` |
 | S18 | correct-mode snap replaced by the clip to [0, 1] | `kam::TestCorrectKAM::test_identical_neighbours_give_zero_not_nan`; `avg::TestGROD::test_correct_center_pixel_has_zero_grod` | the rotation whose self-dot rounds below 1 gives ~3e-6 deg, not 0.0 (amended 2026-10-07, Stage A close gate: the below-1 case is a SYMMETRY-EQUIVALENT pair; a stored rotation's self-dot never rounds below 1 in the production sum, measured on 1000 seeded rotations, while 213-243 of 23,000 rotation/operator pairs do; the killers build such pairs) |
 | S19 | `_map_grid` from the in-data `row`/`col` (the drafted rule) | `avg::TestGrainTable::test_map_grid_spans_points_not_in_the_data`; (B) `sig::TestContracts::test_navigation_masked_dictionary_indexing_map_keeps_its_grid` | the absent-row-0 map shrinks to (2, 4); `hrosm` raises "xmap shape" |
 | S20 | `_dictionary_indexing(verbose=False)` keeps `sleep(0.2)` | `test_dictionary_indexing.py::TestDictionaryIndexing::test_verbose_false_silences_the_core_for_hrosm` | the `sleep` spy is called |
 | S21 | `_directional_statistics._em_correct` VMF: operator set `G` instead of `G+- = {S_j} u {-S_j}` (amended 2026-10-06, Stage A failing-tests gate) | `test_hrosm_averaging.py::TestRecovery::test_vmf_treats_q_and_minus_q_as_one_orientation`; `TestRecovery::test_recovers_left_scrambled_variants[vmf-alpha100-n300]` | sign-flipped samples split into two clusters: `mu` differs and `kappa_hat` collapses |
+| S22 (B) | `EBSD.hrosm` compat check ignores `navigation_mask` (a strengthening found during the build, entry 26 item 2; amended 2026-10-07, spec re-review) | `sig::TestValidation::test_compat_input_is_checked_before_any_work[masked]` | the KAM spy is called |
 
 Stage A mutants M1-M26 (M26 at the array function), S1, S4, S6, S8,
 S9-S12, S15-S19; Stage B M27-M30, S2, S3, S5, S7, S13, S14, S20 (rows
@@ -1571,14 +1696,17 @@ strengthened test verified by re-injection.
 
 Two numbers per stage gate (D15.1 as amended 2026-10-06, spec review,
 with the measured CI job times of 17 min 21 s / 20 min on `develop`):
-(1) the BINDING CI-style wall time `uv run --no-sync --with pytest-cov
+(1) the BINDING CI-style time as pytest reports it (ledger entry 14;
+amended 2026-10-07, spec re-review) `uv run --no-sync --with pytest-cov
 pytest <the HROSM modules> -n 4 -q -p no:cacheprovider
 --cov=kikuchipy --cov-branch --cov-report=` <= 25 s (MTP; NLPAR's
 trimmed equivalent measured 22.0-25.8 s), median of three runs; (2)
 serial seconds of the DEFAULT suite (`uv run --no-sync pytest <file>
 -n 0 -q -p no:cacheprovider --durations=0`, warm numba caches, this
 machine) <= 60 s (A5 ceiling), with the summed worker-seconds. Seeds
-are estimates.
+are estimates. Measured: Stage A median 11.81 s, Stage B 17.78 s
+(<= 25 s); serial net 8 s and 16.40 s (<= 60 s); no trim applied
+(entries 17, 26).
 
 | file | stage | default arms (heavy arms moved out) | seed s |
 |---|---|---|---|
@@ -1604,19 +1732,19 @@ lazy arms reduced to one case each.
 
 | measurement | recipe | seed / recorded value |
 |---|---|---|
-| compat KAM, Ni6 map (28,086 px) | NumPy, `TestCompatKAMOnEMsoftFiles` local arm, `record_property` | 0.29 s measured 2026-10-06 (requirements D3.8 probe) |
-| compat KAM, Al map (501,592 px) | local + weekly arm | ~5 s estimate for the vectorised implementation; an unoptimised float64 transcription took 96.8 s (spec-review probe 2026-10-06) |
-| segmentation (csgraph), Al map | weekly local, timed in the KAM arm | unmeasured |
-| ball N 20 (68,921 points) | `test_count_order_and_shells[20]` | unmeasured |
-| Watson EM, one grain of 2,000 px, 25 x 40 | `TestRecovery` weekly arm scaled | ~1 s estimate (parked design) |
-| `EBSD.hrosm` on `nickel_ebsd_large` (4,125 px, 60 x 60), N 20 | local ledger run (and the V13 full-map local + weekly arm) | NCC 2.0e12 flops (~40 s) + simulation ~3 s per grain (one 68,921-pattern `get_patterns` measured 1.9 s here) |
-| `ni_gain` (29,800 px) | local ledger only | 1.5e13 flops, ~5 min estimate |
-| `si_wafer` binned 4 x, `n_steps=10` | local ledger entry (Local-gated section) | unmeasured; unbinned 7.9e13 flops (hours) |
-| V14 regeneration | bin arm | ~10-25 min estimate (D13.6; `plan.md` 7.3 item 23) |
-| default-suite addition (serial) | "CI budget" recipe | ceiling <= 60 s; seed 49 s (47 before round 2) |
-| CI-style HROSM run (`-n 4`, coverage) | "CI budget" CI-style recipe | gate <= 25 s (MTP); unmeasured |
-| on-push CI job times | `gh run view <id> --json jobs` per stage push | each <= 18 min (`develop` de27741a: 17 min 21 s max) |
-| weekly additions (round 2: no CI runner, the fork's Weekly workflow is disabled) | local `--weekly` gate with `--durations=0`, serial seconds; scaled CI estimate = local x (last on-push ubuntu py3.13 job time / local full-suite `-n 4` time) | target <= 5 min estimated; unmeasured |
+| compat KAM, Ni6 map (28,086 px) | NumPy, `TestCompatKAMOnEMsoftFiles` local arm, `record_property` | 0.29 s measured 2026-10-06 (requirements D3.8 probe); the arm 0.45-0.48 s, GRX810 2.16 s (entry 8) |
+| compat KAM, Al map (501,592 px) | local + weekly arm | 7.88 s measured (entry 8); an unoptimised float64 transcription took 96.8 s (spec-review probe 2026-10-06) |
+| segmentation (csgraph), Al map | weekly local, timed in the KAM arm | not measured (amended 2026-10-07, spec re-review) |
+| ball N 20 (68,921 points) | `test_count_order_and_shells[20]` | default-spacing test 0.15 s (entry 13) |
+| Watson EM, one grain of 2,000 px, 25 x 40 | `TestRecovery` weekly arm scaled | ~1 s estimate (parked design); not measured |
+| `EBSD.hrosm` on `nickel_ebsd_large` (4,125 px, 60 x 60), N 20 | local ledger run (and the V13 full-map local + weekly arm) | defaults 186.3 s (273.2 s before the hot-spot fix), `n_steps=10` 21.8 s, compat +13 % time, peak 1.24 GB (entries 21-22) |
+| `ni_gain` (29,800 px) | local ledger only | 1.5e13 flops, ~5 min estimate; not run |
+| `si_wafer` binned 4 x, `n_steps=10` | local ledger entry (Local-gated section) | not run (see Definition of done, Stage B, as amended 2026-10-07); unbinned 7.9e13 flops (hours) |
+| V14 regeneration | bin arm | 2,148.8 s run / 2,846.8 s arm (entries 11, 15) |
+| default-suite addition (serial) | "CI budget" recipe | ceiling <= 60 s; seed 49 s (47 before round 2); measured 16.40 s net (entry 26) |
+| CI-style HROSM run (`-n 4`, coverage) | "CI budget" CI-style recipe | gate <= 25 s; measured median 17.78 s (entry 26) |
+| on-push CI job times | `gh run view <id> --json jobs` per stage push | each <= 18 min (`develop` de27741a: 17 min 21 s max); Stage B push max 15 min 37 s (entry 27) |
+| weekly additions (round 2: no CI runner, the fork's Weekly workflow is disabled) | local `--weekly` gate with `--durations=0`, serial seconds; scaled CI estimate = local x (last on-push ubuntu py3.13 job time / local full-suite `-n 4` time) | target <= 5 min estimated; local 70.4 s for the 22 `-m weekly` arms (entry 23), 134.3 s for all 47 weekly/local arms (entry 26); scaled estimate see Definition of done |
 
 ## Manual
 
@@ -1631,8 +1759,9 @@ lazy arms reduced to one case each.
   the EMsoftOO checkout untouched.
 - Tutorial `doc/tutorials/hrosm.ipynb` (Stage C) renders and passes
   nbval locally (`run_nbval.sh` entry between `hough_indexing` and
-  `hybrid_indexing`; sanitize regexes only as needed); stored outputs
-  if the estimated Read the Docs run exceeds ~2 min (MTP). Review items,
+  `hybrid_indexing`; sanitize regexes only as needed); outputs stored
+  (decided 2026-10-07: Read the Docs estimate 4-11 min; entry 28;
+  amended 2026-10-07, spec re-review). Review items,
   each ticked by eye with the figure named:
   - global OSM (from `pattern_matching.ipynb`'s dictionary route plus
     NCC refinement on `nickel_ebsd_large`) next to the HROSM OSM, same
@@ -1648,7 +1777,9 @@ lazy arms reduced to one case each.
   - the `:cite:` keys render; links to `pattern_matching.ipynb` and
     `spherical_indexing.ipynb` (never edited).
 - Gallery example `examples/indexing/hrosm.py` (+ `README.rst`) runs
-  under sphinx-gallery in <= 30 s (MTP) and shows one OSM pair.
+  in 6.6-6.8 s (quiet; 8.1-12.7 s loaded; budget 30 s; entry 28) and
+  shows the global and HROSM OSM and the GROD in a 2x2 figure (entry
+  29; amended 2026-10-07, spec re-review).
 - `sphinx-build -b html` exits 0; the API reference lists the eight
   names and `EBSD.hrosm`.
 - One end-user smoke run from a notebook: `s.hrosm(...)` on
@@ -1696,6 +1827,16 @@ lazy arms reduced to one case each.
 - Stage B: V11 routing arms, V13 (one-grain weekly, full map local +
   weekly; both run once locally), V15, V16 green; performance table filled; the `si_wafer` ledger entry
   written or "not cached".
+  Gap recorded (amended 2026-10-07, spec re-review): no ledger entry yet
+  reports the si_wafer run or "not cached", and no stage entry recorded
+  the scaled weekly CI estimate. Before commit 6 the main loop appends a
+  ledger entry that either reports the si_wafer run or states "si_wafer:
+  not run (not cached / dropped)", and reports the weekly scaled estimate
+  with the recipe used. Recorded inputs: weekly-only arms 70.4 s (entry
+  23, `-n 4`); ubuntu py3.13 job 13 min 13 s (entry 27); local full suite
+  183.54 s, but at `-n 2` (entry 26), not the `-n 4` the formula names, so
+  the ratio needs a stated basis. No new measurement is implied by this
+  amendment.
 - Stage C: tutorial, gallery example, CHANGELOG tutorial bullet;
   nbval green; `sphinx-build -b html` exit 0; the Manual list ticked;
   the three spec documents re-submitted to adversarial review with
@@ -3616,3 +3757,186 @@ py3.13 10 min 39 s and py3.14 6 min 16 s red ONLY on the pre-existing
 `test_ni_proper_oh_count` (23 == 22; 4930 passed each). Every job is
 under the 18 min check of plan 1.4. Roadmap Stage B gates box ticked.
 Stage C waits for Johan's go.
+
+### 28. 2026-10-07 (Stage C measurement)
+
+This machine: 20 logical / 14 physical cores; the notebook sets 8 Dask
+workers; another session may load the machine (timings below vary with
+that load).
+
+1. **Execute in place** (`jupyter nbconvert --to notebook --execute
+   --inplace`, clean kernel): 179 s summed cell time (kernel start
+   excluded), under load. Slowest cells: `refine_orientation` 55.4 s,
+   `s.hrosm(max_angle=5, n_steps=10)` 52.5 s, the synthetic sub-grain
+   `hrosm` 34.6 s, `dictionary_indexing` 11.4 s. No notebook-level
+   `metadata.widgets` was written (nothing to strip).
+2. **Stored outputs normalised**: nbconvert stored the progress bars
+   as hundreds of `\r` stream fragments (524 in the refinement cell);
+   re-written with `jupyter nbconvert --to notebook --inplace
+   --coalesce-streams` (no re-execution) to the final-state form of
+   `nlpar.ipynb`/`pattern_matching.ipynb` (27 outputs in 23 code
+   cells), and the per-cell `metadata.execution` timestamps removed
+   (the templates have none). Sources and cell metadata asserted equal
+   to the author's output-free version; `nbformat.validate` passes;
+   ruff, ruff format, black-jupyter pass (`SKIP=licenseheaders`).
+   Notebook 446 kB executed raw, 335 kB stored.
+3. **nbval** (`uv run --no-sync --with nbval pytest -v --nbval
+   doc/tutorials/hrosm.ipynb --nbval-sanitize-with
+   doc/tutorials/tutorials_sanitize.cfg`): first run 2 failed / 21
+   passed (148 s, loaded): cell 4 tqdm bar `11/11 [...  1.06s/it]`
+   (`[regex4]` only covers `it/s`) and cell 13 stdout `Re-indexing
+   time: 32.77606 s`; second run 1 failed (228 s, loaded): cell 13
+   stderr `Grains: 100%|...| 31/31 [00:52<00:00, 1.69s/it]`. Added at
+   EOF of `tutorials_sanitize.cfg` (CRLF kept):
+   `[regex20]` `^(Grains: )?100%\|.*(s/it|it/s)\]$` -> TQDM_PROGRESSBAR
+   (completed bars only; a partial bar is not matched) and `[regex21]`
+   `(?<=Re-indexing time: )\d+\.\d+(?= s)` -> TIME (a wall-clock timing,
+   no result number). Then **23 passed** three times: 64.8 s, 66.3 s
+   and, on the final coalesced notebook, 62.0 s pytest time (81-93 s
+   shell wall) on a quiet machine. Slowest nbval cells (final run):
+   refinement 22.7 s, `s.hrosm` 16.4 s, synthetic `hrosm` 7.2 s,
+   dictionary indexing 5.1 s. Within the ~5 min local budget.
+4. **Read the Docs estimate** (~2 vCPU): every heavy cell is
+   parallel (Dask with 8 workers for dictionary indexing; Numba/Dask
+   over all threads for refinement and the per-grain re-indexing).
+   Scaling the quiet 62-66 s by the effective-parallelism ratio gives
+   8 / 2 = 4x -> ~4.3 min (lower bound, Dask cells) up to 20 / 2 = 10x
+   -> ~11 min (all-thread cells); the loaded local runs (148-228 s)
+   alone already exceed 2 min. Estimate ~4-11 min, well above ~2 min.
+5. **Decision: outputs stay stored** (builder estimate > ~2 min; nbval
+   also needs them as its reference). `doc/conf.py` has
+   `nbsphinx_execute = "auto"`, so the builder renders the stored
+   outputs and does not execute the notebook.
+6. **Gallery example** `examples/indexing/hrosm.py` (`MPLBACKEND=Agg`,
+   `uv run --no-sync python`): exit 0, 6.8 s and 6.6 s wall (quiet;
+   the gallery author measured 8.1-12.7 s under load), within the 30 s
+   budget.
+
+### 29. 2026-10-07 (Stage C close gate)
+
+Run on the working tree at HEAD 953358e2 after the validation-matrix
+review fixes (V1-V8 of the review: gallery 2x2 OSM/GROD figure,
+comment wording and line length, `verbose=0` in the example, crystal
+axis wording, notebook re-executed on a quiet machine, KAM/GROD colour
+bars and grey-bad map, IPF colour key panel, sub-grain demo legend and
+per-column report).
+
+1. **nbval** (`uv run --no-sync --with nbval pytest -v --nbval
+   doc/tutorials/hrosm.ipynb --nbval-sanitize-with
+   doc/tutorials/tutorials_sanitize.cfg -p no:cacheprovider`): **23
+   passed** in 63.8 s pytest time (96.5 s shell wall). The stored
+   re-indexing time is 16.19 s; the notebook validates
+   (`nbformat.validate`), 49 cells / 23 code, hidden first cell,
+   thumbnail tag on cell 32, no notebook-level `metadata.widgets`.
+2. **sphinx-build** (`uv run --no-sync sphinx-build -b html doc
+   doc/_build/html -q`): **exit 0**. `tutorials/hrosm.html` and
+   `examples/indexing/hrosm.html` newer than their sources. Warnings
+   are of pre-existing classes only (pyxem intersphinx 404, autodoc
+   dataclass-field imports of `GrainTable.*` as for
+   `PseudoSymmetryOperators.*`, the codeautolink and config.cache
+   notices); none from the notebook or the gallery.
+3. **Links**: every `../reference/generated/...` target of the
+   notebook (9 API pages) and `pattern_matching.html`,
+   `spherical_indexing.html` exist in the build; the external links
+   (github.com/EMsoft-org/EMsoftOO, kikuchipy.org) return HTTP 200.
+4. **HROSM selection** (plan section 5 `$B_TESTS`, `-n 2` because the
+   machine is shared): **440 passed, 34 skipped** in 13.4 s (skips are
+   the gate-variable and weekly arms). Doctests: `_hrosm/` +
+   `_orientation_similarity_map.py` **8 passed**; `ebsd.py -k hrosm`
+   **1 passed**.
+5. **pre-commit** (`SKIP=licenseheaders uvx pre-commit run --files`
+   on `hrosm.ipynb`, `examples/indexing/hrosm.py`,
+   `examples/indexing/README.rst`, `index.rst`, `run_nbval.sh`,
+   `tutorials_sanitize.cfg`, `CHANGELOG.rst`): **exit 0** (ruff, ruff
+   format, black-jupyter passed); no file modified. `doc/conf.py` not
+   touched.
+6. **Clean replay**: the plan section 5 grep over `git diff develop`
+   (committed + working tree; src, tests, doc, examples, benchmarks,
+   conftest.py, CHANGELOG.rst, pyproject.toml, notebooks excluded)
+   plus the untracked `examples/indexing/` files prints nothing; the
+   notebook cell-source check prints `[]` (exit 0). Non-ASCII: none in
+   the notebook sources, the example files or the added CHANGELOG and
+   doc lines.
+7. **Never-sweep**: `git diff develop` empty for
+   `hybrid_indexing`, `spherical_indexing`, `load_save_data`,
+   `pattern_matching`, `nlpar` notebooks and
+   `specs/2026-08-16-constitution/upstream-issue.md`; `stash@{0}`
+   present; nothing staged; the worktrees `kikuchipy-hrebsd` and
+   `kikuchipy-develop` not touched by this stage.
+8. **git status** (only expected): modified `CHANGELOG.rst`,
+   `doc/tutorials/index.rst`, `doc/tutorials/run_nbval.sh`,
+   `doc/tutorials/tutorials_sanitize.cfg`, `specs/roadmap.md`,
+   `specs/2026-10-06-hrosm/validation.md`; untracked
+   `doc/tutorials/hrosm.ipynb`, `examples/indexing/` (`README.rst`,
+   `hrosm.py`), plus the pre-existing untracked
+   `AGH__Si_indent_1_512x672.h5oina` and
+   `specs/_research/plan-upstream-merge-0.13.1.md` (not for commit 6).
+9. **Roadmap** (HROSM block, Stage C): ticked the notebook,
+   registration and validation-matrix boxes (CRLF kept, no BOM). The
+   CHANGELOG/spec re-review/commit box and the fan-out boxes stay open
+   until the spec re-review and commit 6.
+
+### 30. 2026-10-07 (spec re-review)
+
+Workflow `hrosm-c-spec-review` (critic, then fixer; Opus 5.5 medium).
+The critic re-read `requirements.md`, `plan.md` and `validation.md`
+against the built tree (HEAD 953358e2 plus the Stage C working tree)
+and returned 46 amendments (A1-A46). The fixer checked each against
+the code, the tests or this ledger (pinned constants read from the
+test modules, test names and classes located by `grep`, `ebsd.py`
+`:59-63` and `:2564`, the `[regex20]`/`[regex21]` EOF sections, `git
+diff develop -- doc/user/bibliography.bib` empty) and applied them,
+each marked "amended 2026-10-07, spec re-review" (dispositions:
+`plan.md` section 13).
+
+1. **Counts**: 45 applied, 1 no change needed (A46), 0 rejected.
+   Placement corrections inside A37: the pair-order test is a V10
+   test (`test_hrosm_osm.py::TestCompatOSM`), and the `"mean"`
+   both-modes test is in `TestCenterPixel` (V6).
+2. **Open items for the main loop before commit 6** (recorded, not
+   resolved here): (a) A18: the `chen2015parameter` bibliography entry
+   of the approved default of plan 7.2 item 12 is not built; choose
+   (i) implement it or (ii) record "not added" in 7.2 item 12 and
+   D16.4, with a ledger entry; (b) A41: the si_wafer ledger record
+   (run or "not run") and the weekly scaled CI estimate with a stated
+   basis (inputs: 70.4 s weekly-only arms at `-n 4`, entry 23; ubuntu
+   py3.13 13 min 13 s, entry 27; full suite 183.54 s at `-n 2`, entry
+   26).
+3. **Mirrors**: the plan 0.3 and `specs/tech-stack.md` HROSM blocks
+   are byte-equal again (CRLF kept in tech-stack). The tech-stack copy
+   of the CI-budget bullet had not received the Stage A gates
+   amendment (pytest time, entry 14); it was synchronised with plan
+   0.3 in the same edit. Plan 0.2 and the `specs/roadmap.md` text are
+   unchanged (A46).
+4. **Roadmap**: the HROSM Stage C box "CHANGELOG tutorial bullet; the
+   three spec documents re-submitted to review and the amendments
+   folded in (definition of done); then the signed commit pushed" is
+   ticked (CRLF kept, no BOM). Evidence: the CHANGELOG tutorial bullet
+   in the working tree (entry 29 item 8) and this re-review; the
+   registration facts per A46: `[regex20]`, `[regex21]` added, outputs
+   stored (entry 28). Signed commit 6 and its push are the main loop's
+   next step.
+5. Files touched: `specs/2026-10-06-hrosm/{requirements,plan,
+   validation}.md`, `specs/tech-stack.md`, `specs/roadmap.md`. ASCII
+   only, no em-dashes; no git command that changes state.
+
+### 31. 2026-10-07 (spec re-review open items, main loop)
+
+(a) A18: option (i). `chen2015parameter` (Chen, Wei, Newstadt, De Graef,
+Simmons, Hero, "Parameter Estimation in Spherical Symmetry Groups", IEEE
+Signal Process. Lett. 22(8), 1152-1155, 2015, DOI 10.1109/LSP.2014.2387206;
+verified against the publisher record and arXiv 1411.2540) added to
+`doc/user/bibliography.bib` after `chen2015dictionary` (pybtex parses 43
+entries) and cited in `average_grain_orientations` (the VMF/Watson EM).
+The "not touched as built" notes now take their option (i) exception:
+the clean replay stays conflict free; the `hrebsd-dic` merge expects one
+alphabetical conflict in the `chen2015dictionary`..`foden2019indexing`
+gap. (b) A41: `si_wafer`: not run (the unbinned map is 7.9e13 flops,
+hours; the binned local ledger run is optional and needs a separate
+global indexing of the wafer first); recorded as not run. Weekly scaled
+CI estimate: the weekly-only arms take 70.4 s at `-n 4` here (entry
+23); this machine runs the full default suite in 183.5 s at `-n 2`
+(entry 26) while the ubuntu py3.13 CI job takes 13 min 13 s including
+~3 min of setup (entry 27), a test-time ratio of about 3.3; estimate
+70.4 s x 3.3 = ~4 min on a CI runner, under the 5 min target (never a
+gate).

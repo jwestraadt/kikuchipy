@@ -18,6 +18,9 @@ Unreleased
 
 Added
 -----
+- Tutorial on high angular resolution orientation similarity maps (HROSM),
+  ``doc/tutorials/hrosm.ipynb``, and a gallery example.
+  (`#20 <https://github.com/jwestraadt/kikuchipy/pull/20>`_)
 - High angular resolution orientation similarity maps (HROSM), a NumPy port of
   EMsoftOO's EMHROSM program: ``EBSD.hrosm()`` segments an indexed map into grains,
   re-indexes every grain against patterns simulated for a fine misorientation ball

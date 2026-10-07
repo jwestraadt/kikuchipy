@@ -198,10 +198,10 @@ and keeps the CHANGELOG gate (it ships a tutorial).
 - [x] Gates as Stage A; CHANGELOG bullet extended with `EBSD.hrosm()` and the two keywords; signed commits pushed
 
 ## Stage C -- tutorial
-- [ ] `doc/tutorials/hrosm.ipynb` (`nickel_ebsd_large`: dictionary indexing and refinement as in `pattern_matching.ipynb`, then `EBSD.hrosm()`; global OSM next to the HROSM OSM; KAM, grain map, GROD and its warning; synthetic sub-grain demonstration; parameter guidance and cost; differences from EMsoftOO's EMHROSM in words); `pattern_matching.ipynb` and `spherical_indexing.ipynb` linked, never edited
-- [ ] Registration: `doc/tutorials/index.rst` after `pattern_matching`, `NOTEBOOKS` entry in `run_nbval.sh`, `tutorials_sanitize.cfg` sections (if any) numbered from `[regex20]`, stored outputs if > ~2 min on the RTD builder; gallery example `examples/indexing/hrosm.py` with the new section file `examples/indexing/README.rst`
-- [ ] Validation matrix + failure-mode review (clean-kernel execute, nbval, html render inspection, linkcheck, name/spell pass) + fixes; `sphinx-build -b html` exit 0
-- [ ] CHANGELOG tutorial bullet; the three spec documents re-submitted to review and the amendments folded in (definition of done); then the signed commit pushed
+- [x] `doc/tutorials/hrosm.ipynb` (`nickel_ebsd_large`: dictionary indexing and refinement as in `pattern_matching.ipynb`, then `EBSD.hrosm()`; global OSM next to the HROSM OSM; KAM, grain map, GROD and its warning; synthetic sub-grain demonstration; parameter guidance and cost; differences from EMsoftOO's EMHROSM in words); `pattern_matching.ipynb` and `spherical_indexing.ipynb` linked, never edited
+- [x] Registration: `doc/tutorials/index.rst` after `pattern_matching`, `NOTEBOOKS` entry in `run_nbval.sh`, `tutorials_sanitize.cfg` sections (if any) numbered from `[regex20]`, stored outputs if > ~2 min on the RTD builder; gallery example `examples/indexing/hrosm.py` with the new section file `examples/indexing/README.rst`
+- [x] Validation matrix + failure-mode review (clean-kernel execute, nbval, html render inspection, linkcheck, name/spell pass) + fixes; `sphinx-build -b html` exit 0
+- [x] CHANGELOG tutorial bullet; the three spec documents re-submitted to review and the amendments folded in (definition of done); then the signed commit pushed
 
 ## Fan-out (plan section 1; after the merge)
 - [ ] Fork PR `feat-HROSM -> develop` opened with the PR template (number confirmed; CHANGELOG links rewritten if not #20); roadmap tick commit "Tick HROSM boxes in roadmap (jwestraadt/kikuchipy#20)"

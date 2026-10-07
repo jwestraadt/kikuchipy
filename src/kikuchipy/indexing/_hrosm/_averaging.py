@@ -131,10 +131,11 @@ def average_grain_orientations(
         the centre of the bounding box, which may lie outside the
         grain). "vmf" and "watson" estimate the mean of a von
         Mises-Fisher or Watson mixture over the symmetry variants by
-        expectation maximisation. Since a quaternion and its negative
-        are one orientation, the von Mises-Fisher mixture runs over
-        the symmetry operators and their negatives (EMsoft compatible:
-        over the operators only, as in EMsoft).
+        expectation maximisation :cite:`chen2015parameter`. Since a
+        quaternion and its negative are one orientation, the von
+        Mises-Fisher mixture runs over the symmetry operators and
+        their negatives (EMsoft compatible: over the operators only,
+        as in EMsoft).
     max_angle
         Radius in degrees of the misorientation ball the averages will
         be centred on. A warning is emitted if a valid grain has a
