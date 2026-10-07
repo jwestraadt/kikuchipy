@@ -212,6 +212,47 @@ pay nothing. Two follow-ups recorded below, neither commissioned.
   round-batching overhead, only if real-data speed is ever wanted; would
   trim pass-1 waste but moves real-data seed_round assignments.
 
+## Stage E -- GPU backend for the DIC engine (commissioned 2026-10-06; D21, V9)
+
+Plan section 9 item 5, commissioned 2026-10-06; plan section 11 carries the
+tasks, open questions and the recorded defaults awaiting Johan's approval.
+Optional `backend="gpu"` (CuPy) on `EBSD.hrebsd_dic`: the CPU path stays the
+default, the reference and the parity oracle; no silent fallback; the seed
+stage is a frozen, pluggable seam (D21.5); `seed_from_neighbors=True` with
+`backend="gpu"` raises (recorded default, approved 2026-10-06, D21.12). Spec-gate
+prototype (throwaway, ledger 89-99), at the "mixed" device precision and with
+a dedicated prototype reader thread: the whole Si-indent map in 166.5 s = 347
+pat/s with the complex128 seed (51x the 8-worker CPU's 2.34 h) and 92.0 s =
+628 pat/s with complex64 (92x), with the CPU run's convergence counts. Under
+"float64" (the parity and debug build; the D17 amendment that makes "mixed"
+the device default was approved 2026-10-06),
+the map projects at about 440 s = 131 pat/s (about 19x; an inference, ledger
+98). Spec review 2026-10-06: 34 critic findings, all applied (plan 11.5).
+- [x] plan approved by Johan: the section 11.4 recorded defaults, the D17
+  amendment (D21.4) and the mission/tech-stack amendments (HREBSD sections,
+  dated 2026-10-06) -- approved as written 2026-10-06 under his overnight
+  waiver (plan 11.4 approval record)
+- [ ] failing tests first: `test_hrebsd_gpu.py` (default numpy-xp suite + gated
+  `cupy_gpu` suite, V9(a)-(p)) incl. the seed-seam h0 oracle and the
+  `seed_from_neighbors` raise pin; freeze, defaults and import-audit pins
+  updated
+- [ ] implementation: `_hrebsd/_gpu.py` gate (imports the Phase 12 shim, floor
+  and lock; no `_spherical` edit) + session + VRAM model + device runner;
+  xp-agnostic batched core with the seed seam and lockstep IC-GN; `backend`
+  plumbing; every V9 MTP pin measured and pinned
+- [ ] adversarial review + bug injection (plan 11 item 4 mutants, kills
+  re-verified on the GPU machine) + fixes; coverage 100 % of the touched
+  `_hrebsd` modules (default + gated combined); default path bitwise
+  unchanged; gated suite 0 skipped under KIKUCHIPY_EXPECT_GPU=1;
+  oldest-matrix + full suite green
+- [ ] D21.16 performance record on the Si-indent data (far256, patch C, whole
+  map, both seed and both device precisions, the E8 device-wait fraction) +
+  go/no-go floor; docstring, CHANGELOG, tutorial
+  markdown cell; signed commits pushed to origin/hrebsd-dic (no PR)
+
+Stage F (Fourier-Mellin initial guess, both backends, behind the D21.5 seed
+seam) is planned after Stage E (plan section 11.3); not commissioned.
+
 ---
 
 # Feature path: NLPAR (branch `feat-NLPAR`; spec `2026-10-04-nlpar`)

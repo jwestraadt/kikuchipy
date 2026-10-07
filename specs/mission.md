@@ -64,6 +64,16 @@ permanently on branch `hrebsd-dic` and is never merged into `develop` (no PR;
 user decision 2026-09-07); the spherical mission, deliverables and success
 criteria above are unaffected by it.
 
+**Amendment 2026-10-06 (HREBSD Stage E, spec D21; APPROVED 2026-10-06 at the
+Stage E plan gate under Johan's waiver).** The path gains an optional `backend="gpu"` (CuPy)
+for the IC-GN engine of `EBSD.hrebsd_dic`: the CPU path stays the default, the
+reference implementation and the parity oracle, and the GPU path is held to
+recorded CPU-parity bands measured then pinned in
+`specs/2026-09-07-hrebsd-dic/validation.md` (V9). Criterion 3's CuPy rule
+applies here unchanged: CuPy is optional, never a required dependency, never
+imported at module scope, never installed on CI. Still fork-only, never merged
+into `develop`.
+
 ## Fork feature path: NLPAR (recorded 2026-10-04)
 
 Beside the spherical indexing project above, the fork carries NLPAR

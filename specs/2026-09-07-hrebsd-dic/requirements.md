@@ -115,7 +115,8 @@ Out of scope (confirmed; each recorded with its revisit path):
 - **Fourier-Mellin rotation initial guess** (Ernould 2020's
   cascaded FM + XC): deferred; the translation-only seed's capture
   range is measured and recorded instead (D5; plan open question
-  5).
+  5). Planned 2026-10-06 as Stage F, after Stage E, for both
+  backends behind the D21.5 seed seam (not commissioned).
 - **Cross-correlation (Wilkinson-style multi-ROI) HREBSD**: not
   this feature; nothing from EMsoftOO's classic `mod_HREBSD.f90`
   debug-state module is ported (its formulas are used only as
@@ -642,6 +643,12 @@ translations; deviation recorded in our favor).
   (11 and 16 iterations at 2.5 and 3.0) and fails at 4.0 deg.
   This is what sizes the deferred Fourier-Mellin stage, and it is
   the number the `hrebsd_dic` docstring Notes carry.
+  **PLANNED 2026-10-06 (Stage E spec, Johan decision 1):
+  Fourier-Mellin is planned as Stage F, after Stage E, for both
+  backends at once as one xp-agnostic code path behind the D21.5
+  seed seam, with the CPU as parity oracle (plan section 11
+  follow-ups). Not commissioned; the translation-only seed above
+  stays the behaviour of both backends until it is.**
 - A future orientation-delta seed from the input `CrystalMap`
   (compose the reference->target misorientation into `W0` via D6)
   is recorded as a deferred extension beside Fourier-Mellin, not
@@ -1553,6 +1560,28 @@ because the antisymmetry fix is defined in the detector frame:
    (`ebsd.py:3226` precedent), never `self.xmap` implicitly.
    Masks follow kikuchipy polarity (True = masked out). Harmonics
    are NOT inputs anywhere (nothing spherical is touched).
+   **AMENDED 2026-10-06 (Stage E, requirements D21.1).** The block
+   above is the Stage A freeze and stays as drafted; two dated
+   extensions sit on top of it. D20.1 (2026-09-09) added
+   `seed_from_neighbors: bool = False` after `step_scale`, and D21.1
+   (2026-10-06) adds `backend: str = "cpu"` after `navigation_mask`
+   and immediately before `chunksize`, the slot
+   `EBSD.spherical_indexing` gives the same keyword
+   (`ebsd.py:2580-2582`). The frozen order after Stage E ends
+   `..., step_scale, seed_from_neighbors, navigation_mask, backend,
+   chunksize, verbose`, every one keyword only. The signature-freeze
+   test that must change is
+   `tests/test_signals/test_ebsd_hrebsd_dic.py::TestFrozenSignature
+   ::test_signature_is_frozen`: its `FROZEN_SIGNATURE` list gains
+   `("backend", KEYWORD_ONLY, "cpu")` between `navigation_mask` and
+   `chunksize`, with a dated comment like the D20.1 one
+   (`test_ebsd_hrebsd_dic.py:85-91`). The engine-level pin
+   `tests/test_indexing/test_hrebsd_engine.py::TestOrchestration::
+   test_run_defaults_are_frozen` gains `backend` (`"cpu"`) and the
+   two engine-only knobs, `device_precision` (D21.4) and
+   `seed_precision` (`"complex128"`, D21.5), which sit after
+   `coefficient_dtype` on `run_hrebsd_dic` and are never public in
+   v1.
 5. **`hrebsd_strain_stress(xmap, detector, *, stiffness=None,
    closure="auto", strain_measure="biot") -> CrystalMap`**
    (frozen): returns a shallow-copied CrystalMap with the Stage B
@@ -1613,7 +1642,12 @@ because the antisymmetry fix is defined in the detector frame:
   chunk correlates against one reference's precomputed state) and
   MUST restore map order in the result; the run is deterministic
   for fixed inputs and chunking (frozen; pinned by a
-  two-runs-bitwise test).
+  two-runs-bitwise test). **Re-scoped per backend 2026-10-06
+  (Stage E, requirements D21.7):** the sentence governs
+  `backend="cpu"` unchanged; `backend="gpu"` is bitwise run to run at
+  a fixed device, driver, CuPy and CUDA-library (cuFFT, cuBLAS,
+  NVRTC) versions and batch size, with batch-size invariance
+  measured and tolerance parity against the CPU (D21.8).
 - Per-grain resident state (coefficients + gradients + Hessian
   factor): ~5 f32/f64 planes of the SR, ~4.6 MB at 480x480 --
   the memory note in the info message follows the
@@ -1723,6 +1757,33 @@ so nothing is left provisional. Extending the harness to a separate
 storage dtype for those planes would be a re-opening of D17, not a
 discharge of it, and is not proposed.
 
+**AMENDMENT 2026-10-06 (Stage E, requirements D21.4; APPROVED
+2026-10-06 at the Stage E plan gate under Johan's waiver, plan 11.4
+approval record).** Under
+`backend="gpu"` only, f32 per-pixel arithmetic and f32 per-thread
+partial sums over a fixed run of pixels become a sanctioned
+surface; every block and cross-block reduction (those of the final
+criterion included), the gradient, the solve, the update and the
+stored h stay f64, and the CPU path is untouched. The surface
+includes f32 STORAGE on the device of exactly the planes the
+narrowed-scope paragraph above reserves as f64 "solver accumulands,
+BY DESIGN": the zero-mean unit-norm reference vector, the two
+coordinate planes `xi_x` and `xi_y`, and the (window-weighted)
+gradient columns from which the steepest-descent terms are rebuilt
+per pixel (plus the window weight plane when `window` is set). For
+`backend="gpu"` only, this amendment therefore REVERSES that
+f64-by-design clause; for `"cpu"` it stands. The mixed build is
+deliberately inconsistent in one place, recorded: the
+steepest-descent terms are rebuilt in f32 per pixel, while the
+Hessian, its Cholesky factor and the per-reference constants
+(`SD^T ref`, `SD^T 1` and their windowed forms, D21.6) are the
+host's f64 values, uploaded. Measured both ways at the spec gate
+(validation entries 91 and 93: 22.7 against 270 us per
+pattern-iteration at 512x622, at a parity cost of at most 1.4e-6 px
+on h against the CPU). With the approval, `"mixed"` is the device
+default in force; the D21.4 `"float64"` build (f64 throughout on the
+device) stays built as the parity and debug mode.
+
 ### D18 -- Dependencies, licensing, attribution (frozen)
 
 - **No new required dependency** (mission criterion 3 pattern):
@@ -1780,6 +1841,19 @@ discharge of it, and is not proposed.
   attribution); the reviewer checks this at every stage gate.
 - `pre-commit run --files <changed>` only, never `--all-files`
   (tech-stack.md:44).
+- **AMENDED 2026-10-06 (Stage E, requirements D21.13).** cupy
+  joins as an OPTIONAL, function-scope-only import of the new
+  `_hrebsd/_gpu.py` (and of any device-only module beside it); the
+  import audit (`test_hrebsd_engine.py::TestImportAudit`) allows
+  exactly `cupy` and `gc` beyond its current tuple and gains a
+  module-scope arm for cupy plus a subprocess check that `import
+  kikuchipy` imports no cupy. No new required dependency. The new
+  modules carry the plain kikuchipy GPL header (nothing in them is
+  EMSphInx-derived) and, like every existing `_hrebsd` module, use
+  no `typing` and no `from __future__` import (the Phase 12 gate
+  module does; the HREBSD audit tuple does not allow them, and
+  this is the recorded convention, not a gap; added 2026-10-06,
+  spec review).
 
 ### D19 -- Measurement deferral (recorded)
 
@@ -1882,6 +1956,950 @@ cross-correlation there.
   seeded vs default; the plan 9.4 projection is 3-8x on deformed
   zones. Recorded honestly whatever it measures, with a full-map
   wall-time row if run.
+
+### D21 -- GPU backend for the DIC engine (Stage E, commissioned 2026-10-06)
+
+User go 2026-10-06 for plan section 9 item 5 (GPU backend for the DIC
+engine, the Phase 12 recipe). Motivation, measured at the spec gate
+on a THROWAWAY prototype (validation V9, ledger entries 89 to 99):
+the whole Si-indent map, 57772 fitted points at 512x622 px, ran in
+166.5 s = 347 patterns/s with the faithful complex128 seed and in
+92.0 s = 628 patterns/s with a complex64 seed, both with the
+"mixed" device precision (D21.4) and both including the h5oina
+read through a DEDICATED prototype reader thread with static
+batches of 128 (a setup v1 does not freeze, D21.11), against 2.34 h
+= 6.85 patterns/s on 8 CPU workers (ledger 82) -- 51x and 92x --
+reproducing the CPU run's counts (57685 converged, 87 not, median
+14 iterations, max 500; residual median 0.04626 against the CPU's
+printed 0.046). Under the "float64" device precision (the default in force
+until the D17 amendment was approved on 2026-10-06), no whole map was
+run; the ledger 98 model projects about 440 s = 131 patterns/s
+(about 19x) with the complex128 seed and about 365 s = 158
+patterns/s (about 23x) with complex64 (an inference, ledger 98).
+The plan 9.5 estimate of 5-20x was conservative under "mixed" and
+about right under "float64".
+The per-pattern SEED, not the IC-GN loop, is now the device
+bottleneck under "mixed": about 62 per cent of device time on the
+map with the complex128 seed (ledger 98).
+
+Johan's decisions of 2026-10-06, binding on this entry: (1) the seed
+stage is a named, pluggable seam (D21.5), because a Fourier-Mellin
+large-rotation seed is planned as Stage F for both backends at
+once; (2) `backend="gpu"` with `seed_from_neighbors=True` raises
+(D21.12; a recorded default, approved 2026-10-06 at the Stage E
+plan gate under his waiver, plan 11.4 approval record); (3) a main-session lean, NOT a decision: the device
+translation seed defaults to complex128, with complex64 an explicit
+opt-in (D21.5, listed for his approval).
+
+The prototype is throwaway and nothing of it is committed; every
+number below is carried inline with its ledger entry because the
+session scratchpad does not survive (the D19 rule). Items marked
+FROZEN are frozen at the spec gate; items marked RECORDED DEFAULT
+stand as written until Johan approves or changes them at the Stage
+E plan gate (plan section 11, "Recorded defaults for Johan's
+approval"); MTP numbers are filled at the Stage E gates.
+
+- **D21.1 API (FROZEN)**: one new keyword-only parameter on
+  `EBSD.hrebsd_dic`: `backend: str = "cpu"`, after `navigation_mask`
+  and immediately before `chunksize` (the slot
+  `EBSD.spherical_indexing` gives the same keyword,
+  `ebsd.py:2580-2582`; the dated D15.4 amendment carries the frozen
+  order and names the freeze test that changes). Accepted values
+  `"cpu"` and `"gpu"`, case-sensitive; anything else raises
+  `ValueError` in the Phase 12 message shape, "Backend {backend!r}
+  not in the list of supported backends ['cpu', 'gpu']". The
+  default `"cpu"` path is BITWISE-UNCHANGED current behaviour and
+  never touches the gate or cupy: pinned by the existing
+  pre-Stage-D literal pins re-run unmodified
+  (`test_ebsd_hrebsd_dic.py:146-270` through
+  `TestSeedFromNeighbors::test_the_default_path_still_gives_the_pre_
+  stage_d_result`; `test_hrebsd_seeding.py:342-412`,
+  `PRE_STAGE_D_PIN_TOL = 1e-9` px, through
+  `TestDefaultOffIsBitwiseUnchanged`) plus an explicit
+  `backend="cpu"` == no-keyword bitwise pin. NO SILENT FALLBACK
+  anywhere: no `backend="auto"`, a failed gate raises, and an
+  out-of-memory at a device batch of one raises `MemoryError`
+  (D21.10) -- the backend choice is result affecting (D21.8), so it
+  is explicit. Order of checks, frozen: the checks live in
+  `run_hrebsd_dic`, AFTER its existing argument checks (the
+  `interpolation`, navigation-shape, pattern-shape and navigation
+  mask `ValueError`s, `_engine.py:1050-1086`, unchanged) and
+  immediately before `resolve_reference`; first the `backend`
+  string check, then, under `"gpu"` only, the `device_precision`
+  and `seed_precision` value checks and the `coefficient_dtype`
+  check (anything other than `numpy.float32` raises `ValueError`
+  under `"gpu"`: the device coefficients are f32 under both
+  precisions, D21.4), then the D21.12 raise, then the D21.2 gate,
+  all BEFORE reference resolution, any pattern read or any
+  `ReferenceState` build, so a missing GPU costs nothing. Under
+  `"gpu"`, `chunksize` means the device batch size (D21.10). The
+  engine entry `run_hrebsd_dic` gains the same `backend` plus two
+  ENGINE-ONLY knobs, `device_precision` (D21.4) and
+  `seed_precision` (D21.5), after `coefficient_dtype`; the public
+  method does not pass them (the `coefficient_dtype`/
+  `correct_pc_shift` precedent, so the public signature changes
+  exactly once). CONSEQUENCE, stated for the plan gate (2026-10-06,
+  spec review): with the knobs engine-only, the complex64 seed
+  opt-in of D21.5 -- the largest measured lever, about 1.8x end to
+  end -- is reachable ONLY through the private
+  `kikuchipy.indexing._hrebsd._engine.run_hrebsd_dic`, not through
+  `EBSD.hrebsd_dic`. The paired alternative (a public
+  `seed_precision` keyword with its own dated D15.4 amendment and
+  `FROZEN_SIGNATURE` edit) is offered to Johan as one decision with
+  the seed-precision default (plan 11.4 items 2 and 4; open
+  question E13). `LazyEBSD` inherits the method unchanged.
+- **D21.2 Availability gate (FROZEN)**: a new private module
+  `_hrebsd/_gpu.py` (plain kikuchipy GPL header: nothing in it is
+  EMSphInx-derived, so the CMU third-party block of
+  `_spherical/_gpu.py:20-33` does not apply) carries HREBSD's own
+  three-stage gate, re-implemented in the Phase 12 shape
+  (`_spherical/_gpu.py:139-367`) with its own wording, its own
+  process-global result cache and the fresh-copy re-raise of a
+  cached failure (`type(e)(*e.args) from cached`, falling back to
+  the cached instance). It IMPORTS, at module scope and unchanged,
+  exactly three names from `kikuchipy.indexing._spherical._gpu`: the
+  Windows DLL shim `_add_nvidia_dll_directories`, the version floor
+  `_CUPY_MINIMUM_VERSION` (13) and the process-wide `_DEVICE_LOCK`,
+  so "one GPU consumer per process" holds ACROSS both backends. No
+  `_spherical/*` file is ever edited; the three are develop-owned
+  private names. A rename on develop fails loudly in two places:
+  at the module-scope import of `_hrebsd/_gpu.py` (an `ImportError`
+  that every default-suite test touching the engine raises) and at
+  the identity pins of V9(c); plan section 11 item 6 adds "the full
+  suite after every merge of develop into hrebsd-dic" as a recorded
+  gate, so the failure surfaces at the merge, not later. Wrapping
+  the spherical stage functions is REJECTED: they raise
+  "Spherical indexing with backend='gpu'" text, their import and
+  version failures are both `ImportError` (separable only by
+  message), and they cache the spherical verdict process-wide.
+  Stages, in the frozen Phase 12 order: (a) `import cupy` and the
+  major-version floor read from `cupy.__version__` (never
+  `importlib.metadata`, which cannot see `cupy-cuda12x`); (b)
+  `cupy.cuda.runtime.getDeviceCount() >= 1`, catching
+  `CUDARuntimeError`; then the shim; then (c) a probe of EXACTLY
+  the libraries the HREBSD device path calls: one complex128 and one
+  complex64 `cupy.fft` transform (cuFFT: the band-pass and the
+  seed), one tiny `matmul` (cuBLAS: the seed's upsampled DFT), and
+  the compile and launch of one trivial `RawKernel` (NVRTC: the
+  fused IC-GN kernels). Never FFT-only: a cuFFT wheel without
+  cuBLAS passes an FFT-only probe and dies mid-run (Phase 12,
+  `specs/2026-09-07-spherical-gpu/validation.md:1112-1120`). Message
+  prefix, frozen: "EBSD.hrebsd_dic with backend='gpu' requires";
+  each message names its remedy, and the stage-(c) one names the
+  wheel set of the verified overlay (`nvidia-cufft-cu12`,
+  `nvidia-cublas-cu12`, `nvidia-cusolver-cu12`,
+  `nvidia-cusparse-cu12`, `nvidia-nvjitlink-cu12`), the CUDA Toolkit
+  alternative, and that on Windows kikuchipy registers the nvidia
+  wheel DLL directories itself. Which DLL supplied NVRTC in the
+  2026-10-06 compile check (a wheel, or a Toolkit on PATH) was NOT
+  recorded (plan open question E6); the spec review found that the
+  overlay resolves `nvidia-cuda-nvrtc-cu12` 12.9.86 TRANSITIVELY
+  (installed in the overlay environment, read through
+  `importlib.metadata`; ledger 89), so a wheel was at least
+  available. The message gains `nvidia-cuda-nvrtc-cu12` if a
+  wheel-only machine needs it named. The
+  gate runs once per call through `_verify_gpu_or_raise` imported
+  into `_engine`'s namespace, where tests patch it (the Phase 12
+  test seam).
+- **D21.3 Device scope (FROZEN)**: under `"gpu"` the whole
+  PER-PATTERN pipeline runs on the device, per batch: upload of the
+  patterns in their STORED dtype (uint8 on the Si route, 0.063 ms
+  per pattern pageable against 0.44 ms as f64; ledger 92), exact
+  conversion to f64, the D4 band-pass (the full complex128 FFT of
+  `_preprocessing.py:301-310` times the host-built transfer
+  function; skipped at `filter_cutoffs=(None, None)`), the spline
+  prefilter (f64, stored f32 per D17) and the seed stage (D21.5),
+  these three per preprocessing sub-batch of P patterns (D21.7.3,
+  D21.10.2), then the IC-GN loop (D21.6) over the whole batch, the
+  final criterion (D2.7) and the packing of the 12-wide row; only
+  the `(B, 12)` f64 rows come back. Everything
+  else stays on the host, shared with and bitwise identical to the
+  CPU path: argument validation, `resolve_reference`, the keep mask,
+  the PCs, the subregion mask, the transfer function and window, the
+  `ReferenceState` build (numba gradient planes, the f64
+  steepest-descent block, the Hessian and `cho_factor`, built
+  exactly as today and UPLOADED, so the Hessian and its Cholesky
+  factor are the CPU's to the bit), grain ordering and `store()`,
+  the Fe conversion (the host loop over converged points; the whole
+  four-function analysis chain takes 0.43 s on 58500 points, ledger
+  82), warnings and props. Justification, measured: the host fixed
+  cost per pattern at 512x622 is about 80 ms single threaded
+  (band-pass 35.5, seed 34.5, spline 9.9 ms; ledger 90), which would
+  cap a hybrid that kept those stages on the host at roughly 100
+  patterns/s on 8 threads (an inference, 14.6x the CPU baseline),
+  while on the device the same three cost 1.79 + 2.16 + 0.24 ms
+  (complex128; ledger 92) and the measured whole map reached 347
+  patterns/s. The hybrid's one advantage, bitwise seeds, the
+  complex128 device seed delivers in practice (D21.5).
+- **D21.4 Float discipline on the device (AMENDMENT of D17,
+  APPROVED 2026-10-06 under Johan's waiver, plan 11.4 approval
+  record; `"mixed"` in force)**: the device
+  engine is built in two precisions, chosen by the engine-only
+  `device_precision`:
+  - `"float64"`: every per-pixel operation and every reduction in
+    f64, i.e. D17 unamended on the device; the parity and debug
+    mode. MEASURED 270 us per pattern-iteration at 512x622 (B=64),
+    11.9x the mixed build (ledger 91); FP64 runs at 1/64 of the
+    FP32 rate on consumer Ada parts (vendor figure, not measured
+    here).
+  - `"mixed"`: f32 per-pixel arithmetic (the warp in displacement
+    form, the mirror-folded bicubic gather on the f32 coefficients,
+    the steepest-descent terms rebuilt on the fly from the
+    reference gradient columns, the residual) on f32 device-resident
+    planes (the reference vector, `xi_x`, `xi_y`, the
+    window-weighted gradient columns and, under `window`, the weight
+    plane; the D17 amendment names them), and f32 per-thread
+    partial sums over a FIXED run of pixels, taken on values shifted
+    by a per-pattern shift K (the shifted-data form, so the f32
+    partials do not cancel). K is the MEASURED adaptive scheme of
+    the prototype, frozen (2026-10-06, spec review; the prototype
+    updated K every iteration, `kshift += mp`, and all of ledger 93
+    is for that scheme): K0 is the mean of the preprocessed
+    subregion rounded to the pixel precision; after every iteration
+    K moves to the running warped mean (K + mp), again rounded to
+    the pixel precision, so K is always a number the f32 pixel pass
+    represents exactly; and every moment (the mean, the norm, the
+    gradient and the criterion terms) is reconstructed against the
+    shift ACTUALLY subtracted, never against an f64 K the pixels did
+    not see (the prototype's moments kernel rebuilt the mean as an
+    f64 `K + mp` against an f32-rounded subtraction, a discrepancy of
+    up to K * 2^-24 that this rule removes). Then f64 block and
+    cross-block reductions of the per-pattern sums from which the
+    ZMN, the CIC and the gradient follow algebraically (eleven at
+    `window=None`; the windowed algebra of D21.6 adds its own); the
+    gradient, the 8x8 solve on the uploaded host Cholesky factor,
+    `dp * step_scale`, the corner norm, the 3x3 update with its W33
+    renormalisation, the carried matrix (D21.6) and the reductions
+    of the final criterion all in f64. MEASURED 22.7 us per
+    pattern-iteration (B=64; ledger 91) for at most 1.4e-6 px on h
+    against the CPU (ledger 93).
+  DEFAULT: `"mixed"` -- the dated D17 amendment was APPROVED at the
+  Stage E plan gate on 2026-10-06 (plan 11.4 approval record), so
+  `"mixed"` is the default IN FORCE and is what
+  `test_run_defaults_are_frozen` pins. Both precisions are built,
+  tested and banded (V9).
+  Rejected, measured: pure f32 (f32 block reductions too) costs the
+  same as mixed and carries 5x its error on the iteration-1
+  increment (5.3e-7 against 1.0e-7 px at 480 px; ledger 93), the
+  quantity the first-step band of D21.8(c) pins; recorded in full
+  (2026-10-06, spec review), its FINAL-h parity is comparable --
+  at most 1.43x mixed's final-h maximum on every set and below it
+  on 480 seed 0 (4.2e-7 against 6.6e-7 px; ledger 93) -- so the
+  rejection rests on the per-step error and on f32 cross-block
+  reductions being outside the amendment, not on final accuracy;
+  per-pixel f64 accumulation costs 2-3x mixed and buys nothing
+  (ledger 91).
+  Coefficients are f32 under both, exactly the D17 verdict.
+  Compilation: NO `--use_fast_math` (a global switch over division
+  and transcendental semantics); the speed it bought in the
+  prototype comes from replacing the eight IEEE f32 divisions by 6
+  in the B-spline weights with multiplications by a reciprocal
+  constant written in the source, which measured the same (ledger
+  91; plan open question E11). `--fmad` stays at the NVRTC default:
+  GPU-against-CPU parity is banded (D21.8), never bitwise, and the
+  contraction is fixed per build, so it cannot break run-to-run
+  determinism.
+- **D21.5 The seed seam (FROZEN, Johan decision 1 of 2026-10-06;
+  extended 2026-10-06 at the spec review, see the EXTENSION NOTE)**:
+  the device pipeline's seed stage is a named, pluggable internal
+  interface, xp-agnostic (numpy or cupy), frozen at signature level
+  in the planned module `_hrebsd/_batched.py` (the module name is
+  implementation freedom; the names and contracts below are
+  frozen):
+
+  ```python
+  class SeedContext:
+      # once per run: the execution context
+      xp                  # numpy or cupy
+      fft                 # the namespace's fft module
+      kernels             # the KernelNamespace of D21.9.5; its
+                          # `gather` is the warp a later stage
+                          # de-rotates through
+
+  class SeedState:
+      # once per reference: built in the batch's namespace from its
+      # ReferenceState (the reference crop is uploaded, ZMN'd and
+      # transformed there; under cupy by cuFFT, as measured)
+      bounds              # (r0, r1, c0, c1), the D5 bounding box
+      reference_spectrum  # (sr, sc) complex, fft2 of the ZMN'd
+                          # reference crop, at `precision`
+      precision           # "complex128" | "complex64"
+      upsample_factor     # int, the public D5 knob
+
+  class SeedBatch:
+      # once per preprocessing sub-batch of P slots (D21.7.3)
+      targets             # (P, nrows, ncols) f64, preprocessed (D4)
+      coefficients        # (P, nrows, ncols) f32 spline coefficients
+                          # of the same targets (the D21.3 order)
+      pattern_index       # (P,) int64 flat map indices of the
+                          # slots, -1 on padded slots
+      extras              # dict of per-slot (P, ...) arrays
+                          # reserved for later stages; empty in E
+
+  def seed_spectra(ctx, batch, seed_state):
+      # -> target_spectra: (P, sr, sc) complex at
+      #    seed_state.precision, fft2 of each target's ZMN'd crop;
+      #    computed ONCE per sub-batch, passed to the seed stage
+      ...
+
+  def seed_homographies(ctx, batch, target_spectra, seed_state):
+      # -> h0: (P, 8) float64, C-contiguous, in ctx.xp; a row that
+      #    is not finite throughout marks a seed FAILURE for that
+      #    pattern only (D21.6); padded slots' rows are discarded
+      ...
+  ```
+
+  Contract, frozen: (i) INPUT is the batch of preprocessed targets,
+  the spectra already computed for the translation seed and the
+  per-reference seed state (Johan's three inputs), plus the
+  execution context and the per-slot identity of the sub-batch;
+  OUTPUT is a FULL 8-parameter starting homography per pattern, not
+  a translation, in exactly the layout and frame of `fit_pattern`'s
+  `h0`: the reference->target homography in the D1.3
+  grain-reference-PC-centred frame, in binned detector pixels. (ii)
+  The pipeline calls the stage through the module global
+  `_batched.seed_homographies` at call time, never through a
+  captured reference, so Stage F can replace or wrap it and tests
+  can plant arbitrary rows; a spy asserts it (the
+  `TestSeedChoiceIsTheSeamTheCascadeUses` precedent). Both seam
+  functions are called ONCE PER PREPROCESSING SUB-BATCH, right
+  after that sub-batch's band-pass and prefilter, so the seed's
+  transient memory sits inside the P term of D21.10.2. (iii) The
+  batched IC-GN (D21.6) honours an ARBITRARY per-pattern `h0`, with
+  parity against the CPU `fit_pattern(state, target, h0=row)`
+  (V9(e)). (iv) Later stages EXTEND `SeedContext`, `SeedState` and
+  `SeedBatch` (new fields, and new `extras` keys that the runner
+  fills from host data keyed by `pattern_index`) and reuse the
+  spectra; existing fields and the two signatures never change.
+  EXTENSION NOTE (2026-10-06, spec review; for Johan's confirmation
+  at the plan gate, plan 11.4 item 21): the draft froze
+  `seed_spectra(xp, fft, targets, seed_state)` and
+  `seed_homographies(xp, fft, targets, target_spectra, seed_state)`,
+  exactly Johan's three inputs. Both critics showed that his own
+  Stage F notes (plan 11.3) cannot pass through those signatures:
+  the recommended pre-fit gate must know WHICH map point each slot
+  is (a per-reference `SeedState` cannot say), and de-rotation
+  "through the existing warp kernel" needs the target coefficients
+  and the kernel namespace. Clause (iv) would then force Stage F to
+  break a frozen signature, the very thing decision 1 exists to
+  prevent. The context and the per-slot descriptor are the ADDITIVE
+  extension that closes the gap; Johan's three inputs are unchanged
+  inside it.
+  NaN-ROW SEMANTICS, a recorded divergence: `_fit_chunk` reads a
+  non-finite `h0` row as "use the phase-XC seed" (the Stage D
+  rescue rule, `_engine.py:1399-1402, 1419-1422`); the seam reads it
+  as a per-pattern seed FAILURE, because in Stage E the seam IS the
+  phase-XC seed, and a non-finite row there is exactly the CPU's
+  `initial_guess` raising inside `fit_pattern`'s catch-all, whose
+  outcome is the D2.6 failure contract. Stage F keeps the seam's
+  meaning: a Fourier-Mellin wrapper whose estimate fails returns
+  the translation row it wraps, never a NaN row (plan 11.3).
+  Stage E implements ONLY the existing translation-only phase-XC
+  seed of D5 behind the seam: the batched transcription of
+  `skimage.registration.phase_cross_correlation(upsample_factor)` on
+  the ZMN'd crops (`_engine.py:457-537`; skimage
+  `_phase_cross_correlation.py:335-392`): the cross-power spectrum
+  normalised with the `max(|X|, 100*eps)` guard, the inverse FFT,
+  the argmax of the modulus; then, for `upsample_factor > 1` only,
+  the shift rounded to 1/upsample_factor px and the
+  ceil(1.5 * upsample_factor) square upsampled DFT around the peak
+  -- 24x24 at 16, 3x3 at 2 -- by matmuls; for `upsample_factor ==
+  1` the coarse peak alone, no rounding and no upsampled DFT (the
+  skimage branch at `:360`). It returns exactly the row
+  `initial_guess` returns (`h[2] = -shift[1]`, `h[5] = -shift[0]`,
+  every other entry 0; `_engine.py:535-536`). `upsample_factor < 1`
+  is not validated by the public API and on the CPU fails EVERY
+  pattern (skimage's empty upsampled region raises at the argmax and
+  the catch-all turns that into the D2.6 contract; measured
+  2026-10-06 at 0 and -3); the device reproduces that outcome, a
+  non-finite row for every pattern, with no new error path. The
+  reference spectrum is computed once per reference in the batch's
+  namespace, not per target on the host as on the CPU (same data,
+  same result up to FFT rounding; the 256 of 256 seed equality of
+  ledger 94 was measured with the device-computed spectrum). Seed
+  precision, RECORDED DEFAULT for Johan's approval (decision 3
+  lean): `seed_precision="complex128"`, MEASURED bitwise equal to
+  the CPU's skimage seed on all 256 compared patterns (four sets of
+  64; ledger 94) at 2.16 ms per pattern; `"complex64"` is the
+  explicit opt-in at 0.52 ms per pattern, about 1.8x end to end on
+  the map (92.0 against 166.5 s, mixed), with 63 of 64 seeds equal
+  on the Si far set (one off by 1/16 px) and, over the whole map
+  against the complex128 run, 7 points differing by one iteration
+  and 12 by more than 1e-4 px (max 6.0e-4 px, below `min_step`;
+  ledger 94). With the precision knobs engine-only (D21.1) the
+  opt-in is reachable through the private engine entry only (plan
+  11.4 items 2 and 4). The seed is NOT bitwise by construction
+  (cuFFT and pocketfft round differently; quantising to
+  1/upsample_factor px is what makes equality the measured norm):
+  its parity is a measured property pinned on the fixtures
+  (V9(d)). Fourier-Mellin itself is OUT of Stage E (D21.18; Stage
+  F).
+- **D21.6 Batched IC-GN semantics (FROZEN)**: a batch iterates in
+  LOCKSTEP under per-pattern masks, with per-pattern semantics
+  IDENTICAL to the CPU loop (`_engine.py:759-780`): each pattern
+  stops at ITS OWN criterion -- the update is applied first and the
+  pattern exits when `norm_dp < min_step` -- or at ITS OWN
+  `max_iterations`; a retired pattern's state never changes again;
+  `num_iterations` is that pattern's own count; its `residual` is
+  the criterion re-evaluated at its returned homography when it
+  retires (D2.7); `converged`, `norm_dp` and the packed row are
+  exactly what `_fit_chunk` packs (`_engine.py:1424-1428`).
+  Retirement is by mask in a STATIC batch (RECORDED DEFAULT: no
+  compaction and no slot refill, which measured no gain, 2.03
+  against 2.06 s on patch C; ledger 97), and the active set must
+  not change any surviving pattern's arithmetic (D21.7).
+  1. Failure flags. Exceptions the CPU uses as control flow become
+     per-pattern status flags giving the D2.6 failure contract
+     (NaN `h`, `residual` and `norm_dp`, `num_iterations` 0,
+     `converged` False): a zero or non-finite ZMN norm
+     (`_preprocessing.py:342-350` raises), a non-finite step
+     (`cho_solve(check_finite=True)` raises), a singular update
+     matrix (`inv` raises `LinAlgError`), `M[2, 2] == 0`
+     (`homography_parameters` raises), a non-finite seed row
+     (D21.5), and -- device-specific -- a non-finite warped
+     coordinate, flagged BEFORE the mirror fold, because the CPU's
+     silent `int(floor(NaN))` wrap is undefined behaviour in CUDA C.
+     Non-converged points keep their last iterate (D2.6). The
+     corner norm's maximum PROPAGATES NaN: a NaN corner never
+     satisfies the exit test, as `np.max` carries it into `norm_dp`
+     on the CPU (the prototype's `nd = d > nd ? d : nd` from 0
+     swallowed NaN and could have marked such a pattern converged).
+  2. The scope of "the same outcome", narrowed 2026-10-06 (spec
+     review, measured): the device reproduces the CPU's outcome
+     EXACTLY for exactly constant inputs and for non-finite values.
+     Inputs whose centred norm sits at rounding level, and
+     near-singular update steps, are OUTSIDE the parity contract
+     (recorded, never asserted): the CPU's zero-norm test is an
+     exact-zero check on a two-pass centred norm from numpy's
+     pairwise mean, while the device decides from single-pass
+     shifted sums, and numpy's pivoted-LU `inv` and a closed-form
+     3x3 inverse disagree near singularity. Measured on the CPU: a
+     constant target under the default band-pass is NOT exactly
+     constant after filtering (centred norm 2.2e-14 at 60x60,
+     1.7e-13 at 480 and 2.7e-11 at 512x622), so the seed proceeds
+     and the fit fails only later, in the criterion after the f32
+     coefficient cast (`zero_mean_normalize` raising through
+     `_engine.py:753`); under `filter_cutoffs=(None, None)` the norm
+     is exactly 0 and the SEED fails (through `initial_guess`,
+     `_engine.py:525`). Both end in the D2.6 contract on the CPU;
+     under `"float64"` the device may instead carry the band-passed
+     case on rounding noise, which is why that case is asserted as
+     `converged=False` only (V9(i)).
+  3. Coordinates. Every sample outside the frame is folded through
+     the whole-sample mirror boundary IN FLOATING POINT, the CPU's
+     order (`cx % period`, `_interpolation.py:148-158`), BEFORE any
+     conversion to an integer, and the conversion is range guarded,
+     so no finite coordinate, however large (a diverging iterate can
+     reach 1e30 or FLT_MAX), meets an undefined float-to-int
+     conversion or an out-of-range index; the folded value equals
+     the CPU's. (The prototype converted first, `i0 = base +
+     (int)floorf(u)`, which is undefined for |u| >= 2^31 and could
+     have become an illegal-address error that D21.9.4 turns into a
+     failed RUN.)
+  4. The carried matrix. The device carries the f64 3x3 matrix
+     between iterations exactly as the CPU does (`_engine.py:
+     776-777`): built once from `h0` by the CPU's shape-function
+     rule, composed with the inverse of the step's shape function
+     and renormalised by W33 each iteration, and converted to `h` by
+     the CPU's `homography_parameters` rule only at retirement.
+     (The prototype carried `h` and rebuilt the matrix as `1 + h`
+     each iteration; the round trip `1 + (m - 1) == m` is exact
+     only for diagonal entries in [0.5, 2], by Sterbenz, so it is
+     not frozen; corrected 2026-10-06, spec review.)
+  5. The window. With `window` set the CPU applies the weight TWICE:
+     the steepest-descent block is built from `gx * w` and `gy * w`
+     and the residual is `(ref - warped) * w` (`_engine.py:382-384,
+     757`), so the gradient, the Hessian and the criterion carry
+     w^2, while the ZMN mean and norm stay UNWEIGHTED. The device
+     algebra, frozen: with `SD_w` the host's (weighted) block, `vp`
+     the shifted warped values and `mp` their mean, the gradient is
+     `gscale * (SD_w^T (w * ref) - (SD_w^T (w * vp) - mp * SD_w^T w)
+     / norm)`, i.e. per-pixel products `(SD_w * w) * vp` and the
+     per-reference constants `SD_w^T (w * ref)` and `SD_w^T w`,
+     built on the host in f64 from the WEIGHTED block; the final
+     criterion is `sum((w * r)^2)` from its own pass. At
+     `window=None` it reduces to the prototype's algebra (w = 1),
+     whose `SD^T ref` and `SD^T 1` are the unweighted forms. The
+     weight plane is a per-reference resident (D21.10.2).
+  6. Knobs. Every D4 knob (`filter_cutoffs`, `window` as above,
+     `border`, `dead_band`), `upsample_factor`, `step_scale`,
+     `min_step` and `max_iterations` (its `0` and `1` edges
+     included, whatever the CPU returns there) is honoured with CPU
+     parity, each with its own V9(h) arm; `interpolation` stays
+     `"bicubic"` only (`SUPPORTED_INTERPOLATION`). NOT prototyped
+     at the spec gate, so specified by the algebra above and parity
+     alone: `window=True`, `dead_band`, multi-grain maps and the
+     failure flags (ledger 99).
+- **D21.7 Determinism, per backend (FROZEN; one point MTP)**: the
+  D16 pledge is re-scoped per backend (dated note in D16):
+  1. `"cpu"`: the existing pledge and its pins, untouched.
+  2. `"gpu"` at a fixed device, driver, CuPy and CUDA-library
+     (cuFFT, cuBLAS, NVRTC) versions and batch size (the versions
+     pinned in D21.15): BITWISE run to run, asserted in the gated
+     suite. No atomics anywhere (MEASURED: f32 atomic reductions
+     differ on 64 of 64 patterns on every run, by up to 4.7e-7; f64
+     atomic accumulation differed on one pattern by 4.4e-16; ledger
+     95). Reductions are two-stage and fixed-order -- a fixed
+     shared-memory tree per block, then a fixed-order cross-block
+     pass -- MEASURED bitwise in 4 of 4 repeats on all four sets and
+     all three precisions, and over three repeats of the whole
+     device pipeline, cuFFT included (ledger 95).
+  3. A pattern's result must not depend on B, on the batch's other
+     patterns or on which of them are still active: the launch
+     layout (block size, blocks per pattern, pixels per thread) is a
+     function of the pattern geometry -- the subregion pixel count
+     -- ONLY, never of B (the prototype derived its block count from
+     B, and bits measurably depend on layout; ledger 95); every
+     device batch is padded to the fixed B with the padded slots
+     computed and discarded (the Phase 12 D7.3 rule); and every
+     batched FFT and seed matmul runs at ONE shape per run: the
+     preprocessing sub-batch size is P = min(32, B), fixed for the
+     run, and EVERY sub-batch, the tail of a batch whose B is not a
+     multiple of P included, is padded to P. (Corrected 2026-10-06,
+     spec review: the draft padded only the batch to B while
+     sub-batching at P <= 32, so at B = 50 a tail sub-batch of 18
+     would have run cuFFT at another batch count and a pattern's
+     bits would have depended on its slot.) For every B >= 32 the
+     FFT shapes are therefore identical (P = 32), so invariance
+     across such B is expected bitwise by construction; below 32, P
+     follows B. Invariance ACROSS B values is MEASURED at B in {8,
+     32, a B that is not a multiple of P, default}: pinned bitwise
+     if bitwise, else at the measured tolerance with the deviation
+     recorded (MTP; plan open question E4).
+  4. Lazy and eager input agree bitwise at a fixed B (the upload
+     converts the stored dtype exactly).
+  5. GPU against CPU: tolerance parity per D21.8, never bitwise.
+  6. Cross-device, cross-driver and cross-library variation:
+     recorded if ever observed, never asserted; a version bump
+     re-measures the device-side pins (D21.15).
+- **D21.8 Parity contract (FROZEN discipline; bands MTP)**: the CPU
+  path is the oracle for every GPU output, compared on identical
+  inputs. Bands are measured on this machine and pinned at about 2x
+  margin: CPU-side literals at the Stage E failing-tests gate, and
+  device bands and device-side literals at the implementation gate,
+  carried as `FIXME-pin` placeholders until then (no device
+  implementation exists at the failing-tests gate; corrected
+  2026-10-06, spec review). The spec-gate numbers quoted are the
+  scales a correct implementation should reproduce, not pins (V9
+  names each constant):
+  (a) bitwise wiring probes: every host-only output (`grain_id`,
+  `reference_index`, the NaN pattern of masked points, the prop set
+  with its names, dtypes and shapes) equals the CPU's exactly;
+  (b) seeds: complex128 device seeds equal `initial_guess` row for
+  row on the fixtures (measured 256/256 at the default 16; the 2
+  and 1 arms of V9(d) are first measured at the implementation
+  gate); complex64 differences counted and pinned;
+  (c) homographies on points BOTH backends converge, by the V2
+  corner-displacement metric against the CPU's `h`, per precision
+  (spec gate: mixed at most 6.6e-7 px on the synthetic sets and
+  1.3e-6 px on the Si rim set, float64 at most 2.1e-12 px; ledger
+  93), a first-step band on the iteration-1 increment (mixed
+  1.0e-7 px, which pure-f32 reductions miss at 5.3e-7), and Fe
+  through the shared host conversion;
+  (d) residuals: a relative band (mixed measured at most 2.7e-7)
+  with an absolute floor for near-zero criteria (the reference
+  point's own fit sits near 1e-16);
+  (e) iteration counts and `converged` flags: COUNT budgets at small
+  N, pinned at the measured count (0 differences over 320 compared
+  patterns at the spec gate, ledger 93), never a fraction below the
+  N that resolves it (the Phase 12 rule). The exit test `norm_dp <
+  min_step` turns last-bit differences into +-1 iteration and flips
+  `converged` at the cap, so real-data rates (patch C, the far-field
+  patch) are RECORDED, not asserted;
+  (f) intensity scale: power-of-two rescales bitwise on the device
+  (measured, all precisions); the generic factor gets a device band
+  (measured float64 3.6e-9 px, mixed 3.2e-8 px, against the CPU's
+  `INTENSITY_SCALE_GENERIC_TOL = 6e-9` px, which mixed does not
+  meet; ledger 93);
+  (g) the analogue of `UPDATE_RULE_TOL` (1e-13 px, a
+  CPU-implementation pin): float64 device band measured 1.4e-13 to
+  1.6e-11 px; mixed about 2e-6 px (twice the measured 9.2e-7), 40x
+  below the tightest mutant separation of 8.2e-5 px (ledger 93);
+  (h) DRIFT TRIPWIRE (new; Phase 12 had none): on the V2 480 px
+  twelve-case fixture, the device's and the CPU's recovery errors
+  against the EXACT imposed homographies are each pinned to dated
+  literals -- the CPU half measured at the failing-tests gate, the
+  device half at the implementation gate -- so an edit to shared
+  code that moves both backends together -- invisible to a
+  GPU-against-CPU comparison and to the `"cpu"` == no-keyword pin --
+  fails loudly (`GPU_DRIFT_TRIPWIRE_PX`, MTP).
+  The CPU's pinned bands are never reused for device asserts, and
+  bands measured under the numpy namespace never stand in for
+  device bands (numpy is the more precise of the two; the Phase 12
+  caveat). Recorded margin warning: the CPU's own V2 recovery on a
+  64-pattern batch is already 0.02251 px, 90 per cent of
+  `WARP_REFIT_TOL_480 = 0.025` px (measured on 12 patterns), so the
+  device V2 asserts use the twelve-case fixture the pin was
+  measured on (ledger 93).
+- **D21.9 Integration topology (FROZEN)**: the dispatch point is
+  `_run_chunks` (`_engine.py:1432-1514`); the device runner
+  reproduces its contract, `(patterns, ordered_indices,
+  state_index, states, chunksize, options) -> (n, 12)` f64 rows in
+  fit order, so everything upstream and downstream of it in
+  `run_hrebsd_dic` is shared code.
+  1. Per-call session: a private object built after the gate and
+     closed in a `finally` (idempotent; frees the default and pinned
+     pools) holds the namespace, the compiled kernels, B and the
+     device residents. Nothing device-resident lives on a public
+     object or enters a dask token (`__dask_tokenize__` returns
+     `("kikuchipy-hrebsd-gpu-session", id(session))`, the
+     `_spherical/_indexer.py:780-798` precedent).
+  2. The dask topology stays: `da.blockwise` over the grain-ordered
+     gather, chunk == device batch, `scheduler="threads"` forced on
+     the compute, one device section per chunk under the shared
+     `_DEVICE_LOCK`. Host work per chunk is the gather of stored
+     patterns only, so concurrent chunks read while one holds the
+     device. No feeder thread in v1 (Phase 12: the lock was held for
+     97.5 per cent of wall time and a feeder would not have helped;
+     for HREBSD the v1 route's device wait is E8, a required
+     implementation-gate measurement, D21.11).
+  3. Grain-pure batches (RECORDED DEFAULT): a device batch never
+     straddles grains; each grain's last batch is padded. A grain's
+     residents (the uploaded `ReferenceState` mirror and its
+     `SeedState`) are uploaded on first use and held under an
+     explicit residency bound (RECORDED DEFAULT, 2026-10-06, spec
+     review): at most `R_MAX = 2` references resident, the least
+     recently used evicted BEFORE the next grain's upload. Batches
+     are grain-ordered, so every grain is uploaded once and the
+     resident count never grows with the number of grains (the
+     draft bounded residents by "the D21.10 bound", which defined
+     none: 500 grains at 19.4 MB would have held 9.7 GB). Residency
+     never changes a value (an upload is a byte copy). Multi-grain
+     batches with a per-pattern state index are deferred (plan open
+     question E5).
+  4. Device errors propagate (the Phase 12 D7.7 rule): the device
+     section runs once per chunk OUTSIDE every per-pattern scope;
+     per-pattern failures come only from the D21.6 flags; a device
+     exception (driver reset, invalid value, cuFFT failure, an
+     out-of-memory after the D21.10 halving) fails the run and is
+     never turned into NaN rows. `fit_pattern`'s catch-all
+     (`_engine.py:621-641`) never wraps a device call.
+  5. Names, frozen (2026-10-06, spec review; the D21.5 precedent,
+     so the failing tests have stable targets): in
+     `_hrebsd/_gpu.py`, `_verify_gpu_or_raise` (the gate, D21.2),
+     `_GpuSession` (item 1, with an idempotent `close()`),
+     `_make_session(namespace, ...)` (the module-global factory the
+     runner calls at call time; the default-suite tests patch it to
+     build the numpy session), `_vram_model_bytes(...)` and
+     `_default_batch_size(free_bytes, n_pixels, device_precision,
+     seed_precision)` (D21.10), and `_run_chunks_gpu(...)` (the
+     device runner at the contract above); in `_hrebsd/_batched.py`,
+     beside the D21.5 names, `_launch_layout(n_pixels) -> (threads,
+     blocks_per_pattern, pixels_per_thread)` (D21.7.3) and
+     `KernelNamespace`, the per-precision kernel interface: `xp`,
+     `fft`, `precision`, `out_of_memory_error` (the exception type
+     the out-of-memory loop catches: cupy's `OutOfMemoryError` under
+     cupy, a module-local class under numpy, which the default-suite
+     twins raise), and the entry points `gather` (batched
+     mirror-folded bicubic evaluation, D21.6.3), `pixel_sums`,
+     `reduce_solve_update` and `final_criterion`, implemented once as
+     CUDA RawKernels and once as the numpy twin (D21.14.3).
+     Argument lists beyond these names are fixed by the failing-tests
+     commit and recorded in the test module's docstring. Import
+     direction, frozen: `_engine` imports `_hrebsd._gpu` at module
+     scope (the gate seam of D21.2); `_gpu` and `_batched` never
+     import `_engine` at module scope (the runner receives the
+     row-slot constants and the states as arguments), so no import
+     cycle exists.
+- **D21.10 Batching, VRAM model, out of memory (FROZEN;
+  calibration MTP)**:
+  1. `chunksize` == device batch size B under `"gpu"`: the CPU
+     `estimate_chunksize` and the shared clamp `max(1, min(chunksize,
+     n_fit))` (`_engine.py:1167-1169`) are bypassed. An explicit
+     `chunksize` below 1 raises `ValueError` under `"gpu"` (the CPU
+     path keeps its silent clamp, unchanged), and B is NEVER clamped
+     to the number of fitted points: a map smaller than B runs one
+     padded batch, so a pattern's bits never depend on the map's
+     size (2026-10-06, spec review).
+  2. A pure-math VRAM model (no device query inside it),
+     `_vram_model_bytes = B * g(n) + P * p(n) + R_MAX * r(n)` bytes
+     for n pattern pixels and P = min(32, B): g the per-slot set
+     held for the WHOLE batch lifetime (the f32 coefficient plane,
+     1.27 MB at 512x622 and 0.92 MB at 480, plus the carried matrix,
+     the per-pattern sums, partials and flags; the f64 preprocessed
+     targets and the seed spectra are NOT in g, because both live
+     only inside a sub-batch, D21.5(ii)); p the preprocessing and
+     seed transient per sub-batch slot (about 29 MB at 512x622 -- a
+     64-pattern one-shot preparation peaked at a 1.87 GB pool and a
+     256-pattern one ran out of memory -- so preparation runs in
+     sub-batches of P); r the per-reference resident set (14.2 MB
+     mixed and 19.4 MB float64 at 512x622, 10.3 and 14.0 MB at 480,
+     the 4.1 MB complex128 seed spectrum included, plus the weight
+     plane and the windowed constants under `window`); R_MAX the
+     residency bound of D21.9.3 (ledger 92). The three terms are
+     calibrated SEPARATELY against measured pool high-water marks
+     at the implementation gate (Phase 12: the first model missed
+     elementwise temporaries of about 5 MB per pattern).
+  3. Default B (RECORDED DEFAULT): `_default_batch_size` returns the
+     largest B in {64, 32, 16, 8, 4, 2, 1} whose WHOLE model,
+     residents and preprocessing transient included, fits in half of
+     free VRAM (`model(B) <= 0.5 * free`; WDDM display-attached
+     cards misreport free memory), so the default B is a power of
+     two and, at 32 or above, a multiple of P (no tail padding on
+     the default path). Capped at 64 because the per-iteration cost
+     is flat from B=8 (23.0 us) to 64 (22.7 us) and rises at 128
+     (25.5 us, L2 thrash; ledger 91). (Corrected 2026-10-06, spec
+     review: the draft's `clamp(floor(0.5 * free / g'), 1, 64)`
+     divided by the per-slot term alone, so it returned 64 on any
+     card with more than about 170 MB free while the P and R terms,
+     about 0.93 GB and 39 MB at 512x622, went uncounted.) Free VRAM
+     comes from `cupy.cuda.runtime.memGetInfo()`, queried by the
+     caller only. An explicit `chunksize` (>= 1) overrides it (plan
+     open question E3).
+  4. Out of memory, two windows (Phase 12 D8.4): at session build,
+     halve B and retry; inside the compute, abort, dispose the
+     session (its residents with it), free the pools (traceback
+     cleared and `gc.collect()` before `free_all_blocks()`),
+     rebuild session and graph at B/2 and re-run the whole map; no
+     sub-batching inside a chunk beyond the fixed P, and a completed
+     run's results come wholly from its final B. Residents are
+     bounded by R_MAX, so they never grow with the number of grains
+     and the halving acts on the terms that scale with B (at B below
+     32 the P term halves too). At B = 1 the error becomes
+     `MemoryError` naming the pattern shape, the model MB per term,
+     the free VRAM and the remedies (`backend="cpu"`, a smaller
+     `chunksize`). Non-OOM device errors never enter the loop
+     (D21.9.4).
+  5. Information message: the existing CPU message plus a device
+     block (device name, free and total VRAM, B, P, the model in MB)
+     and a warning line when the model exceeds free VRAM.
+- **D21.11 Lazy streaming and I/O (lazy-stays-lazy FROZEN; the
+  no-reader choice a RECORDED DEFAULT, downgraded 2026-10-06 at the
+  spec review)**: lazy input stays lazy end to end (FROZEN):
+  patterns are read through the existing dask gather
+  (`patterns_da[fit_indices].rechunk`, `_engine.py:1485-1486`) in
+  grain order, chunk == batch, and uploaded in their stored dtype;
+  the runner never receives or computes the whole map array (the
+  V9(m) laziness oracle); reference patterns are still read eagerly
+  on the host (`_gather`), and the block-wise `reference="auto"`
+  candidate read is unchanged (D16). Eager input takes the same
+  route. RECORDED DEFAULT: no dedicated reader thread, no pinned host
+  buffers and no double-buffered upload in v1. The evidence, with
+  its limits stated (ledger 96, 97): (1) the whole-map prototype
+  runs that reached 347 and 628 patterns/s used a DEDICATED h5py
+  reader thread streaming contiguous map-order blocks of 512
+  patterns through a two-deep queue, with static batches of 128;
+  the device waited 0.33 s in total for data BECAUSE that reader
+  existed, so the figure says nothing direct about the v1 route
+  (the draft's "the device waited 0.33 s, so no dedicated reader"
+  was a non sequitur, withdrawn); (2) the `kp.load(lazy=True)` plus
+  dask route read about 1100 patterns/s (8 threads) on CONTIGUOUS
+  slices rechunked to 32; (3) the v1 gather itself, probed at the
+  spec review on the same file -- `data[fit_indices].rechunk((64,
+  -1, -1))` over the 6200 map points of the crater band with its
+  362 masked points removed, 8 dask threads, reduced per block --
+  read 1640 patterns/s (first read in that process, OS cache state
+  unknown) and 2142 on a re-read, against 1504 for a contiguous
+  slice of the same size and chunking (ledger 96 addendum): the
+  fancy-index gather costs no more than a contiguous read and sits
+  about 2.6x above the fastest whole-map device rate. Whether
+  concurrent dask chunks keep the device fed while one chunk holds
+  `_DEVICE_LOCK` is NOT yet measured, so plan open question E8 is a
+  REQUIRED implementation-gate measurement (the device wait
+  fraction on the real v1 route, whole map, lazy h5oina, default
+  B); a dedicated reader, pinned buffers or double-buffered upload
+  open as a follow-up if the device waits on data for more than
+  about 10 per cent of wall time.
+- **D21.12 Stage D interplay (RECORDED DEFAULT, approved
+  2026-10-06 at the Stage E plan gate under Johan's waiver, plan
+  11.4 approval record; Johan decision 2 of 2026-10-06)**: `backend="gpu"` with `seed_from_neighbors=True`
+  raises `NotImplementedError` in Stage E, with the message, frozen
+  literally (2026-10-06, spec review): "seed_from_neighbors=True is
+  not supported with backend='gpu'; use backend='cpu' for
+  neighbour-seeded propagation (a Fourier-Mellin rotation seed
+  covering the same regime is planned)" -- no roadmap stage letters
+  in public text, the Phase 12 D13 rule; V9(b) asserts the literal.
+  It fires after the `backend` string check and BEFORE the gate,
+  reference resolution, any pattern read and any device work (the
+  D21.1 order), so it behaves the same on every machine, CPU-only
+  ones included. Reasons, measured: Fourier-Mellin covers the same
+  regime -- rotation about the detector normal past the ~2 deg
+  phase-XC capture range of D5 -- per point and without propagation
+  risk; the cascade measured 0.56x on real Si (1.8x slower, ledger
+  84) and moved 3 of 618 rim points to worse optima (ledger 85);
+  and its 23 small phase launches on 618 points would underfill a
+  device batch. Consequently the device runner takes no per-point
+  `h0` array in Stage E: the seed seam (D21.5) is the one place
+  `h0` enters the device path.
+- **D21.13 CuPy optional dependency (FROZEN)**: cupy stays optional
+  and unregistered exactly as the constitution states it for Phase
+  12 (`tech-stack.md:16`; mission criterion 3's rule, restated for
+  this path in the dated mission amendment): never imported at
+  module scope anywhere in `src/` (every call site imports it
+  inside the function, after the gate), never added to
+  `_constants.deps_for_version_check`, never installed on any CI
+  job, never installed into the worktree `.venv` (the uv overlay of
+  D21.15 supplies it), and no `[gpu]` extra (the pyopencl
+  precedent, `_constants.py:50-51`). D18 carries the matching dated
+  amendment: the import audit
+  (`test_hrebsd_engine.py::TestImportAudit::test_no_new_required_
+  dependency`) allows exactly `cupy` and `gc` beyond its current
+  tuple (`os` and `threading` are not needed, because the shim and
+  the lock are imported from `_spherical/_gpu.py`; `typing` and
+  `__future__` are not needed, because the new modules follow the
+  `_hrebsd` convention of using neither, D18), and gains a
+  module-scope arm for cupy (the AST pattern of
+  `test_scikit_image_is_never_imported_at_module_scope`) plus the
+  Phase 12 subprocess check that `import kikuchipy` imports no
+  cupy. The import direction of D21.9.5 keeps the new modules free
+  of an `_engine` cycle. No new required dependency.
+- **D21.14 Test gating and CI coverage (FROZEN)**:
+  1. One new file, `tests/test_indexing/test_hrebsd_gpu.py`, laid
+     out like `test_spherical_gpu.py`: dated pin constants, then the
+     `cupy_gpu` fixture and the fake-cupy helpers DUPLICATED from the
+     spherical file (test modules cannot import each other under
+     `--import-mode=importlib`, and the root `conftest.py` is
+     develop-owned and is not edited), then the default-suite
+     classes, then the gated ones.
+  2. Fixture skip order, each pinned with the probe forbidden from
+     running: `KIKUCHIPY_NO_GPU_TESTS` (kill switch),
+     `PYTEST_XDIST_WORKER` (structural: the gated suite runs only at
+     `-n 0`), then the gate's own message. The
+     `KIKUCHIPY_EXPECT_GPU=1` canary fails when a GPU is expected
+     but the suite would skip. The wgpu `gpu` marker is never
+     reused.
+  3. What is single-source, stated precisely (corrected 2026-10-06,
+     spec review): the orchestration (batching, padding,
+     sub-batching, residents, retirement, packing, the runner) and
+     the seed stage are ONE xp-agnostic code path, run under numpy
+     in the default suite and under cupy in the gated one. The
+     per-pixel and reduction kernels are written TWICE, as CUDA
+     RawKernels and as a numpy twin behind the same
+     `KernelNamespace` (D21.9.5). The numpy twin reproduces the
+     `"float64"` build ONLY: its gather is the numba bicubic kernel,
+     which works in f64 (`_interpolation.py:142-143`), so it cannot
+     reproduce the mixed build's f32 gather, and the mixed build is
+     covered by the gated suite alone. The twin's reductions are
+     fixed-order per-pattern reductions along the pixel axis of
+     C-contiguous `(B, n)` arrays, never a BLAS GEMV or GEMM over
+     the batch (OpenBLAS changes its summation order with the batch
+     size), so batched-against-alone is bitwise under numpy. A gated
+     per-kernel A/B oracle compares the numpy twin with the CUDA
+     kernels at float64 on identical inputs (V9(f)). The default
+     suite runs the seed stage, the lockstep loop, the status flags,
+     retirement, the final criterion, padding, packing and the
+     runner against the CPU `fit_pattern` on CI, on small fixtures
+     for CI cost (V9 fixtures); its wall time is recorded at the
+     failing-tests gate.
+  4. Coverage: 100 per cent of every touched `_hrebsd` module from
+     the default and gated runs combined, with the command and its
+     output recorded in validation.md; `# pragma: no cover` only on
+     import-guard branches; no coverage `omit`. There is no PR on
+     this branch: the on-push CI coverage report will show the
+     cupy-only lines uncovered, the accepted and recorded outcome.
+  5. CI green is ZERO evidence for the GPU path; every GPU gate is a
+     local check recorded with numbers and the machine ID.
+- **D21.15 Platform notes (RECORDED)**: measured only on machine A
+  (i7-13700H, NVIDIA RTX 2000 Ada Generation Laptop GPU, 8 GB, 24
+  SMs, 32 MB L2, Windows 11, NVIDIA driver 595.71), CuPy 14.2.0
+  through the uv overlay. The overlay's resolved versions, read at
+  the spec review through `importlib.metadata` (ledger 89), are
+  PINNED in every Stage E gate command (V9 gate commands):
+  `cupy-cuda12x==14.2.0`, `nvidia-cufft-cu12==11.4.1.4`,
+  `nvidia-cublas-cu12==12.9.2.10`, `nvidia-cusolver-cu12==
+  11.7.5.82`, `nvidia-cusparse-cu12==12.5.10.65` and
+  `nvidia-nvjitlink-cu12==12.9.86`, with `nvidia-cuda-nvrtc-cu12`
+  12.9.86 pulled in transitively. An unpinned `--with cupy-cuda12x`
+  can resolve newer wheels on a later day and move device-side bits
+  (cuFFT plan choice, cuBLAS matmul order, NVRTC code generation),
+  so a library or driver bump re-measures every device-side pin as
+  a dated ledger entry before the pins are trusted again (added
+  2026-10-06, spec review). GPU numbers are machine-specific
+  recorded baselines, never portable claims. Windows: the DLL shim
+  is load-bearing (the `cupy-cuda12x` wheel bundles no cuFFT, and
+  CuPy 14.2.0 does not find the nvidia wheels by itself). Linux:
+  CuPy's own preload is expected to work, untested here; ROCm and
+  CUDA 11/13 wheels untested. Laptop boost clocks moved during runs
+  (SM 1.4-2.5 GHz, memory 6.0-7.8 GHz, P1-P4), so timings are best
+  of 3 after a warm-up, rested, with `nvidia-smi` read before each
+  (the Phase 12 lesson: a first idle CPU baseline read 22 per cent
+  soft). The machine is shared with the HROSM session, which may
+  run EMsoft OpenCL GPU jobs and heavy CPU tests: a foreign GPU
+  process at a check is recorded and the timing repeated, and
+  `KIKUCHIPY_NO_GPU_TESTS=1` is set while another job owns the GPU.
+  FP64 on consumer Ada is 1/64 of FP32 by vendor specification, not
+  measured; the spec relies only on the measured f64-to-mixed ratio
+  (11.9x per iteration).
+- **D21.16 Performance record (RECORDED, never a CI or test
+  gate)**: re-measured on the implementation and recorded in
+  validation.md with recipe and machine: the far-field patch (rows
+  20:36, cols 20:36, 256 points), patch C of ledger 84 (rows
+  115:140, cols 100:130 with the crater mask, 618 points) and the
+  whole Si-indent map (57772 fitted), each at both seed precisions
+  and BOTH device precisions (the map at least at both device
+  precisions with the complex128 seed and at the default device
+  precision with complex64), against the same-machine 8-worker CPU
+  (2.34 h on the map, ledger 82; 338.3 s on patch C, ledger 84), on
+  the load recipe of the executed `hrebsd_si_indent.ipynb` (lazy
+  h5oina, reference (10, 10), `filter_cutoffs=(None, None)`, the
+  CCC < 0.35 crater mask, `max_iterations=500`), each run through
+  the v1 read route with the E8 device-wait fraction recorded.
+  Prototype expectation, per device precision (corrected 2026-10-06,
+  spec review): under "mixed", 347 and 628 patterns/s on the map,
+  measured WITH a dedicated prototype reader thread and static
+  batches of 128 (ledger 97; D21.11); under "float64" (the parity
+  and debug build since the D17 approval), about 131 and 158
+  patterns/s (about 440 and 365 s), projected by the ledger 98
+  model, an inference. Each run is compared against the expectation
+  for its own precision. A shortfall against it is a pass with the
+  gap explained (Phase 12's projections ran low too: 0.809 ms of
+  device time per pattern against a 0.65-0.75 ms projection).
+  Go/no-go floor (RECORDED DEFAULT, the Phase 12 D12 precedent; a
+  local recorded measurement, never a test or CI gate): end-to-end
+  `backend="gpu"` throughput on the far-field patch at least the
+  same-session idle 8-worker `backend="cpu"` throughput on the same
+  patch, else Stage E records a negative result and the review gate
+  decides whether the backend ships at all (plan open question E7).
+  D16's "never a gate" otherwise stands.
+- **D21.17 Docs, CHANGELOG, tutorial (FROZEN)**: the `hrebsd_dic`
+  docstring gains the `backend` parameter with the
+  optional-dependency sentence ("Requires that :mod:`cupy` is
+  installed, which is an optional dependency of kikuchipy") and the
+  wheel remedy; a Raises section listing `MemoryError` (D21.10.4),
+  `NotImplementedError` (D21.12) and the `ValueError` of an
+  unsupported `backend` (D21.1); and Notes covering the device
+  precision and its parity band, the determinism scoping,
+  `chunksize` as the device batch, the VRAM model and its warning,
+  the no-silent-fallback rule and the `seed_from_neighbors`
+  restriction; no stage letters in public text. A docstring test
+  in `TestBackendSwitch` pins those entries (the Stage D
+  `TestSeedFromNeighbors::test_the_docstring_documents_the_keyword`
+  precedent). `doc/user/installation.rst` is NOT edited
+  (develop-owned; its cupy bullet names spherical indexing only):
+  the remedy lives in the gate messages and the docstring, a
+  recorded deviation (RECORDED DEFAULT; plan 11.4 item 17). One
+  fork-style CHANGELOG entry in the HREBSD block, ending with the
+  precedent's closing sentence (`CHANGELOG.rst:73-75`): "Fork-only,
+  developed on the ``hrebsd-dic`` branch and specified in
+  ``specs/2026-09-07-hrebsd-dic/`` (requirements D21), with no pull
+  request into ``develop``." Any speed figure in the CHANGELOG entry
+  or the tutorial cell names its machine (machine A, an RTX 2000
+  Ada laptop GPU) and its device and seed precisions, and is called
+  a measurement on that machine, never a portable claim (D21.15).
+  Tutorial, minimal (RECORDED DEFAULT; plan 11.4 item 18): one
+  MARKDOWN cell in `doc/tutorials/hrebsd_si_indent.ipynb` stating
+  the measured whole-map GPU time against the CPU's and showing the
+  call as a fenced code block -- no executed GPU cell (the docs
+  builder and the nbval runners have no GPU), no stored output
+  touched, no re-execution (the ledger 82 markdown-edit precedent).
+- **D21.18 Out of scope (recorded, each with its revisit path)**:
+  the Fourier-Mellin seed (Stage F, both backends, plan section 11
+  follow-ups); neighbour seeding on the device and a per-point
+  `h0` input to the device runner (D21.12); public precision knobs
+  (plan open question E13); multi-grain batches (E5); slot refill
+  and compaction (measured no gain); the multi-pattern tiled kernel
+  (measured no gain at 480 px, its 7.2 MB of shared reference
+  arrays already sitting in L2); the rfft2 band-pass (0.39 against
+  0.66 ms per pattern at 480 px, but 8.5e-14 away from the CPU's
+  full complex FFT, so not bitwise), a box-mean K0 (0.009 against
+  0.097 ms at 480), pinned double-buffered upload and CUDA graphs
+  (speed follow-ups once the seed stops dominating); a dedicated
+  reader thread (D21.11; E8); device Fe conversion and the analysis
+  chain (host, 0.43 s per map); multi-GPU; the two CPU-side
+  findings of the spec gate (OpenBLAS oversubscription worth up to
+  about 1.3-1.5x on 8 workers, and numpy warp coordinates at 31 per
+  cent of each CPU iteration), which would touch the CPU default
+  path and belong to their own note; super-resolution (plan 9.7).
 
 ## Context
 

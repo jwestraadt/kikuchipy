@@ -135,6 +135,34 @@ scopings:
   70 deg sample tilt, mixed units, Fehat from uncorrected homographies,
   zeroed non-converged points, progressive warp-of-warp) are recorded
   deviations in spec D1-D6 and never reproduced; no binary oracle exists.
+- **GPU backend (HREBSD Stage E, spec D21; added 2026-10-06, APPROVED
+  2026-10-06 at the Stage E plan gate under Johan's waiver).** (a) Dependency: cupy stays optional
+  and unregistered exactly as under "Runtime dependencies"; HREBSD carries its
+  own three-stage gate in `_hrebsd/_gpu.py` (own wording, own cache) and
+  imports the Windows DLL shim, the version floor and the process-wide device
+  lock from `_spherical/_gpu.py` unchanged -- `_spherical/*` is never edited
+  from this branch; no `[gpu]` extra. (b) Float discipline: under
+  `backend="gpu"` only, f32 per-pixel arithmetic, f32 per-thread partial sums
+  over a fixed run of pixels and f32 device storage of the reference vector,
+  the coordinate planes and the gradient columns become a sanctioned surface;
+  every block and cross-block reduction, the gradient, the solve, the update,
+  the carried matrix and the stored homography stay f64 (spec D17 amendment,
+  D21.4); until that is approved the device runs f64 throughout; the CPU path
+  is untouched.
+  (c) Orchestration: the spec D16 dask rule plus the Phase 12 sentence of
+  "Code layout and style" (one process-wide lock, `scheduler="threads"`
+  forced, no `workers=1` on `cupy.fft`); chunk size == device batch size. (d)
+  Gating: the GPU test conventions of "Tests, docs, data" (`cupy_gpu` fixture,
+  the xdist structural skip, `KIKUCHIPY_NO_GPU_TESTS`) plus the
+  `KIKUCHIPY_EXPECT_GPU=1` canary. (e) Coverage: the GPU-touching-module rule
+  of "Tests, docs, data", with "the Codecov patch report on such a PR" read as
+  the on-push CI report (this branch has no PR). (f) Determinism is per
+  backend: `backend="gpu"` is bitwise run to run at a fixed device, driver,
+  CuPy and CUDA-library (cuFFT, cuBLAS, NVRTC) versions and batch size, with
+  the uv overlay pinned to those versions in every gate command (spec D21.15),
+  and tolerance-parity against the CPU oracle. (g) Performance
+  stays a recorded baseline, never a CI gate; the local go/no-go floor of spec
+  D21.16 is a recorded default awaiting the same approval.
 
 ## NLPAR feature path (branch `feat-NLPAR`, spec `specs/2026-10-04-nlpar/`; recorded 2026-10-04)
 
