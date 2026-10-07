@@ -195,7 +195,7 @@ and keeps the CHANGELOG gate (it ships a tutorial).
 - [x] Backwards-compatible upstream touches: `orientation_similarity_map(..., *, grain_id=None, emsoft_compatible=False)` (legacy path bitwise unchanged at the defaults) and `_dictionary_indexing(..., verbose=True)`
 - [x] Tests: `tests/test_signals/test_ebsd_hrosm.py` (contracts, masks, PC policy, skips, `n_per_iteration` and lazy/eager invariance, determinism, warnings, physics sanity on a synthetic sub-grain map, end-to-end tolerance against the EMHROSM references: one grain weekly, full map local + weekly) and additions to `test_orientation_similarity_map.py` and `test_dictionary_indexing.py`; performance baselines recorded as local ledger runs, never gated
 - [x] Adversarial review + bug injection (Stage B rows) + fixes; coverage 100 % of `_hrosm/` re-recorded
-- [ ] Gates as Stage A; CHANGELOG bullet extended with `EBSD.hrosm()` and the two keywords; signed commits pushed
+- [x] Gates as Stage A; CHANGELOG bullet extended with `EBSD.hrosm()` and the two keywords; signed commits pushed
 
 ## Stage C -- tutorial
 - [ ] `doc/tutorials/hrosm.ipynb` (`nickel_ebsd_large`: dictionary indexing and refinement as in `pattern_matching.ipynb`, then `EBSD.hrosm()`; global OSM next to the HROSM OSM; KAM, grain map, GROD and its warning; synthetic sub-grain demonstration; parameter guidance and cost; differences from EMsoftOO's EMHROSM in words); `pattern_matching.ipynb` and `spherical_indexing.ipynb` linked, never edited

@@ -3605,3 +3605,14 @@ change; no test weakened.
    plan section 12). These ticks go into the Stage B implementation
    commit. Not ticked: the gates box (signed commits pushed, on-push
    CI job times against 18 min, plan section 1.4).
+
+### 27. 2026-10-07 (Stage B on-push CI, main loop)
+
+Commits 5f3e899d and 05b9ee6c pushed (origin/feat-HROSM 05b9ee6c); CI run
+37614781838: ubuntu py3.13 13 min 13 s, ubuntu py3.10 oldest 15 min 11 s
+(green: the relaxed platform pins of entry 19 hold), windows py3.13 15
+min 37 s, windows py3.14 10 min 6 s, wheel 9 min 26 s, all green; macOS
+py3.13 10 min 39 s and py3.14 6 min 16 s red ONLY on the pre-existing
+`test_ni_proper_oh_count` (23 == 22; 4930 passed each). Every job is
+under the 18 min check of plan 1.4. Roadmap Stage B gates box ticked.
+Stage C waits for Johan's go.
