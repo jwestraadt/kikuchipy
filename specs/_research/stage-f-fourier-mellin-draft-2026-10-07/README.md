@@ -1,6 +1,9 @@
 # Stage F draft (parked 2026-10-07): Fourier-Mellin rotation initial guess
 
-Status (2026-10-07): REVISED, awaiting splice after the Stage E commit.
+Status (2026-10-07): SPLICED into specs/2026-09-07-hrebsd-dic/ (requirements
+D22 + dated amendments, validation V10 with ledger 115-131, plan section 12,
+roadmap Stage F) after the Stage E commit 50bf7b19; this folder is the
+historical draft record. Earlier status: REVISED, awaiting splice.
 All 45 critic findings are dispositioned (20 accepted, 24 already
 applied, 1 rejected; plan_section12.md section 12.5). The plan gate
 stays PENDING Johan's review. Nothing here is part of the spec yet;
