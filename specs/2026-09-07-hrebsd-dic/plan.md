@@ -1190,6 +1190,40 @@ E13. **Public precision knobs** (D21.1). In force: engine-only
   oversubscription (up to about 1.3-1.5x on 8 workers) and fusing
   the numpy warp coordinates (31 per cent of a CPU iteration) into
   the numba kernel.
+- RECORDED 2026-10-07 at the review and performance gates (ledgers
+  105, 108 and 111 to 114); NOT commissioned, each Johan's call:
+  (a) Retired slots still pay: `run_lockstep` calls `gather` and
+  `pixel_sums` over every slot of a batch, so only 41 per cent of
+  the slot-iterations do work on the Si map (31 per cent on patch
+  C). An active-mask early exit in both kernels (the prototype's
+  scheme, whose cost scaled with the active count, ledger 91) is the
+  largest lever left, about 2x on the map.
+  (b) E8 fired: the device waits 19 to 24 per cent of the map run,
+  all of it before the first batch, because dask completes batches
+  out of order while the device consumes them in order; the early
+  batches pile up in host memory (peak 15.2 to 15.9 GB on a 32 GB
+  host). An ordered read (dask ordering, or the dedicated reader
+  above) removes both the wait and the memory peak.
+  (c) E5 fired: grain-pure batching still costs 1.9x (mixed) and
+  1.6x (float64) at 512x622 on 20-point grains after the
+  padding-skip deviation (ledger 108); multi-grain batches, or B
+  from the grain-size distribution, change D21.9.3 or D21.10.3.
+  (d) E12 fired by its letter on patch C: one point per device
+  precision lies outside the per-point h band, both explained. Under
+  "mixed" the CPU stops at 51 iterations with a last step of
+  9.9988e-4 px, just under `min_step`, and the device takes a 52nd
+  (a convergence knife edge, 7.3e-4 px); under "float64" an
+  84-iteration fit differs by 6.6e-11 px against a band pinned on
+  short fits. Whole-map counts are identical at all four precision
+  combinations (ledger 113). Recommended instead of the 2.34 h CPU
+  re-run: amend the D21.8 per-point bands to exempt points whose
+  iteration counts differ and to scale the float64 band with the
+  iteration count.
+  (e) E13 sits on the line: complex64 over complex128 is 1.44x and
+  1.52x end to end on the map (ledger 114); whether to expose a
+  public `seed_precision` (D15.4 amendment) is open.
+  (f) Adopt the Toolkit-free overlay (D21.15 amendment, ledger 110)
+  in the gate commands.
 
 ### 11.4 Recorded defaults for Johan's approval
 
@@ -1403,3 +1437,29 @@ was written.
 | M27a (survivor) | `/ 6.0` to `* (1.0 / 6.0)` in the CPU B-spline weights | KILLED: `TestCpuHelpersBitwise::test_the_bicubic_evaluation_is_the_frozen_formula` (`_bicubic_evaluate` and `evaluate` against an independent scalar transcription, bitwise) |
 | M27b (survivor) | `/ norm` to `* (1.0 / norm)` in `zero_mean_normalize` | KILLED: `TestCpuHelpersBitwise::test_the_zero_mean_normalisation_is_the_frozen_formula` (bitwise against `centred / norm`) |
 | M9 (equivalent on review) | zero-norm guard dropped | accepted as equivalent on the injector's argument (ledger 107 (ii): 0/0 is non-finite and fails the slot through the same branch, flags and NaN `norm_dp`); guards kept |
+| M28 (injection 2) | `step_scale` ignored / norm from the unscaled step (shared, device, twin) | killed: `test_knob_arm[mixed-step_scale_0.5]` 9.7e-4 and 4.8e-4 > 2.5e-6; twin `test_every_knob_against_the_cpu[step_scale_0.5]` 9.7e-4 > 5e-13 (ledger 109 (i)) |
+| M29 (injection 2) | window weights not applied (shared, device) | killed: the window arm, worst 0.0816, default and gated (ledger 109 (i)) |
+| M30 (injection 2) | W33 renormalisation skipped | device killed: `test_converged_parity[F1-mixed-complex128]` 0.0134; twin EQUIVALENT on review (the f64 gather divides by the full third row and `parameters_from_matrices` by W33; rounding only, 17 re-checks pass) (ledger 109 (i), (iii)) |
+| M31 (injection 2) | update-rule perturbation (device, twin) | killed: 1.09e-5 > 2.5e-6 (device), 1.08e-5 > 5e-13 (twin) (ledger 109 (i)) |
+| M32 (injection 2) | f32 rebuild of the update (device, twin) | killed: 1.58e-5 (device), 1.57e-5 (twin) (ledger 109 (i)) |
+| M33 (injection 2) | `max_iterations` off by one (loop, twin, device) | loop and twin killed (`[max_iterations_1]` 0.177, gated `test_max_iterations_one[mixed]`; `test_own_iteration_counts_on_f5` 1 != 0); device killed by re-check only (`test_update_matches_the_hand_built_loop[*-2]`, `test_converged_parity[F6-*]` count 1 != 0, `test_f5_failure_contract_and_map_order`): mutation map corrected, the `[*-2]` hand loop and the F6 counts are its killers (ledger 109 (ii)) |
+| M34 (injection 2) | explicit chunksize ignored | killed: `test_an_explicit_chunksize_wins`, default and gated (TypeError on the None chunksize) |
+| M35 (injection 2) | VRAM model term dropped | killed: `test_the_p_and_r_terms_decide`; gated `test_per_slot_and_transient_terms[mixed]` |
+| M36 (injection 2) | mixed update-rule perturbation | killed: `test_update_matches_the_hand_built_loop[mixed-1]` 2.5e-3 > 1.8e-7 |
+| M37 (injection 2) | first-step perturbation (device, twin) | killed: `test_first_step_band[F1-mixed]` 6.15 > 1e-6; twin `test_the_first_step[F1]` 6.10 |
+| M38 (injection 2) | first-step perturbation (device, twin) | killed: 4.41 (device), 4.29 (twin) |
+| M39 (injection 2) | first-step perturbation (device, twin) | killed: 8.69 (device), 8.18 (twin) |
+| M40 (injection 2) | window perturbation | killed: window arm 0.229 (default), 0.231 (gated) |
+| M41 (injection 2) | window arm vacuous | killed: the default window arm went vacuous; gated window arm |
+| M42 (injection 2) | the shift K (a: next K kept in f64, mixed kernel; b: K never updated; c: K0 = 0 in mixed; twin: K never updated) | a KILLED AFTER FIX: new gated `TestGatedKernelAB::test_the_mixed_update_keeps_k_at_pixel_precision` (updated K bitwise f32-representable), re-injected, fails at the representability assert; b killed by re-check (`TestGatedKernelAB::test_reduce_solve_update` 9.3e-14 > 3e-14); c KILLED AFTER FIX: new default `TestBatchedCoreNumpy::test_initial_shifts_are_the_masked_mean` (K0 against the boolean-mask mean, f32-rounded under "mixed"), re-injected, `[0.05-mixed]` and `[0.1-mixed]` fail; twin EQUIVALENT on review (K cancels from every centred moment and the norm in f64) (ledger 110) |
+| M43 (injection 2) | corner maximum swallows NaN (device, twin) | EQUIVALENT on review x2: a NaN step sets the non-finite-step flag first; a NaN corner from a finite step needs 0/0 or inf/inf, unreachable from f32-bounded data. Hazard noted: in the device mutant four NaN corners would give `nd = 0` and a converged slot (ledger 109 (iii)) |
+| M44 (injection 2) | int conversion before the fold (device, twin) | killed: `test_planted_far_coordinates_fold[float64-3e9]` 0.904 > 3e-14; twin `[3e9]` |
+| M45 (injection 2) | diagonal rebuilt as `1 + (m - 1)` (device, twin) | EQUIVALENT on review x2 (Sterbenz: exact for m in [0.5, 2]; bitwise identical below 50 % strain) (ledger 109 (iii)) |
+| M46 (injection 2) | band-pass (a: always applied, identity under `(None, None)`; b: skip branch inverted) | a KILLED AFTER FIX: new gated `TestGatedKernelAB::test_no_band_pass_uploads_the_raw_patterns[*]` (cupy `_prepare_sub_batch` targets equal the raw patterns as f64 bitwise under `(None, None)`; with a band-pass they change and match the host within 1e-9 relative), re-injected, both precisions fail; b killed (gated `test_dc_offset_without_band_pass[mixed]`); mutation map corrected: the default killers are blind by construction (the numpy session takes the host `preprocess` branch) (ledger 110) |
+| M47 (injection 2) | `upsample_factor` hard-coded | killed: seed equal count 0 != 12, default and gated |
+| M48 (injection 2) | `min_step` hard-coded (shared, device) | killed: `min_step_1e-2` arm 2.9e-4 |
+| M49 (injection 2) | border ignored (a: corner-norm support from the whole pattern; b: K0 from the whole pattern) | a killed by re-check (default-border `test_parity_with_the_cpu[F1]` 1.04e-5 > 5e-13, gated `test_converged_parity` 1.03e-5; mutation map corrected: the default border kills it, not the border arm); b KILLED AFTER FIX: `TestBatchedCoreNumpy::test_initial_shifts_are_the_masked_mean`, re-injected, all 4 arms fail (ledger 110) |
+| M50 (injection 2) | tail sub-batch run unpadded | killed: `test_the_runner_calls_the_seam_once_per_sub_batch[40]`, gated `test_the_runner_reaches_the_seam_per_padded_sub_batch`; mutation map corrected: only the seam-count spies kill it (`last_sub_batch_slot_equals_alone` passes, the slots are independent) |
+| M51 (injection 2) | residents never evicted | killed: `test_the_residency_bound_on_f7`; gated `test_real_pool_limit_recovers_without_leak[F7-3600-4]` (MemoryError at B = 1) |
+| M52 (injection 2) | `pattern_index` wrong (a: 0 on padded slots; b: sorted in the sub-batch; c: map order in `_compute_map`) | a killed (gated seam spy; default by `TestSeedSeamContract::test_the_runner_calls_the_seam_once_per_sub_batch[40, 12]`, map corrected); b EQUIVALENT on review (grain-pure batches from a stable argsort, already ascending); c (added by the injector, the reachable form) killed: `test_the_seam_carries_the_fit_order_on_f7`, gated `test_many_grain_map_order[*]` |
+| M53 (injection 2) | seam called once too few | killed: spy count 1 != 2, default and gated |

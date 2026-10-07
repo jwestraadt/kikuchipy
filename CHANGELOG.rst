@@ -18,6 +18,28 @@ Unreleased
 
 Added
 -----
+- Optional GPU backend for ``EBSD.hrebsd_dic()``: the new keyword-only
+  ``backend`` (default ``"cpu"``, which is bitwise the previous behaviour and
+  stays the parity oracle) accepts ``"gpu"``, which runs the same inverse
+  compositional Gauss-Newton fit in batches on a CUDA device through CuPy.
+  CuPy is optional and never a dependency: ``backend="gpu"`` passes a
+  three-stage gate first (CuPy imports, a CUDA device is present, and the
+  cuFFT, cuBLAS and NVRTC libraries the device path calls answer a probe), and
+  any failing stage raises an error naming its remedy, with no silent fallback
+  to the CPU. The device runs in ``"mixed"`` precision by default (float32
+  per-pixel arithmetic on shifted values, float64 reductions, linear solve and
+  homography update), agreeing with the CPU within a small measured band rather
+  than bitwise; ``chunksize`` sets the device batch, chosen from the free VRAM
+  when not given. On the full Si-indent map (57772 fitted points) the GPU run
+  took 375.7 s, and 358.8 s on a repeat, against 8424 s for the CPU on 8
+  workers in an earlier session (22.4x and 23.5x), with identical convergence
+  counts: measured on machine A
+  (an RTX 2000 Ada laptop GPU) at device precision ``"mixed"`` and seed
+  precision ``"complex128"``, a measurement on that machine, not a portable
+  claim. Neighbour seeding is not available on the device. Fork-only,
+  developed on the ``hrebsd-dic`` branch and specified in
+  ``specs/2026-09-07-hrebsd-dic/`` (requirements D21, validation V9), with no
+  pull request into ``develop``.
 - Tutorial replicating a published HR-EBSD measurement,
   ``doc/tutorials/hrebsd_si_indent.ipynb``: the full resolution half of
   Winkelmann et al., *Ultramicroscopy* **276** (2025) 114180, on their own

@@ -232,23 +232,38 @@ the map projects at about 440 s = 131 pat/s (about 19x; an inference, ledger
   amendment (D21.4) and the mission/tech-stack amendments (HREBSD sections,
   dated 2026-10-06) -- approved as written 2026-10-06 under his overnight
   waiver (plan 11.4 approval record)
-- [ ] failing tests first: `test_hrebsd_gpu.py` (default numpy-xp suite + gated
+- [x] failing tests first: `test_hrebsd_gpu.py` (default numpy-xp suite + gated
   `cupy_gpu` suite, V9(a)-(p)) incl. the seed-seam h0 oracle and the
   `seed_from_neighbors` raise pin; freeze, defaults and import-audit pins
   updated
-- [ ] implementation: `_hrebsd/_gpu.py` gate (imports the Phase 12 shim, floor
+- [x] implementation: `_hrebsd/_gpu.py` gate (imports the Phase 12 shim, floor
   and lock; no `_spherical` edit) + session + VRAM model + device runner;
   xp-agnostic batched core with the seed seam and lockstep IC-GN; `backend`
   plumbing; every V9 MTP pin measured and pinned
-- [ ] adversarial review + bug injection (plan 11 item 4 mutants, kills
+- [x] adversarial review + bug injection (plan 11 item 4 mutants, kills
   re-verified on the GPU machine) + fixes; coverage 100 % of the touched
   `_hrebsd` modules (default + gated combined); default path bitwise
   unchanged; gated suite 0 skipped under KIKUCHIPY_EXPECT_GPU=1;
   oldest-matrix + full suite green
-- [ ] D21.16 performance record on the Si-indent data (far256, patch C, whole
+- [x] D21.16 performance record on the Si-indent data (far256, patch C, whole
   map, both seed and both device precisions, the E8 device-wait fraction) +
   go/no-go floor; docstring, CHANGELOG, tutorial
   markdown cell; signed commits pushed to origin/hrebsd-dic (no PR)
+
+### Stage E follow-ups (recorded 2026-10-07, NOT commissioned; plan 11.3)
+Measured at the review and performance gates (ledgers 105-114). Stage E
+result: the whole Si-indent map in 358.8-375.7 s on the GPU (22.4-23.5x the
+8-worker CPU's 8424 s) at the default precisions, 32-36x with the complex64
+seed, 5.4-5.7x under "float64", convergence counts identical to the CPU.
+- [ ] skip retired slots in `gather` and `pixel_sums` (41 per cent of slot
+  iterations do work on the map; about 2x)
+- [ ] ordered batch reading (E8: 19-24 per cent start-up wait, host peak
+  15-16 GB)
+- [ ] multi-grain batches or B from grain size (E5: 1.6-1.9x on small grains)
+- [ ] amend the D21.8 per-point bands for convergence knife edges (E12),
+  instead of the 2.34 h CPU re-run
+- [ ] decide a public `seed_precision` (E13: 1.44-1.52x)
+- [ ] adopt the Toolkit-free overlay in the gate commands (D21.15 amendment)
 
 Stage F (Fourier-Mellin initial guess, both backends, behind the D21.5 seed
 seam) is planned after Stage E (plan section 11.3); not commissioned.

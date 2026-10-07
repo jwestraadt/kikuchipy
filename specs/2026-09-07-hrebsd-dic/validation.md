@@ -6485,3 +6485,483 @@ plumbing of the parallel implementer).
     RC-R5 (a D21.15 amendment for Johan), the second injection half
     (M28 to M53), V9(q)/E12 real-data parity, the D21.16 performance
     record with E7 and E8, E11, and the CHANGELOG and tutorial note.
+
+109. **Bug injection, M28 to M53 (plan 11 item 4, second half;
+    injector, run ALONE).** Machine A, 2026-10-07 08:30 to 09:30,
+    worktree at 5d503491 (the WIP checkpoint of the Stage E review
+    fixes of entry 108, clean tree). The first half's backups were
+    stale (the fixer had changed `_gpu.py`, `_cuda.py`, `_engine.py`,
+    `ebsd.py` and the test file), so every candidate file was backed
+    up afresh with its md5 before the run; all 48 recipe anchors were
+    re-checked against the current code (each found exactly once, none
+    moved), and every killer node was checked against a `--weekly`
+    collection. Same harness discipline as entry 107: smallest edit
+    per variant, exact-match assertion, ONLY the designed killers
+    (default `uv run pytest <nodes> -n 0 -x`; gated via the D21.15
+    overlay, `KIKUCHIPY_EXPECT_GPU=1 -n 0 -x --weekly`), restore from
+    the backup and md5 verified before the next variant (no git
+    operation). `nvidia-smi` before every gated run: none, then from
+    08:50 an idle Jupyter kernel (pid 19480, a CUDA context, 0 MiB,
+    0 % utilisation); nothing here is a timing, so no run was
+    repeated. Baselines on the unmutated tree: the 24 default killer
+    nodes 48 passed; the 31 gated killer nodes 103 passed. 48 variants
+    (device, numpy-twin and shared variants of the 26 ids, plus M52c
+    added below), then 14 re-checks with the next-most-relevant tests
+    (`-x` off). Tally: **37 killed (34 by the designed killers, 3 only
+    by re-check), 7 reviewed-equivalent, 4 SURVIVED**.
+    (i) **Killed by the designed killers:** M28 (device step_scale
+    ignored and the norm taken from the unscaled step:
+    `test_knob_arm[mixed-step_scale_0.5]` 9.7e-4 and 4.8e-4 > 2.5e-6;
+    twin: `[step_scale_0.5]` 9.7e-4 > 5e-13); M29 (shared and device:
+    the window residual, worst 0.0816); M30 device
+    (`test_converged_parity[F1-mixed-complex128]` 0.0134); M31 (device
+    1.09e-5, twin 1.08e-5); M32 (device 1.58e-5, twin 1.57e-5); M33
+    loop (`[max_iterations_1]` 0.177; gated `test_max_iterations_one
+    [mixed]`) and twin (`test_own_iteration_counts_on_f5` 1 != 0);
+    M34 (default and gated `test_an_explicit_chunksize_wins`, a
+    TypeError on the None chunksize); M35 (`test_the_p_and_r_terms_
+    decide`; gated `test_per_slot_and_transient_terms[mixed]`); M36
+    (`test_update_matches_the_hand_built_loop[mixed-1]` 2.5e-3 >
+    1.8e-7, its sole killer as designed); M37, M38, M39 (device
+    `test_first_step_band[F1-mixed]` 6.15, 4.41, 8.69 > 1e-6; twins
+    `test_the_first_step[F1]` 6.10, 4.29, 8.18); M40 (window arm 0.229
+    and 0.231); M41 (default: the window arm went vacuous; gated
+    window arm); M44 (device `test_planted_far_coordinates_fold
+    [float64-3e9]` 0.904 > 3e-14; twin `[3e9]`); M46b (gated
+    `test_dc_offset_without_band_pass[mixed]`); M47 (seed equal count
+    0 != 12 in both); M48 (shared and device: `min_step_1e-2` arm
+    2.9e-4); M50 (`test_the_runner_calls_the_seam_once_per_sub_batch
+    [40]`; gated `test_the_runner_reaches_the_seam_per_padded_sub_
+    batch`; the designed `test_a_last_sub_batch_slot_equals_alone`
+    passes, the slots are independent); M51 (`test_the_residency_
+    bound_on_f7`; gated `test_real_pool_limit_recovers_without_leak
+    [F7-3600-4]`, the MemoryError at B = 1); M52a gated (the seam
+    spy); M52c (added: `_compute_map` hands the batch its pattern
+    index in MAP order while the patterns stay in fit order, the
+    reachable form of the M52 definition: `test_the_seam_carries_the_
+    fit_order_on_f7`, gated `test_many_grain_map_order[*]`); M53
+    (spy count 1 != 2 in both).
+    (ii) **Killed only by re-check (designed killers blind):** M33
+    device (retire at `it >= max_iterations - 1`): the 0 and 1 arms
+    cannot see it (no kernel call at 0; at 1 both conditions hold
+    after the first step); killed by `test_update_matches_the_hand_
+    built_loop[*-2]`, `test_converged_parity[F6-*]` (iteration count
+    1 != 0) and `test_f5_failure_contract_and_map_order[*]`. M42b
+    device (K never updated): killed by `TestGatedKernelAB::test_
+    reduce_solve_update` (shifts 9.3e-14 > 3e-14, the float64 build).
+    M49a (corner-norm support from the whole pattern): the border arm
+    passes, but the default border kills it (`test_parity_with_the_
+    cpu[F1]` 1.04e-5 > 5e-13, gated `test_converged_parity[F1-mixed-
+    *]` 1.03e-5). M52a on the default suite (the designed numpy
+    killers pass; `TestSeedSeamContract::test_the_runner_calls_the_
+    seam_once_per_sub_batch[40, 12]` kills it).
+    (iii) **Reviewed-equivalent (7 variants):** M30 twin (W33
+    renormalisation skipped in the float64 twin): the twin's gather
+    divides by the full third row and `parameters_from_matrices`
+    divides by W33, so a scaled carried matrix is the same projective
+    warp; only f64 rounding differs (17 re-check tests pass at 5e-13).
+    The device variant is killed because the mixed gather's
+    displacement form assumes W33 = 1. M42 twin (K never updated, f64):
+    K cancels algebraically from every centred moment and the norm;
+    17 re-check tests pass. M43 device and twin (corner max swallowing
+    NaN): a NaN in `dp` sets the separate non-finite-step flag first,
+    so a NaN corner needs a FINITE step with an exact 0/0 projective
+    corner or an inf/inf overflow (|dp| about 1e306), unreachable from
+    sums bounded by f32 data (critic F6, the map's own caveat); 8
+    gated and 9 default re-checks pass. Hazard noted: in the device
+    mutant four NaN corners would leave `nd = 0` and report the slot
+    converged. M45 device and twin (diagonal rebuilt as `1 + (m - 1)`):
+    by Sterbenz `m - 1` is exact for m in [0.5, 2] and so is the sum,
+    so the variant is bitwise identical below 50 % strain; any other
+    "rebuilt from h" in f64 is the renormalisation M30 already covers,
+    and the f32 form is M32. M52b (the sub-batch's index sorted): every
+    batch is grain-pure and the fit list is a stable argsort of
+    `np.flatnonzero(keep)` (`_engine.py` 1178, 1233), so it is already
+    ascending inside a batch and the sort is the identity; M52c
+    (above) is the reachable form and is killed.
+    (iv) **SURVIVED (4 variants; for the fixer):**
+    M42a (mixed solve kernel: next K kept in f64): every consumer casts
+    K to f32 and the next update re-anchors on that cast, so K is off
+    by at most half an f32 ulp and does not accumulate; the 3 designed
+    and 12 re-check gated tests pass. The only mixed-build observable
+    is the stored shift. Proposed killer: a mixed-build arm of
+    `TestGatedKernelAB::test_reduce_solve_update` against the twin's
+    `round_to_pixel_precision(..., "mixed")` (the A/B is float64
+    only).
+    M42c (K0 = 0 in the mixed build) and M49b (K0 the whole-pattern
+    mean, border ignored): both only move the initial shift. K cancels
+    algebraically, and after the first update K is the warped mean
+    again, so only the first step's f32 rounding changes and IC-GN
+    reaches the same fixed point (38 + 12 and 2 + 28 gated tests
+    pass, the F4 DC-offset arm among them). Proposed killer: a
+    default-suite pin of `_batched.initial_shifts` (K0 equals the mean
+    over `mask_index`, f32-rounded under a mixed namespace), and/or a
+    `max_iterations=1` arm on the F4 DC-offset fixture in the mixed
+    build.
+    M46a (band-pass always applied, identity transfer under
+    `(None, None)`): a cuFFT round trip changes the targets by a few
+    ulp, and not at all for the F5 integer constant (DC bin only, the
+    M15 argument), so all 4 designed and 32 gated plus 18 default
+    re-check tests pass; it is a performance defect (two FFTs per
+    sub-batch). The designed default killers can never see M46: the
+    numpy session's `_prepare_sub_batch` takes the host `preprocess`
+    branch. Proposed killer: under `(None, None)` the seam spy's
+    targets must equal the raw patterns as float64 BITWISE on the
+    cupy session, or a spy on `session.fft.fft2` must record no call.
+    Mutation-map corrections for the fixer: M33 (add `[*-2]` hand
+    loop and F6 counts as killers), M46 (D killers are blind by
+    construction), M49 (the default-border parity, not the border
+    arm, kills the corner variant), M50 (only the seam-count spies
+    kill), M52 (`TestSeedSeamContract::test_the_runner_calls_the_seam_
+    once_per_sub_batch` kills the padded-index variant on the default
+    suite).
+    (v) **Closing.** After the last variant every backed-up file
+    (the 16 `_hrebsd` modules, `signals/ebsd.py`, the test file,
+    `validation.md`, `plan.md`, `CHANGELOG.rst`) matched its pre-run
+    md5 (`md5sum -c`, all OK). Default suite once, `uv run pytest
+    tests/test_indexing/test_hrebsd_gpu.py -n 0 -q -p no:cacheprovider`:
+    **205 passed, 0 failed, 275 skipped** in 125.6 s. Logs and JSON
+    per variant in the scratchpad `inject_results3/`.
+110. **M28 to M53 fix round: survivor killers, the hermetic overlay
+    check (RC-R5) and the closing runs (plan 11 items 4 to 6;
+    fixer).** Machine A, 2026-10-07 09:20 to 10:05, worktree at
+    5d503491 plus ledger 109 (uncommitted).
+    (i) **Survivors killed (4 of 4).** Killers added to
+    `tests/test_indexing/test_hrebsd_gpu.py` (7 test instances, no
+    source change):
+    - `TestBatchedCoreNumpy::test_initial_shifts_are_the_masked_mean
+      [border 0.05, 0.1][float64, mixed]` (default suite, 4): F4
+      targets, `_batched.initial_shifts` against the boolean-mask mean
+      of each preprocessed target, rtol 1e-13 in float64; under a
+      namespace carrying `precision="mixed"` the result must be
+      f32-representable bitwise and within half an f32 ulp of that
+      mean. Premise asserted: the masked means (0.72 to 1.25) differ
+      from the whole-pattern means (0.035) by more than 0.5.
+    - `TestGatedKernelAB::test_the_mixed_update_keeps_k_at_pixel_
+      precision` (gated, 1): one mixed-build `reduce_solve_update` on
+      the A/B inputs from a deliberately poor f32-exact K0; no slot
+      fails, every K moves, and every updated K is bitwise
+      f32-representable (D21.4).
+    - `TestGatedKernelAB::test_no_band_pass_uploads_the_raw_patterns
+      [mixed, float64]` (gated, 2): a real cupy session's
+      `_gpu._prepare_sub_batch` on two F4-DC patterns returns the raw
+      patterns as f64 BITWISE under `filter_cutoffs=(None, None)`
+      (the host `preprocess` too); with `(0.05, None)` the targets
+      change and match the host within 1e-9 relative.
+    Re-injection with fresh backups (`inject_backup3\`, md5 list
+    `pre_run4_md5.txt`, harness `inject4.py` + `mutants4.py`, restore
+    from backup and md5 verified, no git; `nvidia-smi`: only the idle
+    Jupyter kernel pid 19480, 0 %): M42a (mixed kernel keeps K + mean
+    in f64) 1 failed, the representability assert; M42c (K0 = 0 in
+    mixed) 2 failed (`[*-mixed]`, the half-ulp assert); M49b (K0 the
+    whole-pattern mean) 4 failed (all arms); M46a (band-pass always
+    applied) 2 failed (the bitwise raw-pattern assert, both
+    precisions). Afterwards `md5sum -c` all OK. The new tests pass on
+    the unmutated tree. Mutation-map corrections of ledger 109 (iv)
+    and one row per mutant M28 to M53 are in plan 11.6.
+    (ii) **Hermetic overlay check (RC-R5, Johan's waiver).** The
+    D21.15 overlay plus `--with nvidia-cuda-runtime-cu12==12.9.79`
+    (the version of entry 105 (iii)) and `--with
+    nvidia-cuda-nvrtc-cu12==12.9.86`, every PATH entry naming CUDA
+    removed and `CUDA_PATH`, `CUDA_PATH_V10_0`, `CUDA_PATH_V11_7` and
+    `CUDA_PATH_V13_1` unset for that process only
+    (`scratchpad\hermetic.sh`).
+    - AS SPECIFIED (variant A) the gate FAILS at stage (c): "Failed
+      to find CUDA headers". Cause: under `uv run --with` the overlay
+      wheels sit in a layered `archive-v0\...\site-packages` on
+      `sys.path`, but `cuda.pathfinder` 1.8.3 (used by cupy 14.2.0
+      for NVRTC, cuFFT and the CUDA root) searches only
+      `site.getsitepackages()`, i.e. the ephemeral
+      `builds-v0\.tmp...` environment; `find_nvidia_header_directory
+      ("cudart")` returns None and `load_nvidia_dynamic_lib("nvrtc")`
+      raises. With `CUDA_PATH` set in-process to the overlay's own
+      `nvidia\cuda_runtime` (variant B) the headers resolve and NVRTC
+      is not found; adding the overlay's `nvidia\cuda_nvrtc\bin` to
+      PATH (variant C) then fails on cuFFT. The kikuchipy DLL shim
+      (`os.add_dll_directory`) does not help, since pathfinder
+      searches by file existence and plain `LoadLibrary`. So the
+      seven-wheel overlay is not hermetic through `uv run --with`
+      alone; the wheel-only VENV of entry 105 (iii) is (pathfinder
+      sees a real site-packages there).
+    - WORKING FORM (variant D): the same command, toolkit off PATH and
+      every `CUDA_PATH*` unset, run through
+      `scratchpad\overlay_cuda_path.py`, which prepends every
+      `<overlay site-packages>\nvidia\*\bin` (found on `sys.path`) to
+      PATH inside the Python process before cupy is imported, then
+      calls `pytest.main`. DLLs loaded (`EnumProcessModules` after the
+      gate): `nvrtc64_120_0.dll` and `nvrtc-builtins64_129.dll` from
+      the overlay's `nvidia\cuda_nvrtc\bin` (NVRTC 12.9,
+      `nvrtc.getVersion()` (12, 9)), `cufft64_11.dll`,
+      `cublas64_12.dll` and `cublasLt64_12.dll` from the overlay
+      wheels, runtime 12090, driver 13020; no Toolkit DLL. For
+      comparison the ordinary D21.15 overlay in this shell loads
+      `nvrtc64_130_0.dll` (NVRTC 13.1) and also `cufft64_12.dll`,
+      `cublas64_13.dll` and `cublasLt64_13.dll` from the CUDA 13.1
+      Toolkit beside the wheels' `cufft64_11.dll` and
+      `cublas64_12.dll`, with `CUDA_PATH` pointing at the
+      `kikuchipy-gpu` venv's `nvidia\cuda_runtime`.
+    - RESULT, variant D, `KIKUCHIPY_EXPECT_GPU=1 -n 0 --weekly`,
+      split in two calls by `-k`: `TestGatedSeedSeam or
+      TestSeedSeamHonoursArbitraryH0Numpy` **114 passed** in 334.5 s
+      (09:44 to 09:50), the rest **373 passed** in 305.9 s (09:50 to
+      09:56): **487 passed, 0 failed, 0 skipped** (480 + the 7 new
+      instances). Every device pin, bitwise invariance and drift
+      literal holds under wheel NVRTC 12.9 with no Toolkit and no
+      `CUDA_PATH`. `nvidia-smi` before each part: 0 %, 332 MiB, only
+      the idle pid 19480; no timing was taken.
+    - For the D21.15 amendment (main session): the seven `--with`
+      pins alone are not enough under `uv run --with`; the command
+      also needs the overlay's `nvidia\*\bin` on PATH (or the gated
+      run in a wheel-only venv as in entry 105 (iii)).
+    (iii) **Closing runs.**
+    - Default: `uv run pytest tests/test_indexing/test_hrebsd_gpu.py
+      -n 0 -q -p no:cacheprovider`: **209 passed, 0 failed, 278
+      skipped** in 156.0 s (205 + 4 new; 275 + 3 new gated skips).
+    - `uv run pytest tests -k hrebsd -n 2 -q -p no:cacheprovider`:
+      **905 passed, 0 failed, 287 skipped** in 207.1 s.
+    - `ruff format` (1 file reformatted, the test file) and `ruff
+      check` on `_hrebsd`, `signals/ebsd.py` and the test file: all
+      checks passed, 18 files formatted.
+    Logs: scratchpad `inject_results4\`, `hermetic_p1.log`,
+    `hermetic_p2.log`, `fix4_default.log`, `fix4_hrebsd.log`.
+
+#### V9 recorded results, performance record (2026-10-07)
+
+111. **Conditions, the same-session CPU baseline and the far256 and
+    patch C matrix; the go/no-go floor (requirements D21.16; plan 11
+    item 7; E7).** Machine A as in entry 89 (i7-13700H, RTX 2000 Ada
+    Laptop GPU 8 GB, driver 595.71, Windows 11), 2026-10-07 10:05 to
+    12:11, worktree at 5d503491 plus the uncommitted Stage E edits.
+    GPU runs on the D21.15 overlay (the toolkit NVRTC 13.1 of entry
+    105 (iii)), CPU runs on the worktree `.venv`. RECIPE (scratchpad
+    `perf\perf_run.py`, results `perf\results.jsonl`, per-point arrays
+    `perf\arrays\*.npz`): the executed `hrebsd_si_indent.ipynb` load,
+    cells 4 to 10 and 17 reproduced (lazy `kp.load`, rechunk `{0: 1,
+    1: 32, 2: -1, 3: -1}`, `detector.binning = 2`, the per-point PC,
+    the `CrystalMap` from the file's Euler angles and the Si phase,
+    reference (10, 10), `filter_cutoffs=(None, None)`,
+    `max_iterations=500`, crater mask CCC < 0.35,
+    `dask.config.set(num_workers=8)`), through the PUBLIC
+    `EBSD.hrebsd_dic`; the CPU at the tutorial's `chunksize=16`, the
+    GPU at `chunksize=None` (the default B, 64 at every run here). The
+    engine-only precisions reach the engine by replacing
+    `kikuchipy.signals.ebsd.run_hrebsd_dic` in-process with
+    `functools.partial(run_hrebsd_dic, device_precision=...,
+    seed_precision=...)`, so every other argument is the method's own.
+    far256 = rows 20:36, cols 20:36 (256 points); patch C = rows
+    115:140, cols 100:130 minus the crater (618 points; ledger 84).
+    `nvidia-smi` before every timing: 0 %, and the only compute
+    process an idle Jupyter kernel of another session (pid 19480,
+    `ipykernel_launcher`, 332 MiB, 0 %) until 11:23, none after; no
+    run was contaminated and none was repeated for that reason. Host
+    load (psutil, 1 s sample before each timed run): 0.2 to 20.4 %
+    (the 20.4 % before the first mixed complex64 map run, entry 112).
+    GPU rows: one warm-up, then best of 3, each combination in its
+    own process. CPU far256: one warm-up then 3 runs in one process.
+    CPU patch C: three runs, each its own process (about 5 min each),
+    the first doubling as the warm-up (the numba cache was already
+    warm on disk from the far256 process); recorded as such.
+
+    | patch | backend, device / seed precision | runs (s) | best | patterns/s | vs same-session CPU |
+    |---|---|---|---|---|---|
+    | far256 | CPU, 8 workers | 15.94, 16.28, 15.92 (warm-up 16.98) | 15.92 s | 16.08 | 1.00x |
+    | far256 | GPU mixed / complex128 | 1.660, 1.947, 1.982 | 1.660 s | 154.2 | 9.59x |
+    | far256 | GPU mixed / complex64 | 1.392, 1.427, 1.540 | 1.392 s | 183.9 | 11.44x |
+    | far256 | GPU float64 / complex128 | 2.973, 3.084, 3.258 | 2.973 s | 86.1 | 5.35x |
+    | far256 | GPU float64 / complex64 | 2.884, 2.936, 2.760 | 2.760 s | 92.7 | 5.76x |
+    | patch C | CPU, 8 workers | 285.12, 290.79, 307.81 | 285.12 s | 2.17 | 1.00x |
+    | patch C | GPU mixed / complex128 | 10.859, 10.877, 10.972 | 10.859 s | 56.9 | 26.3x |
+    | patch C | GPU mixed / complex64 | 9.739, 9.787, 9.533 | 9.533 s | 64.8 | 29.9x |
+    | patch C | GPU float64 / complex128 | 79.932, 79.668, 79.529 | 79.529 s | 7.8 | 3.59x |
+    | patch C | GPU float64 / complex64 | 79.461, 79.573, 79.160 | 79.160 s | 7.8 | 3.60x |
+
+    Every run: far256 256/256 converged, 2231 iterations (median 9, max
+    10), residual median 0.04269; patch C 618/618 converged, median 76,
+    max 497 iterations, residual median 0.11426, iteration total 54032
+    (CPU and GPU float64) and 54033 (GPU mixed, entry 113). The CPU
+    patch C (285 to 308 s) ran faster than ledger 84's 338.3 s; the
+    three CPU patch C runs are bitwise identical to each other.
+    **GO/NO-GO FLOOR (E7): PASS.** Best GPU on far256 at the default
+    precisions (mixed, complex128) 154.2 patterns/s against the
+    same-session 8-worker CPU's 16.08: 9.6x; every one of the four
+    combinations clears it (lowest 86.1 patterns/s, float64
+    complex128, 5.35x).
+    Against the prototype expectation (ledger 97, DEVICE ONLY): far256
+    395 and 947 patterns/s, patch C 212 and 300 (mixed). Shortfall
+    explained by two measured terms. (a) Per-call fixed costs: on
+    far256 the device sections (`_gpu._device_batch`, 4 batches) are
+    busy 0.79 s (mixed complex128, about 324 patterns/s device only)
+    and 0.41 s (complex64, about 624), the rest of the 1.4 to 2.0 s is
+    the 0.37 to 0.45 s before the first device section (graph, first
+    read) plus about 0.55 s outside `_compute_map` (session build,
+    reference state). (b) LOCKSTEP WITHOUT RETIRED-SLOT SAVINGS: each
+    batch iterates until its slowest slot finishes, and by inspection
+    `_batched.run_lockstep` calls `kernels.gather` and
+    `kernels.pixel_sums` without the active mask, so a retired slot
+    costs what an active one does (the prototype's retired slots were
+    nearly free, entry 91). Patch C's 10 batches run 2703 lockstep
+    iterations, 172992 slot-iterations at B = 64 for 54033 real ones
+    (lockstep efficiency 0.31; far256 0.89). Per lockstep iteration at
+    B = 64: mixed about 3.5 ms (9.34 s busy / 2703), float64 about 29
+    ms (78.3 s / 2703), i.e. 0.45 ms per slot-iteration in float64
+    against the prototype's 0.270 ms per ACTIVE pattern-iteration.
+    That is why float64 patch C runs at 7.8 patterns/s against the
+    ledger 98 projection of about 39. Recorded as a D21.18 follow-up
+    candidate (mask retired slots in `gather` and `pixel_sums`, or
+    compact or refill slots), not changed here. The E3 B sweep on
+    far256 and patch C (entry 105 (iv)) was NOT run in this record.
+
+112. **The whole map on the GPU and the E8 device-wait fraction
+    (requirements D21.11, D21.16; plan 11 item 7; E8).** Same recipe
+    and conditions as entry 111, all 57772 fitted points (728
+    masked), one run per combination in the chain `perf\maps.sh`
+    (10:44 to 11:49), then one repeat of each mixed combination with
+    a host-memory sampler (psutil RSS every 0.5 s; 11:59 to 12:11).
+    "Compute" is `_gpu._compute_map` (graph build plus the dask
+    compute); "busy" is the summed wall time of the 903
+    `_gpu._device_batch` sections; wait fraction = 1 - busy /
+    compute. CPU reference: ledger 82, 8424 s (2.34 h, 6.86
+    patterns/s) on 8 workers, 2026-09-08, NOT same-session.
+
+    | device / seed | wall | patterns/s | vs CPU (ledger 82) | conv. / not | its. median / max / total | residual median | first section after | wait fraction (after first section) | host load |
+    |---|---|---|---|---|---|---|---|---|---|
+    | mixed / complex128 | 375.7 s | 153.8 | 22.4x | 57685 / 87 | 14 / 500 / 1110801 | 0.046258 | 76.1 s | 21.7 % (0.44 %) | 0.8 % |
+    | mixed / complex128, repeat | 358.8 s | 161.0 | 23.5x | 57685 / 87 | 14 / 500 / 1110801 | 0.046258 | 64.6 s | 19.3 % (0.4 %) | 6.8 % |
+    | mixed / complex64 | 261.7 s | 220.8 | 32.2x | 57685 / 87 | 14 / 500 / 1110804 | 0.046258 | 60.4 s | 24.4 % (0.59 %) | 20.4 % |
+    | mixed / complex64, repeat | 235.4 s | 245.4 | 35.8x | 57685 / 87 | 14 / 500 / 1110804 | 0.046258 | 43.4 s | 19.8 % (0.6 %) | 8.7 % |
+    | float64 / complex128 | 1553.6 s | 37.2 | 5.42x | 57685 / 87 | 14 / 500 / 1110803 | 0.046258 | 57.7 s | 3.9 % (0.08 %) | 4.8 % |
+    | float64 / complex64 | 1489.7 s | 38.8 | 5.65x | 57685 / 87 | 14 / 500 / 1110806 | 0.046258 | 65.2 s | 4.7 % (0.16 %) | 3.4 % |
+
+    AGGREGATE PARITY WITH LEDGER 82 (E12's map-level clause): every
+    run converges 57685 points and leaves 87 (all at the 500 cap),
+    iterations median 14 and max 500, residual median of converged
+    points 0.04626, exactly ledger 82's counts at all four
+    combinations; iteration totals 1110801 to 1110806 (prototype
+    1110802 and 1110805, ledger 97). So the map-level clause of the
+    E12 trigger does NOT fire. Between GPU runs (`perf\mapcmp.py`):
+    complex64 against complex128 differ at 7 points by one iteration,
+    39 homographies are not bitwise equal, 12 differ by more than 1e-4
+    px (max 5.98e-4 px, below `min_step`), 0 convergence flips, at
+    both device precisions, the ledger 94 numbers exactly; mixed
+    against float64 (complex128): 6 points differ by one iteration, 0
+    flips, 6 points over 1e-4 px (max 8.5e-4 px), median corner
+    difference 4.2e-8 px.
+    Against the expectation per precision (D21.16): mixed 347 and 628
+    patterns/s (prototype, dedicated reader, B = 128) against 154 to
+    161 and 221 to 245 measured, 2.2x to 2.6x short; float64 about
+    131 and 158 (projection) against 37.2 and 38.8, 3.5x to 4.1x
+    short. Both shortfalls are the two terms of entry 111: lockstep
+    efficiency 0.41 on the map (903 batches, 42292 lockstep
+    iterations, 2706688 slot-iterations for 1110801 real; 20 batches
+    hold a point at the 500 cap and run all 64 slots for 500
+    iterations), about 35 ms per lockstep iteration in float64
+    (1490.5 s busy / 42292) and about 6.9 ms in mixed, and the
+    start-up wait below. A shortfall is a pass with the gap explained
+    (D21.16).
+    **E8: the device-wait fraction of the v1 read route on the default
+    combination (mixed, complex128) is 21.7 % and 19.3 % (complex64
+    24.4 % and 19.8 %), above the about-10 % threshold, so the E8
+    follow-up (dedicated reader, pinned or double-buffered upload) is
+    TRIGGERED.** The wait is NOT streaming starvation: after the
+    first device section the device is busy 99.4 to 99.9 % of the
+    time; all of the wait is the 43 to 76 s before the first device
+    section starts. Cause, probed (`perf\e8_probe.py`,
+    `perf\e8_order.py`, CPU only, no GPU): the gather graph
+    (`s.data.reshape(-1, 512, 622)[fit_indices].rechunk(64)`, 128972
+    tasks) builds in 0.13 s and the threaded scheduler is running in
+    5 s, but it completes the 903 batch blocks in an order unrelated
+    to batch number (median position error 565); batch 0 is the
+    1772nd of 1806 matched block completions (the probe's callback
+    matched two per batch), at 43.3 s of a 43.8 s read.
+    `_OrderedDevice` runs batches strictly in order, so the device
+    waits for nearly the whole map to be read, and the blocks that
+    arrive early are held in `pending`: the process RSS peaked at
+    **15.9 GB** (complex64 repeat) and **15.2 GB** (complex128 repeat)
+    on this 32 GB machine, against 2.4 to 3.5 GB when the first
+    section started. That host-memory peak is a SECOND finding for the
+    review gate (a whole-map run holds most of the 18.4 GB map in RAM;
+    on a smaller host or a larger map it would fail), and a fix to
+    the read order (a reader that walks batches in order, or bounding
+    `pending`) addresses both. Nothing changed here.
+
+113. **Real-data per-point parity, V9(q) and E12 (requirements D21.8;
+    plan 11 item 7).** RECIPE: `perf\parity.py` on the per-point arrays
+    of the first timed run of each entry 111 row, GPU against the CPU
+    (far256 against `far256_cpu`, patch C against the first CPU run,
+    which is bitwise equal to the other two); the homography metric is
+    the V2 corner displacement of `W(h_cpu)^-1 W(h_gpu)` over the
+    PC-centred subregion corners of each point's own PC (border 0.05);
+    the bands are the pinned V9(f) constants `GPU_PARITY_H_TOL_MIXED =
+    2.5e-6` px, `GPU_PARITY_H_TOL_F64 = 7e-12` px,
+    `GPU_PARITY_RESIDUAL_RTOL = 4.5e-6` with `ATOL = 6e-14`.
+
+    | patch | device / seed | both conv. | flips | its. differing (max) | corner max / median, px | max abs h component diff / median | over the h band | residual rel. max | over residual band |
+    |---|---|---|---|---|---|---|---|---|---|
+    | far256 | mixed / c128 | 256/256 | 0 | 0 | 4.90e-8 / 2.11e-8 | 1.26e-8 / 4.3e-9 | 0 | 1.04e-8 | 0 |
+    | far256 | mixed / c64 | 256/256 | 0 | 0 | 4.90e-8 / 2.11e-8 | 1.26e-8 / 4.3e-9 | 0 | 1.04e-8 | 0 |
+    | far256 | float64 / c128 | 256/256 | 0 | 0 | 3.60e-13 / 1.27e-13 | 9.1e-15 / 1.5e-15 | 0 | 5.7e-15 | 0 |
+    | far256 | float64 / c64 | 256/256 | 0 | 0 | 3.60e-13 / 1.27e-13 | 9.1e-15 / 1.5e-15 | 0 | 5.7e-15 | 0 |
+    | patch C | mixed / c128 | 618/618 | 0 | 1 (+1) | **7.33e-4** / 6.02e-7 | 2.30e-5 / 1.47e-7 | **1** | 1.53e-6 | 0 |
+    | patch C | mixed / c64 | 618/618 | 0 | 1 (+1) | **7.33e-4** / 6.02e-7 | 2.30e-5 / 1.47e-7 | **1** | 1.53e-6 | 0 |
+    | patch C | float64 / c128 | 618/618 | 0 | 0 | **6.61e-11** / 1.80e-13 | 2.6e-12 / 3.6e-15 | **1** | 3.3e-12 | 0 |
+    | patch C | float64 / c64 | 618/618 | 0 | 0 | **6.61e-11** / 1.80e-13 | 2.6e-12 / 3.6e-15 | **1** | 3.3e-12 | 0 |
+
+    On both patches the complex64 GPU outputs are BITWISE equal to the
+    complex128 ones at each device precision (homographies and
+    iteration counts), so the seed precision changes nothing on these
+    874 points (the map-level complex64 differences of entry 112 lie
+    elsewhere). The two exceedances, one point each:
+    - mixed, point (125, 100): the CPU stops at 51 iterations with
+      `norm_dp` 9.9988e-4, just under `min_step = 1e-3`; the GPU's
+      step there is a last-bit above it, so it takes one more
+      iteration (52, final `norm_dp` 7.34e-4) and lands 7.33e-4 px
+      away, the D21.8(e) mechanism (an exit-test flip into +-1
+      iteration), not a kernel error. Every other point is within
+      1.47e-6 px (point (124, 108)), inside the 2.5e-6 band.
+    - float64, point (130, 109): 84 iterations on both, `norm_dp`
+      agreeing to 1.7e-13, corner difference 6.61e-11 px, 9.4x the
+      7e-12 band, which was pinned on synthetic fixtures of at most
+      tens of iterations; the next worst point is 1.88e-12 px (378
+      iterations, within the band). Accumulated rounding over a long
+      real-data fit, 6.6e-11 px in absolute terms.
+    No residual exceeds its band, no convergence flag flips, and the
+    far256 patch is clean at every combination.
+    **E12 VERDICT: the trigger FIRES by its letter** ("a disagreement
+    beyond the V9(f) bands there"): one of 618 patch C points exceeds
+    the h band at each device precision. Per the instruction for this
+    record the 2.34 h CPU map re-run was NOT started; the decision goes
+    to the main session and Johan, with the two diagnoses above (one
+    exit-test iteration flip under mixed; one long fit 9.4x over a
+    synthetic-pinned float64 band) and the map-level aggregates of
+    entry 112, which equal ledger 82 exactly.
+
+114. **E13 at whole-map level, and the record's verdicts (requirements
+    D21.1, D21.16; plan 11 item 7; E13).** From entry 112, same
+    machine and session, end-to-end wall time:
+    - complex64 over complex128, device precision mixed: **1.44x** on
+      the first pair (375.7 / 261.7 s, the complex64 run under 20.4 %
+      host load) and **1.52x** on the repeat pair (358.8 / 235.4 s);
+      best over best 1.52x; device-busy ratio 1.48x and 1.54x.
+      Float64: **1.04x** (1553.6 / 1489.7 s, one pair). So under mixed
+      the gain sits AT the about-1.5x line (1.44x to 1.52x, borderline,
+      not clearly above it); under float64 it is far below. On the
+      synthetic F3 x4 batch it was 1.19x to 1.20x (entry 105 (vi)).
+    - mixed over float64 (complex128): **4.13x** (1553.6 / 375.7 s) and
+      4.33x against the repeat; complex64 6.33x. This one is well above
+      1.5x.
+    E13's measured rule ("a gain above about 1.5x on the record making
+    a public keyword ... the proposal"): it is MET for
+    `device_precision` (mixed over float64, 4.1x to 4.3x) and
+    BORDERLINE for `seed_precision` (1.44x to 1.52x under mixed, 1.04x
+    under float64). Recorded only; the main session decides any public
+    keyword.
+    Verdicts of this record: go/no-go floor PASS (9.6x on far256);
+    E12 trigger fires on patch C (one point per device precision,
+    diagnosed above; no CPU re-run started); map aggregates equal
+    ledger 82 at all four combinations; E8 triggered (19 to 24 %
+    start-up wait from out-of-order dask reads, with a 15 to 16 GB
+    host RSS peak); E13 met for the device precision, borderline for
+    the seed precision; two performance follow-up candidates
+    (retired-slot masking in the lockstep, in-order reading) recorded
+    for D21.18. No repository source or test file was changed by this
+    record.

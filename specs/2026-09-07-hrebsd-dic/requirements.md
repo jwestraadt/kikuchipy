@@ -2820,6 +2820,20 @@ approval"); MTP numbers are filled at the Stage E gates.
   FP64 on consumer Ada is 1/64 of FP32 by vendor specification, not
   measured; the spec relies only on the measured f64-to-mixed ratio
   (11.9x per iteration).
+  **AMENDED 2026-10-07 (review gate; ledgers 105 and 110).** On
+  machine A the pinned overlay resolves NVRTC 13.1, and cuFFT and
+  cuBLAS 13, from the CUDA 13.1 Toolkit on PATH, so every device pin
+  was measured with Toolkit libraries. A Toolkit-free run needs the
+  overlay plus `nvidia-cuda-runtime-cu12==12.9.79` and
+  `nvidia-cuda-nvrtc-cu12==12.9.86` AND the overlay's
+  `nvidia\*\bin` directories on PATH before cupy is imported
+  (`cuda.pathfinder` 1.8.3 searches only `site.getsitepackages()`,
+  which under `uv run --with` is the build environment); in that
+  form the gated `--weekly` suite gave 487 passed with NVRTC 12.9 and
+  no Toolkit DLL loaded (ledger 110), so the pins do not depend on
+  the Toolkit. The gate commands stay the overlay above; the
+  Toolkit-free form is the recorded alternative (plan 11.3 (f)), and
+  the stage-(c) message names both extra wheels (ledger 106).
 - **D21.16 Performance record (RECORDED, never a CI or test
   gate)**: re-measured on the implementation and recorded in
   validation.md with recipe and machine: the far-field patch (rows

@@ -3571,6 +3571,36 @@ class TestBatchedCoreNumpy:
                 np.isnan(twin["norm_dp"]), np.isnan(np.asarray(cpu["norm_dp"]))
             )
 
+    @pytest.mark.parametrize("precision", ["float64", "mixed"])
+    @pytest.mark.parametrize("border", [0.05, 0.1])
+    def test_initial_shifts_are_the_masked_mean(self, border, precision):
+        # Added 2026-10-07 (M28-M53 fix round, M42c and M49b): K0 of
+        # every slot is the mean of its preprocessed target over the
+        # subregion MASK (not the whole pattern), rounded to f32 under
+        # "mixed" (D21.4); the oracle is the boolean-mask mean per
+        # target.  Only ``kernels.precision`` is read, so a namespace
+        # carrying "mixed" pins the shared function without a device.
+        # The fixture's masked means (about 0.8 and 1.2) are far from
+        # its whole-pattern means (about 0.035) and from 0
+        f4 = f4_batch()
+        state = fixture_state(f4, border=border)
+        batch = numpy_seed_batch(state, np.asarray(f4["targets"]))
+        resident = _batched.build_resident(numpy_seed_context(), state)
+        ctx = _batched.SeedContext(
+            np, np.fft, types.SimpleNamespace(precision=precision)
+        )
+        shifts = np.asarray(_batched.initial_shifts(ctx, resident, batch))
+        expected = np.array([t[state.mask].mean() for t in batch.targets])
+        whole = np.asarray(batch.targets).reshape(len(expected), -1).mean(axis=1)
+        assert shifts.dtype == np.float64 and shifts.shape == expected.shape
+        assert (np.abs(expected - whole) > 0.5).all()  # premise
+        if precision == "mixed":
+            assert np.array_equal(shifts, shifts.astype(np.float32).astype(np.float64))
+            half_ulp = np.spacing(np.abs(expected).astype(np.float32)) / 2.0
+            assert (np.abs(shifts - expected) <= 1.001 * half_ulp).all()
+        else:
+            np.testing.assert_allclose(shifts, expected, rtol=1e-13, atol=0.0)
+
     @staticmethod
     def kernel_inputs(n_slots=3):
         f4 = f4_batch()
@@ -6085,6 +6115,73 @@ class TestGatedKernelAB:
         assert sums.dtype == np.float64
         criterion = ctx.kernels.final_criterion(resident, values, shifts)
         assert criterion.dtype == np.float64
+
+    def test_the_mixed_update_keeps_k_at_pixel_precision(self, cupy_gpu):
+        # Added 2026-10-07 (M28-M53 fix round, M42a): the mixed build's
+        # updated shift K + mean is rounded to f32 (D21.4), so the pixel
+        # pass represents it exactly; the update moved every K
+        cp = cupy_gpu
+        state, coefficients, matrices = _ab_inputs()
+        ctx = _device_context(cp, "mixed")
+        resident = _batched.build_resident(ctx, state)
+        values, _ = ctx.kernels.gather(
+            resident, cp.asarray(coefficients), cp.asarray(matrices)
+        )
+        # a deliberately poor f32-exact K0, so the update's mean is large
+        start = np.round(cp.asnumpy(values).astype(np.float64).mean(axis=1)) + 0.5
+        sums = ctx.kernels.pixel_sums(resident, values, cp.asarray(start))
+        options = {
+            "min_step": DEFAULT_FIT_OPTIONS["min_step"],
+            "step_scale": DEFAULT_FIT_OPTIONS["step_scale"],
+            "max_iterations": DEFAULT_FIT_OPTIONS["max_iterations"],
+        }
+        lockstep = _lockstep(cp, matrices)
+        lockstep.shifts = cp.asarray(start)
+        ctx.kernels.reduce_solve_update(resident, sums, lockstep, options)
+        device = _lockstep_to_host(cp, lockstep)
+        assert not device["failed"].any()
+        shifts = device["shifts"]
+        assert (shifts != start).all()
+        assert np.array_equal(shifts, shifts.astype(np.float32).astype(np.float64))
+
+    @pytest.mark.parametrize("device_precision", FROZEN_DEVICE_PRECISIONS)
+    def test_no_band_pass_uploads_the_raw_patterns(self, cupy_gpu, device_precision):
+        # Added 2026-10-07 (M28-M53 fix round, M46a): with
+        # ``filter_cutoffs=(None, None)`` the cupy sub-batch skips the
+        # FFT round trip, so its targets are the raw patterns as f64,
+        # bitwise (the host ``preprocess`` returns them unchanged too);
+        # with a band-pass the round trip runs and changes them
+        cp = cupy_gpu
+        fixture = f4_dc_batch()
+        raw = np.asarray(fixture["patterns"])[:2]
+        session = _gpu._make_session(
+            "cupy",
+            2,
+            device_precision=device_precision,
+            seed_precision="complex128",
+        )
+        try:
+            ctx = _batched.SeedContext(session.xp, session.fft, session.kernels)
+            for cutoffs, unchanged in (((None, None), True), ((0.05, None), False)):
+                state = fixture_state(fixture, filter_cutoffs=cutoffs)
+                resident = _batched.build_resident(ctx, state)
+                targets, _ = _gpu._prepare_sub_batch(session, state, resident, raw)
+                targets = cp.asnumpy(targets)
+                host = np.stack(
+                    [
+                        preprocess(p, transfer_function=state.transfer_function)
+                        for p in raw
+                    ]
+                )
+                assert targets.dtype == np.float64
+                if unchanged:
+                    assert np.array_equal(host, raw.astype(np.float64))
+                    assert np.array_equal(targets, raw.astype(np.float64))
+                else:
+                    assert not np.array_equal(targets, raw.astype(np.float64))
+                    assert np.abs(targets - host).max() <= 1e-9 * np.abs(host).max()
+        finally:
+            session.close()
 
 
 class TestGatedBatchedSemantics:
