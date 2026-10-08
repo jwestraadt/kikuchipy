@@ -52,9 +52,7 @@ argument or a local alias taken before a loop.
 
 """
 
-import functools
 import warnings
-import weakref
 
 import numpy as np
 
@@ -182,10 +180,22 @@ class FourierMellinState:
 # ------------------------- Angle (D22.3) ----------------------------- #
 
 
-@functools.lru_cache(maxsize=None)
+# The read-only host look-up tables, one per crop shape (D22.3.3).  A
+# plain dictionary: the D21.13 import audit allows no ``functools``
+_HOST_LUTS: dict = {}
+
+
 def _host_lut(sr: int, sc: int) -> tuple[np.ndarray, np.ndarray]:
     """Return the read-only host look-up table of :func:`fourier_mellin_lut`,
     built once per crop shape (D22.3.3)."""
+    key = (int(sr), int(sc))
+    if key not in _HOST_LUTS:
+        _HOST_LUTS[key] = _build_host_lut(*key)
+    return _HOST_LUTS[key]
+
+
+def _build_host_lut(sr: int, sc: int) -> tuple[np.ndarray, np.ndarray]:
+    """Build the host look-up table of :func:`_host_lut`."""
     m = min(sr, sc)
     n_rho = int(np.floor((FM_RHO_MAX - FM_RHO_MIN) * m + 1e-9)) + 1
     theta = np.arange(FM_N_THETA, dtype=np.float64) * np.pi / FM_N_THETA
@@ -571,15 +581,24 @@ def _box_resident(ctx, state):
     return box
 
 
-# One upload of the host look-up table per context and crop shape
-# (D22.3.3: uploaded once per device session)
-_LUT_UPLOADS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+# The attribute of a ``SeedContext`` holding its uploaded look-up
+# tables, one upload per context and crop shape (D22.3.3: uploaded once
+# per device session, released with the context)
+_CONTEXT_LUTS_ATTRIBUTE: str = "_fourier_mellin_luts"
 
 
 def _context_lut(ctx, sr: int, sc: int):
     """Return the look-up table of ``(sr, sc)`` in the namespace of
-    *ctx*, uploaded once per context."""
-    per_context = _LUT_UPLOADS.setdefault(ctx, {})
+    *ctx*, uploaded once per context (cached on the context itself, so
+    it lives and dies with it; a context that refuses the attribute
+    uploads per call)."""
+    per_context = getattr(ctx, _CONTEXT_LUTS_ATTRIBUTE, None)
+    if per_context is None:
+        per_context = {}
+        try:
+            setattr(ctx, _CONTEXT_LUTS_ATTRIBUTE, per_context)
+        except AttributeError:  # pragma: no cover - a slotted context
+            pass
     key = (int(sr), int(sc))
     if key not in per_context:
         indices, weights = fourier_mellin_lut(sr, sc)

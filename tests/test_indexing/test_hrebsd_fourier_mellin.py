@@ -690,7 +690,14 @@ FM_ANGLE_PARITY_DEG = 3e-7
 # acceptance flips, a COUNT budget: 0 at the seam on every key; 1 end
 # to end, at ("mixed", "complex128") only, on the REFERENCE point under
 # "always" (a rounding-level tie, criteria 3.05e-15 against 3.11e-15
-# through the f32 gather; 1.76e-16 both on the CPU); pinned at 2x
+# through the f32 gather; 1.76e-16 both on the CPU); pinned at 2x.
+# Re-measured 2026-10-08 (integration close, machine A, final code,
+# scratch ``close/flip.py``): the seam count is 1, not 0, at ("mixed",
+# "complex128") route 1 on G1 -- the zero-twist slot, criteria 3.111e-15
+# (h_T) against 3.017e-15 (h_FM) through the f32 gather, an exact tie of
+# 1.765e-16 on the CPU route; 0 on every other key.  Worst count 1 at
+# the seam and end to end, so the 2x pin stands (a count budget, no
+# mutant killed by it)
 FM_ACCEPT_FLIP_COUNT = 2
 # G8 retry-subset flips: 0 at both device precisions; pinned AT 0
 FM_RETRY_FLIP_COUNT = 0
@@ -3912,7 +3919,7 @@ FK_PLANTED_TWIST_DEG = 3.0
 FK_MIXED_OFF_CONVERGED = (True, True, True, False, False)
 FK_PREMISE_CRITERION_ATOL = 5e-3
 
-# FIXME-pin: the number of SECOND fits the retry gives G8's constant
+# Formerly a FIXME-pin: the number of SECOND fits the retry gives G8's constant
 # pattern under the default band-pass (V10(i); the premise "its forced
 # FM estimate fails" does NOT hold there, the MEASURED block's
 # ``G8_CONSTANT_TRANSLATION_ROW_FINITE``): 1 without a guard (the forced

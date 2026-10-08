@@ -58,7 +58,6 @@ both backends and a develop-side rename fails loudly at this import.
 
 import gc
 import sys
-import threading
 
 import dask.array as da
 from dask.diagnostics.progress import ProgressBar
@@ -932,7 +931,7 @@ def _run_chunks_gpu(
                 )
                 # The final B of this call, which a later retry pass
                 # reuses as its explicit ``chunksize`` (D22.8)
-                _RUN_STATE.batch_size = int(batch_size)
+                _RUN_STATE["batch_size"] = int(batch_size)
                 return packed
             finally:
                 # Per call (D21.9.1): disposed on success, on an
@@ -951,22 +950,25 @@ def _run_chunks_gpu(
 
 
 # The final device batch size of the last :func:`_run_chunks_gpu` call
-# that completed in this thread (D22.8: the retry pass runs at the first
-# pass's final B), read through :func:`_last_batch_size`
-_RUN_STATE = threading.local()
+# that completed (D22.8: the retry pass runs at the first pass's final
+# B), read through :func:`_last_batch_size`.  A module dictionary, not
+# thread-local storage: the D21.13 import audit allows no
+# ``threading``, and one run's passes are called in sequence from the
+# calling thread, the device itself serialised by its lock
+_RUN_STATE: dict = {}
 
 
 def _last_batch_size(default: int) -> int:
     """Return the final device batch size of the last
-    :func:`_run_chunks_gpu` call completed in this thread, or *default*
-    when there is none (requirements D22.8)."""
-    return int(getattr(_RUN_STATE, "batch_size", default))
+    :func:`_run_chunks_gpu` call completed, or *default* when there is
+    none (requirements D22.8)."""
+    return int(_RUN_STATE.get("batch_size", default))
 
 
 def _reset_last_batch_size() -> None:
-    """Forget the recorded final batch size of this thread, so that a
-    stale value of an earlier run is never reused."""
-    _RUN_STATE.__dict__.pop("batch_size", None)
+    """Forget the recorded final batch size, so that a stale value of an
+    earlier run is never reused."""
+    _RUN_STATE.pop("batch_size", None)
 
 
 def _batch_chunks(state_of_point: np.ndarray, batch_size: int) -> tuple[int, ...]:

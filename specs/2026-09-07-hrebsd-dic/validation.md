@@ -8490,3 +8490,318 @@ scaffold's own recipe.
     `build_fourier_mellin_state` (non-finite reference profile) and the
     no-point-group warning of the gate, which the review gate's tests
     must reach.
+
+136. **Integration close: the deliverables audit (plan 12 Deliverables
+    and item 2; requirements D22.1 to D22.18).** The implementation
+    workflow of 2026-10-08 07:12 to 08:05 lost its three implementer
+    agents (the `_fourier_mellin` module and gate; the engine, seam,
+    CPU route and retry; the GPU wiring) to a network outage at 07:33
+    to 07:39 before they reported, and its integrator was stopped at
+    08:05; their work was checkpointed uncommitted-then-WIP at
+    46a9b6d8, and only implementer A's ledger entry (135) was written.
+    This close audited the tree against plan 12 item by item, reading
+    the code, and found every item PRESENT; no functional gap needed
+    implementing.
+    ONE conformance defect was found by the final `-k hrebsd` run and
+    FIXED here: D22.17 (no import outside the D21.13 audit's allowed
+    tuple) was violated by three standard-library imports the
+    interrupted run added -- `functools` (the host look-up-table
+    `lru_cache`) and `weakref` (the per-context upload cache) in
+    `_fourier_mellin.py`, and `threading` (a thread-local for the
+    first pass's final B) in `_gpu.py`; `TestImportAudit::
+    test_no_new_required_dependency` failed on `import functools`.
+    Replaced, behaviour unchanged: a module dictionary `_HOST_LUTS`
+    keyed by crop shape; the per-context uploads cached on the
+    `SeedContext` itself (attribute `_fourier_mellin_luts`, so they
+    live and die with the context, as the weak-key cache did); and a
+    module dictionary `_RUN_STATE` for the final B (one run's passes
+    are sequential calls from one thread). Every suite was re-run
+    after the fix (entry 139). Items audited:
+    - D22.1 / D22.11: `fourier_mellin="off"` keyword on both entries;
+      `_check_fourier_mellin` after the `backend` string check and
+      before every `"gpu"`-only check, in the frozen order (value with
+      the D21.1 message shape, a bool refused; the D22.11 combination
+      raise; `"auto"` without `xmap`); the D21.12 literal amended
+      (`SEED_FROM_NEIGHBORS_GPU_MESSAGE`, the "is planned" clause gone);
+      the FM settings never enter `fit_options`.
+    - D22.3: `fourier_mellin_lut` in physical frequency, built once per
+      crop shape on the host (read-only, `lru_cache`) and uploaded once
+      per context (weak-key cache); the exact frequency-domain Hann
+      stencil on a NEW complex128 array; `log1p(|X_w|)`; the radial
+      mean, zero mean and unit norm (NaN on a zero or non-finite norm);
+      the circular ZNCC by length-360 FFTs; `fourier_mellin_peak` with
+      the window, first-maximum (lowest output index) ties and the
+      raw-neighbour parabolic offset.
+    - D22.4: the box resident (every pixel of the D5 box, dead band
+      included); `fourier_mellin_derotate` through `kernels.gather`
+      about the grain reference PC; `fourier_mellin_translate` reusing
+      the Stage E body `_batched._translation_rows` unchanged on the
+      de-rotated crops; `fourier_mellin_partial_row`, `W0 = R T(t)`.
+    - D22.5: `fourier_mellin_criteria` through `kernels.gather` on
+      `fm_state.resident` with `_batched.initial_shifts` K and
+      `kernels.final_criterion`, called twice at the full P only when a
+      slot carries route 1; strict `<`, ties and NaN keep `h_T`; every
+      failure returns `h_T` with `applied` False; a non-finite `h_T` is
+      never rescued.
+    - D22.6: `SeedState.fourier_mellin`, `SeedBatch.outputs`, the route
+      check on the host before any device work, `h_T` first, the masked
+      full-P branch reached through the module object, the outputs
+      rule (angle NaN on route-0 and padded slots); every listed stage
+      reached through module globals; no module-scope `_engine`,
+      `_batched` or cupy import in `_fourier_mellin`.
+    - D22.7: `twist_about_detector_normal`, `fourier_mellin_routes`
+      (fails open on NaN), the frozen warning issued by the engine on
+      the input condition `|twist| < 1e-9` (never float equality).
+    - D22.8 / D22.10: the CPU route at P = 1 inside `_fit_chunk`, its
+      route block paired by the Stage D blockwise index
+      (`_fit_chunk_routed`), the numpy `SeedState` with its FM state
+      built once per reference with a routed point, before the graph;
+      a route-1 point whose FM row lost runs `h0=None` (bitwise
+      `"off"`), a forced slot not applied is not fitted; 14-wide rows
+      on FM runs only; the retry under both modes over the not
+      converged, translation-seeded points of a grain with an FM state
+      (NaN-`h` points included; the D22.8 option-A amendment: no
+      degenerate-crop guard), replacing wholly only when converged,
+      the device retry at the first pass's FINAL B (`_last_batch_size`,
+      thread-local, reset before the first pass).
+    - D22.9: the two props and the seed codes from `fm_applied` of the
+      pass whose result is stored; `FOURIER_MELLIN_PROP_NAMES`.
+    - D22.11 / D22.18 device: `_run_chunks_gpu(seed_extras=)` sliced per
+      sub-batch slot (0 on padded slots); the lazy FM state in the
+      session, built once per residency the first time a batch of the
+      grain carries a nonzero route, evicted with the resident; forced
+      slots not applied made inactive before the lockstep; the 14-wide
+      `row_slots`; `fourier_mellin=` keyword-only on
+      `_vram_model_terms`, `_vram_model_bytes` and
+      `_default_batch_size`, the latter choosing B from the `"off"`
+      model first and halving only where the FM terms do not fit; the
+      engine passes `fourier_mellin=True` iff a route flag is nonzero.
+    - `ebsd.py`: the keyword forwarded, `FOURIER_MELLIN_PROP_NAMES`
+      appended to the `_engine` import block, the prop loop extended,
+      and the D22.16 docstring (the entry, the Notes paragraph with
+      both capture numbers, the props and the cost, the two `Raises`
+      entries, the warning, the rewritten Limitations paragraph; no
+      stage letters); the D16 information message's FM host-bytes line.
+    NOT done here, by this close's scope (no `doc/` or CHANGELOG edit
+    allowed): the CHANGELOG entry, the `hrebsd_dic.ipynb` bullet and
+    the `hrebsd_si_indent.ipynb` cell of D22.16, which plan 12 item 2
+    places after the performance record anyway. The real-data
+    measurements of plan 12 item 3 (V10(m)(1) frame oracle, V10(m)(2)
+    whole-map record) are NOT part of this close either.
+    Test-module edits by the interrupted run, recorded here as the
+    ledger they cite: (i) TEST BUG, provable: `fk_spies` installed over
+    a first `fk_spies` captured the first's `(*args, **kwargs)` spies,
+    so `inspect.signature(...).bind` could not bind `fit_indices`; each
+    spy now carries `__wrapped__`, which `inspect.signature` follows
+    (no assertion changed); (ii) every `FIXME-pin` placeholder replaced
+    by a measured literal with its recipe and machine-A comment; (iii)
+    `FM_G8_CONSTANT_SECOND_FITS = 1`, the DECIDED option A of plan
+    12.6. This close's own test edits: the `FM_ACCEPT_FLIP_COUNT`
+    comment corrected (entry 137) and the stale "FIXME-pin:" label of
+    the G8 literal's comment reworded; no assertion and no literal
+    changed.
+
+137. **Integration close: every pin re-measured against the FINAL code
+    (46a9b6d8 plus this close's edits of entry 136; machine A CPU and GPU,
+    the recipes of ledger 135 and of the pins' comments, re-run
+    unmodified: scratch `fmA_measure1.py`, `fmA_measure2.py`,
+    `impl_b/m_capture.py`, `impl_b/m_ramp.py`, `impl_b/m_numpy.py`,
+    `integ/parity.py`, `integ/parity2.py`, `integ/e2e.py`,
+    `integ/vram_r.py`, plus `close/flip.py`, `close/fm12.py`,
+    `close/g3db.py` and the gated suite's `record_property` values).**
+    Every number reproduced the interrupted run's to the printed digit;
+    every pin is KEPT (value unchanged), its ~2x margin and its stated
+    kill separation holding:
+    - `FM_ANGLE_TOL_DEG = 0.25`: worst use 0.1155 deg (G1_COMBINED),
+      G1 twists 0.0134, G5 0.0323, projection link 0.0048 (2.2x);
+      FM9's flipped offset 0.4197 (1.68x above the pin).
+    - `FM_ANGLE_TOL_NONSQUARE_DEG = 0.06`: 0.0277 deg (worst of 2 to 20
+      and -8 deg; 2.2x); FM3: 3 x 0.06 =
+      0.18 <= 0.1959.
+    - `FM_ANGLE_TOL_DEADBAND_DEG = 0.25`: 0.0838 deg at `(None, None)`, 0.1193
+      at `(0.05, None)` (2.1x).
+    - `FM_STENCIL_RTOL = 1e-15`: 4.58e-16 (2.2x).
+    - `FM_ANGLE_TOL_BACKGROUND_DEG = 0.5`: 0.117 / 0.177 at `(None,
+      None)`, 0.186 / 0.249 at `(0.05, None)` (2.0x).
+    - `FM_SEED_TOL_PX = 0.45`: 0.102 to 0.221 px (2.03x); separations
+      FM2 0.950 (2.1x above), FM43 4.77, FM38 6.64 px.
+    - `FM_CAPTURE_TOL_PX = 0.2`: worst 0.0912 px (rotation vector (-2,
+      2, 4)), starred arms 0.0170 (2.2x); `FM_CAPTURE_ITERATIONS = 6`:
+      border 0.15 arms 2 to 3 iterations (2x); `FM_FIXED_POINT_TOL_PX =
+      2.5e-5`: worst gap 1.13e-5 px at 20 deg (2.2x); the 30 deg edge
+      29.930 deg, 3 iterations, 0.0326 px.
+    - `FM_RAMP_FAR_TOL_PX = 0.11`: 0.0531 px in 3 iterations under both
+      modes (2.1x); `FM_RAMP_RESCUE_ALWAYS_ITERATIONS = 116` and
+      `FM_RAMP_ALWAYS_CODES` exact (the `"auto"` rescue 113
+      iterations); the constant pattern (index 19) carries code 0 and
+      the retry's finite angle 5.0544 deg under both modes (option A:
+      one zero-iteration refit, first result kept).
+    - `FM_G5_ITERATIONS = 4`, exact. FM12's separations, the
+      NORMALISED cross-power peak (`local_phase_peaks`): G5 `h_T`
+      0.2878 against `h_FM` 0.2528 (the peak would refuse the FM row
+      the criterion keeps; applied True), G6 0.01741 against 0.02057
+      (the peak would keep the FM row the criterion refuses; applied
+      False) -- both orderings hold.
+    - `FM_GATE_TWIST_TOL_DEG = 1e-12`: worst 8.08e-14 deg; the pure
+      out-of-plane arms 4.93e-14 / 4.90e-14 (untilted) and 2.07e-14 /
+      2.98e-14 (tilted). FIXER NOTE (FM36), re-logged: the constant
+      NON-identity map gives a twist of -1.76556e-31 deg on every
+      point, not exactly 0.0 (the all-identity map gives 0.0), so the
+      float-equality kill HOLDS on this machine; the fragility of
+      ledger 135 (a residue 1e16 below D22.7's "order 1e-15") stands
+      for the review gate. Noise population: 32 of 32 routed.
+    - `FM_NUMPY_ANGLE_TOL_DEG = 2e-14`, `FM_NUMPY_ROW_TOL_PX = 1e-12`:
+      NOT bitwise; seed codes equal ([0 0 1 2 0 -1] both), angles
+      within 1.78e-15 deg (11x), converged homographies within 8.53e-14
+      px (12x), iterations equal.
+    - `FM_ANGLE_PARITY_DEG = 3e-7`: worst 5.77e-15 deg at complex128,
+      1.577e-7 at complex64 (G4-poisson50-default; 1.9x), end to end
+      2.30e-8. FM37 separation (all FM arithmetic in complex64/float32,
+      `parity2.py`): G1 4.29e-7, G3 2.27e-7, G4-none-open 1.52e-6,
+      G4-none-default 4.74e-7, G4-poisson50-open 2.83e-6,
+      G4-poisson50-default 1.19e-6 -- above the pin on five of six sets
+      (G1 only 1.43x; G3 below); the stencil-only variant 1.73e-7, below
+      the pin, is killed by the default dtype spy only.
+    - `FM_ACCEPT_FLIP_COUNT = 2`: CORRECTED RECORD. The pin comment said
+      0 flips at the seam on every key; the re-run (and the interrupted
+      run's own `integ/parity.log`) shows ONE seam flip, at ("mixed",
+      "complex128") route 1 on G1, slot 0 (the zero twist): device
+      criteria 3.111e-15 (`h_T`) against 3.017e-15 (`h_FM`) through
+      the f32 gather, an exact tie at 1.765e-16 on the CPU route, so the
+      CPU keeps `h_T` and the device applies `h_FM`; 0 on every other
+      key and route. End to end the same single flip, on the reference
+      point under `"always"` at ("mixed", "complex128"). Worst count 1,
+      so the 2x pin is KEPT; the comment is re-dated with these numbers.
+    - `FM_RETRY_FLIP_COUNT = 0`: retry subsets [3, 4, 5] on both
+      backends at both device precisions, 0 flips.
+    - `FM_VRAM_P_BOUNDS = (5_150_000, 30_900_000)`: per-slot FM term at
+      512x622, 10,304,064 B at complex128 and 15,456,064 B at
+      complex64, equal at both device precisions.
+      `FM_VRAM_R_BOUNDS = (16_400_000, 65_800_000)`: 32,883,712 B high
+      water at every precision (13.31 MB held).
+    - `GATED_FM_ITERATION_DIFF_COUNT = 0`, `GATED_FM_CONVERGED_FLIP_COUNT
+      = 0`: 0 and 0 at all four precision keys; the FM-seeded `h` band
+      1.063e-6 px (mixed) and 8.5e-14 / 4.8e-12 px (float64).
+    - `GATED_FM_BATCH_INVARIANCE_TOL = 0.0`: 0.0 at B = 32, 40 and the
+      default (64) against B = 8, both device precisions.
+    - Device peak (fixer note): `fourier_mellin_peak` under cupy is
+      BITWISE the numpy call on the planted rows (asserted in the gated
+      contract class, green).
+
+138. **Integration close: the synthetic measurement debt of plan 12
+    item 3 (not the real-data V10(m)).** Machine A (i7-13700H,
+    Windows 11 build 26200; worktree .venv, CPython 3.13.12, numpy
+    2.4.6; GPU NVIDIA RTX 2000 Ada Generation Laptop 8 GB, driver
+    595.71, CuPy 14.2.0 on the pinned overlay of D21.15,
+    `KIKUCHIPY_EXPECT_GPU=1`; `nvidia-smi` 332 MiB used, 0 % before
+    every GPU run), scratch `close/`:
+    (i) **The numpy session against the CPU route (D22.14)**, FK-MIXED
+    under `"auto"`: NOT bitwise; seed codes identical, `theta_hat`
+    within 1.78e-15 deg, converged homographies within 8.53e-14 px,
+    iterations equal (pinned at the measured bands, entry 137).
+    (ii) **`theta_hat` parity and acceptance flips on the device (FQ14)**,
+    six seam sets x two device precisions x two routes: complex128
+    worst 5.77e-15 deg, complex64 worst 1.577e-7 deg (the promoted
+    complex64 spectra), routes 1 and 2 identical; applied-row
+    difference at most 4.4e-16 (complex128) and 1.33e-8 (complex64);
+    acceptance flips 1 in 48 keyed runs (entry 137), retry-subset flips
+    0. End to end on the capture map: angle-prop difference 2.2e-15 /
+    2.3e-8 deg, seed-code flips 1 / 0 / 0 / 0, iteration and converged
+    flips 0.
+    (iii) **The FM VRAM terms, calibrated separately (D22.18)**, at
+    512x622 (460x560 crop): per routed slot measured 10.30 MB
+    (complex128) and 15.46 MB (complex64; the promotion copies),
+    against the model's 38.22 / 33.12 MB under `"mixed"` and 40.76 /
+    35.67 MB under `"float64"` (2.1x to 4.0x over, an upper bound);
+    per reference the build high water 32.88 MB (the 4.03 MB look-up
+    table plus 112 B per crop pixel; 28.85 MB with the table cached)
+    against the model's 47.01 MB (`"mixed"`) and 49.56 MB (`"float64"`;
+    1.43x / 1.51x). Whole model against an `"always"` run's high water:
+    293.7 / 555.1 MB (`"mixed"`, B = 8 / 16) and 296.8 / 558.2 MB
+    (`"float64"`) against 726.5 / 1297.7 and 777.5 / 1379.3 MB. Default
+    B on this card (7.7 GB free): 64 under `"off"` and `"auto"` at
+    480x480 and 512x622, all four precision keys (and 64 / [64, 64]
+    sessions in the gated chooser arm); the FM check first changes B
+    only below about 0.5 GB free (4 -> 1 at 512x622).
+    (iv) **B and routing invariance with FM on**: max homography
+    difference 0.0 between B = 8, 32, 40 and 64 under `"auto"` on the
+    ramp map, both device precisions; the 32-slot sub-batch with one
+    slot routed (positions 0, 13, 31) against all 32 routed: row, angle
+    and decision BITWISE at both routes, device and seed precisions
+    (`test_routing_invariance`, green); unrouted ramp points under
+    `"auto"` bitwise `"off"` (3 points).
+    (v) **CPU host bytes per routed reference (D22.10)**: held numpy
+    state per reference 16.00 MB at 480x480 (spectrum 2.85, box 3.56,
+    subregion resident 9.59 MB) and 22.09 MB at 512x622 (3.93, 4.91,
+    13.24 MB); look-up table 3.63 / 3.85 MB once. The information
+    message's note says "up to 18.5 MB ... plus 4.0 MB" and "up to 25.5
+    MB ... plus 4.3 MB" (the pattern-size bound, 1.15x / 1.16x over),
+    an honest upper bound.
+    (vi) **Costs (D22.15), synthetic** -- CPU, one point, best of 5,
+    default threads, at 480x480 (G1, 3 deg) / 512x622 (G3, 8 deg): the
+    whole P = 1 seam call of a routed point 92.7 / 138.6 ms (forced
+    66.7 / 102.9, no acceptance), of which the translation row 28.6 /
+    50.2, the angle alone 10.4 / 14.3 and one criterion 12.3 / 17.1 ms;
+    `fit_pattern` at 0 iterations 35.8 / 62.2 ms; one IC-GN iteration
+    11.5 / 15.9 ms, so a routed point adds about 8.1 / 8.7 iterations
+    (the spec's 7 to 11; absolute times below the spec-gate estimate on
+    this machine). GPU, P = 32, best of 3 after a warm-up: the seam
+    46.5 / 75.6 ms unrouted against 151.3 / 224.0 ms all routed, i.e.
+    3.28 / 4.64 ms per routed slot (the spec's inference was 2.2 to
+    2.5 ms at 480x480). Ramp map (21 points, 480x480) best of 3:
+    `"off"` 0.449 s, `"auto"` 0.964 s, `"always"` 0.965 s under
+    `"mixed"`; 1.607, 2.422, 2.410 s under `"float64"`.
+    (vii) **Per-class fits and the default-suite wall time**:
+    `uv run pytest tests/test_indexing/test_hrebsd_fourier_mellin.py
+    -n 0 -q -p no:cacheprovider`, 140 passed, 118 skipped, 124.7 s in
+    pytest, 130 s wall (the interrupted run's 210.9 s was taken under
+    load). Per class (tests run, seconds; CPU `fit_pattern` calls,
+    numpy-session lockstep slots; counted by a scratch plugin wrapping
+    `_engine.fit_pattern` and `_batched.run_lockstep`, cached runs
+    counted once, in the class that first builds them): Switch 25, 6.7
+    s, 59 fits, 22 slots; Angle 13, 3.3 s, 0; EdgeTreatment 10, 4.5 s,
+    0; SeedRows 18, 9.8 s, 5 fits; Capture 5, 5.8 s, 20 fits;
+    RampRescue 7, 15.9 s, 32 fits; Acceptance 10, 24.7 s, 36 fits, 6
+    slots; Gate 22, 1.4 s, 0; Retry 8, 4.7 s, 10 fits; CpuRoute 6, 8.0
+    s, 47 fits; NumpySession 16, 38.9 s, 0 fits, 74 slots. In all 209
+    CPU fits and 102 lockstep slots, against V10's estimate of about
+    100 fits (the excess is mostly the switch and CPU-route classes'
+    small-map runs); the slowest class is NumpySession at 38.9 s; no
+    class was moved to the weekly marker at this close.
+
+139. **Integration close: the final runs.** Same machine and
+    environment as entry 138.
+    - Default FM suite, `-n 0`: 140 passed, 118 skipped (106 gated, 12
+      weekly), 0 failed (entry 138 (vii)).
+    - Gated FM suite, the pinned overlay, `KIKUCHIPY_EXPECT_GPU=1`, `-n
+      0`: 246 passed, 12 skipped (the weekly arms), 235.8 s; then
+      `--weekly`: 258 passed, 0 skipped, 383.9 s.
+    - Stage E: `tests/test_indexing/test_hrebsd_gpu.py` default at `-n
+      2`: 209 passed, 278 skipped, 113.7 s; gated through the overlay at
+      `-n 0 --weekly`: 487 passed, 0 skipped, 577.4 s.
+    - `uv run pytest tests -k hrebsd -n 2 -q`: before the import fix 1
+      failed (`TestImportAudit::test_no_new_required_dependency`, entry
+      136), 1044 passed, 405 skipped; after it 1045 passed, 405
+      skipped, 0 failed, 351.6 s.
+    - After the import fix every suite above was re-run: default FM
+      suite 140 passed, 118 skipped (183.4 s in pytest, the machine
+      busier; the 124.7 s of entry 138 (vii) is the quiet figure);
+      gated FM 246 passed, 12 skipped; `--weekly` 258 passed, 0
+      skipped; Stage E gated `--weekly` 487 passed, 0 skipped (722.4 s,
+      a stray CPU load during part of it); the Stage E default suite
+      inside the `-k hrebsd` run above. Every recorded
+      measurement of entries 137 and 138 reproduced bitwise (the
+      timings within noise: ramp `"off"` / `"auto"` / `"always"` 0.567
+      / 1.248 / 1.236 s mixed, 1.691 / 2.602 / 2.590 s float64; 3.05 /
+      4.45 ms per routed slot).
+    - `ruff check` and `ruff format --check` on `_engine.py`,
+      `_batched.py`, `_gpu.py`, `_fourier_mellin.py`, `ebsd.py` and the
+      test module: clean.
+    - `"off"` bitwise unchanged on both backends: the `fourier_mellin=
+      "off"` == no-keyword pins (CPU, numpy session, device), the V9
+      `extras == {}` asserts, the pre-Stage-D literal pins and the
+      whole Stage E gated suite are green unmodified.
+    No red test remains. Coverage, the adversarial review, bug
+    injection on FM1 to FM52, the real-data V10(m) record and the
+    D22.16 docs and tutorial edits are the next gates (plan 12 items
+    3 to 8).
