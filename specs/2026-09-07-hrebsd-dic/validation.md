@@ -7300,6 +7300,13 @@ mislabelled point converges in the first pass from its FM row (code
 1, not retried), and the retry subset is exactly the unrelated point
 and the constant pattern.
 
+Amended 2026-10-08 (critic F7, plan 12.6; D22.8 amendment): the G8
+constant pattern under the default band-pass IS refitted once by the
+retry (its FM row is finite), and that fit returns the D2.6 contract
+again, so `FM_G8_CONSTANT_SECOND_FITS` is 1 there and the first-pass
+result stands bitwise; the "never refitted" spy is asserted on the
+`(None, None)` arm, where the translation row is NaN.
+
 (j) **CPU route** [default] (D22.9, D22.10, D22.13). On a map mixing
 routed, unrouted and retried points under `"auto"`: every point that
 is neither routed nor retried, and every routed point whose
@@ -8060,3 +8067,361 @@ a decision.
     the fitted rotation as regressor 1.545 (its inverse 0.647),
     geometric mean 0.541, median ratio input / fitted (|fitted| > 0.1
     deg) 1.19.
+
+#### V10 recorded results, failing-tests gate (2026-10-08)
+
+Measured on machine A (ledger 89; `nvidia-smi` idle, 12 GB physical
+memory free at the start; no GPU work at this gate) by the Stage F
+failing-tests scaffold agent, CPU only, on the worktree `.venv`
+(CPython 3.13.12, numpy 2.4.6, scipy 1.17.1, numba 0.65.1,
+scikit-image 0.26.0, orix 0.14.2), OMP and MKL threads at 2, on
+a499129d plus the Stage F skeleton: `_hrebsd/_fourier_mellin.py`
+(every frozen name of D22.3 to D22.7 as a stub raising
+`NotImplementedError("Stage F: not implemented yet")`, the frozen
+constants, literals and the `FourierMellinState` container); the
+inert seam fields `SeedState.fourier_mellin=None` and
+`SeedBatch.outputs={}` in `_batched.py`; `fourier_mellin="off"` in
+its frozen slot on `run_hrebsd_dic` (any other value raises the
+skeleton `NotImplementedError` after the `backend` string check) and
+on `EBSD.hrebsd_dic` (forwarded by name); `FOURIER_MELLIN_PROP_NAMES`
+re-exported by `_engine`. Scripts: session scratchpad
+`measure_premises` (`m1.py` to `m13.py`), each loading the scaffold
+`tests/test_indexing/test_hrebsd_fourier_mellin.py` by path and
+calling its own builders and its LOCAL re-implementation of the D22.3
+angle (`local_angles` and friends, written from the requirements
+text, never importing `_fourier_mellin`), so the numbers are the
+scaffold's own recipe.
+
+132. **CPU-side premises of V10 (plan 12 item 1; requirements D22.3
+    to D22.5, D22.7, D22.8; fixtures G1 to G8).** Every number below
+    is pinned or quoted in the scaffold's MEASURED block with this
+    recipe; the device-side and new-code-path literals stay
+    `FIXME-pin` (`None`).
+    (i) **G1 angle, local recipe** (border 0.05, default band-pass):
+    max |error| 0.0134 deg over the nine twists of V10(b) (worst at
+    9.61 deg; 0.37 deg -0.0002, -0.37 deg -0.0019) and 0.1155 deg on
+    the two combined cases (6.13 deg about z then 1 deg about x:
+    +0.0716; 3.27 then 2 about y: -0.1155, the in-plane-axis bias);
+    ledger 131 (iv) had 0.0134. The look-up table: 165 and 175 radii,
+    237600 and 252000 entries, weights summing to 1 within 2e-16.
+    The PC-shift fixture: the local partial row seeds +8 deg with
+    (12, -9) px at 0.177 px (ledger 125: 0.177) and the exact
+    homography `T(s) H(fe)` of `g1_pair` fits from itself in 2
+    iterations to 0.0027 px.
+    (ii) **G3, local recipe**, signed error in deg at 2, 5, 8, 15, 20
+    and -8 deg (crop 460x560, bounds (26, 486, 31, 591)): physical
+    -0.0031, +0.0170, +0.0038, +0.0183, +0.0277, -0.0147; the
+    bin-unit table (`(fx m, fy m)`, `m = min(sr, sc)`) -0.0737,
+    -0.1959, -0.3444, -1.0309, -2.2919, +0.3860 -- ledger 131 (iv) to
+    1e-3 deg. Premise band 0.06; the mutant is at least 3.3x beyond
+    it from 5 deg on.
+    (iii) **G4, the background lock** (nine cases: the seven nonzero
+    off-grid twists and the two combined rotations). FIXTURE CHANGE
+    against the V10 wording, recorded: a smooth background (Gaussian
+    plus ramp) multiplying the RAW projected pattern (mean 44.9,
+    standard deviation 28.4) never locks the untreated recipe, 0 of 9
+    above 1 deg for background amplitudes from 1x up to a 200x
+    Gaussian with a 100x ramp, at both filter settings, log and
+    amplitude alike, because the multiplied Kikuchi contrast grows
+    with the background. An ADDITIVE background of 5x the pattern mean
+    locks 8 of 9. G4 therefore multiplies the background (1 + 4
+    Gauss(centre (0.68, 0.30) of the frame, sigma 0.30 nrows) + 2
+    column / ncols) into the raw-camera model `1 + 0.1 (p - mean) /
+    std` (a 10 per cent Kikuchi contrast, an affine intensity map, so
+    the exact homography is unchanged); contrasts 0.05, 0.2 and 0.3
+    were measured too (0.05: treated 0.82 and 1.31 deg at Poisson 50;
+    0.3: only 4 of 9 locked with amplitude). With 0.1, the D22.3
+    recipe WITH the edge treatment: max |error| 0.117 / 0.177 deg
+    (noise-free / Poisson 50, seed 1904 and 1905 + case) at `(None,
+    None)` and 0.186 / 0.249 deg at `(0.05, None)` (spec gate 0.151,
+    0.252, 0.281); WITHOUT it, the untreated amplitude variant over
+    rho [0.05, 0.20] (ledger 128's V11): 8 of 9 above 1 deg at
+    `(None, None)` both noise-free and at Poisson 50 (worst 19.1 deg:
+    the 30 deg window caps the lock at zero, where ledger 128's
+    nearest rule reached 80 deg), 0 of 9 at `(0.05, None)`; the
+    untreated LOG variant also 8 of 9. `FM_LOCK_PREMISE_COUNT =
+    {"none": 8, "poisson50": 8}`, pinned at the measured count.
+    (iv) **Dead band**, local recipe, 8 px cross at columns and rows
+    236:244 in both images and `dead_band=(236, 244, 236, 244)`:
+    -0.0701 / +0.0838 deg at 3 / 8 deg under `(None, None)`, -0.1193
+    / +0.0841 under `(0.05, None)` (ledger 131 (vi) to 1e-3 deg).
+    (v) **G5 BUILT** (both run-time premises hold; its (g) arms are
+    KEPT): the G1 pair of a 2.5 deg twist and a (14, -10) px PC shift,
+    both images times the same white gain `1 + 0.02 N(0, 1)` plus the
+    same white offset `0.02 std(reference) N(0, 1)` (seed 2205),
+    default band-pass. (i) `initial_guess` returns exactly (-0.0,
+    -0.0) (the clean pair: (-31.875, -0.125)); (ii) local angle 2.468
+    deg (error -0.032). Scan: gains and offsets in {0, 0.02, 0.05,
+    0.1, 0.2, 0.4} all gave an exactly zero seed and angle errors of
+    at most 0.083 deg under both filter settings. At 0.02: criterion
+    at the seed 2.1104 (translation row) against 0.0145 (local FM
+    row); `"off"` fit not converged at 50 (28.58 px off); local
+    FM-seeded fit converged in 4 iterations to 0.0068 px. At 0.1 the
+    `"off"` fit converged in 8 iterations to a wrong optimum 30.68 px
+    away (the false convergence of D22.8), which is why 0.02 is used.
+    (vi) **G6** (V8 PC, default band-pass, budget 200), with the
+    target orientation `Rotation((0, 1, 1), 20 deg) * orientation_a()`
+    (orix product, extra rotation on the LEFT): local angle +12.008
+    deg; criterion at the seed 2.040 (translation) against 2.080
+    (local FM row), so the acceptance refuses; translation-seeded fit
+    not converged at 200 with a finite `h`, residual 1.888; forced
+    local-FM fit not converged, residual 1.656 -- ledger 131 (iii) to
+    the printed digits. The other compositions do NOT reproduce it:
+    `orientation_a() * R` gave 12.877 deg and criteria 1.985 / 1.986
+    (forced 1.953); `orientation_a() * ~R` -12.858 deg, 2.050 / 1.506
+    (the FM row would be KEPT); `~R * orientation_a()` -12.164 deg,
+    2.006 / 1.555; the absolute orientation `R` alone converges from
+    the FM row (18 iterations), so it is not unrelated.
+    (vii) **G8** (V8 geometry, default band-pass, budget 200;
+    `fit_pattern` from the D5 seed per column): reference and easy 0
+    deg converge in 1; easy 0.8 deg in 5 (0.0019 px); the mislabelled
+    4.0 deg twist NOT converged, finite `h`, 42.85 px off, residual
+    1.368, while the local FM row (angle 4.030 deg) converges in 3
+    iterations to 0.0119 px (ledger 131 (iii): 42.9 px, 3); the
+    unrelated column as G6. PREMISE NOT HOLDING AS WORDED, the
+    constant pattern: under the default band-pass the preprocessed
+    constant crop is rounding noise (standard deviation 4.0e-16, not
+    0), so `initial_guess` and the numpy seam BOTH return a FINITE
+    translation row (0.75, 167.0) px and the local FM estimate does
+    not fail (angle 5.05 deg, peak 0.29); only `fit_pattern` refuses
+    the pattern (the D2.6 contract: 0 iterations, NaN `h`, from any
+    `h0`, zeros included). Under `(None, None)` the crop is exactly
+    constant and the translation row is NaN. So on the V8 ramp map
+    and on G8 (both default band-pass) the forced FM row of the
+    constant pattern is not provably a failed estimate: unless the
+    implementation adds a guard, it is FITTED in the retry and returns
+    the D2.6 contract again, keeping the first result bitwise. The
+    V10(f) and (i) arms "its forced FM estimate fails, so it is never
+    refitted" and "it gets no second fit (spy)" need a decision at
+    insertion: assert the outcome (D2.6 contract bitwise, code 0,
+    angle NaN or finite as measured) and pin the second-fit count as
+    measured, or run the constant pattern under `(None, None)`.
+    Recorded as `G8_CONSTANT_TRANSLATION_ROW_FINITE = True`.
+    (viii) **The D5 failure premise of (e)**, `run_hrebsd_dic` on the
+    one-row maps of `g1_row_map`, `max_iterations=50`, `"off"`: every
+    arm fails. Border 0.05: twists 2.5*, 3*, 4, 5*, -3*, -5 at 148.26,
+    172.88, 221.43, 97.93, 23.11, 164.72 px; rotation vectors (2,
+    -1.5, 3)*, (-2, 2, 4), (1, 1, -3.5) at 53.21, 68.46, 33.53 px
+    (ledger 129 to the printed digits). Border 0.15: 8, 10, 15, 20,
+    25, -20 and 30 deg at 39.52, 81.23, 79.13, 154.59, 138.15, 120.27
+    and 175.08 px.
+    (ix) **The V8 ramp premise of (f)** (`seed_from_neighbors=False`,
+    budget 200, the V8 mask): columns 0 to 2 converge in 1, 5, 10
+    iterations (0, 0.0019, 0.0056 px); columns 3 to 6 do not (47.66,
+    48.70, 42.85, 105.24 px); the 8 deg point does not (144.50 px);
+    the 9 deg tilt converges in 113 iterations to 0.3888 px; the
+    constant pattern gives the D2.6 contract (0 iterations); the prop
+    set is exactly the pre-Stage-D one. Bitwise the V8 record.
+    (x) **G7 projection link** (the (h) arm's premise): the pattern
+    projected from `g_t = g_r (M^T R_det M)^T` equals the
+    detector-frame deformation construction of `R_det` to 5.5e-13 and
+    4.2e-13 relative (twists 2.5 and -4.8 deg, default detector) and
+    3.8e-13 and 1.2e-12 (tilted detector 10, 4, 1.5 deg), inside the
+    frozen 1e-10 (ledger 127: 4e-14 to 1.4e-12). The special map's
+    phase list carries the not-indexed phase -1, `ni` and `al`, and
+    exactly one NaN rotation.
+    (xi) **Default path and gates.** `fourier_mellin="off"` equals the
+    call without the keyword bitwise on F6 (`run_hrebsd_dic`) and on
+    the Ni map (`EBSD.hrebsd_dic`, every prop); `"auto"` and
+    `"always"` raise the skeleton `NotImplementedError`. `uv run
+    pytest tests -k hrebsd -n 2 -q`: 4 failed, 901 passed, 287
+    skipped in 246 s (re-run after the audit fix below), the four failures exactly the intended
+    pin move of the amended D21.12 literal
+    (`SEED_FROM_NEIGHBORS_GPU_MESSAGE`; `TestBackendSwitch::
+    test_backend_checks_run_in_the_frozen_order` and three
+    `TestSeedFromNeighborsOnGpuRaises` arms), which the implementation
+    turns green by amending the engine literal. The `FROZEN_SIGNATURE`
+    and `test_run_defaults_are_frozen` edits pass with the skeleton's
+    keyword. A first run also failed `TestImportAudit::
+    test_no_new_required_dependency` on a docstring line of
+    `_fourier_mellin.py` beginning with "import of" (the audit reads
+    lines); reworded, green. The scaffold collects 0 tests (the
+    classes are inserted at its four markers), so the default-suite
+    wall time and the per-class fit counts of V10's intro are recorded
+    when the classes are inserted. `ruff check` and `ruff format`
+    clean on every touched file.
+
+133. **The failing-tests gate tally and the default-suite wall time
+    (plan 12 item 1; V10 (a) to (l)).** Same machine, environment
+    and skeleton as ledger 132; the three class blocks (written
+    separately, (a) to (e), (f) to (k) and (l)) spliced into
+    `tests/test_indexing/test_hrebsd_fourier_mellin.py` at their
+    markers, their imports merged into the module header (`contextlib`,
+    `re`, `subprocess`, `threading`, `time` and `dask.array` added; the
+    scaffold's `noqa: F401` markers dropped, every name now used), and
+    the mutation map filled: FM1 to FM52 each name their designed
+    killer(s) in this module; FM39 alone has NO KILLER YET, recorded
+    reviewed-equivalent (the G7 maps carry one projection centre and
+    the twist depends only on the detector tilt chain, the
+    `TestFourierMellinGate` docstring). `ruff check` and `ruff format`
+    clean; no duplicate module-level name across the blocks (the (f)
+    to (k) helpers are `fk_`-prefixed, the (l) copies of
+    `test_hrebsd_gpu.py` names `GATED_FM_` / `_gated_fm_`-prefixed).
+    (i) **Default suite**, `uv run pytest
+    tests/test_indexing/test_hrebsd_fourier_mellin.py -n 0 -q -p
+    no:cacheprovider`: 130 failed, 10 passed, 117 skipped (12 weekly:
+    the F6 numpy-session `"off"` pin and 11 capture arms; 105 gated),
+    37.5 s in pytest, 46 s wall. Per class (failed / passed, seconds
+    at `-n 0`): Switch 16 / 9, 8.7; Angle 13 / 0, 2.6;
+    EdgeTreatment 10 / 0, 2.5; SeedRows 18 / 0, 3.0; Capture 5 / 0,
+    4.1; RampRescue 7 / 0, 5.7; Acceptance 10 / 0, 6.1; Gate 22 / 0,
+    0.4; Retry 8 / 0, 0.2; CpuRoute 6 / 0, 0.0; NumpySession 15 / 1,
+    3.1. Every failure is for the right reason: 126 the skeleton's
+    `NotImplementedError("Stage F: not implemented yet")`, 63 from
+    the engine's skeleton raise and 63 from `_fourier_mellin` stubs
+    (36 `build_fourier_mellin_state`, 15 `twist_about_detector_normal`,
+    the rest the look-up-table, stencil, peak, partial-row and route
+    stubs), each
+    after every run-time premise that precedes the FM call held; 2 `TypeError` on the
+    missing `fourier_mellin` keyword of `_gpu._vram_model_terms` and
+    `_gpu._vram_model_bytes` (D22.18, an implementation edit);
+    `test_the_fourier_mellin_path_imports_no_cupy`, whose child
+    process raises the stub's `NotImplementedError`; and
+    `test_the_docstring_documents_fourier_mellin` (the
+    `EBSD.hrebsd_dic` docstring has no `fourier_mellin` entry yet).
+    No premise assertion, import, fixture or name error. The 10
+    passes are the ones that must pass on the skeleton: the `"off"`
+    bitwise pins (F6 and the Ni map on the CPU, the Ni map through
+    the numpy session), the two FM16 no-work spies under `"off"`, the
+    forwarding spy (FM41), the prop-name re-export, the two
+    frozen-slot signature arms and the static import-hygiene check.
+    The per-class FIT counts of V10's intro need the FM path and are
+    recorded at the implementation gate; the writers' estimate once
+    implemented is about 35 to 45 s for (k) and about 15 s for each
+    cached G8 run shared by (g) and (i).
+    (ii) **Gated suite** through the PINNED overlay of D21.15,
+    `KIKUCHIPY_EXPECT_GPU=1`, `-n 0 --weekly -k TestGated`
+    (`nvidia-smi` idle, 0 MiB used, before the run): 105 collected, 99
+    failed, 6 passed, 21.2 s in pytest, 41 s wall including the
+    overlay resolution. All 99 failures are the stub's
+    `NotImplementedError` (74 from `build_fourier_mellin_state`, 25
+    from the engine); the 6 passes are the `"off"` device default
+    path and the D21.8(h) drift tripwire under `"off"` (both device
+    precisions) and the record-only `"off"` throughput arms. Per
+    class (failed / passed): Contract 10 / 4, Parity 54 / 0,
+    Determinism 18 / 0, Vram 11 / 0, Throughput 6 / 2.
+    (iii) **Stage E and earlier**, `uv run pytest tests -k hrebsd -n
+    2 -q`: 134 failed, 911 passed, 404 skipped in 213 s (221 s wall):
+    the 130 FM failures of (i) and exactly the four intended failures
+    of the amended D21.12 pin recorded in ledger 132 (xi); 911 = 901
+    of ledger 132 plus the 10 FM passes. Nothing else changed.
+
+134. **Critic disposition of the failing-tests gate (plan 12 item 1;
+    V10 (b), (d), (g), (h), (i), (k)).** A read-only critic reviewed
+    the gate (no blockers, 2 major, 7 minor); same machine,
+    environment and skeleton as ledger 132. Every finding was
+    re-checked before it was applied. Disposition:
+    (F1, major, APPLIED) the gated arm of V10(b) was missing:
+    `TestGatedFourierMellinContract::test_the_peak_rule_on_the_device`
+    feeds the planted correlations (the 40 / 5 deg window pair, the +6
+    / -6 lag tie, the edge peak at lag 60, the flat row and the
+    plateau at lag -60) to `fourier_mellin_peak(cupy, ...)`. It asserts
+    `cupy.ndarray` float64 `(6,)` outputs, the V10(b) values, and host
+    values bitwise equal to the numpy call. It is the FM8 gated twin.
+    (F2, major, APPLIED) the FM12 separations are now asserted as local
+    premises through the new `local_phase_peak(s)` helpers. These take
+    the maximum of the real inverse FFT of the NORMALISED cross-power
+    spectrum of the zero-mean unit-norm crops, translation crop against
+    the crop de-rotated by the local angle. G5: 0.2878 (`h_T`) against
+    0.2528 (FM row), while the criteria are 2.110 / 0.0145, so
+    acceptance by the peak refuses the row the G5 arm keeps. G6: 0.0174
+    against 0.0206, opposite to the criteria 2.040 / 2.080, so
+    `test_the_unrelated_pair_refuses_the_fm_row` kills FM12 too (the
+    critic read 0.0179 for G6's `h_T`, from a slightly different peak
+    recipe; the ordering is the same). The G5 margin is about 12 %,
+    and the UNNORMALISED cross-correlation orders G5 the other way
+    (0.084 against 0.933), so the peak definition is part of the
+    premise. This is stated beside the helper. Mutation map FM12 lists
+    both arms.
+    (F3, minor, APPLIED) the `"always"` retry subset is pinned
+    literally, `[G8_UNRELATED, G8_CONSTANT]` (4, 5), both route 2. The
+    expression derived from the outputs stays only as a consistency
+    check. Map: FM25 and FM47.
+    (F4, minor, APPLIED) the lazy-build arm now counts one FM-state
+    build per `_run_chunks_gpu` pass that fits a routed-grain point.
+    The arm stays robust to a D22.8 retry in a new session, and a
+    rebuild per sub-batch still fails it. Every build must be the
+    routed grain's reference and hold that pass's resident.
+    (F5, minor, APPLIED) the `_run_chunks`, `_run_chunks_gpu` and
+    `run_lockstep` spies take `*args, **kwargs`. They read their
+    arguments through `inspect.signature(...).bind` and forward the
+    call unchanged, so they do not care whether an argument arrives by
+    position or by keyword.
+    (F6, minor, APPLIED) the constant non-identity arm of
+    `test_a_map_without_twists_warns_and_routes_nothing` first asserts
+    that the production twists are not all exactly 0.0 and all lie
+    below `FROZEN_ZERO_TWIST_DEG` (D22.7: of order 1e-15). The
+    magnitude is recorded at the implementation gate. On the skeleton
+    this arm now raises from the `twist_about_detector_normal` stub
+    instead of the engine (the 63 / 63 split of ledger 133 (i) becomes
+    64 / 62).
+    (F7, minor, PARTLY APPLIED: recorded, NOT decided) the G8 constant
+    pattern under the default band-pass (ledger 132 (vii)) leaves a
+    behavioural choice the spec has not made. D22.8 and V10(f)/(i)
+    still say "never refitted". This gate may not edit requirements or
+    plan text, so the decision is recorded here as OPEN and must get a
+    dated disposition in plan 12 / V10 BEFORE the implementation.
+    Option A: no guard, pin `FM_G8_CONSTANT_SECOND_FITS = 1` and amend
+    the D22.8 sentence. Option B: a specified degenerate-crop guard,
+    pin 0. The FIXME-pin comment now says the literal takes the DECIDED
+    value, not "as measured".
+    (F8, minor, APPLIED here) deviation from plan 12 item 1, recorded:
+    the default-suite wall time of ledger 133 (i), and the one below,
+    were measured against stubs. They are a LOWER BOUND, not the CI
+    cost, and the per-class FIT counts move to the implementation
+    gate. The FK-MIXED premises of the module comment, copied into the
+    ledger: `"off"` at budget 20 converged (T, T, T, F, F) on points 0
+    to 4 in (1, 5, 10, 20, 20) iterations, every `h` finite. The 2.4
+    deg mislabelled point is 23.4 px off, and its local FM row (angle
+    2.3988 deg) converges in 2 iterations to 0.0096 px. The 1.6 deg
+    point's seed criteria are 1.6251 (translation) against 0.00087
+    (FM). The unrelated point gives 2.0402 / 2.0801, and its forced
+    local-FM fit does not converge at 20. A direct `fit_pattern` is
+    bitwise the engine's stored result. FK-TWO-GRAIN: fit order (0, 2,
+    4, 1, 3), routes {2, 4} on the label-1 grain, references (3, 0).
+    CI-cost scale (the critic's measurement): FK-MIXED `"off"` on the
+    CPU 0.66 s, through the numpy session 2.6 s, G8 `"off"` 3.2 s.
+    (F9, minor, APPLIED) `local_seed_row_errors` gains the FM38 mutant
+    `reused`: `R(theta) T(t_T)`, where `t_T` is the `initial_guess` of
+    the UN-de-rotated preprocessed crop. Re-measured on the four
+    projection-centre-shift cases (8 deg (12, -9) px, -12 deg (10, 7),
+    5 deg (-8, 5), 15 deg (6, -4)):
+    - partial row: 0.177, 0.102, 0.129, 0.221 px;
+    - `T(t) R` (FM2): 2.225, 2.653, 0.950, 1.948 px;
+    - detector-centre de-rotation (FM43): 7.559, 11.384, 4.771, 14.133
+      px;
+    - reused translation (FM38): 112.7, 13.0, 8.9, 6.6 px.
+    The premise `partial < min(reused)` and the kill separation
+    `FM_SEED_TOL_PX < min(reused)` are asserted beside FM2 and FM43.
+    Rejected: none.
+    **Re-run, final counts.** (i) Default suite, `uv run pytest
+    tests/test_indexing/test_hrebsd_fourier_mellin.py -n 0 -q -p
+    no:cacheprovider`: 130 failed, 10 passed, 118 skipped (12 weekly,
+    106 gated), 47.4 s in pytest, 56 s wall (a stub-time lower bound,
+    F8). Every failure is for the right reason:
+    - 126 skeleton `NotImplementedError` (64 from `_fourier_mellin`
+      stubs, 62 from the engine);
+    - 2 `TypeError` on the `_gpu` VRAM keyword;
+    - the import-hygiene child process (the stub's
+      `NotImplementedError`);
+    - the docstring test.
+    The new premises (G5 and G6 peaks, FM38) HOLD: their tests reach
+    the stub. Per class (failed / passed / skipped): Switch 16 / 9 / 1,
+    Angle 13 / 0 / 0, EdgeTreatment 10 / 0 / 0, SeedRows 18 / 0 / 0,
+    Capture 5 / 0 / 11, RampRescue 7 / 0 / 0, Acceptance 10 / 0 / 0,
+    Gate 22 / 0 / 0, Retry 8 / 0 / 0, CpuRoute 6 / 0 / 0, NumpySession
+    15 / 1 / 0. (ii) Gated suite through the PINNED overlay,
+    `KIKUCHIPY_EXPECT_GPU=1`, `-n 0 --weekly -k TestGated`
+    (`nvidia-smi` idle, 0 MiB used): 106 collected, 100 failed, 6
+    passed, 0 skipped, 31.6 s in pytest, 69 s wall. All 100 failures
+    are the stub's `NotImplementedError` (75 from `_fourier_mellin`,
+    including the new peak arm at `fourier_mellin_peak`, 25 from the
+    engine); the 6 passes are those of ledger 133 (ii). Contract 11 / 4,
+    Parity 54 / 0, Determinism 18 / 0, Vram 11 / 0, Throughput 6 / 2.
+    (iii) `uv run pytest tests -k hrebsd -n 2 -q`: 134 failed, 911
+    passed, 405 skipped in 219 s (227 s wall). The failures are the
+    130 of (i) plus exactly the four intended D21.12 pin moves of
+    ledger 132 (xi), with nothing else; 405 = 404 + the new gated arm.
+    Mutation map: FM1 to FM52 each name a designed killer, except FM39,
+    which is still reviewed-equivalent (ledger 133). `ruff check` and
+    `ruff format --check` are clean.

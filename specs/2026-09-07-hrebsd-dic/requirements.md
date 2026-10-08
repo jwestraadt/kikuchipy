@@ -3559,6 +3559,20 @@ Stage F gates.
   2000 iterations; on real data 2 of 9 converged rim points sat at
   residuals 1.95 and 1.86 where the FM seed reached 1.14 and 0.53;
   ledger 121); a residual trigger is plan open question FQ7.
+  **AMENDED 2026-10-08 (failing-tests gate, critic F7; ledgers 132
+  (vii) and 134; plan 12.6), option A, NO degenerate-crop guard:**
+  "an unusable crop" above means a crop whose FM estimate FAILS (a
+  non-finite translation row or estimate). Under the default
+  band-pass a CONSTANT pattern preprocesses to rounding noise
+  (standard deviation about 4e-16), not to an exactly constant crop,
+  so its translation row and FM estimate are finite and the point IS
+  refitted once; that fit returns the D2.6 contract again (0
+  iterations, NaN `h`), so its first-pass result stands bitwise and
+  the cost is one zero-iteration fit. Under `filter_cutoffs=(None,
+  None)` the crop is exactly constant, the translation row is NaN
+  and the point is not refitted. No degenerate-crop threshold is
+  added (it would be a new frozen constant able to misjudge real
+  low-contrast patterns).
 - **D22.9 Props and the packed row (FROZEN; the D20.5 absence
   rule)**: on runs with `fourier_mellin` other than `"off"`, two new
   props: `fourier_mellin_seed` `(n,)` int32 -- 0 the stored result's

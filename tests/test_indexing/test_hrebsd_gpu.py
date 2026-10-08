@@ -333,10 +333,17 @@ SUPPORTED_BACKENDS = ("cpu", "gpu")
 BACKEND_ERROR_MESSAGE = (
     "Backend {backend!r} not in the list of supported backends ['cpu', 'gpu']"
 )
+# AMENDED 2026-10-08 at the Stage F failing-tests gate (requirements
+# D21.12 as amended 2026-10-07 by D22.11): the Fourier-Mellin seed is no
+# longer "planned", so the remedy names ``seed_from_neighbors=False``
+# with ``fourier_mellin='auto'`` (the combination with
+# ``fourier_mellin`` itself raises, D22.11).  The raise, its position
+# in the D21.1 order and its reasons are unchanged
 SEED_FROM_NEIGHBORS_GPU_MESSAGE = (
     "seed_from_neighbors=True is not supported with backend='gpu'; use "
-    "backend='cpu' for neighbour-seeded propagation (a Fourier-Mellin "
-    "rotation seed covering the same regime is planned)"
+    "backend='cpu' for neighbour-seeded propagation, or "
+    "seed_from_neighbors=False with fourier_mellin='auto' for large "
+    "rotations about the detector normal"
 )
 GATE_MESSAGE_PREFIX = "EBSD.hrebsd_dic with backend='gpu' requires"
 # The wheel set the stage-(c) message names (D21.2)

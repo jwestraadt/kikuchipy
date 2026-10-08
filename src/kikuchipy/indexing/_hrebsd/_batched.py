@@ -260,15 +260,26 @@ class SeedState:
         ``"complex128"`` or ``"complex64"``.
     upsample_factor
         The public D5 knob.
+    fourier_mellin
+        ``None`` (the default, and always with ``fourier_mellin="off"``)
+        or the reference's
+        :class:`~kikuchipy.indexing._hrebsd._fourier_mellin.FourierMellinState`
+        (requirements D22.6, a purely additive extension of D21.5).
     """
 
     def __init__(
-        self, bounds, reference_spectrum, precision: str, upsample_factor: int
+        self,
+        bounds,
+        reference_spectrum,
+        precision: str,
+        upsample_factor: int,
+        fourier_mellin=None,
     ) -> None:
         self.bounds = tuple(int(i) for i in bounds)
         self.reference_spectrum = reference_spectrum
         self.precision = precision
         self.upsample_factor = int(upsample_factor)
+        self.fourier_mellin = fourier_mellin
 
 
 class SeedBatch:
@@ -287,16 +298,26 @@ class SeedBatch:
         ``-1`` on padded slots: a HOST numpy array, so that later
         stages key host data by it.
     extras
-        Dictionary of per-slot ``(P, ...)`` arrays reserved for later
-        stages; empty in Stage E.  ``None`` gives a new empty
-        dictionary.
+        Dictionary of per-slot ``(P, ...)`` INPUT arrays on the host,
+        empty unless a Fourier-Mellin run fills the route key
+        ``"fourier_mellin_route"`` (requirements D22.6).  ``None``
+        gives a new empty dictionary.
+    outputs
+        Dictionary of per-slot ``(P,)`` OUTPUT arrays in ``ctx.xp``,
+        written only by :func:`seed_homographies` (requirements D22.6:
+        ``"fourier_mellin_angle"`` and ``"fourier_mellin_applied"``,
+        present if and only if the route key has a nonzero entry).
+        ``None`` gives a new empty dictionary.
     """
 
-    def __init__(self, targets, coefficients, pattern_index, extras=None) -> None:
+    def __init__(
+        self, targets, coefficients, pattern_index, extras=None, outputs=None
+    ) -> None:
         self.targets = targets
         self.coefficients = coefficients
         self.pattern_index = pattern_index
         self.extras = {} if extras is None else extras
+        self.outputs = {} if outputs is None else outputs
 
 
 def build_seed_state(

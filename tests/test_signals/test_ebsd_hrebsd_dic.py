@@ -98,6 +98,13 @@ from kikuchipy.indexing._hrebsd._engine import (
 # same keyword.  Its default is the bitwise-unchanged CPU path; the
 # engine-only ``device_precision`` and ``seed_precision`` are NOT
 # public, so the public signature changes exactly once
+#
+# EXTENDED 2026-10-08 at the Stage F failing-tests gate by the ONE new
+# keyword requirements D22.1 freezes (the dated D15.4 amendment of
+# 2026-10-07), ``fourier_mellin="off"``, placed immediately after
+# ``seed_from_neighbors`` so that the two seeding knobs stay together
+# and ``backend`` is still immediately followed by ``chunksize``.  Its
+# default ``"off"`` is the bitwise-unchanged translation-only seed
 FROZEN_SIGNATURE = [
     ("self", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
     ("xmap", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.empty),
@@ -119,6 +126,7 @@ FROZEN_SIGNATURE = [
     ("min_step", inspect.Parameter.KEYWORD_ONLY, 1e-3),
     ("step_scale", inspect.Parameter.KEYWORD_ONLY, 1.0),
     ("seed_from_neighbors", inspect.Parameter.KEYWORD_ONLY, False),
+    ("fourier_mellin", inspect.Parameter.KEYWORD_ONLY, "off"),
     ("navigation_mask", inspect.Parameter.KEYWORD_ONLY, None),
     ("backend", inspect.Parameter.KEYWORD_ONLY, "cpu"),
     ("chunksize", inspect.Parameter.KEYWORD_ONLY, None),

@@ -76,6 +76,7 @@ from dask.system import CPU_COUNT
 import numpy as np
 from scipy.linalg import cho_factor, cho_solve
 
+from kikuchipy.indexing._hrebsd import _fourier_mellin as _fourier_mellin
 from kikuchipy.indexing._hrebsd import _gpu as _gpu
 from kikuchipy.indexing._hrebsd._geometry import fe_from_homography, per_point_pc_pixels
 
@@ -208,6 +209,11 @@ SEED_ROUND_PROP_NAME: str = "seed_round"
 SEED_ROUND_PASS1: int = 0
 SEED_ROUND_RESCUE: int = -2
 SEED_ROUND_NONE: int = -1
+
+# The two properties of requirements D22.9, emitted by a run with
+# ``fourier_mellin`` other than ``"off"`` only (defined beside the
+# Fourier-Mellin stage, re-exported here for ``EBSD.hrebsd_dic``)
+FOURIER_MELLIN_PROP_NAMES: tuple[str, ...] = _fourier_mellin.FOURIER_MELLIN_PROP_NAMES
 
 # ------------------ Stage E, the optional GPU backend --------------- #
 
@@ -928,6 +934,7 @@ def run_hrebsd_dic(
     min_step: float = 1e-3,
     step_scale: float = 1.0,
     seed_from_neighbors: bool = False,
+    fourier_mellin: str = "off",
     navigation_mask: np.ndarray | None = None,
     backend: str = "cpu",
     chunksize: int | None = None,
@@ -1002,6 +1009,10 @@ def run_hrebsd_dic(
         and emits exactly the pre-Stage-D property set (D20.1, D20.5).
         With ``True`` the returned dictionary carries one more entry,
         ``"seed_round"``.
+    fourier_mellin
+        ``"off"`` (default), the bitwise-unchanged translation-only
+        seed of requirements D5, ``"auto"`` or ``"always"``, the opt-in
+        Fourier-Mellin rotation seed of requirements D22.
     navigation_mask
         Boolean mask of *navigation_shape* in kikuchipy polarity,
         where only patterns equal to ``False`` are fitted.
@@ -1145,6 +1156,11 @@ def run_hrebsd_dic(
             f"Backend {backend!r} not in the list of supported backends "
             f"{list(SUPPORTED_BACKENDS)}"
         )
+    # Requirements D22.1: the Fourier-Mellin checks sit here, after the
+    # backend string check and before every "gpu"-only check.  The
+    # default "off" passes straight through, bitwise unchanged
+    if fourier_mellin != "off":
+        raise NotImplementedError("Stage F: not implemented yet")
     use_gpu = backend == "gpu"
     if use_gpu:
         _check_gpu_arguments(

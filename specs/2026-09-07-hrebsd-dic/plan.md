@@ -2232,3 +2232,10 @@ widens only on FM runs.
 | C-F-MIN-14 (minor) | CPU route host memory unaccounted | already-applied (the bound recorded): D22.10 per-reference bytes, D22.18 the information message; risk 12 and the 12.3 freeing follow-up added in this pass |
 | C-F-MIN-15 (minor) | the D15.6 edit departs from D20.5 | already-applied (the first option): no D15.6 text edit, D22.9 amends it by reference, Block 5 says so |
 | C-F-MIN-16 (minor) | F11 resolves by an argument | accepted: V10(m)(2) already carried the census; FQ11 rewritten in this pass (the census, reopen above about 25 deg or at the edge bin, `grain_labels` and tuple references noted) |
+
+### 12.6 Failing-tests gate decision (2026-10-08)
+
+| id | decision | where |
+|---|---|---|
+| F7 (critic, minor) | OPTION A, no degenerate-crop guard, decided by the main session under Johan's 2026-10-08 go: a constant pattern under the default band-pass preprocesses to rounding noise, so its forced FM row is finite and it is refitted once, failing again with the D2.6 contract (cost: one zero-iteration fit; results unchanged). Option B (a degenerate-crop threshold) was not taken: a new frozen constant that could misjudge real low-contrast patterns. Johan may override. | requirements D22.8 amendment; V10(i) note; `FM_G8_CONSTANT_SECOND_FITS = 1` |
+

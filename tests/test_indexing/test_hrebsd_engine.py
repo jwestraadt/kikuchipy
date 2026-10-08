@@ -2580,6 +2580,11 @@ class TestOrchestration:
             "backend": "cpu",
             "device_precision": "mixed",
             "seed_precision": "complex128",
+            # EXTENDED 2026-10-08 at the Stage F failing-tests gate
+            # (requirements D22.1, the dated D15.4 amendment of
+            # 2026-10-07): the opt-in Fourier-Mellin rotation seed, off
+            # by default (the bitwise-unchanged translation-only seed)
+            "fourier_mellin": "off",
         }
         for name, default in expected.items():
             assert parameters[name].default == default, name
