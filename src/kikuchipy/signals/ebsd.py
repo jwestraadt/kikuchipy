@@ -57,6 +57,7 @@ from kikuchipy.indexing._hough_indexing import (
     _phase_lists_are_compatible,
 )
 from kikuchipy.indexing._hrebsd._engine import (
+    FOURIER_MELLIN_PROP_NAMES,
     SEED_ROUND_PROP_NAME,
     STAGE_A_PROP_NAMES,
     run_hrebsd_dic,
@@ -3603,6 +3604,29 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             release before this keyword existed. With ``True`` the
             returned map carries one further property,
             ``"seed_round"``; see the notes below.
+        fourier_mellin
+            Whether to seed the correlation with a Fourier-Mellin
+            estimate of the rotation about the detector normal, which
+            the translation only guess cannot capture beyond a few
+            degrees. Options are ``"off"``, ``"auto"`` and
+            ``"always"``. Default is ``"off"``, bitwise the
+            translation only behaviour of every release before this
+            keyword existed. ``"auto"`` seeds the points whose twist
+            about the detector normal relative to their grain
+            reference, read from the orientations of *xmap*, is at
+            least 1.5 degrees (or cannot be read), and ``"always"``
+            seeds every correlated point. A rotation seed is accepted
+            only where its correlation criterion is strictly lower
+            than the translation only guess's, so it never replaces a
+            better start. Under both options every point whose fit
+            from the translation only guess did not converge is then
+            retried once from the rotation seed, and the retry result
+            is kept only if it converged. The estimate is a rotation
+            about the detector normal only, with no scale. Cannot be
+            combined with ``seed_from_neighbors=True``. The returned
+            map carries two further properties,
+            ``"fourier_mellin_seed"`` and ``"fourier_mellin_angle"``;
+            see the notes below.
         navigation_mask
             A boolean mask equal to the signal's navigation (map)
             shape, where only patterns equal to ``False`` are
@@ -3647,7 +3671,9 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             ``"converged"`` (n,), ``"grain_id"`` (n,) and
             ``"reference_index"`` (n,), see the notes below. With
             ``seed_from_neighbors=True`` it also carries
-            ``"seed_round"`` (n,).
+            ``"seed_round"`` (n,), and with ``fourier_mellin`` other
+            than ``"off"`` ``"fourier_mellin_seed"`` (n,) and
+            ``"fourier_mellin_angle"`` (n,).
 
         Raises
         ------
@@ -3661,8 +3687,11 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             center nor one per map point; if the detector carries a
             single projection center and a navigation axis has no
             readable length unit; if *backend* is not one of
-            ``"cpu"`` and ``"gpu"``; if ``chunksize`` is below 1 with
-            ``backend="gpu"``; or for any invalid correlation
+            ``"cpu"`` and ``"gpu"``; if ``fourier_mellin`` is not one
+            of ``"off"``, ``"auto"`` and ``"always"``; if
+            ``fourier_mellin`` other than ``"off"`` is combined with
+            ``seed_from_neighbors=True``; if ``chunksize`` is below 1
+            with ``backend="gpu"``; or for any invalid correlation
             parameter.
         NotImplementedError
             If ``backend="gpu"`` is combined with
@@ -3683,6 +3712,11 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         UserWarning
             If at least one pattern did not converge or failed, since
             a failed pattern is never raised on.
+        UserWarning
+            If ``fourier_mellin="auto"`` finds no rotation about the
+            detector normal in the crystal map, every point matching
+            its reference orientation, so that no point is seeded
+            before the fit and only the retry applies.
 
         See Also
         --------
@@ -3804,6 +3838,38 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         final fit, the one which produced the stored homography, not
         the capped first pass before it.
 
+        **Seeding the rotation about the detector normal.** A lattice
+        rotation about the detector normal rotates the whole pattern
+        about the projection center, which the translation only
+        guess cannot follow. With ``fourier_mellin="auto"`` or
+        ``"always"`` the rotation is estimated from the spectrum of
+        the target's subregion against the reference's, after the
+        method of Ernould et al. :cite:`ernould2020global`, the
+        target is de-rotated by it, the remaining translation is
+        measured by phase cross-correlation, and the two are composed
+        into the starting homography. The seed captures rotations
+        about the detector normal up to its 30 degree search window,
+        measured to 30 degrees on synthetic 480 by 480 pixel
+        patterns. What the fit then recovers accurately is bounded by
+        the subregion instead: the in-frame angle of the chosen
+        ``border``, measured at 5.6 and 6.6 degrees with the default
+        ``border=0.05`` for two projection centers, and at 23.8 and
+        38.7 degrees with ``border=0.15``. ``"auto"`` decides which
+        points to seed from the crystal map before any fit, so
+        orientation noise of the input map matters only near the 1.5
+        degree threshold, and a point the map mislabels is caught by
+        the retry. Every seed is per point, so nothing propagates
+        between neighbours. Two properties record the outcome:
+        ``"fourier_mellin_seed"`` is 0 where the stored fit started
+        from the translation only guess, 1 where it started from a
+        rotation seed in the first pass, 2 where the retry from a
+        rotation seed produced it, and -1 on a masked point; and
+        ``"fourier_mellin_angle"`` holds the most recent rotation
+        estimate in degrees, NaN where none was made. A seeded point
+        costs roughly as much as seven to eleven Gauss-Newton
+        iterations more on the CPU, which a captured rotation usually
+        repays; with ``"always"`` every point pays it.
+
         **Correlating on a GPU.** With ``backend="gpu"`` the
         per-pattern work, the band-pass filter, the spline prefilter,
         the phase cross-correlation guess and the Gauss-Newton loop,
@@ -3835,24 +3901,28 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         missing cupy, device or CUDA library raises with the remedy
         in the message. ``seed_from_neighbors=True`` is not supported
         with ``backend="gpu"`` and raises ``NotImplementedError``;
-        use ``backend="cpu"`` for neighbour-seeded propagation.
+        use ``backend="cpu"`` for neighbour-seeded propagation, or
+        ``fourier_mellin="auto"``, which runs on both backends, for
+        large rotations about the detector normal.
 
         **Limitations of this release, each documented rather than
         silently absorbed.** Optical and radial distortion of the
         detector is NOT corrected, which matters for strains in the
         1e-4 to 2e-3 band on lens-coupled detectors and much less on
-        fiber-coupled or direct detectors. The initial guess is a
-        translation only phase cross-correlation, so the capture
+        fiber-coupled or direct detectors. The default initial guess
+        is a translation only phase cross-correlation, so its capture
         range in rotation is finite, and it depends on
         ``filter_cutoffs``: measured on 480 by 480 pixel patterns, an
         in-plane rotation of up to 2.0 degrees is recovered with the
         default ``(0.05, None)`` band-pass and up to 4.0 degrees with
         no band-pass at all, ``(None, None)``, which also fits the
         2 degree case ten times more accurately on noise-free
-        patterns. The default is kept because a high-pass is what
-        suppresses the background gradients of real data, where it
-        has not yet been measured; it is not the capture range's
-        floor. Cross-grain absolute comparison, simulated references
+        patterns. The default band-pass is kept because a high-pass
+        is what suppresses the background gradients of real data.
+        ``fourier_mellin="auto"`` or ``"always"`` lifts this range for
+        rotations about the detector normal, see above; rotations
+        about the in-plane axes still rely on the translation only
+        guess. Cross-grain absolute comparison, simulated references
         and a tetragonality map are out of scope.
 
         **Precision scales with the pattern size.** Published IC-GN
@@ -3991,8 +4061,13 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         # The Stage D `"seed_round"` is there on a seeded run only, so
         # a default-path result carries exactly the property set every
         # release before that keyword existed wrote (requirements
-        # D20.5)
-        for name in (*STAGE_A_PROP_NAMES, SEED_ROUND_PROP_NAME):
+        # D20.5), and the two Fourier-Mellin properties on a run with
+        # `fourier_mellin` other than `"off"` only (D22.9)
+        for name in (
+            *STAGE_A_PROP_NAMES,
+            SEED_ROUND_PROP_NAME,
+            *FOURIER_MELLIN_PROP_NAMES,
+        ):
             if name in prop:
                 xmap_out.prop[name] = prop[name]
 

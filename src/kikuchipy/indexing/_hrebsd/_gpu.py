@@ -58,12 +58,14 @@ both backends and a develop-side rename fails loudly at this import.
 
 import gc
 import sys
+import threading
 
 import dask.array as da
 from dask.diagnostics.progress import ProgressBar
 import numpy as np
 
 from kikuchipy.indexing._hrebsd import _batched
+from kikuchipy.indexing._hrebsd import _fourier_mellin as _fourier_mellin
 from kikuchipy.indexing._hrebsd._interpolation import spline_coefficients
 from kikuchipy.indexing._hrebsd._preprocessing import preprocess
 from kikuchipy.indexing._spherical._gpu import (
@@ -176,6 +178,38 @@ _R_SEED_SPECTRA = 3
 # factor, the corners and the per-reference constants
 _SLOT_OVERHEAD_BYTES = 64 * 1024
 _REFERENCE_OVERHEAD_BYTES = 64 * 1024
+
+# The Fourier-Mellin terms of D22.18, added only with
+# ``fourier_mellin=True`` (array-size estimates, upper bounds; their
+# calibration against pool high-water marks is the implementation-gate
+# measurement).  p, per slot of a routed sub-batch: the complex128
+# promotion of the target spectrum and its edge-treated copy, the
+# complex128 polar gather (bounded per pixel), the f64 de-rotated crop
+# and its zero-mean copy, its spectrum and cross-power at the seed
+# precision, and two criterion passes' warped values at the pixel
+# precision plus their f64 centred copies
+_P_FM_COMPLEX128_PLANES = 2
+_P_FM_GATHER_BYTES = 16
+_P_FM_CROP_BYTES = 16
+_P_FM_SEED_SPECTRA = 2
+_P_FM_CRITERION_PASSES = 2
+# r, per reference: the box resident's two coordinate planes at the
+# pixel precision, its int32 pixel indices and the f64 profile (bounded
+# per pixel); the run's polar look-up table (int64 indices and f64
+# weights, four corners per sample) counted once inside r, which
+# ``R_MAX * r`` over-counts safely; and the reference profile's build
+# transient, seven complex128 crop planes (the f64 crop and its
+# zero-mean copy, the complex128 promotion, the spectrum with the cuFFT
+# work area and the edge-treatment stencil's copy and rolled
+# temporaries).  CALIBRATED 2026-10-08 at the Stage F implementation
+# gate against pool high-water marks (validation.md V10 ledger): the
+# build's peak at 512x622 is the look-up table plus exactly 112 bytes
+# per crop pixel at every precision, which the held-only first draft
+# under-stated 2.9x
+_R_FM_BOX_PLANES = 2
+_R_FM_INDEX_BYTES = 4
+_R_FM_BUILD_COMPLEX128_PLANES = 7
+_R_FM_LUT_BYTES_PER_SAMPLE = 4 * (8 + 8)
 
 _PIXEL_BYTES = {"mixed": 4, "float64": 8}
 _COMPLEX_BYTES = {"complex128": 16, "complex64": 8}
@@ -360,6 +394,9 @@ class _GpuSession:
         # grain index -> (resident, seed state), least
         # recently used first (D21.9.3)
         self._residents = {}
+        # grains whose Fourier-Mellin state was built (or refused) while
+        # resident (D22.11)
+        self._fourier_mellin_tried = set()
         self._closed = False
 
     def residents(self, grain: int, state, upsample_factor: int) -> tuple:
@@ -380,7 +417,9 @@ class _GpuSession:
             self._residents[grain] = entry
             return entry
         while len(self._residents) >= R_MAX:
-            del self._residents[next(iter(self._residents))]
+            evicted = next(iter(self._residents))
+            del self._residents[evicted]
+            self._fourier_mellin_tried.discard(evicted)
         resident = _batched.build_resident(self.context, state)
         seed_state = _batched.build_seed_state(
             self.context,
@@ -392,10 +431,29 @@ class _GpuSession:
         self._residents[grain] = entry
         return entry
 
+    def fourier_mellin_state(self, grain: int, state, entry: tuple) -> None:
+        """Attach the grain's ``FourierMellinState`` to its seed state
+        the first time a batch of the grain carries a nonzero route
+        (requirements D22.11): built LAZILY, once per residency, by
+        ``_fourier_mellin.build_fourier_mellin_state`` (module object,
+        call time) with the grain's resident, so the state holds the
+        very resident the lockstep uses and is evicted with it.  A grain
+        the builder refuses (``None``) is not asked again and runs as
+        under ``"off"``."""
+        grain = int(grain)
+        if grain in self._fourier_mellin_tried:
+            return
+        self._fourier_mellin_tried.add(grain)
+        resident, seed_state = entry
+        seed_state.fourier_mellin = _fourier_mellin.build_fourier_mellin_state(
+            self.context, state, resident
+        )
+
     def close(self) -> None:
         """Free the residents and the default and pinned pools.
         Idempotent (D21.9.1)."""
         self._residents.clear()
+        self._fourier_mellin_tried.clear()
         if self._closed:
             return
         self._closed = True
@@ -489,7 +547,11 @@ def _device_description(namespace: str) -> tuple[str, int | None]:
 
 
 def _vram_model_terms(
-    n_pixels: int, device_precision: str, seed_precision: str
+    n_pixels: int,
+    device_precision: str,
+    seed_precision: str,
+    *,
+    fourier_mellin: bool = False,
 ) -> tuple[int, int, int]:
     """Return the three terms ``(g, p, r)`` of the pure-math VRAM model
     of requirements D21.10.2, bytes, for *n_pixels* pattern pixels.
@@ -501,7 +563,50 @@ def _vram_model_terms(
 
     The subregion and its bounding box are bounded from above by the
     pattern, so every per-pixel term is counted over all *n_pixels*.
+
+    With *fourier_mellin* (requirements D22.18) the Fourier-Mellin
+    terms are added to ``p`` and ``r``; with ``False`` (the default)
+    every term is the Stage E value bitwise.
     """
+    g, p, r = _vram_model_base_terms(n_pixels, device_precision, seed_precision)
+    if not fourier_mellin:
+        return g, p, r
+    n = int(n_pixels)
+    pixel = _PIXEL_BYTES[device_precision]
+    complex_bytes = _COMPLEX_BYTES[seed_precision]
+    p_fm = n * (
+        _P_FM_COMPLEX128_PLANES * 16
+        + _P_FM_GATHER_BYTES
+        + _P_FM_CROP_BYTES
+        + _P_FM_SEED_SPECTRA * complex_bytes
+        + _P_FM_CRITERION_PASSES * (pixel + 8)
+    )
+    # The look-up table's radii follow the shorter crop side, bounded by
+    # the side of a square of n pixels
+    side = int(np.ceil(np.sqrt(n)))
+    n_rho = (
+        int(np.floor((_fourier_mellin.FM_RHO_MAX - _fourier_mellin.FM_RHO_MIN) * side))
+        + 2
+    )
+    lut = _fourier_mellin.FM_N_THETA * n_rho * _R_FM_LUT_BYTES_PER_SAMPLE
+    r_fm = (
+        n
+        * (
+            _R_FM_BOX_PLANES * pixel
+            + _R_FM_INDEX_BYTES
+            + 8
+            + _R_FM_BUILD_COMPLEX128_PLANES * 16
+        )
+        + lut
+    )
+    return int(g), int(p + p_fm), int(r + r_fm)
+
+
+def _vram_model_base_terms(
+    n_pixels: int, device_precision: str, seed_precision: str
+) -> tuple[int, int, int]:
+    """Return the Stage E terms ``(g, p, r)`` of :func:`_vram_model_terms`
+    (requirements D21.10.2)."""
     n = int(n_pixels)
     pixel = _PIXEL_BYTES[device_precision]
     complex_bytes = _COMPLEX_BYTES[seed_precision]
@@ -527,30 +632,61 @@ def _vram_model_terms(
 
 
 def _vram_model_bytes(
-    batch_size: int, n_pixels: int, device_precision: str, seed_precision: str
+    batch_size: int,
+    n_pixels: int,
+    device_precision: str,
+    seed_precision: str,
+    *,
+    fourier_mellin: bool = False,
 ) -> int:
     """Return ``B * g + P * p + R_MAX * r`` bytes with
     ``P = min(32, B)`` (requirements D21.10.2), the terms of
-    :func:`_vram_model_terms`.  Pure math, no device query."""
+    :func:`_vram_model_terms` (with its *fourier_mellin* keyword,
+    D22.18).  Pure math, no device query."""
     batch_size = int(batch_size)
-    g, p, r = _vram_model_terms(n_pixels, device_precision, seed_precision)
+    g, p, r = _vram_model_terms(
+        n_pixels, device_precision, seed_precision, fourier_mellin=fourier_mellin
+    )
     sub_batch_size = min(_batched.SUB_BATCH_SIZE, batch_size)
     return int(batch_size * g + sub_batch_size * p + R_MAX * r)
 
 
 def _default_batch_size(
-    free_bytes: int, n_pixels: int, device_precision: str, seed_precision: str
+    free_bytes: int,
+    n_pixels: int,
+    device_precision: str,
+    seed_precision: str,
+    *,
+    fourier_mellin: bool = False,
 ) -> int:
     """Return the largest B in :data:`_BATCH_SIZES` whose WHOLE model
-    fits ``0.5 * free_bytes`` (requirements D21.10.3), else 1."""
+    fits ``0.5 * free_bytes`` (requirements D21.10.3), else 1.
+
+    With *fourier_mellin* (requirements D22.18) B is picked from the
+    ``"off"`` model first, then the model with the Fourier-Mellin terms
+    is checked at that B and B is halved only while it does not fit,
+    down to 1: on a card with headroom the Fourier-Mellin seed never
+    changes B.
+    """
     budget = _FREE_VRAM_FRACTION * int(free_bytes)
+    chosen = 1
     for batch_size in _BATCH_SIZES:
         model = _vram_model_bytes(
             batch_size, n_pixels, device_precision, seed_precision
         )
         if model <= budget:
-            return int(batch_size)
-    return 1
+            chosen = int(batch_size)
+            break
+    if not fourier_mellin:
+        return chosen
+    while chosen > 1:
+        model = _vram_model_bytes(
+            chosen, n_pixels, device_precision, seed_precision, fourier_mellin=True
+        )
+        if model <= budget:
+            break
+        chosen //= 2
+    return int(chosen)
 
 
 def _info_lines(
@@ -662,6 +798,7 @@ def _run_chunks_gpu(
     device_precision: str,
     seed_precision: str,
     row_slots: dict,
+    seed_extras: dict | None = None,
 ):
     """Return the packed results of every fitted point, in fit order,
     computed on the device: the ``_run_chunks`` contract of
@@ -704,7 +841,16 @@ def _run_chunks_gpu(
         The packed-row layout, passed by ``_engine`` so that this
         module never imports it: ``{"width": 12, "residual": 8,
         "iterations": 9, "norm_dp": 10, "converged": 11}``, the
-        homography in columns ``[0, 8)``.
+        homography in columns ``[0, 8)``.  A Fourier-Mellin run adds
+        ``"fm_angle"`` and ``"fm_applied"`` with a width of 14
+        (requirements D22.9).
+    seed_extras
+        Mapping of a ``SeedBatch.extras`` key to a ``(n_fit,)`` host
+        array in fit order, sliced per sub-batch slot into the seam's
+        ``extras`` (0 on padded slots), or ``None``, the Stage E
+        behaviour (requirements D22.11).  The Fourier-Mellin seed is
+        on if and only if it carries the route key with a nonzero
+        entry.
 
     Returns
     -------
@@ -716,12 +862,32 @@ def _run_chunks_gpu(
     signal_shape = (int(patterns.shape[1]), int(patterns.shape[2]))
     n_pixels = signal_shape[0] * signal_shape[1]
     width = int(row_slots["width"])
+    route = None
+    if seed_extras is not None:
+        route = seed_extras.get(_batched.FOURIER_MELLIN_ROUTE_KEY)
+        if route is not None:
+            route = np.ascontiguousarray(np.asarray(route, dtype=np.int8))
+            if route.shape != fit_indices.shape:
+                raise ValueError(
+                    f"the route of shape {route.shape} must have one entry per "
+                    f"fitted point, {fit_indices.shape}"
+                )
+    fm_on = route is not None and bool(route.any())
     if fit_indices.size == 0:
         return np.empty((0, width), dtype=np.float64)
     if chunksize is None:
-        batch_size = _default_batch_size(
-            _free_device_bytes("cupy"), n_pixels, device_precision, seed_precision
-        )
+        if fm_on:
+            batch_size = _default_batch_size(
+                _free_device_bytes("cupy"),
+                n_pixels,
+                device_precision,
+                seed_precision,
+                fourier_mellin=True,
+            )
+        else:
+            batch_size = _default_batch_size(
+                _free_device_bytes("cupy"), n_pixels, device_precision, seed_precision
+            )
     else:
         batch_size = int(chunksize)
         if batch_size < 1:
@@ -753,7 +919,7 @@ def _run_chunks_gpu(
         out_of_memory = _out_of_memory_types(session)
         try:
             try:
-                return _compute_map(
+                packed = _compute_map(
                     session,
                     patterns,
                     fit_indices,
@@ -762,7 +928,12 @@ def _run_chunks_gpu(
                     progressbar=progressbar,
                     options=options,
                     row_slots=row_slots,
+                    route=route,
                 )
+                # The final B of this call, which a later retry pass
+                # reuses as its explicit ``chunksize`` (D22.8)
+                _RUN_STATE.batch_size = int(batch_size)
+                return packed
             finally:
                 # Per call (D21.9.1): disposed on success, on an
                 # out-of-memory before the rebuild and on any
@@ -777,6 +948,25 @@ def _run_chunks_gpu(
                     signal_shape, device_precision, seed_precision
                 ) from error
             batch_size //= 2
+
+
+# The final device batch size of the last :func:`_run_chunks_gpu` call
+# that completed in this thread (D22.8: the retry pass runs at the first
+# pass's final B), read through :func:`_last_batch_size`
+_RUN_STATE = threading.local()
+
+
+def _last_batch_size(default: int) -> int:
+    """Return the final device batch size of the last
+    :func:`_run_chunks_gpu` call completed in this thread, or *default*
+    when there is none (requirements D22.8)."""
+    return int(getattr(_RUN_STATE, "batch_size", default))
+
+
+def _reset_last_batch_size() -> None:
+    """Forget the recorded final batch size of this thread, so that a
+    stale value of an earlier run is never reused."""
+    _RUN_STATE.__dict__.pop("batch_size", None)
 
 
 def _batch_chunks(state_of_point: np.ndarray, batch_size: int) -> tuple[int, ...]:
@@ -808,6 +998,7 @@ def _compute_map(
     progressbar: bool,
     options: dict,
     row_slots: dict,
+    route: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return the packed rows of the whole map at the session's B: the
     D21.9.2 dask topology, :func:`dask.array.blockwise` over the
@@ -824,6 +1015,10 @@ def _compute_map(
     grain is uploaded once (D21.9.3) and a run's device sequence is
     reproducible.  The chunk tasks return placeholders; the rows come
     from the ordered device sections.
+
+    *route* is the ``(n_fit,)`` int8 Fourier-Mellin route in fit order
+    (requirements D22.11), paired with the patterns along the same
+    named index, or ``None``, the Stage E graph unchanged.
     """
     chunks = _batch_chunks(state_of_point, session.batch_size)
     if isinstance(patterns, da.Array):
@@ -840,17 +1035,13 @@ def _compute_map(
     batch_number = np.repeat(np.arange(len(chunks), dtype=np.int64), chunks)
     batch_da = da.from_array(batch_number, chunks=(chunks,))
     device = _OrderedDevice(session, tuple(states), options, row_slots)
+    arguments = [ordered, "ikl", state_da, "i", index_da, "i", batch_da, "i"]
+    if route is not None:
+        arguments += [da.from_array(route, chunks=(chunks,)), "i"]
     results = da.blockwise(
         _device_chunk,
         "ij",
-        ordered,
-        "ikl",
-        state_da,
-        "i",
-        index_da,
-        "i",
-        batch_da,
-        "i",
+        *arguments,
         device=device,
         new_axes={"j": int(row_slots["width"])},
         dtype=np.float64,
@@ -900,7 +1091,14 @@ class _OrderedDevice:
         self.plan_caches = {}
         self.closed = False
 
-    def submit(self, number: int, patterns_block, state_index_block, index_block):
+    def submit(
+        self,
+        number: int,
+        patterns_block,
+        state_index_block,
+        index_block,
+        route_block=None,
+    ):
         """Store one chunk's host block, then run every batch whose
         turn has come, in order, under the device lock."""
         session = self.session
@@ -914,6 +1112,7 @@ class _OrderedDevice:
                 patterns_block,
                 state_index_block,
                 index_block,
+                route_block,
             )
             if session.namespace == "cupy":
                 cache = session.xp.fft.config.get_plan_cache()
@@ -963,6 +1162,7 @@ def _device_chunk(
     state_index_block: np.ndarray,
     index_block: np.ndarray,
     batch_block: np.ndarray,
+    route_block: np.ndarray | None = None,
     *,
     device: _OrderedDevice,
 ) -> np.ndarray:
@@ -976,6 +1176,7 @@ def _device_chunk(
             np.asarray(patterns_block),
             np.asarray(state_index_block),
             np.asarray(index_block),
+            None if route_block is None else np.asarray(route_block, dtype=np.int8),
         )
     return np.zeros((n, int(device.row_slots["width"])), dtype=np.float64)
 
@@ -988,10 +1189,16 @@ def _device_batch(
     patterns_block: np.ndarray,
     state_index_block: np.ndarray,
     index_block: np.ndarray,
+    route_block: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return the ``(n, width)`` host rows of one grain-pure batch of
     ``n <= B`` patterns: ONE device section, called with the device lock
-    held and outside every per-pattern scope (D21.9.2, D21.9.4)."""
+    held and outside every per-pattern scope (D21.9.2, D21.9.4).
+
+    With *route_block* (a Fourier-Mellin run, D22.11) the route is
+    padded with zeros to B, the grain's Fourier-Mellin state is built
+    lazily when a slot of the batch is routed, and the rows carry the
+    angle and applied slots of D22.9."""
     n = int(patterns_block.shape[0])
     grain = int(state_index_block[0])
     if np.any(state_index_block != grain):
@@ -1005,9 +1212,15 @@ def _device_batch(
     raw[:n] = patterns_block
     pattern_index = np.full(batch_size, -1, dtype=np.int64)
     pattern_index[:n] = np.asarray(index_block, dtype=np.int64)
-    resident, seed_state = session.residents(
-        grain, states[grain], options["upsample_factor"]
-    )
+    entry = session.residents(grain, states[grain], options["upsample_factor"])
+    route = None
+    if route_block is not None:
+        route = np.zeros(batch_size, dtype=np.int8)
+        route[:n] = np.asarray(route_block, dtype=np.int8)
+        if route.any():
+            session.fourier_mellin_state(grain, states[grain], entry)
+    resident, seed_state = entry
+    del entry
     rows = _fit_batch(
         session,
         states[grain],
@@ -1017,6 +1230,7 @@ def _device_batch(
         pattern_index,
         options,
         row_slots,
+        route=route,
     )
     del resident, seed_state
     return np.ascontiguousarray(rows[:n], dtype=np.float64)
@@ -1078,10 +1292,19 @@ def _fit_batch(
     pattern_index: np.ndarray,
     options: dict,
     row_slots: dict,
+    route: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return the ``(m, width)`` host rows of the first *m* slots of one
     padded device batch, *m* the slots of the sub-batches that hold a
     real pattern.
+
+    With *route*, the ``(B,)`` int8 host route of a Fourier-Mellin run
+    (requirements D22.6, D22.11), each sub-batch's slice is its
+    ``extras`` route key; after the seam call the runner reads
+    ``batch.outputs`` (none means angle NaN and not applied), makes a
+    forced slot that was not applied inactive like a padded slot
+    (D22.8) and writes the angle and the applied flag into the
+    ``"fm_angle"`` and ``"fm_applied"`` slots of the rows (D22.9).
 
     Per sub-batch of P slots (D21.7.3), the tail padded to P with zero
     patterns and ``-1`` indices: the preprocessing of
@@ -1117,10 +1340,13 @@ def _fit_batch(
     coefficient_parts = []
     seed_parts = []
     shift_parts = []
+    angle = np.full(n_run, np.nan, dtype=np.float64)
+    applied = np.zeros(n_run, dtype=bool)
     for start in range(0, n_run, sub_batch_size):
         stop = start + sub_batch_size
         part = raw[start:stop]
         index = pattern_index[start:stop]
+        route_part = None if route is None else route[start:stop]
         if part.shape[0] < sub_batch_size:
             # The tail of a batch whose B is not a multiple of P, padded
             # to P so every FFT runs at one shape per run (D21.7.3)
@@ -1129,12 +1355,30 @@ def _fit_batch(
                 [part, np.zeros((pad, *part.shape[1:]), dtype=part.dtype)]
             )
             index = np.concatenate([index, np.full(pad, -1, dtype=np.int64)])
+            if route_part is not None:
+                route_part = np.concatenate([route_part, np.zeros(pad, dtype=np.int8)])
         targets, coefficients = _prepare_sub_batch(session, state, resident, part)
         batch = _batched.SeedBatch(targets, coefficients, np.ascontiguousarray(index))
+        if route_part is not None:
+            batch.extras[_batched.FOURIER_MELLIN_ROUTE_KEY] = np.ascontiguousarray(
+                route_part, dtype=np.int8
+            )
         target_spectra = _batched.seed_spectra(ctx, batch, seed_state)
         h0 = _batched.seed_homographies(ctx, batch, target_spectra, seed_state)
         shifts = _batched.initial_shifts(ctx, resident, batch)
         keep = min(sub_batch_size, n_run - start)
+        if route_part is not None:
+            # The outputs rule of D22.6: none means angle NaN and not
+            # applied on every slot
+            outputs = batch.outputs
+            if _batched.FOURIER_MELLIN_ANGLE_KEY in outputs:
+                angle[start : start + keep] = _to_host(
+                    outputs[_batched.FOURIER_MELLIN_ANGLE_KEY]
+                )[:keep]
+            if _batched.FOURIER_MELLIN_APPLIED_KEY in outputs:
+                applied[start : start + keep] = _to_host(
+                    outputs[_batched.FOURIER_MELLIN_APPLIED_KEY]
+                )[:keep]
         coefficient_parts.append(coefficients[:keep])
         seed_parts.append(xp.asarray(h0, dtype=xp.float64)[:keep])
         shift_parts.append(shifts[:keep])
@@ -1143,16 +1387,32 @@ def _fit_batch(
     h0 = xp.ascontiguousarray(xp.concatenate(seed_parts))
     shifts = xp.ascontiguousarray(xp.concatenate(shift_parts))
     del coefficient_parts, seed_parts, shift_parts
+    real = np.asarray(pattern_index[:n_run]) >= 0
+    if route is not None:
+        # D22.8: a forced slot whose Fourier-Mellin row was not applied
+        # is never fitted, inactive like a padded slot
+        real = real & ~((route[:n_run] == _fourier_mellin.ROUTE_FORCED) & ~applied)
     rows = _batched.run_lockstep(
         session.kernels,
         resident,
         coefficients,
         h0,
         shifts,
-        np.asarray(pattern_index[:n_run]) >= 0,
+        real,
         options,
         row_slots,
     )
     if xp is not np:
         rows = rows.get()
-    return np.asarray(rows, dtype=np.float64)
+    rows = np.asarray(rows, dtype=np.float64)
+    if route is not None and "fm_angle" in row_slots:
+        rows[:, int(row_slots["fm_angle"])] = angle
+        rows[:, int(row_slots["fm_applied"])] = np.where(applied, 1.0, 0.0)
+    return rows
+
+
+def _to_host(array) -> np.ndarray:
+    """Return *array* as a host numpy array (a cupy array copied)."""
+    if hasattr(array, "get") and not isinstance(array, np.ndarray):
+        return np.asarray(array.get())
+    return np.asarray(array)

@@ -8425,3 +8425,68 @@ scaffold's own recipe.
     Mutation map: FM1 to FM52 each name a designed killer, except FM39,
     which is still reviewed-equivalent (ledger 133). `ruff check` and
     `ruff format --check` are clean.
+
+#### V10 recorded results, implementation gate (2026-10-08)
+
+135. **The `_fourier_mellin` module under numpy and its seed-level pins
+    (plan 12 item 2, implementer A; requirements D22.3 to D22.7).**
+    Machine A CPU (i7-13700H, Windows 11 build 26200; worktree .venv,
+    CPython 3.13.12, numpy 2.4.6, orix 0.14.2), scratch
+    `fmA_measure1.py` and `fmA_measure2.py`, every number through the
+    PRODUCTION frozen names on the numpy seam (`numpy_fm_seam`):
+    - angle (V10(b)): G1 twists max 0.0134 deg (9.61 deg), G1_COMBINED
+      0.0716 and 0.1155, G5 -0.0323, the projection link 0.0032 and
+      0.0003 (untilted, 2.5 and -4.8 deg) and 0.0048 and 0.0037
+      (tilted); each equal to the local recipe of ledger 132 to the
+      printed digit. `FM_ANGLE_TOL_DEG = 0.25`; the FM9 flipped-offset
+      error on the sweep is 0.420 (1.7x the pin);
+    - G3 460x560: 0.0277 deg (20 deg). `FM_ANGLE_TOL_NONSQUARE_DEG =
+      0.06`, 3 x 0.06 = 0.18 < 0.1959 (FM3 from 5 deg);
+    - dead band: 0.0838 deg at `(None, None)`, 0.1193 at `(0.05,
+      None)`. `FM_ANGLE_TOL_DEADBAND_DEG = 0.25`;
+    - stencil against the second FFT (V10(c)): 4.58e-16 relative.
+      `FM_STENCIL_RTOL = 1e-15`;
+    - G4 background: 0.117 and 0.177 deg at `(None, None)`, 0.186 and
+      0.249 at `(0.05, None)` (noise-free, Poisson 50).
+      `FM_ANGLE_TOL_BACKGROUND_DEG = 0.5`;
+    - seed rows, projection-centre-shift fixture at border 0.15, route
+      2 (V10(d)): 0.177, 0.102, 0.129, 0.221 px (the local partial row
+      to the digit). `FM_SEED_TOL_PX = 0.45`; kill separations FM2
+      0.950 (2.1x), FM43 4.77, FM38 6.64 px;
+    - G5 end to end on the CPU route under `"always"`: the FM-seeded fit
+      converges in 4 iterations (`FM_G5_ITERATIONS = 4`, a count, at
+      the measured value; the local premise's 4);
+    - gate (V10(h)): worst twist recovery 8.1e-14 deg over the G7
+      twist, two-grain and special maps on both detectors; the pure
+      out-of-plane arms give 4.9e-14 and 2.1e-14 to 3.0e-14 deg.
+      `FM_GATE_TWIST_TOL_DEG = 1e-12` (about 12x, a rounding-level
+      number; 2x would sit at the ulp noise of the quaternion round
+      trip). Noise population (0.5 deg about random axes on a 2.5 deg
+      twist, untilted): 32 of 32 routed;
+    - FIXER NOTE (2), the constant NON-identity map (`g7_uniform_map(
+      "constant")`, every point at grain A's orientation): the twist
+      is -1.766e-31 deg on every point, NOT exactly 0.0, so the FM36
+      float-equality kill HOLDS (`any(twist != 0.0)` and every `|twist|
+      < 1e-9`); the all-identity map gives exactly 0.0. The magnitude
+      is far below D22.7's quoted "order 1e-15", so the kill rests on
+      a rounding residue that another BLAS or platform could make
+      exactly zero: recorded as a fragility for the review gate.
+    Decisions recorded: the reference profile is built in complex128 and
+    float64 from the reference's zero-mean unit-norm D5 crop whatever
+    the seed precision (D22.12); the look-up table is cached once per
+    crop shape on the host and uploaded once per `SeedContext` (a weak
+    key cache, D22.3.3); `fourier_mellin_translate` reaches the Stage E
+    body `_batched._translation_rows` (the function
+    `seed_homographies` runs for `h_T`), never the seam's patch point,
+    so a spy on `seed_homographies` sees one call per sub-batch; the
+    D22.7 warning is issued by the engine, not the module; the
+    criterion is called twice at the full P only when a slot carries
+    route 1, and a NaN-free `peak` row is required for a finite angle
+    (a non-finite correlation row gives a NaN angle, the estimate's
+    failure). Default classes Angle, EdgeTreatment, SeedRows,
+    Acceptance and Gate: 73 passed at `-n 2` (53 s). Module coverage
+    over the default file 98 per cent; uncovered: the `"mixed"` box
+    columns (gated suite), the `None` return of
+    `build_fourier_mellin_state` (non-finite reference profile) and the
+    no-point-group warning of the gate, which the review gate's tests
+    must reach.

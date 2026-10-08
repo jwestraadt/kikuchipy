@@ -387,7 +387,69 @@ def seed_homographies(ctx, batch, target_spectra, seed_state):
     non-finite for ``upsample_factor < 1``, the CPU outcome.  Padded
     slots' rows are discarded by the caller.  The pipeline calls this
     through the module global at call time.
+
+    The Fourier-Mellin extension of requirements D22.6, purely
+    additive: when ``seed_state.fourier_mellin`` is ``None`` or the
+    ``batch.extras`` route key :data:`FOURIER_MELLIN_ROUTE_KEY` is
+    absent or all zero -- decided on the HOST before any device work --
+    the rows are exactly the translation rows above, from the same
+    code, and nothing is written.  Otherwise the translation rows
+    ``h_T`` of every slot come first, then
+    ``_fourier_mellin.fourier_mellin_rows`` (through the module object
+    at call time) runs at the FULL sub-batch shape P, unrouted and
+    padded slots computed and discarded, and ``batch.outputs`` gains
+    the angle (NaN on route-0 slots) and the applied flag (False on
+    route-0 slots).  ``batch.extras`` is never written and
+    *target_spectra* never modified.
     """
+    route = batch.extras.get(FOURIER_MELLIN_ROUTE_KEY)
+    fm_state = getattr(seed_state, "fourier_mellin", None)
+    if fm_state is not None and route is not None:
+        route = np.asarray(route)
+        if route.any():
+            return _fourier_mellin_seed_rows(
+                ctx, batch, target_spectra, seed_state, route
+            )
+    return _translation_rows(ctx, target_spectra, seed_state)
+
+
+# The ``SeedBatch.extras`` route key and the two ``SeedBatch.outputs``
+# keys of requirements D22.6 (literals equal to the frozen constants of
+# ``_fourier_mellin``, held here so the seam's skip decision needs no
+# import)
+FOURIER_MELLIN_ROUTE_KEY: str = "fourier_mellin_route"
+FOURIER_MELLIN_ANGLE_KEY: str = "fourier_mellin_angle"
+FOURIER_MELLIN_APPLIED_KEY: str = "fourier_mellin_applied"
+
+
+def _fourier_mellin_seed_rows(ctx, batch, target_spectra, seed_state, route):
+    """Return the rows of a sub-batch with a nonzero route (requirements
+    D22.6): ``h_T`` for every slot first, then the masked full-P
+    Fourier-Mellin branch, and the outputs written into
+    ``batch.outputs``."""
+    from kikuchipy.indexing._hrebsd import _fourier_mellin
+
+    xp = ctx.xp
+    route = np.ascontiguousarray(route, dtype=np.int8)
+    h_t = _translation_rows(ctx, target_spectra, seed_state)
+    rows, angle, applied = _fourier_mellin.fourier_mellin_rows(
+        ctx, batch, target_spectra, seed_state, h_t, route
+    )
+    routed = xp.asarray(route != 0)
+    with np.errstate(all="ignore"):
+        rows = xp.where(routed[:, None], xp.asarray(rows, dtype=xp.float64), h_t)
+        angle = xp.where(routed, xp.asarray(angle, dtype=xp.float64), np.nan)
+    applied = xp.asarray(applied, dtype=bool) & routed
+    batch.outputs[FOURIER_MELLIN_ANGLE_KEY] = xp.ascontiguousarray(
+        angle, dtype=xp.float64
+    )
+    batch.outputs[FOURIER_MELLIN_APPLIED_KEY] = xp.ascontiguousarray(applied)
+    return xp.ascontiguousarray(rows, dtype=xp.float64)
+
+
+def _translation_rows(ctx, target_spectra, seed_state):
+    """Return the Stage E translation-only rows of
+    :func:`seed_homographies` (requirements D21.5), unchanged."""
     xp = ctx.xp
     n_slots, n_rows, n_cols = (int(i) for i in target_spectra.shape)
     upsample = int(seed_state.upsample_factor)

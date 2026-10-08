@@ -50,14 +50,18 @@ Call-time seams (D22.6): :func:`fourier_mellin_rows` reaches
 time, never through a ``from ... import name`` binding, a default
 argument or a local alias taken before a loop.
 
-SKELETON (Stage F failing-tests gate, 2026-10-08): every function
-body raises ``NotImplementedError``; the constants and the containers
-are the frozen ones.
 """
+
+import functools
+import warnings
+import weakref
 
 import numpy as np
 
-_NOT_IMPLEMENTED = "Stage F: not implemented yet"
+from kikuchipy.indexing._hrebsd._tensors import (
+    best_orientation_matrices,
+    sample_to_detector_matrix,
+)
 
 # ---------------------- Frozen constants (D22.3, D22.7) -------------- #
 
@@ -178,14 +182,58 @@ class FourierMellinState:
 # ------------------------- Angle (D22.3) ----------------------------- #
 
 
+@functools.lru_cache(maxsize=None)
+def _host_lut(sr: int, sc: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return the read-only host look-up table of :func:`fourier_mellin_lut`,
+    built once per crop shape (D22.3.3)."""
+    m = min(sr, sc)
+    n_rho = int(np.floor((FM_RHO_MAX - FM_RHO_MIN) * m + 1e-9)) + 1
+    theta = np.arange(FM_N_THETA, dtype=np.float64) * np.pi / FM_N_THETA
+    rho = FM_RHO_MIN + np.arange(n_rho, dtype=np.float64) / m
+    # PHYSICAL frequency: (fx sc, fy sr) in (column, row) bin units of
+    # the unshifted spectrum, never bin units on both axes
+    u = rho[None, :] * np.cos(theta)[:, None] * sc
+    v = rho[None, :] * np.sin(theta)[:, None] * sr
+    c0 = np.floor(u)
+    r0 = np.floor(v)
+    du = u - c0
+    dv = v - r0
+    c0 = c0.astype(np.int64)
+    r0 = r0.astype(np.int64)
+    indices = np.empty((*u.shape, 4), dtype=np.int64)
+    weights = np.empty((*u.shape, 4), dtype=np.float64)
+    corners = (
+        (0, 0, (1 - dv) * (1 - du)),
+        (0, 1, (1 - dv) * du),
+        (1, 0, dv * (1 - du)),
+        (1, 1, dv * du),
+    )
+    for k, (a, b, weight) in enumerate(corners):
+        indices[..., k] = ((r0 + a) % sr) * sc + (c0 + b) % sc
+        weights[..., k] = weight
+    indices.flags.writeable = False
+    weights.flags.writeable = False
+    return indices, weights
+
+
 def fourier_mellin_lut(sr: int, sc: int) -> tuple[np.ndarray, np.ndarray]:
     """Return the per-run polar look-up table of requirements D22.3.3
     for an ``(sr, sc)`` spectrum: ``(indices, weights)``, the
     ``(n_theta, n_rho, 4)`` int64 flat indices into the unshifted
     spectrum and the ``(n_theta, n_rho, 4)`` float64 bilinear weights,
     sampled in PHYSICAL frequency (never bin units on both axes).
-    Built once per run on the host and cached by crop shape."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    Built once per run on the host and cached by crop shape.
+
+    The ``n_theta = FM_N_THETA`` angles are ``k pi / n_theta`` over
+    ``[0, pi)``; with ``m = min(sr, sc)`` the ``n_rho = floor((FM_RHO_MAX
+    - FM_RHO_MIN) m + 1e-9) + 1`` radii are ``FM_RHO_MIN + j / m``
+    cycles/px; each sample ``rho (cos theta, sin theta)`` is read at
+    the fractional bin coordinates ``(fx sc, fy sr)`` (column, row) with
+    bilinear weights over its four neighbouring bins, indices modulo
+    ``(sr, sc)``.  The arrays are read-only HOST arrays shared by every
+    caller.
+    """
+    return _host_lut(int(sr), int(sc))
 
 
 def fourier_mellin_hann_stencil(xp, spectra):
@@ -195,7 +243,14 @@ def fourier_mellin_hann_stencil(xp, spectra):
     4`` with circular indices, on ``(P, sr, sc)`` *spectra* promoted
     to complex128 (D22.12).  A NEW array: *spectra* is never modified
     in place (D22.6)."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    # ``astype`` always copies: the reused target spectra stay untouched
+    windowed = xp.asarray(spectra).astype(xp.complex128)
+    for axis in (-1, -2):
+        windowed = (
+            windowed / 2
+            - (xp.roll(windowed, 1, axis=axis) + xp.roll(windowed, -1, axis=axis)) / 4
+        )
+    return windowed
 
 
 def fourier_mellin_profiles(xp, spectra, lut):
@@ -203,8 +258,24 @@ def fourier_mellin_profiles(xp, spectra, lut):
     radial-mean profiles of requirements D22.3.2 and D22.3.4:
     ``log1p`` of the magnitude of the edge-treated *spectra*, gathered
     through the look-up table *lut* and averaged over radius (a gather
-    and a fixed-shape sum, no scatter and no atomics)."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    and a fixed-shape sum, no scatter and no atomics).
+
+    A profile with a zero or non-finite norm is NaN throughout (the
+    estimate's failure, D22.5)."""
+    indices, weights = lut
+    windowed = fourier_mellin_hann_stencil(xp, spectra)
+    n_slots = int(windowed.shape[0])
+    with np.errstate(all="ignore"):
+        magnitude = xp.log1p(xp.abs(windowed).reshape(n_slots, -1))
+        del windowed
+        samples = (magnitude[:, indices] * weights[None]).sum(axis=-1)
+        profiles = samples.mean(axis=-1)
+        profiles = profiles - profiles.mean(axis=1, keepdims=True)
+        norm = xp.sqrt((profiles * profiles).sum(axis=1, keepdims=True))
+        profiles = profiles / norm
+        good = xp.isfinite(norm) & (norm > 0)
+        profiles = xp.where(good, profiles, xp.nan)
+    return xp.ascontiguousarray(profiles, dtype=xp.float64)
 
 
 def fourier_mellin_peak(xp, correlation, search_deg):
@@ -214,8 +285,46 @@ def fourier_mellin_peak(xp, correlation, search_deg):
     *search_deg*, ties to the LOWEST output index, a parabolic sub-bin
     offset from the raw circular neighbours when the curvature is
     negative (else 0), and ``theta_hat = (lag + delta) * 180 /
-    n_theta``.  The peak is a diagnostic only."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    n_theta``.  The peak is a diagnostic only.
+
+    Output index ``k`` carries the lag ``k`` for ``k < n / 2`` and ``k -
+    n`` otherwise.  A row that is not finite throughout gives a NaN
+    angle (the estimate's failure, D22.5)."""
+    correlation = xp.asarray(correlation, dtype=xp.float64)
+    n_slots, n = (int(i) for i in correlation.shape)
+    index = xp.arange(n)
+    lags = xp.where(index < n // 2, index, index - n)
+    inside = xp.abs(lags).astype(xp.float64) * 180.0 / n <= float(search_deg)
+    masked = xp.where(inside[None], correlation, -xp.inf)
+    # ``argmax`` returns the FIRST maximum, i.e. the lowest output index
+    k = xp.argmax(masked, axis=1)
+    slots = xp.arange(n_slots)
+    centre = correlation[slots, k]
+    left = correlation[slots, (k - 1) % n]
+    right = correlation[slots, (k + 1) % n]
+    with np.errstate(all="ignore"):
+        denominator = left - 2.0 * centre + right
+        negative = denominator < 0
+        safe = xp.where(negative, denominator, 1.0)
+        delta = xp.where(negative, (left - right) / (2.0 * safe), 0.0)
+        theta = (lags[k].astype(xp.float64) + delta) * 180.0 / n
+    finite = xp.isfinite(correlation).all(axis=1)
+    theta = xp.where(finite, theta, xp.nan)
+    return (
+        xp.ascontiguousarray(theta, dtype=xp.float64),
+        xp.ascontiguousarray(centre, dtype=xp.float64),
+    )
+
+
+def _circular_correlation(ctx, reference_profile, profiles):
+    """Return the ``(P, n_theta)`` circular ZNCC ``c[k] = sum_j p_ref[j]
+    p_tgt[j + k]`` by length-``n_theta`` FFTs (D22.3.5)."""
+    xp = ctx.xp
+    with np.errstate(all="ignore"):
+        reference = xp.conj(ctx.fft.fft(reference_profile))
+        product = reference[None] * ctx.fft.fft(profiles, axis=1)
+        correlation = xp.real(ctx.fft.ifft(product, axis=1))
+    return xp.ascontiguousarray(correlation, dtype=xp.float64)
 
 
 def fourier_mellin_angles(ctx, target_spectra, fm_state):
@@ -225,10 +334,27 @@ def fourier_mellin_angles(ctx, target_spectra, fm_state):
     against ``fm_state.reference_profile`` (requirements D22.3, D22.6),
     through :func:`fourier_mellin_peak` at ``fm_state.search_deg``.
     Positive is a rotation about +z, ``h21 = +sin(theta_hat)``."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    profiles = fourier_mellin_profiles(ctx.xp, target_spectra, fm_state.lut)
+    correlation = _circular_correlation(ctx, fm_state.reference_profile, profiles)
+    return fourier_mellin_peak(ctx.xp, correlation, fm_state.search_deg)
 
 
 # --------------- De-rotation, translation, row (D22.4) --------------- #
+
+
+def _rotation_matrices(xp, theta_deg):
+    """Return the ``(P, 3, 3)`` float64 rotations ``R(theta_deg)`` about
+    the PC-centred origin (the D1.3 frame, a rotation about +z)."""
+    theta = xp.deg2rad(xp.asarray(theta_deg, dtype=xp.float64))
+    cos = xp.cos(theta)
+    sin = xp.sin(theta)
+    matrices = xp.zeros((int(theta.shape[0]), 3, 3), dtype=xp.float64)
+    matrices[:, 0, 0] = cos
+    matrices[:, 0, 1] = -sin
+    matrices[:, 1, 0] = sin
+    matrices[:, 1, 1] = cos
+    matrices[:, 2, 2] = 1.0
+    return matrices
 
 
 def fourier_mellin_derotate(ctx, batch, fm_state, theta_deg):
@@ -238,15 +364,40 @@ def fourier_mellin_derotate(ctx, batch, fm_state, theta_deg):
     ``D(xi) = target(R xi)``, through ``ctx.kernels.gather`` on
     ``fm_state.box``, and the ``(P,)`` bool conjunction of the
     coordinate flags (requirements D22.4.1)."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    xp = ctx.xp
+    box = fm_state.box
+    matrices = _rotation_matrices(xp, theta_deg)
+    values, ok = ctx.kernels.gather(box, batch.coefficients, matrices)
+    n_slots = int(matrices.shape[0])
+    crops = xp.asarray(values, dtype=xp.float64).reshape(n_slots, *box.box_shape)
+    return xp.ascontiguousarray(crops), xp.asarray(ok, dtype=bool)
 
 
 def fourier_mellin_translate(ctx, crops, seed_state):
     """Return ``rows_t``, the ``(P, 8)`` float64 translation rows the
     Stage E phase cross-correlation seed returns for the de-rotated
     *crops* against ``seed_state.reference_spectrum`` (requirements
-    D22.4.2); reached through a function-scope import of ``_batched``."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    D22.4.2); reached through a function-scope import of ``_batched``.
+
+    The crops are made zero-mean unit-norm and transformed at
+    ``seed_state.precision`` exactly as ``seed_spectra`` transforms a
+    target crop, then the Stage E rows are computed by the Stage E code
+    itself, unchanged."""
+    from kikuchipy.indexing._hrebsd import _batched
+
+    xp = ctx.xp
+    dtype = np.dtype(seed_state.precision)
+    with np.errstate(all="ignore"):
+        zmn = _batched._zero_mean_normalize_crops(
+            xp, xp.asarray(crops, dtype=xp.float64)
+        )
+        spectra = ctx.fft.fft2(zmn.astype(dtype), axes=(1, 2))
+    del zmn
+    spectra = xp.ascontiguousarray(spectra.astype(dtype, copy=False))
+    # the Stage E body ``seed_homographies`` runs for ``h_T``, reached
+    # directly so the seam's patch point sees ONE call per sub-batch
+    rows_t = _batched._translation_rows(ctx, spectra, seed_state)
+    return xp.ascontiguousarray(rows_t, dtype=xp.float64)
 
 
 def fourier_mellin_partial_row(xp, theta_deg, rows_t):
@@ -254,7 +405,21 @@ def fourier_mellin_partial_row(xp, theta_deg, rows_t):
     requirements D22.4.3, ``W0 = R(theta) T(t)``, i.e. ``(c - 1, -s, c
     tx - s ty, s, c - 1, s tx + c ty, 0, 0)`` with ``t = (rows_t[:, 2],
     rows_t[:, 5])`` and *theta_deg* in degrees."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    theta = xp.deg2rad(xp.asarray(theta_deg, dtype=xp.float64))
+    rows_t = xp.asarray(rows_t, dtype=xp.float64)
+    cos = xp.cos(theta)
+    sin = xp.sin(theta)
+    tx = rows_t[:, 2]
+    ty = rows_t[:, 5]
+    rows = xp.zeros((int(theta.shape[0]), 8), dtype=xp.float64)
+    with np.errstate(all="ignore"):
+        rows[:, 0] = cos - 1
+        rows[:, 1] = -sin
+        rows[:, 2] = cos * tx - sin * ty
+        rows[:, 3] = sin
+        rows[:, 4] = cos - 1
+        rows[:, 5] = sin * tx + cos * ty
+    return rows
 
 
 # ------------------------- Acceptance (D22.5) ------------------------ #
@@ -265,8 +430,26 @@ def fourier_mellin_criteria(ctx, batch, fm_state, rows):
     *batch* AT the starting *rows*, through ``ctx.kernels.gather`` on
     the grain's subregion resident ``fm_state.resident`` with the
     initial shifts K of the lockstep and ``ctx.kernels.final_criterion``
-    (requirements D22.5)."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    (requirements D22.5).
+
+    NaN where a row's warped coordinates are not finite (the gather's
+    flag) or the warped values have a zero or non-finite centred norm.
+    """
+    from kikuchipy.indexing._hrebsd import _batched
+
+    xp = ctx.xp
+    resident = fm_state.resident
+    shifts = _batched.initial_shifts(ctx, resident, batch)
+    matrices = _batched.matrices_from_parameters(xp, xp.asarray(rows, dtype=xp.float64))
+    values, ok = ctx.kernels.gather(resident, batch.coefficients, matrices)
+    criterion = ctx.kernels.final_criterion(resident, values, shifts)
+    criterion = xp.asarray(criterion, dtype=xp.float64)
+    return xp.where(xp.asarray(ok, dtype=bool), criterion, xp.nan)
+
+
+def _finite_rows(xp, rows):
+    """Return ``(P,)`` bool, True where a row is finite throughout."""
+    return xp.isfinite(rows).reshape(int(rows.shape[0]), -1).all(axis=1)
 
 
 def fourier_mellin_rows(ctx, batch, target_spectra, seed_state, h_t, route):
@@ -278,8 +461,133 @@ def fourier_mellin_rows(ctx, batch, target_spectra, seed_state, h_t, route):
     the acceptance of D22.5, 2 forced); the rows are *h_t* except
     where D22.5 keeps the FM row (route 1) or the FM row is forced and
     valid (route 2), and a failed estimate returns *h_t* with
-    ``applied`` False."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    ``applied`` False.
+
+    Every slot is computed (masked, never compacted), so that no
+    routed slot's bits depend on which other slots are routed
+    (D21.7.3).  ``angle`` is ``theta_hat`` on route-1 and route-2 slots
+    and NaN on route-0 slots (the D22.6 outputs rule).  The FM stage
+    never introduces a non-finite row and never raises for a per-slot
+    failure: an estimate fails on a non-finite angle, a de-rotated crop
+    with a false coordinate flag or a non-finite pixel, or a non-finite
+    translation or FM row; a non-finite *h_t* is never rescued.  The
+    criterion of D22.5 is evaluated (twice, once per candidate row, at
+    the full P) only when a slot carries route 1.  The stages are
+    reached through this module's globals at call time (D22.6).
+    """
+    xp = ctx.xp
+    fm_state = seed_state.fourier_mellin
+    route_host = np.asarray(route, dtype=np.int8).ravel()
+    route_device = xp.asarray(route_host)
+    h_t = xp.asarray(h_t, dtype=xp.float64)
+    n_slots = int(h_t.shape[0])
+
+    theta, _ = fourier_mellin_angles(ctx, target_spectra, fm_state)
+    theta = xp.asarray(theta, dtype=xp.float64)
+    crops, ok = fourier_mellin_derotate(ctx, batch, fm_state, theta)
+    crops = xp.asarray(crops, dtype=xp.float64)
+    rows_t = xp.asarray(
+        fourier_mellin_translate(ctx, crops, seed_state), dtype=xp.float64
+    )
+    h_fm = xp.asarray(fourier_mellin_partial_row(xp, theta, rows_t), dtype=xp.float64)
+
+    valid = (
+        xp.isfinite(theta)
+        & xp.asarray(ok, dtype=bool)
+        & _finite_rows(xp, crops)
+        & xp.isfinite(rows_t[:, 2])
+        & xp.isfinite(rows_t[:, 5])
+        & _finite_rows(xp, h_fm)
+        & _finite_rows(xp, h_t)
+    )
+    forced = route_device == ROUTE_FORCED
+    accept = route_device == ROUTE_ACCEPT
+    if bool((route_host == ROUTE_ACCEPT).any()):
+        criterion_t = xp.asarray(
+            fourier_mellin_criteria(ctx, batch, fm_state, h_t), dtype=xp.float64
+        )
+        criterion_fm = xp.asarray(
+            fourier_mellin_criteria(ctx, batch, fm_state, h_fm), dtype=xp.float64
+        )
+        # STRICTLY lower: ties and every comparison with NaN keep h_T
+        with np.errstate(all="ignore"):
+            wins = xp.isfinite(criterion_fm) & (criterion_fm < criterion_t)
+    else:
+        wins = xp.zeros(n_slots, dtype=bool)
+    applied = valid & (forced | (accept & wins))
+    with np.errstate(all="ignore"):
+        rows = xp.where(applied[:, None], h_fm, h_t)
+    angle = xp.where(route_device != ROUTE_NONE, theta, xp.nan)
+    return (
+        xp.ascontiguousarray(rows, dtype=xp.float64),
+        xp.ascontiguousarray(angle, dtype=xp.float64),
+        xp.ascontiguousarray(applied, dtype=bool),
+    )
+
+
+def _box_resident(ctx, state):
+    """Return the bounding-box resident of requirements D22.4.1: a
+    ``ReferenceResident`` whose subregion is EVERY pixel of the D5
+    bounding box of *state* in row-major order (dead-band pixels
+    included), carrying the fields ``kernels.gather`` reads at the
+    precision of ``ctx.kernels``, plus ``box_shape``, ``(sr, sc)``."""
+    from kikuchipy.indexing._hrebsd import _batched
+
+    xp = ctx.xp
+    precision = ctx.kernels.precision
+    pixel_dtype = np.float32 if precision == "mixed" else np.float64
+    r0, r1, c0, c1 = (int(i) for i in state.bounds)
+    rows, columns = np.mgrid[r0:r1, c0:c1]
+    rows = rows.ravel()
+    columns = columns.ravel()
+    pcx, pcy = (float(i) for i in np.asarray(state.pc_pixels, dtype=np.float64)[:2])
+    xi_x = columns + 0.5 - pcx
+    xi_y = rows + 0.5 - pcy
+    shape = tuple(int(i) for i in state.shape)
+
+    def upload(array, dtype):
+        return xp.asarray(np.ascontiguousarray(np.asarray(array).astype(dtype)))
+
+    box = _batched.ReferenceResident()
+    box.precision = precision
+    box.shape = shape
+    box.box_shape = (r1 - r0, c1 - c0)
+    box.n_pixels = int(rows.size)
+    box.xi_x = upload(xi_x, pixel_dtype)
+    box.xi_y = upload(xi_y, pixel_dtype)
+    box.mask_index = upload(np.ravel_multi_index((rows, columns), shape), np.int32)
+    if precision == "mixed":
+        box.columns = upload(columns, np.int32)
+        box.rows = upload(rows, np.int32)
+    else:
+        box.columns = None
+        box.rows = None
+    box.offset = (pcx - 0.5, pcy - 0.5)
+    box.reference = None
+    box.gradient_x = None
+    box.gradient_y = None
+    box.weights = None
+    box.transfer_function = None
+    return box
+
+
+# One upload of the host look-up table per context and crop shape
+# (D22.3.3: uploaded once per device session)
+_LUT_UPLOADS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _context_lut(ctx, sr: int, sc: int):
+    """Return the look-up table of ``(sr, sc)`` in the namespace of
+    *ctx*, uploaded once per context."""
+    per_context = _LUT_UPLOADS.setdefault(ctx, {})
+    key = (int(sr), int(sc))
+    if key not in per_context:
+        indices, weights = fourier_mellin_lut(sr, sc)
+        per_context[key] = (
+            ctx.xp.asarray(indices, dtype=ctx.xp.int64),
+            ctx.xp.asarray(weights, dtype=ctx.xp.float64),
+        )
+    return per_context[key]
 
 
 def build_fourier_mellin_state(ctx, state, resident):
@@ -287,8 +595,29 @@ def build_fourier_mellin_state(ctx, state, resident):
     ``ReferenceState`` *state* in the namespace of *ctx*, holding a
     reference to the grain's subregion *resident* (requirements D22.6),
     or ``None`` when the reference profile is non-finite or of zero
-    norm (that grain then runs as with ``"off"``)."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    norm (that grain then runs as with ``"off"``).
+
+    The reference profile is computed in complex128 and float64 from
+    the reference's zero-mean unit-norm D5 crop (the transform
+    ``build_seed_state`` makes at its default precision) whatever the
+    seed precision (D22.12)."""
+    from kikuchipy.indexing._hrebsd import _batched
+
+    xp = ctx.xp
+    r0, r1, c0, c1 = (int(i) for i in state.bounds)
+    lut = _context_lut(ctx, r1 - r0, c1 - c0)
+    crop = xp.asarray(np.ascontiguousarray(state.reference_subregion), dtype=xp.float64)
+    with np.errstate(all="ignore"):
+        zmn = _batched._zero_mean_normalize_crops(xp, crop[None])
+        spectrum = ctx.fft.fft2(zmn.astype(xp.complex128), axes=(1, 2))
+    del crop, zmn
+    profile = fourier_mellin_profiles(xp, spectrum, lut)[0]
+    if not bool(xp.isfinite(profile).all()):
+        return None
+    box = _box_resident(ctx, state)
+    return FourierMellinState(
+        lut, xp.ascontiguousarray(profile, dtype=xp.float64), box, resident
+    )
 
 
 # --------------------------- The gate (D22.7) ------------------------ #
@@ -302,12 +631,70 @@ def twist_about_detector_normal(xmap, detector, point_index, reference_index):
     cannot be computed (requirements D22.7): ``R_s = g_t^T S^T g_r``
     maximising the trace over the reference phase's proper point group,
     ``R_det = M R_s M^T`` with ``M = sample_to_detector_matrix``, and
-    ``atan2(R_det[1, 0] - R_det[0, 1], R_det[0, 0] + R_det[1, 1])``."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    ``atan2(R_det[1, 0] - R_det[0, 1], R_det[0, 0] + R_det[1, 1])``.
+
+    NaN covers a point or a reference that is not indexed, a
+    non-finite rotation and a point of a phase other than its
+    reference's (the gate fails open).  A phase without a point group
+    uses no symmetry and warns (the ``segment_grains`` precedent).
+    The swing-twist split's twist is exact and independent of the
+    out-of-plane swing; matrices are used throughout, never a rotation
+    vector (``det M = -1``)."""
+    point_index = np.asarray(point_index, dtype=np.int64).ravel()
+    reference_index = np.asarray(reference_index, dtype=np.int64).ravel()
+    n = int(point_index.size)
+    twist = np.full(n, np.nan, dtype=np.float64)
+    size = int(np.asarray(xmap.phase_id).size)
+    phase_id = np.asarray(xmap.phase_id).ravel().astype(np.int64)
+    indexed = np.asarray(xmap.is_indexed).ravel().astype(bool)
+    g = best_orientation_matrices(xmap).reshape(size, 3, 3)
+    finite = np.isfinite(g).all(axis=(1, 2))
+    m = sample_to_detector_matrix(detector)
+
+    usable = (
+        indexed[point_index]
+        & indexed[reference_index]
+        & finite[point_index]
+        & finite[reference_index]
+        & (phase_id[point_index] == phase_id[reference_index])
+    )
+    for identifier in np.unique(phase_id[reference_index[usable]]):
+        selection = np.flatnonzero(usable & (phase_id[reference_index] == identifier))
+        phase = xmap.phases[int(identifier)]
+        point_group = phase.point_group
+        if point_group is None:
+            warnings.warn(
+                f"phase {phase.name!r} carries no point group, so the twist about "
+                "the detector normal is measured from the RAW misorientation, "
+                "NOT symmetry-reduced. Give the phase a space group or a point "
+                "group to reduce it",
+                UserWarning,
+            )
+            operators = np.eye(3)[None]
+        else:
+            operators = np.asarray(
+                point_group.proper_subgroup.to_matrix(), dtype=np.float64
+            ).reshape(-1, 3, 3)
+        g_t = g[point_index[selection]]
+        g_r = g[reference_index[selection]]
+        # trace(g_t^T S^T g_r) = sum(S * (g_r g_t^T)) elementwise
+        outer = g_r @ np.swapaxes(g_t, 1, 2)
+        traces = np.einsum("sij,nij->ns", operators, outer)
+        best = np.argmax(traces, axis=1)
+        s = operators[best]
+        r_s = np.swapaxes(g_t, 1, 2) @ np.swapaxes(s, 1, 2) @ g_r
+        r_det = m @ r_s @ m.T
+        twist[selection] = np.rad2deg(
+            np.arctan2(r_det[:, 1, 0] - r_det[:, 0, 1], r_det[:, 0, 0] + r_det[:, 1, 1])
+        )
+    return twist
 
 
 def fourier_mellin_routes(twist_deg, gate_deg):
     """Return the ``(n,)`` int8 pre-fit routes of requirements D22.7:
     1 if and only if ``|twist| >= gate_deg`` or the twist is NaN (the
     gate fails open), else 0."""
-    raise NotImplementedError(_NOT_IMPLEMENTED)
+    twist = np.asarray(twist_deg, dtype=np.float64).ravel()
+    with np.errstate(invalid="ignore"):
+        routed = np.isnan(twist) | (np.abs(twist) >= float(gate_deg))
+    return routed.astype(np.int8)

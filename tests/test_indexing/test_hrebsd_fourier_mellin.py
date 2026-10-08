@@ -600,42 +600,108 @@ RAMP_RESCUE_OFF_ITERATIONS = 113
 # kill separation stated.  The spec-gate numbers quoted are SCALES.
 
 # (b) angle, seed level, deg.  Spec gate 0.123 noise-free, 0.113 with
-# noise (ledger 128); must sit below the FM9 flipped-offset error
-FM_ANGLE_TOL_DEG = None  # FIXME-pin
+# noise (ledger 128); must sit below the FM9 flipped-offset error.
+# Pinned 2026-10-08 (Stage F implementation gate, machine A CPU,
+# ``fourier_mellin_angles`` on the numpy seam): worst use 0.1155 deg
+# (G1_COMBINED, the in-plane-axis bias), G1 twists 0.0134, G5 0.032,
+# projection link 0.0048; the FM9 flipped offset errs 0.420 (1.7x)
+FM_ANGLE_TOL_DEG = 0.25
 # (b) G3, deg.  Spec gate at most 0.027; the bin-unit mutant 0.196 to
-# 2.29 from 5 deg (ledger 131 (iv)); a 2x pin of about 0.06 kills FM3
-FM_ANGLE_TOL_NONSQUARE_DEG = None  # FIXME-pin
-# (b) dead band, deg.  Spec gate 0.12 (ledger 131 (vi))
-FM_ANGLE_TOL_DEADBAND_DEG = None  # FIXME-pin
-# (c) the stencil against a second FFT, relative.  Spec gate 1.6e-16
-FM_STENCIL_RTOL = None  # FIXME-pin
-# (c) G4, deg.  Spec gate 0.151 noise-free, 0.252 and 0.281 at Poisson 50
-FM_ANGLE_TOL_BACKGROUND_DEG = None  # FIXME-pin
+# 2.29 from 5 deg (ledger 131 (iv)); a 2x pin of about 0.06 kills FM3.
+# Pinned 2026-10-08 (implementation gate, machine A CPU): 0.0277 at 20
+# deg; 3 x 0.06 = 0.18 < 0.1959 (the FM3 mutant from 5 deg)
+FM_ANGLE_TOL_NONSQUARE_DEG = 0.06
+# (b) dead band, deg.  Spec gate 0.12 (ledger 131 (vi)).  Pinned
+# 2026-10-08 (implementation gate, machine A CPU): 0.0838 at (None,
+# None), 0.1193 at (0.05, None)
+FM_ANGLE_TOL_DEADBAND_DEG = 0.25
+# (c) the stencil against a second FFT, relative.  Spec gate 1.6e-16.
+# Pinned 2026-10-08 (implementation gate, machine A CPU): 4.58e-16
+FM_STENCIL_RTOL = 1e-15
+# (c) G4, deg.  Spec gate 0.151 noise-free, 0.252 and 0.281 at Poisson
+# 50.  Pinned 2026-10-08 (implementation gate, machine A CPU): 0.117 /
+# 0.177 at (None, None), 0.186 / 0.249 at (0.05, None), noise-free /
+# Poisson 50 (the local recipe's numbers to the digit)
+FM_ANGLE_TOL_BACKGROUND_DEG = 0.5
 # (d) seed-row corner error, px; between 0.083-0.220 (partial) and
-# 0.898-2.655 (``T(t) R``), ledger 125
-FM_SEED_TOL_PX = None  # FIXME-pin
-# (e) capture, px; iterations at border 0.15; fixed-point gap, px
-FM_CAPTURE_TOL_PX = None  # FIXME-pin
-FM_CAPTURE_ITERATIONS = None  # FIXME-pin
-FM_FIXED_POINT_TOL_PX = None  # FIXME-pin
-# (f) the 8 degree ramp point, px (spec gate 0.053, ledger 131 (iii))
-FM_RAMP_FAR_TOL_PX = None  # FIXME-pin
-# (f) the measured codes and iterations the ramp arms pin
-FM_RAMP_RESCUE_ALWAYS_ITERATIONS = None  # FIXME-pin (spec gate 116)
-FM_RAMP_ALWAYS_CODES = None  # FIXME-pin (expected 1 on columns 1, 2; 0 at 0)
+# 0.898-2.655 (``T(t) R``), ledger 125.  Pinned 2026-10-08
+# (implementation gate, machine A CPU, numpy seam, route 2): 0.102 to
+# 0.221 px; kill separations against the local mutants: FM2 ``T(t) R``
+# 0.950 (2.1x), FM43 detector centre 4.77, FM38 reused translation 6.64
+FM_SEED_TOL_PX = 0.45
+# (e) capture, px; iterations at border 0.15; fixed-point gap, px.
+# Pinned 2026-10-08 (Stage F implementation gate, machine A CPU,
+# ``run_hrebsd_dic(fourier_mellin="always")`` on the one-row maps,
+# scratch ``impl_b/m_capture.py``): border 0.05, every arm converged
+# from code 1 in 2 to 7 iterations, worst error 0.0170 px on the
+# starred arms and 0.0912 px over all nine (rotation vector (-2, 2,
+# 4)); border 0.15, twists 8 to 25 and -20 deg converged in 2 to 3
+# iterations, worst gap to the exact-seeded optimum 1.13e-5 px (20
+# deg); the 30 deg window edge converged in 3 to 0.0326 px (theta_hat
+# 29.930).  Pins at about 2x of the worst
+FM_CAPTURE_TOL_PX = 0.2
+FM_CAPTURE_ITERATIONS = 6
+FM_FIXED_POINT_TOL_PX = 2.5e-5
+# (f) the 8 degree ramp point, px (spec gate 0.053, ledger 131 (iii)).
+# Pinned 2026-10-08 (implementation gate, machine A CPU, scratch
+# ``impl_b/m_ramp.py``): 0.0531 px in 3 iterations under both modes
+FM_RAMP_FAR_TOL_PX = 0.11
+# (f) the measured codes and iterations the ramp arms pin.  MEASURED
+# 2026-10-08 (implementation gate, machine A CPU, ``"always"``): the
+# 9 degree tilt converges in 116 iterations from its kept FM row; codes
+# 0 at the reference, 1 on ramp columns 1 and 2 and on the tilt, 0 on
+# the constant pattern (its first-pass acceptance kept the translation
+# row; the retry's FM fit fails again, so the first result stands)
+FM_RAMP_RESCUE_ALWAYS_ITERATIONS = 116
+FM_RAMP_ALWAYS_CODES = {0: 0, 1: 1, 2: 1, 17: 1, 19: 0}
 # (g) G5's FM-seeded outcome against ``"off"`` (MTP)
-FM_G5_ITERATIONS = None  # FIXME-pin
-# (h) the gate's twist recovery, deg (spec gate 1e-6, ledger 127)
-FM_GATE_TWIST_TOL_DEG = None  # FIXME-pin
-# (k) the numpy session against the CPU route
-FM_NUMPY_ANGLE_TOL_DEG = None  # FIXME-pin
-FM_NUMPY_ROW_TOL_PX = None  # FIXME-pin
-# (l) device parity and budgets
-FM_ANGLE_PARITY_DEG = None  # FIXME-pin
-FM_ACCEPT_FLIP_COUNT = None  # FIXME-pin
-FM_RETRY_FLIP_COUNT = None  # FIXME-pin
-FM_VRAM_P_BOUNDS = None  # FIXME-pin
-FM_VRAM_R_BOUNDS = None  # FIXME-pin
+# Pinned 2026-10-08 (implementation gate, machine A CPU, CPU route,
+# ``"always"``): 4 iterations, the local FM-seeded premise's count
+FM_G5_ITERATIONS = 4
+# (h) the gate's twist recovery, deg (spec gate 1e-6, ledger 127).
+# Pinned 2026-10-08 (implementation gate, machine A CPU): worst 8.1e-14
+# over the G7 twist, two-grain and special maps on both detectors (the
+# out-of-plane arms' zero twist included); a rounding-level number, so
+# the pin takes about 12x rather than 2x to stay platform-robust
+FM_GATE_TWIST_TOL_DEG = 1e-12
+# (k) the numpy session against the CPU route.  Pinned 2026-10-08
+# (implementation gate, machine A CPU, FK-MIXED under "auto", scratch
+# ``impl_b/m_numpy.py``): NOT bitwise; seed codes equal, angles within
+# 1.8e-15 deg, the converged homographies within 8.5e-14 px.
+# Rounding-level numbers, so the pins take about 11x and 12x (the
+# FM_GATE_TWIST_TOL_DEG precedent) to stay platform-robust
+FM_NUMPY_ANGLE_TOL_DEG = 2e-14
+FM_NUMPY_ROW_TOL_PX = 1e-12
+# (l) device parity and budgets.  MEASURED 2026-10-08 (Stage F
+# implementation gate) on machine A (``GATED_FM_MACHINE_A``; nvidia-smi
+# idle), RECIPE: the gated suite (``-n 0``, the pinned overlay,
+# ``KIKUCHIPY_EXPECT_GPU=1``) and scratch ``integ/parity.py``,
+# ``integ/parity2.py``, ``integ/e2e.py`` and ``integ/vram_r.py`` (the
+# test helpers, the test bodies unchanged); validation.md V10 ledger.
+# theta_hat parity, deg, one scalar over every set, route and
+# precision: worst 5.8e-15 at complex128, 1.58e-7 at complex64
+# (G4-poisson50-default), end to end 2.3e-8; pinned at 1.9x.  FM37 kill
+# separation: the FM arithmetic all in complex64/float32 (stencil,
+# gather, profile, correlation) errs 2.27e-7 (G3) to 2.83e-6
+# (G4-poisson50-open), above the pin on five of the six sets (worst
+# 9.4x); the stencil-only variant (1.73e-7) sits below it and is killed
+# by the default dtype spy only
+FM_ANGLE_PARITY_DEG = 3e-7
+# acceptance flips, a COUNT budget: 0 at the seam on every key; 1 end
+# to end, at ("mixed", "complex128") only, on the REFERENCE point under
+# "always" (a rounding-level tie, criteria 3.05e-15 against 3.11e-15
+# through the f32 gather; 1.76e-16 both on the CPU); pinned at 2x
+FM_ACCEPT_FLIP_COUNT = 2
+# G8 retry-subset flips: 0 at both device precisions; pinned AT 0
+FM_RETRY_FLIP_COUNT = 0
+# the per-slot FM term of a routed sub-batch at 512x622, bytes (slope
+# P = 8 to 16): 10,304,064 at complex128 and 15,456,064 at complex64,
+# equal at both device precisions; low = smaller / 2, high = 2 x larger
+FM_VRAM_P_BOUNDS = (5_150_000, 30_900_000)
+# the per-reference FM build high-water mark at 512x622, bytes:
+# 32,883,712 at every precision (the 4,032,000 B look-up table plus 112
+# B per crop pixel); low = measured / 2, high = 2 x measured
+FM_VRAM_R_BOUNDS = (16_400_000, 65_800_000)
 
 # --- the default-suite wall time and the per-class fit counts, recorded
 # not asserted, in validation.md V10 ledger (failing-tests gate and
@@ -4230,6 +4296,13 @@ def fk_spies(raw_lookup=None, seam_lookup=None, *, stage_e=False, planted_angles
         (_fourier_mellin, "fourier_mellin_angles", angles_spy),
         (_fourier_mellin, "build_fourier_mellin_state", build_fm_spy),
     ]
+    # Test bug fixed 2026-10-08 (Stage F implementation gate, validation
+    # V10 ledger): a SECOND ``fk_spies`` installed over a first one
+    # captured the first's ``(*args, **kwargs)`` spies, so ``bound`` could
+    # not bind ``fit_indices``; each spy now carries ``__wrapped__``, which
+    # ``inspect.signature`` follows to the real signature
+    for module, name, spy in pairs:
+        spy.__wrapped__ = getattr(module, name)
     return pairs, rec
 
 
@@ -6158,12 +6231,18 @@ GATED_FM_DRIFT_TRIPWIRE_PX = 1e-9
 # points both backends seed from FM rows (Stage E measured 0 and 0 on
 # translation seeds; expected 0 here too, the FM seed rows differ by FFT
 # rounding and, under "mixed", the f32 de-rotation gather)
-GATED_FM_ITERATION_DIFF_COUNT = None  # FIXME-pin
-GATED_FM_CONVERGED_FLIP_COUNT = None  # FIXME-pin
+# MEASURED 2026-10-08 (Stage F implementation gate, machine A, the
+# recipe of the (l) pins above): 0 and 0 at both device and both seed
+# precisions on the capture map; pinned AT the measured counts
+GATED_FM_ITERATION_DIFF_COUNT = 0
+GATED_FM_CONVERGED_FLIP_COUNT = 0
 # (E4) B invariance with FM on, max absolute homography parameter
 # difference against B = 8 (Stage E measured 0.0 with FM off; the
 # masked full-P branch keeps P = 32 for B >= 32 but P = 8 at B = 8)
-GATED_FM_BATCH_INVARIANCE_TOL = None  # FIXME-pin
+# MEASURED 2026-10-08 (Stage F implementation gate, machine A, the
+# recipe of the (l) pins above): 0.0 at both device precisions (the
+# Stage E precedent ``GPU_BATCH_INVARIANCE_TOL``); pinned 0
+GATED_FM_BATCH_INVARIANCE_TOL = 0.0
 
 # The seam fixtures of the angle parity (V10(l): "theta_hat against the
 # CPU route on G1, G3 and G4"): G1's nine twists plus its two combined

@@ -76,6 +76,7 @@ from dask.system import CPU_COUNT
 import numpy as np
 from scipy.linalg import cho_factor, cho_solve
 
+from kikuchipy.indexing._hrebsd import _batched as _batched
 from kikuchipy.indexing._hrebsd import _fourier_mellin as _fourier_mellin
 from kikuchipy.indexing._hrebsd import _gpu as _gpu
 from kikuchipy.indexing._hrebsd._geometry import fe_from_homography, per_point_pc_pixels
@@ -226,9 +227,47 @@ SUPPORTED_BACKENDS: tuple[str, ...] = ("cpu", "gpu")
 # and before any work; no roadmap stage letter in public text
 SEED_FROM_NEIGHBORS_GPU_MESSAGE: str = (
     "seed_from_neighbors=True is not supported with backend='gpu'; use "
-    "backend='cpu' for neighbour-seeded propagation (a Fourier-Mellin "
-    "rotation seed covering the same regime is planned)"
+    "backend='cpu' for neighbour-seeded propagation, or "
+    "seed_from_neighbors=False with fourier_mellin='auto' for large "
+    "rotations about the detector normal"
 )
+
+# ------- Stage F, the opt-in Fourier-Mellin rotation initial guess ------- #
+
+# The packed per-point row of a run with ``fourier_mellin`` other than
+# ``"off"`` (requirements D22.9): the twelve slots of :data:`_ROW_WIDTH`
+# plus the Fourier-Mellin angle (deg, NaN where none was estimated) and
+# the applied flag (1.0 where the slot's seed row was the FM row).  An
+# ``"off"`` run keeps the twelve-wide row
+_SLOT_FM_ANGLE: int = _ROW_WIDTH
+_SLOT_FM_APPLIED: int = _ROW_WIDTH + 1
+_ROW_WIDTH_FM: int = _ROW_WIDTH + 2
+
+# The ``row_slots`` of the device runner (requirements D21.9.5) on an
+# ``"off"`` run, and on a Fourier-Mellin run (D22.9)
+_ROW_SLOTS: dict = {
+    "width": _ROW_WIDTH,
+    "residual": _SLOT_RESIDUAL,
+    "iterations": _SLOT_ITERATIONS,
+    "norm_dp": _SLOT_NORM_DP,
+    "converged": _SLOT_CONVERGED,
+}
+# The host bytes per pattern pixel a reference with a routed point adds
+# on the CPU route (requirements D22.10, the information message's
+# memory note of D22.18): the complex128 reference spectrum of its
+# numpy seed state, and the 64-bit planes of its box resident (two
+# coordinate planes) and of its numpy subregion resident (two
+# coordinate planes, the reference, two gradient columns and the
+# window weights) plus the 32-bit pixel indices
+_FM_HOST_COMPLEX_BYTES: int = 16
+_FM_HOST_PLANE_BYTES: int = 2 * 8 + 6 * 8 + 4
+
+_ROW_SLOTS_FM: dict = {
+    **_ROW_SLOTS,
+    "width": _ROW_WIDTH_FM,
+    "fm_angle": _SLOT_FM_ANGLE,
+    "fm_applied": _SLOT_FM_APPLIED,
+}
 
 
 class ReferenceState:
@@ -1012,7 +1051,16 @@ def run_hrebsd_dic(
     fourier_mellin
         ``"off"`` (default), the bitwise-unchanged translation-only
         seed of requirements D5, ``"auto"`` or ``"always"``, the opt-in
-        Fourier-Mellin rotation seed of requirements D22.
+        Fourier-Mellin rotation seed of requirements D22. ``"auto"``
+        routes the points whose twist about the detector normal from
+        their grain reference in *xmap* is at least ``FM_GATE_DEG``
+        (or cannot be computed) through the seed, which keeps the
+        rotation row only if its criterion beats the translation
+        row's (D22.5, D22.7), and needs *xmap*; ``"always"`` evaluates
+        the seed on every fitted point. Both then retry once, from the
+        forced rotation row, every point whose translation-seeded fit
+        did not converge (D22.8). Never combined with
+        *seed_from_neighbors* (D22.11).
     navigation_mask
         Boolean mask of *navigation_shape* in kikuchipy polarity,
         where only patterns equal to ``False`` are fitted.
@@ -1066,13 +1114,24 @@ def run_hrebsd_dic(
         one a cascade round converted; :data:`SEED_ROUND_RESCUE`
         (``-2``) for one converged only in the rescue pass; and
         :data:`SEED_ROUND_NONE` (``-1``) for a point which never
-        converged or is masked out.
+        converged or is masked out. A run with *fourier_mellin* other
+        than ``"off"`` carries the two entries of
+        :data:`FOURIER_MELLIN_PROP_NAMES` (D22.9) instead:
+        ``"fourier_mellin_seed"``, ``int32``, 0 where the stored fit
+        was seeded by the translation row, 1 by a rotation row in the
+        first pass, 2 by one in the retry pass and -1 on a masked or
+        not fitted point; and ``"fourier_mellin_angle"``, ``float64``,
+        the most recent rotation estimate in degrees, NaN where none
+        was made.
 
     Raises
     ------
     ValueError
         For any invalid argument, each naming the offending one, an
-        unsupported *backend* included (requirements D21.1).
+        unsupported *backend* included (requirements D21.1); for an
+        unsupported *fourier_mellin*, for *fourier_mellin* other than
+        ``"off"`` with *seed_from_neighbors*, and for
+        ``fourier_mellin="auto"`` without *xmap* (D22.1, D22.11).
     NotImplementedError
         With ``backend="gpu"`` and ``seed_from_neighbors=True``
         (requirements D21.12), before the gate and any work.
@@ -1158,9 +1217,10 @@ def run_hrebsd_dic(
         )
     # Requirements D22.1: the Fourier-Mellin checks sit here, after the
     # backend string check and before every "gpu"-only check.  The
-    # default "off" passes straight through, bitwise unchanged
-    if fourier_mellin != "off":
-        raise NotImplementedError("Stage F: not implemented yet")
+    # default "off" passes straight through, bitwise unchanged: (1) the
+    # value, (2) the D22.11 combination, (3) "auto" without a crystal map
+    _check_fourier_mellin(fourier_mellin, seed_from_neighbors, xmap)
+    use_fm = fourier_mellin != "off"
     use_gpu = backend == "gpu"
     if use_gpu:
         _check_gpu_arguments(
@@ -1251,6 +1311,18 @@ def run_hrebsd_dic(
     state_of_point = np.ascontiguousarray(state_of_point[order].astype(np.int64))
 
     n_fit = int(fit_indices.size)
+
+    # Requirements D22.7: the pre-fit routes of a Fourier-Mellin run,
+    # on the host, in fit order, before any fit; ``None`` on "off"
+    fm_route = None
+    if use_fm:
+        fm_route = _fourier_mellin_routes(
+            fourier_mellin, xmap, detector, fit_indices, reference_index
+        )
+    # D22.18: the device batch choice consults the FM terms only when a
+    # route flag of the run is nonzero
+    fm_routed = fm_route is not None and bool(fm_route.any())
+
     if use_gpu:
         # Requirements D21.10.1: ``chunksize`` IS the device batch size,
         # never clamped to the number of fitted points, and the default
@@ -1259,12 +1331,21 @@ def run_hrebsd_dic(
         if chunksize is None or verbose >= 1:
             free_bytes = _gpu._free_device_bytes("cupy")
         if chunksize is None:
-            chunksize = _gpu._default_batch_size(
-                free_bytes,
-                signal_shape[0] * signal_shape[1],
-                device_precision,
-                seed_precision,
-            )
+            if fm_routed:
+                chunksize = _gpu._default_batch_size(
+                    free_bytes,
+                    signal_shape[0] * signal_shape[1],
+                    device_precision,
+                    seed_precision,
+                    fourier_mellin=True,
+                )
+            else:
+                chunksize = _gpu._default_batch_size(
+                    free_bytes,
+                    signal_shape[0] * signal_shape[1],
+                    device_precision,
+                    seed_precision,
+                )
         chunksize = int(chunksize)
         if verbose >= 1:
             # The device batches are grain pure (D21.9.3): one grain's
@@ -1276,6 +1357,7 @@ def run_hrebsd_dic(
                 len(states),
                 chunksize=chunksize,
                 n_chunks=len(_gpu._batch_chunks(state_of_point, chunksize)),
+                fourier_mellin=use_fm,
             )
             device_block = _gpu._info_lines(
                 chunksize, signal_shape, device_precision, seed_precision, free_bytes
@@ -1288,7 +1370,13 @@ def run_hrebsd_dic(
 
         if verbose >= 1:
             print(
-                get_info_message(n_fit, signal_shape, len(states), chunksize=chunksize)
+                get_info_message(
+                    n_fit,
+                    signal_shape,
+                    len(states),
+                    chunksize=chunksize,
+                    fourier_mellin=use_fm,
+                )
             )
 
     homography = np.full((map_size, HOMOGRAPHY_PROP_SIZE), np.nan, dtype=np.float64)
@@ -1341,6 +1429,8 @@ def run_hrebsd_dic(
         )
 
     time_start = time.time()
+    fm_seed = None
+    fm_angle = None
     if seed_from_neighbors:
         # PASS 1 of requirements D20.2: the ordinary phase
         # cross-correlation seeded fit of every point, at the capped
@@ -1348,6 +1438,114 @@ def run_hrebsd_dic(
         # cascade rounds and the rescue pass below re-fit every point
         # it leaves unconverged at the FULL budget
         fit_phase(fit_indices, min(int(max_iterations), PASS1_CAP))
+    elif use_fm:
+        # Requirements D22.8 to D22.10: the first pass with the routes,
+        # then one retry pass, both runner changes only
+        fm_seed = np.full(map_size, _fourier_mellin.FOURIER_MELLIN_SEED_NONE, np.int32)
+        fm_angle = np.full(map_size, np.nan, dtype=np.float64)
+        fm_states = [None] * len(states)
+        fm_built = [False] * len(states)
+
+        def cpu_fm_states(positions) -> tuple:
+            """Return the numpy ``SeedState`` of every reference, each
+            carrying its ``FourierMellinState``, built ONCE per
+            reference in *positions* on the host before the graph
+            (D22.10), ``None`` elsewhere and where the build refused
+            the reference (D22.6)."""
+            for position in np.unique(np.asarray(positions, dtype=np.int64)):
+                position = int(position)
+                if not fm_built[position]:
+                    fm_built[position] = True
+                    fm_states[position] = _cpu_fourier_mellin_state(
+                        states[position], upsample_factor
+                    )
+            return tuple(fm_states)
+
+        def fm_pass(indices, state_index, route, batch_size):
+            """Run one Fourier-Mellin pass over *indices* (fit order)
+            with the per-point *route* and return its packed rows."""
+            if use_gpu:
+                return _gpu._run_chunks_gpu(
+                    patterns,
+                    indices,
+                    state_index,
+                    states,
+                    batch_size,
+                    progressbar=verbose >= 1,
+                    options=fit_options,
+                    device_precision=device_precision,
+                    seed_precision=seed_precision,
+                    row_slots=dict(_ROW_SLOTS_FM),
+                    seed_extras={_fourier_mellin.FOURIER_MELLIN_ROUTE_KEY: route},
+                )
+            return _run_chunks(
+                patterns,
+                indices,
+                state_index,
+                states,
+                max(1, min(int(batch_size), int(indices.size))),
+                progressbar=verbose >= 1,
+                options=fit_options,
+                fm_route=route,
+                fm_states=cpu_fm_states(state_index[route != 0]),
+            )
+
+        # The first pass: every fitted point, route 1 where routed
+        if use_gpu:
+            _gpu._reset_last_batch_size()
+        packed = fm_pass(fit_indices, state_of_point, fm_route, chunksize)
+        # The retry runs at the first pass's FINAL device batch size
+        # (D22.8), which the out-of-memory loop may have halved
+        retry_batch_size = chunksize
+        if use_gpu:
+            retry_batch_size = _gpu._last_batch_size(chunksize)
+        store(fit_indices, packed)
+        applied = packed[:, _SLOT_FM_APPLIED] > 0.5
+        fm_seed[fit_indices] = np.where(
+            applied,
+            _fourier_mellin.FOURIER_MELLIN_SEED_FIRST_PASS,
+            _fourier_mellin.FOURIER_MELLIN_SEED_TRANSLATION,
+        )
+        fm_angle[fit_indices] = packed[:, _SLOT_FM_ANGLE]
+
+        # The retry subset (D22.8): fitted, unmasked, not converged and
+        # seeded by the translation row, in a grain with an FM state; a
+        # NaN-``h`` first-pass point included.  On the CPU a grain's
+        # state is built here if the first pass did not need it; the
+        # device builds its own lazily and a grain it refuses leaves
+        # its forced slots unapplied, so unfitted
+        candidates = ~converged[fit_indices] & (
+            fm_seed[fit_indices] == _fourier_mellin.FOURIER_MELLIN_SEED_TRANSLATION
+        )
+        if not use_gpu and candidates.any():
+            cpu_fm_states(state_of_point[candidates])
+            has_state = np.array([s is not None for s in fm_states], dtype=bool)
+            candidates &= has_state[state_of_point]
+        if candidates.any():
+            retry_indices = np.ascontiguousarray(fit_indices[candidates])
+            retry_states = np.ascontiguousarray(state_of_point[candidates])
+            retry_route = np.full(
+                retry_indices.size, _fourier_mellin.ROUTE_FORCED, dtype=np.int8
+            )
+            if verbose >= 1:
+                print(
+                    f"  Fourier-Mellin retry: {retry_indices.size} pattern(s) "
+                    "re-fitted from the rotation seed"
+                )
+            retried = fm_pass(
+                retry_indices, retry_states, retry_route, retry_batch_size
+            )
+            # The most recent estimate is the retry's (D22.9)
+            fm_angle[retry_indices] = retried[:, _SLOT_FM_ANGLE]
+            # The retry result replaces the first one wholly if and only
+            # if it converged; otherwise the first result stands bitwise
+            replace = retried[:, _SLOT_CONVERGED] > 0.5
+            store(retry_indices[replace], retried[replace])
+            fm_seed[retry_indices[replace]] = np.where(
+                retried[replace, _SLOT_FM_APPLIED] > 0.5,
+                _fourier_mellin.FOURIER_MELLIN_SEED_RETRY,
+                _fourier_mellin.FOURIER_MELLIN_SEED_TRANSLATION,
+            )
     elif use_gpu:
         # Requirements D21.9: the dispatch point is ``_run_chunks``;
         # the device runner reproduces its contract, so everything
@@ -1496,6 +1694,12 @@ def run_hrebsd_dic(
     # so a default-path result carries EXACTLY the pre-Stage-D set
     if seed_round is not None:
         properties[SEED_ROUND_PROP_NAME] = seed_round
+    # The D22.9 absence rule, the same precedent: the two properties
+    # exist on a Fourier-Mellin run only
+    if fm_seed is not None:
+        seed_name, angle_name = FOURIER_MELLIN_PROP_NAMES
+        properties[seed_name] = fm_seed
+        properties[angle_name] = fm_angle
     return properties
 
 
@@ -1545,6 +1749,161 @@ def _check_gpu_arguments(
         )
 
 
+def _check_fourier_mellin(fourier_mellin, seed_from_neighbors: bool, xmap) -> None:
+    """Check *fourier_mellin* in the frozen order of requirements D22.1:
+    (1) the value, one of ``"off"``, ``"auto"`` and ``"always"``,
+    case-sensitive, a bool included in what is refused; (2) the D22.11
+    combination with ``seed_from_neighbors=True``; (3) under ``"auto"``
+    an *xmap* of ``None``.  Called after the ``backend`` string check
+    and before every ``"gpu"``-only check, the gate of D21.2, reference
+    resolution and any pattern read.
+
+    Raises
+    ------
+    ValueError
+        With the frozen message literals of ``_fourier_mellin``.
+    """
+    values = _fourier_mellin.FOURIER_MELLIN_VALUES
+    if not isinstance(fourier_mellin, str) or fourier_mellin not in values:
+        raise ValueError(
+            _fourier_mellin.FOURIER_MELLIN_VALUE_MESSAGE.format(
+                fourier_mellin=fourier_mellin
+            )
+        )
+    if fourier_mellin == "off":
+        return
+    if seed_from_neighbors:
+        raise ValueError(
+            _fourier_mellin.FOURIER_MELLIN_NEIGHBORS_MESSAGE.format(
+                fourier_mellin=fourier_mellin
+            )
+        )
+    if fourier_mellin == "auto" and xmap is None:
+        raise ValueError(_fourier_mellin.FOURIER_MELLIN_XMAP_MESSAGE)
+
+
+def _fourier_mellin_routes(
+    fourier_mellin: str,
+    xmap,
+    detector,
+    fit_indices: np.ndarray,
+    reference_index: np.ndarray,
+) -> np.ndarray:
+    """Return the ``(n_fit,)`` int8 first-pass routes of a
+    Fourier-Mellin run in fit order (requirements D22.6, D22.7).
+
+    ``"always"`` routes every fitted point with the acceptance (route
+    1).  ``"auto"`` runs the pre-fit gate on the host: the twist about
+    the detector normal of every fitted point against its GRAIN
+    reference, :func:`~kikuchipy.indexing._hrebsd._fourier_mellin.\
+twist_about_detector_normal`, then
+    :func:`~kikuchipy.indexing._hrebsd._fourier_mellin.\
+fourier_mellin_routes` at ``FM_GATE_DEG``, both reached through the
+    module object at call time.  Masked points are not in *fit_indices*
+    and so are never routed.  The frozen ``UserWarning`` of D22.7 is
+    issued when no twist of a fitted non-reference point is NaN and
+    every one is below ``FM_ZERO_TWIST_DEG`` in magnitude (an input
+    condition, never a float equality).
+    """
+    fit_indices = np.asarray(fit_indices, dtype=np.int64)
+    n_fit = int(fit_indices.size)
+    if fourier_mellin == "always":
+        return np.full(n_fit, _fourier_mellin.ROUTE_ACCEPT, dtype=np.int8)
+    point_reference = np.asarray(reference_index, dtype=np.int64)[fit_indices]
+    twist = np.asarray(
+        _fourier_mellin.twist_about_detector_normal(
+            xmap, detector, fit_indices, point_reference
+        ),
+        dtype=np.float64,
+    ).reshape(n_fit)
+    route = np.ascontiguousarray(
+        np.asarray(
+            _fourier_mellin.fourier_mellin_routes(twist, _fourier_mellin.FM_GATE_DEG),
+            dtype=np.int8,
+        ).reshape(n_fit)
+    )
+    others = twist[fit_indices != point_reference]
+    if not np.isnan(others).any() and np.all(
+        np.abs(others) < _fourier_mellin.FM_ZERO_TWIST_DEG
+    ):
+        warnings.warn(_fourier_mellin.FOURIER_MELLIN_NO_TWIST_WARNING, UserWarning)
+    return route
+
+
+def _cpu_fourier_mellin_state(state: ReferenceState, upsample_factor: int):
+    """Return the numpy ``SeedState`` of one reference carrying its
+    ``FourierMellinState`` for the CPU route of requirements D22.10, or
+    ``None`` when the state builder refuses the reference (that grain
+    then runs as under ``"off"``, is never routed and never retried).
+
+    Built once per reference on the host, before the graph: the
+    complex128 reference spectrum of the Stage E seed, the numpy
+    subregion resident the acceptance criterion gathers through, and
+    the box resident and profile of the Fourier-Mellin state (the
+    run's look-up table is the builder's, cached by crop shape).  The
+    builders are reached through the module objects at call time.
+    """
+    ctx = _cpu_seed_context()
+    seed_state = _batched.build_seed_state(
+        ctx, state, precision="complex128", upsample_factor=int(upsample_factor)
+    )
+    resident = _batched.build_resident(ctx, state)
+    fm_state = _fourier_mellin.build_fourier_mellin_state(ctx, state, resident)
+    if fm_state is None:
+        return None
+    seed_state.fourier_mellin = fm_state
+    return seed_state
+
+
+def _cpu_seed_context():
+    """Return the numpy seed context of the CPU route of requirements
+    D22.10: ``SeedContext(np, np.fft, make_kernel_namespace("numpy",
+    "float64"))``."""
+    kernels = _batched.make_kernel_namespace("numpy", "float64")
+    return _batched.SeedContext(np, np.fft, kernels)
+
+
+def _fourier_mellin_seed(ctx, state: ReferenceState, seed_state, target, route: int):
+    """Return ``(row, angle, applied)`` of the numpy seam at P = 1 for
+    one raw *target* with the *route* code (requirements D22.10): the
+    target is preprocessed and splined exactly as ``_fit_pattern``
+    does, put in a one-slot ``SeedBatch`` carrying the route key, and
+    passed to ``_batched.seed_spectra`` and
+    ``_batched.seed_homographies`` through the module object.  A seam
+    that wrote no outputs reads as angle NaN and not applied."""
+    preprocessed = preprocess(
+        np.asarray(target), transfer_function=state.transfer_function
+    )
+    coefficients = np.ascontiguousarray(
+        spline_coefficients(
+            preprocessed,
+            interpolation=state.interpolation,
+            dtype=state.coefficient_dtype,
+        )
+    )
+    batch = _batched.SeedBatch(
+        np.ascontiguousarray(preprocessed[None], dtype=np.float64),
+        coefficients[None],
+        np.zeros(1, dtype=np.int64),
+        extras={
+            _fourier_mellin.FOURIER_MELLIN_ROUTE_KEY: np.array([route], dtype=np.int8)
+        },
+    )
+    spectra = _batched.seed_spectra(ctx, batch, seed_state)
+    rows = _batched.seed_homographies(ctx, batch, spectra, seed_state)
+    row = np.array(np.asarray(rows)[0], dtype=np.float64)
+    outputs = batch.outputs
+    angle = np.nan
+    applied = False
+    if _fourier_mellin.FOURIER_MELLIN_ANGLE_KEY in outputs:
+        angle = float(np.asarray(outputs[_fourier_mellin.FOURIER_MELLIN_ANGLE_KEY])[0])
+    if _fourier_mellin.FOURIER_MELLIN_APPLIED_KEY in outputs:
+        applied = bool(
+            np.asarray(outputs[_fourier_mellin.FOURIER_MELLIN_APPLIED_KEY])[0]
+        )
+    return row, angle, applied
+
+
 def _gather(patterns, indices: np.ndarray) -> np.ndarray:
     """Return the patterns at *indices* as one eager array.
 
@@ -1572,8 +1931,20 @@ def _fit_chunk(
     h0_block: np.ndarray | None = None,
     states: tuple = (),
     options: dict | None = None,
+    route_block: np.ndarray | None = None,
+    fm_states: tuple = (),
 ) -> np.ndarray:
     """Return the packed IC-GN results of one chunk of patterns.
+
+    With *route_block* (a Fourier-Mellin run, requirements D22.10) a
+    point whose route is nonzero and whose reference has a state in
+    *fm_states* is seeded through the numpy seam at P = 1 inside this
+    function: if the seam applied the Fourier-Mellin row the fit runs
+    from it; otherwise a route-1 point runs with the phase
+    cross-correlation seed of ``fit_pattern``, exactly as under
+    ``"off"``, and a route-2 (forced, the retry of D22.8) point is NOT
+    fitted and gets the D2.6 failure row.  A route-0 point is never
+    passed to the seam, so it is bitwise the ``"off"`` result.
 
     Parameters
     ----------
@@ -1594,29 +1965,94 @@ def _fit_chunk(
         The per-reference precomputed states.
     options
         Keyword arguments forwarded to :func:`fit_pattern`.
+    route_block
+        ``(n,)`` int8 block of Fourier-Mellin routes (0 not routed, 1
+        routed with the acceptance, 2 forced), paired with
+        *patterns_block* along the same named dask index as *h0_block*,
+        or ``None`` on an ``"off"`` run.
+    fm_states
+        Aligned with *states*: each reference's numpy ``SeedState``
+        carrying its ``FourierMellinState``, or ``None``.
 
     Returns
     -------
     results
-        ``(n, 12)`` 64-bit float array of packed rows.
+        ``(n, 12)`` 64-bit float array of packed rows when
+        *route_block* is ``None``, else ``(n, 14)`` with the
+        Fourier-Mellin angle and applied flag (D22.9).
     """
     options = {} if options is None else options
     n_patterns = int(patterns_block.shape[0])
-    results = np.empty((n_patterns, _ROW_WIDTH), dtype=np.float64)
+    width = _ROW_WIDTH if route_block is None else _ROW_WIDTH_FM
+    results = np.empty((n_patterns, width), dtype=np.float64)
+    context = None
     for i in range(n_patterns):
-        state = states[int(state_index_block[i])]
+        position = int(state_index_block[i])
+        state = states[position]
         h0 = None
         if h0_block is not None:
             row = np.asarray(h0_block[i], dtype=np.float64)
             if np.all(np.isfinite(row)):
                 h0 = row
-        result = fit_pattern(state, patterns_block[i], h0=h0, **options)
+        angle = np.nan
+        applied = False
+        fit = True
+        if route_block is not None:
+            route = int(route_block[i])
+            seed_state = fm_states[position] if position < len(fm_states) else None
+            if route != _fourier_mellin.ROUTE_NONE and seed_state is not None:
+                if context is None:
+                    context = _cpu_seed_context()
+                row, angle, applied = _fourier_mellin_seed(
+                    context, state, seed_state, patterns_block[i], route
+                )
+                if applied:
+                    h0 = row
+            # A forced slot the seam did not apply is never fitted
+            # (D22.5, D22.8): its first-pass result stands
+            fit = applied or route != _fourier_mellin.ROUTE_FORCED
+        if fit:
+            result = fit_pattern(state, patterns_block[i], h0=h0, **options)
+        else:
+            result = {
+                "h": np.full(N_HOMOGRAPHY_PARAMETERS, np.nan),
+                "residual": np.nan,
+                "num_iterations": 0,
+                "norm_dp": np.nan,
+                "converged": False,
+            }
         results[i, :HOMOGRAPHY_PROP_SIZE] = result["h"]
         results[i, _SLOT_RESIDUAL] = result["residual"]
         results[i, _SLOT_ITERATIONS] = result["num_iterations"]
         results[i, _SLOT_NORM_DP] = result["norm_dp"]
         results[i, _SLOT_CONVERGED] = 1.0 if result["converged"] else 0.0
+        if route_block is not None:
+            results[i, _SLOT_FM_ANGLE] = angle
+            results[i, _SLOT_FM_APPLIED] = 1.0 if applied else 0.0
     return results
+
+
+def _fit_chunk_routed(
+    patterns_block: np.ndarray,
+    state_index_block: np.ndarray,
+    route_block: np.ndarray,
+    *,
+    states: tuple,
+    options: dict,
+    fm_states: tuple,
+) -> np.ndarray:
+    """The blockwise entry of a Fourier-Mellin run: :func:`_fit_chunk`
+    with the route block paired along the pattern index (D22.10),
+    reached through the module global at call time."""
+    return _fit_chunk(
+        patterns_block,
+        state_index_block,
+        None,
+        states,
+        options,
+        route_block,
+        fm_states,
+    )
 
 
 def _run_chunks(
@@ -1629,6 +2065,8 @@ def _run_chunks(
     progressbar: bool,
     options: dict,
     h0: np.ndarray | None = None,
+    fm_route: np.ndarray | None = None,
+    fm_states: tuple | None = None,
 ) -> np.ndarray:
     """Return the packed results of every fitted point, in fit order.
 
@@ -1663,11 +2101,21 @@ def _run_chunks(
         with the patterns along the SAME named dask index as the
         state identifiers, so a per-point seed cannot be handed to
         the wrong pattern whatever the chunking is.
+    fm_route
+        ``(fit_indices.size,)`` int8 Fourier-Mellin routes in fit order
+        (requirements D22.10), or ``None`` on an ``"off"`` run, which
+        keeps the twelve-wide rows. Paired with the patterns along the
+        same named dask index as *h0*; a Fourier-Mellin run never
+        carries *h0*.
+    fm_states
+        Aligned with *states*: each reference's numpy ``SeedState``
+        with its ``FourierMellinState``, or ``None`` (D22.10).
 
     Returns
     -------
     packed
-        ``(fit_indices.size, 12)`` 64-bit float array.
+        ``(fit_indices.size, 12)`` 64-bit float array, or
+        ``(fit_indices.size, 14)`` with *fm_route* (D22.9).
     """
     if isinstance(patterns, da.Array):
         patterns_da = patterns
@@ -1675,25 +2123,46 @@ def _run_chunks(
         patterns_da = da.from_array(np.asarray(patterns), chunks=(chunksize, -1, -1))
     ordered = patterns_da[fit_indices].rechunk((chunksize, -1, -1))
     state_da = da.from_array(state_of_point, chunks=(chunksize,))
-    if h0 is None:
-        # The default path, untouched: two paired arguments and no
-        # seed array in the graph at all
-        arguments = (ordered, "ikl", state_da, "i")
-    else:
-        h0_da = da.from_array(
-            np.ascontiguousarray(h0, dtype=np.float64), chunks=(chunksize, -1)
+    if fm_route is not None:
+        route_da = da.from_array(
+            np.ascontiguousarray(fm_route, dtype=np.int8), chunks=(chunksize,)
         )
-        arguments = (ordered, "ikl", state_da, "i", h0_da, "im")
-    results = da.blockwise(
-        _fit_chunk,
-        "ij",
-        *arguments,
-        states=tuple(states),
-        options=options,
-        new_axes={"j": _ROW_WIDTH},
-        dtype=np.float64,
-        concatenate=True,
-    )
+        results = da.blockwise(
+            _fit_chunk_routed,
+            "ij",
+            ordered,
+            "ikl",
+            state_da,
+            "i",
+            route_da,
+            "i",
+            states=tuple(states),
+            options=options,
+            fm_states=tuple(() if fm_states is None else fm_states),
+            new_axes={"j": _ROW_WIDTH_FM},
+            dtype=np.float64,
+            concatenate=True,
+        )
+    else:
+        if h0 is None:
+            # The default path, untouched: two paired arguments and no
+            # seed array in the graph at all
+            arguments = (ordered, "ikl", state_da, "i")
+        else:
+            h0_da = da.from_array(
+                np.ascontiguousarray(h0, dtype=np.float64), chunks=(chunksize, -1)
+            )
+            arguments = (ordered, "ikl", state_da, "i", h0_da, "im")
+        results = da.blockwise(
+            _fit_chunk,
+            "ij",
+            *arguments,
+            states=tuple(states),
+            options=options,
+            new_axes={"j": _ROW_WIDTH},
+            dtype=np.float64,
+            concatenate=True,
+        )
     # The threaded scheduler, as the spherical path pins it: the states
     # are read-only and never cross a process boundary
     if progressbar:
@@ -1746,6 +2215,7 @@ def get_info_message(
     n_grains: int,
     chunksize: int | None = None,
     n_chunks: int | None = None,
+    fourier_mellin: bool = False,
 ) -> str:
     """Return the information message printed at ``verbose >= 1``.
 
@@ -1768,6 +2238,11 @@ def get_info_message(
         Number of chunks, or ``None`` for ``ceil(n_patterns /
         chunksize)``.  The GPU backend passes its grain-pure device
         batch count (requirements D21.9.3, D21.10.5).
+    fourier_mellin
+        Whether the run uses the Fourier-Mellin seed of requirements
+        D22; if so a further line states its host memory (D22.10,
+        D22.18). Default is ``False``, the message of every earlier
+        release.
 
     Returns
     -------
@@ -1791,12 +2266,32 @@ def get_info_message(
     bytes_per_reference = (
         nrows * ncols * (_N_STEEPEST_DESCENT_COLUMNS * 8 + 4 + _RESIDENT_F64_PLANES * 8)
     )
-    return "\n".join(
-        [
-            "HREBSD-DIC information:",
-            f"  Correlating {n_patterns} pattern(s) of shape ({nrows}, {ncols}) "
-            f"against {int(n_grains)} reference(s)",
-            f"  Chunking: {n_chunks} chunk(s) of up to {chunksize} pattern(s)",
-            f"  Estimated memory per reference: {bytes_per_reference / 1024**2:.1f} MB",
-        ]
-    )
+    lines = [
+        "HREBSD-DIC information:",
+        f"  Correlating {n_patterns} pattern(s) of shape ({nrows}, {ncols}) "
+        f"against {int(n_grains)} reference(s)",
+        f"  Chunking: {n_chunks} chunk(s) of up to {chunksize} pattern(s)",
+        f"  Estimated memory per reference: {bytes_per_reference / 1024**2:.1f} MB",
+    ]
+    if fourier_mellin:
+        # Requirements D22.10: a reference with a routed point also
+        # holds, on the host, the numpy seed state (the complex128
+        # reference spectrum), the bounding-box resident (two 64-bit
+        # coordinate planes) and the numpy subregion resident; the
+        # polar look-up table is held once per run.  The model, bounded
+        # by the pattern size as above, not a measurement
+        fm_bytes = nrows * ncols * (_FM_HOST_COMPLEX_BYTES + _FM_HOST_PLANE_BYTES)
+        side = min(nrows, ncols)
+        n_rho = (
+            math.floor(
+                (_fourier_mellin.FM_RHO_MAX - _fourier_mellin.FM_RHO_MIN) * side + 1e-9
+            )
+            + 1
+        )
+        lut_bytes = _fourier_mellin.FM_N_THETA * n_rho * 4 * (8 + 8)
+        lines.append(
+            "  Fourier-Mellin seed: up to "
+            f"{fm_bytes / 1024**2:.1f} MB more per reference with a routed point, "
+            f"plus {lut_bytes / 1024**2:.1f} MB once for the polar look-up table"
+        )
+    return "\n".join(lines)
