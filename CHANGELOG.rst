@@ -18,6 +18,34 @@ Unreleased
 
 Added
 -----
+- Optional Fourier-Mellin rotation initial guess for ``EBSD.hrebsd_dic()``: the
+  new keyword-only ``fourier_mellin`` (default ``"off"``, which is bitwise the
+  previous translation only behaviour) accepts ``"auto"`` and ``"always"``. A
+  Fourier-Mellin estimate of the rotation about the detector normal, from the
+  spectrum of the pattern subregion, de-rotates the target before the
+  translation guess, and the rotation seed is kept only where it correlates
+  better than the translation only guess. ``"auto"`` seeds the points whose
+  twist about the detector normal relative to their grain reference, read from
+  the crystal map, is at least 1.5 degrees, and ``"always"`` seeds every point;
+  under both, every point whose first fit did not converge is retried once from
+  the rotation seed. Both backends run the same code, and the returned map
+  carries two more properties, ``"fourier_mellin_seed"`` and
+  ``"fourier_mellin_angle"``. The seed captures rotations up to its 30 degree
+  search window on synthetic 480 by 480 pixel patterns. On the full Si-indent
+  map (57772 fitted points) on the GPU, ``"auto"`` routed 57 points and
+  converged 57750 points against 57685 for ``"off"`` without band-pass, with 6
+  routed points worse (3 lost convergence) at 1 % more wall time, and with the
+  default band-pass converted 2049 points, made none worse and cut the
+  iterations by 35 % at 10 % more wall time: measured on machine A (an RTX 2000
+  Ada laptop GPU) at device precision ``"mixed"`` and seed precision
+  ``"complex128"``, a measurement on that machine, not a portable claim.
+  ``"auto"`` needs the crystal map's orientations in kikuchipy's sample frame:
+  Euler angles from an Oxford H5OINA file are given in a frame turned 90 degrees
+  about the surface normal and are converted with
+  ``Rotation.from_euler(euler) * Rotation.from_axes_angles([0, 0, 1], -90,
+  degrees=True)``. Fork-only, developed on the ``hrebsd-dic`` branch and
+  specified in ``specs/2026-09-07-hrebsd-dic/`` (requirements D22, validation
+  V10), with no pull request into ``develop``.
 - Optional GPU backend for ``EBSD.hrebsd_dic()``: the new keyword-only
   ``backend`` (default ``"cpu"``, which is bitwise the previous behaviour and
   stays the parity oracle) accepts ``"gpu"``, which runs the same inverse

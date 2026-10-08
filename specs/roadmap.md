@@ -300,13 +300,13 @@ the Si-indent map has an input twist above 1.5 deg. Spec review 2026-10-07:
 the Stage E gates pass AND Johan has reviewed plan 12.4.
 - [x] plan approved by Johan: the section 12.4 recorded defaults (approved
   as written 2026-10-08, "Go ahead with stage F"; recorded in 12.4)
-- [ ] failing tests first: `test_hrebsd_fourier_mellin.py` (default numpy-xp
+- [x] failing tests first: `test_hrebsd_fourier_mellin.py` (default numpy-xp
   suite + gated `cupy_gpu` suite, V10(a)-(l)) incl. the angle, look-up-table,
   edge, row, capture, ramp-rescue, acceptance, gate, projection-link, retry,
   CPU-route and numpy-session oracles, the public-method forwarding and
   props arms and the new docstring test; the freeze, defaults and D21.12
   literal pins edited with dated comments
-- [ ] implementation: `_hrebsd/_fourier_mellin.py` (look-up table, angle,
+- [x] implementation: `_hrebsd/_fourier_mellin.py` (look-up table, angle,
   peak, de-rotation, translation, partial row, acceptance, CrystalMap gate
   and routes) + the seam extension (`SeedState.fourier_mellin`, the `extras`
   route key, `SeedBatch.outputs`) + the CPU route at P = 1 + the retry pass
@@ -314,8 +314,10 @@ the Stage E gates pass AND Johan has reviewed plan 12.4.
   seed_extras=)`, the lazy FM state, the inactive forced slot and the VRAM
   keyword + `ebsd.py` forwarding and props; every V10 MTP pin measured and
   pinned; the REQUIRED real-data frame oracle of the gate under its
-  pre-registered rule (FQ13)
-- [ ] adversarial review + bug injection (plan 12 item 4 mutants FM1-FM52,
+  pre-registered rule (FQ13): FAILED on the raw h5oina Euler angles
+  (Oxford's CS1 frame), PASSED on the converted map, signed off by Johan
+  2026-10-08 (plan 12.8, ledgers 143-144)
+- [x] adversarial review + bug injection (plan 12 item 4 mutants FM1-FM52,
   kills re-verified, device ones on the GPU machine) + fixes; coverage 100 %
   of the touched `_hrebsd` modules (default + gated combined); CPU default
   path bitwise unchanged (`fourier_mellin="off"` == no keyword); Stage E
@@ -323,9 +325,48 @@ the Stage E gates pass AND Johan has reviewed plan 12.4.
   KIKUCHIPY_EXPECT_GPU=1; oldest-matrix + full suite green
 - [ ] D22.15 performance record on the Si-indent data (whole map `"off"`
   against `"auto"` at both filter settings on both backends, far256 and
-  patch C under `"always"`, the D5 anchor census of FQ8); docstring,
-  CHANGELOG, the `hrebsd_dic.ipynb` bullet and the `hrebsd_si_indent.ipynb`
-  markdown cell; signed commits pushed to origin/hrebsd-dic (no PR)
+  patch C under `"always"`, the D5 anchor census of FQ8), with the
+  converted map; signed commits pushed to origin/hrebsd-dic (no PR).
+  PARTLY DONE 2026-10-08: the frame oracle and the GPU records are in
+  ledgers 143-152; the CPU whole-map `"auto"` records follow in a later
+  commit
+- [x] docstring (with the frame requirement), CHANGELOG, the
+  `hrebsd_dic.ipynb` bullet, the `hrebsd_si_indent.ipynb` markdown cell
+  with the converted-map GPU `"auto"` record, plus the Oxford CS1
+  conversion cell and the convention-first MapSweeper text (2026-10-08;
+  D22.16 amendment)
+
+### Stage F follow-ups (recorded 2026-10-08, NOT commissioned; plan 12.3, 12.8)
+Measured on the converted map (ledgers 143-152). Stage F result on the GPU
+whole Si-indent map: at `(None, None)` `"auto"` routes 57 points, accepts
+45 FM seeds and converts 68 points (all through the retry) but worsens 6
+routed ones (3 lose convergence), at +1 % wall time; at `(0.05, None)` it
+converts 2049 points, worsens none and cuts iterations 35 %, at +10 %.
+- [ ] Oxford reader fix on develop, then upstream (cite kikuchipy #746 and
+  #748), then fan out: a real CrystalMap in kikuchipy's sample frame
+  instead of the identity placeholder, the detector azimuthal 0.78 deg and
+  twist 0.59 deg read from the header, and a warning when the scan rotation
+  is not 180 deg (unverified: re-run the simulation oracle on an Oxford
+  file with patterns and a scan rotation of 0 first); then drop the
+  tutorial's manual conversion (plan 12.8)
+- [ ] FQ8, the D5 zero-translation anchor (Johan's decision): 12.7 % of the
+  map's points start from a zero D5 seed the band-limited correlation would
+  place within about 1 px, and they are 96 % of the `"off"` non-converged
+  points at `(0.05, None)`; `"auto"` reaches them only through the retry
+- [ ] FQ1 and FQ12, the gate quantity: `theta_eff` tracks `theta_hat` better
+  than the twist (correlation 0.993 against 0.983 on the routed points, the
+  spurious -24 deg cluster excluded); the data-gate arm is not measured
+- [ ] FQ2, the threshold: 1.0 and 2.0 deg not measured on the whole map
+- [ ] FQ3, the default: stays `"off"` (6 routed points worse than `"off"` at
+  `(None, None)`); revisit with the D5 anchor decision
+- [ ] FQ7, the residual-triggered retry; FQ10, FM with
+  `seed_from_neighbors` (on request); FQ4 and FQ5, the recipe alternatives
+  (not measured on real data)
+- [ ] GPU cost: the FM branch runs masked at the full sub-batch P (736 slots
+  for 144 routed slots at `(None, None)`), but FM is only 0.8-1.4 % of the
+  device time, under FQ9's 10 % trigger, so no compaction; `"always"` costs
+  +53 % wall on far256 (nothing to gain) and +26 % on patch C at
+  `(None, None)` (iterations -27 %)
 
 ---
 

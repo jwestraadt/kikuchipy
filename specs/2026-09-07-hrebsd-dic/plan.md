@@ -2332,3 +2332,65 @@ The fixer pass of plan 12 item 5 on the implementation at 21351744: the nine rev
 | FM50 | killed D (a, b); c by the new CPU build-count arm |
 | FM51 | killed D |
 | FM52 | c killed D and G; a by the new direct-branch arm; b equivalent |
+
+### 12.8 Frame oracle disposition (2026-10-08)
+
+The REQUIRED V10(m)(1) frame oracle (D22.7, FQ13) FAILED on the
+CrystalMap as the tutorial's load recipe read it, and PASSED once
+the orientations were converted to kikuchipy's sample frame.
+Ledgers 143 and 144 have the numbers; `frameinv/verdict.md` in the
+session scratchpad has the investigation.
+
+- **As read: FAIL.** On the 445 pre-registered points of the GPU
+  `"always"` whole map at `(None, None)`, the best of the five
+  frames was "sample z -90", not the as-read frame (correlation
+  0.993 against 0.604), and the as-read slope 0.522 lies outside
+  [0.8, 1.25]. The stage stopped for Johan, as the rule requires.
+- **Root cause: the vendor's sample frame, not code.** The h5oina
+  Euler angles are in Oxford's CS1, kikuchipy's sample frame turned
+  90 deg about the surface normal (X1 = +Y_kp, Y1 = -X_kp, Z1 =
+  Z_kp; q = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]]). The tutorial's
+  recipe passed them to `Rotation.from_euler` unconverted and V10(m)
+  inherited the recipe; neither kikuchipy nor orix converts them.
+  Not at fault: the gate code, the detector and sample geometry, the
+  PC convention. Ledger 127 (iv) had flagged the risk. The
+  tutorial's MapSweeper "+90 deg rotation of the axes" (ledgers 80
+  to 82) and the oracle's "sample z -90" are the same matrix q.
+- **Converted: PASS.** The same points and fits, with only the
+  orientations converted, `R_kp = Rotation.from_euler(euler_ox) *
+  Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)`:
+  correlation 0.993, slope 0.985, Deming 0.987, best of the five.
+  The routed count at 1.5 deg falls from 336 (as read) to 57.
+- **Sign-off.** Johan accepted the diagnosis and the converted-frame
+  PASS on 2026-10-08, knowing that the input was corrected after the
+  result was seen (the defence: kikuchipy's reference frames tutorial
+  and issue #746 predicted the frame beforehand, and dynamical
+  simulation with no HREBSD or FM code picks it on 18 of 18 points).
+  His decisions: fix on hrebsd-dic now -- the `hrebsd_dic`
+  docstring, an explicit conversion cell in
+  `hrebsd_si_indent.ipynb`, the convention-first MapSweeper text and
+  the dated D22.7, D22.16 and V10(m) amendments; no Stage F code
+  change and no `sample_frame` option on `hrebsd_dic` (the frame
+  belongs to the data, not to HREBSD); redo every `"auto"` record
+  with the converted map (GPU: ledgers 145 to 152; the CPU whole
+  maps follow in a later commit). The `"off"` runs, the `"always"`
+  fits and the D5 anchor census do not read the orientations and
+  stay valid with recomputed twist columns (ledger 144).
+- **Parked: the Oxford reader fix** (after Stage F; develop first,
+  then an upstream PR citing kikuchipy #746 and #748, then a fan-out
+  to hrebsd-dic, the HROSM route). The H5OINA reader builds a real
+  CrystalMap in kikuchipy's sample frame (phases from the `Phase`
+  group, the step size, the um unit, unindexed points) instead of
+  the identity placeholder; reads the detector azimuthal (+0.78 deg)
+  and twist (+0.59 deg) from the header's `Detector Orientation
+  Euler` (only the tilt is read now; about 1 deg in `M`, second
+  order for the gate); and warns when the `Scanning Rotation Angle`
+  is not 180 deg. Scan-rotation caveat: both local files with
+  patterns have a scan rotation of 180 deg, so a fixed Rz(-90)
+  cannot yet be told apart from "+90 deg plus the scan rotation";
+  the physical reading favours the fixed rotation, and before the
+  fix ships the simulation oracle is re-run on an Oxford file with
+  patterns and a scan rotation of 0. The tutorial's manual
+  conversion is dropped once the fixed reader fans out. A conversion
+  helper and the matching Bruker h5 / ctf question (for orix) are
+  separate decisions.

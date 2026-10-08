@@ -7394,6 +7394,20 @@ the routed points (FQ11: reopen if any routed |twist| exceeds about
 patch C under `"always"`; (4) the D5 anchor census of FQ8 (the
 fraction of points whose D5 seed is exactly zero while a
 band-limited phase correlation is not).
+**AMENDED 2026-10-08 (frame oracle; ledgers 143 and 144; plan
+12.8).** The load recipe of (m) applies the Oxford conversion: the
+CrystalMap is built from `Rotation.from_euler(euler_ox) *
+Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)` (Oxford
+CS1 to kikuchipy's sample frame, D22.7 amendment), as the
+tutorial's conversion cell does; the reader-derived detector is
+unchanged. (1) was first measured on the raw angles and FAILED
+(correlation 0.604, slope 0.522, best frame "sample z -90"); the
+cause is the vendor's frame, and on the converted map the same 445
+points PASS (0.993, slope 0.985, Deming 0.987), signed off by Johan
+on 2026-10-08. Every `"auto"` record of (2) uses the converted map;
+the `"off"` runs, the `"always"` fits of (3) and the census of (4)
+do not read the orientations and stay valid with recomputed twist
+columns.
 
 V10 requirement-to-oracle map:
 
@@ -9203,3 +9217,371 @@ scaffold's own recipe.
     (every `_hrebsd` module 100 %). Ruff check and format clean.
     (v) **Counts.** 19 default tests and 2 gated tests added (default
     140 to 159, gated FM 258 to 279).
+
+#### V10 recorded results, performance record (2026-10-08)
+
+The frame oracle of V10(m)(1) and the GPU records of V10(m)(2) to (4)
+with the converted map (plan 12.8); the CPU whole-map `"auto"`
+records follow.
+
+143. **V10(m)(1) frame oracle (requirements D22.7; plan open questions
+    FQ1, FQ2): the as-read FAIL, its root cause, and the
+    converted-frame PASS signed off by Johan (2026-10-08).** Snapshot
+    `snapF_21351744` (commit 21351744), CPU-only analysis, no HREBSD
+    re-run. Fits: the GPU whole map under `"always"` at `(None, None)`
+    (57772 fitted points, 57746 converged; ledger record of the earlier
+    run, `perfF/arrays/map_gpu_always_none.npz`). Selection exactly as
+    pre-registered: converged, |fitted twist| >= 1 deg (polar
+    decomposition of Fe), outside the crater (their CCC >= 0.35): 445
+    points, fitted twist -2.25 to +1.73 deg. Homography read-out
+    against the polar twist on those points: correlation 0.999996, max
+    |diff| 0.040 deg, median 0.0018 deg.
+    (i) **As read: FAIL by the D22.7 rule.** The tutorial's load recipe
+    passes the raw h5oina `EBSD/Data/Euler` to `Rotation.from_euler`.
+    On that map, xmap twist against fitted twist, 445 points (the
+    as-read frame and the four alternative frames of the rule; the
+    Deming slopes use the far-field Hough variance of rows 0 to 40 and
+    of far256 as the error variance of the xmap twist):
+
+    | frame | corr | OLS slope | intercept (deg) | Deming rows0_40 / far256 | median abs diff (deg) | sign agree | n abs twist >= 1.5 (all 57772) |
+    |---|---|---|---|---|---|---|---|
+    | as read | 0.604 | 0.522 | +0.061 | 0.576 / 0.529 | 0.582 | 320 | 336 |
+    | sample z +90 | -0.557 | -0.267 | -0.099 | -0.286 / -0.270 | 1.660 | 105 | 256 |
+    | sample z 180 | 0.411 | 0.196 | -0.165 | 0.214 / 0.198 | 1.121 | 260 | 103 |
+    | sample z -90 | **0.993** | **0.985** | -0.004 | 0.987 / 0.985 | 0.051 | 445 | 57 |
+    | no y flip | -0.604 | -0.522 | -0.061 | -0.575 / -0.529 | 1.755 | 125 | 336 |
+
+    Best frame "sample z -90", not "as read", and the as-read slope
+    0.522 lies outside [0.8, 1.25]: FAIL on both criteria. The stage
+    stopped for Johan, as the rule requires. ("sample z a" means
+    R_s' = Rz(a)^T R_s Rz(a) applied to the sample-frame
+    misorientation, `perfF/frame.py`; the gate itself,
+    `twist_about_detector_normal`, matched the as-read column to 0.0
+    deg.)
+    (ii) **Root cause: the vendor's sample-frame convention, not code.**
+    The h5oina Euler angles are given in Oxford's CS1 sample frame,
+    which is kikuchipy's (EDAX/TSL) sample frame turned 90 deg about
+    the surface normal: Oxford X1 = +Y_kp (along the tilt axis,
+    parallel to detector X_g), Y1 = -X_kp, Z1 = Z_kp; vectors
+    v_ox = q v_kp with q = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]].
+    Orientations: `R_kp = Rotation.from_euler(euler_ox) *
+    Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)`, i.e.
+    phi1_kp = phi1_ox + 90 deg with Phi and phi2 unchanged (EMsoft's
+    'hkl' to TSL rule; checked against the matrix form to 2.7e-14
+    deg). Naming hazard: the tutorial's "+90 deg rotation of the axes"
+    (ledger 80) and the oracle's "sample z -90" are the SAME matrix q;
+    records quote the matrix or the axis statement, never a bare signed
+    angle. It entered through the tutorial's CrystalMap recipe (cell 8)
+    and V10(m) inherited it; neither kikuchipy nor orix converts these
+    angles (the Oxford reader returns an identity placeholder map). A
+    sample-side rotation leaves every crystal-frame misorientation angle
+    unchanged, so segmentation, KAM and misorientation angles cannot see
+    it; the gate's twist about the detector normal (n_s = (0.375, 0,
+    0.927)) is the first consumer sensitive to it. Not at fault: the
+    gate code, the detector/sample geometry (`DETECTOR_Y_FLIP`
+    confirmed: no-y-flip correlation -0.604), the PC convention.
+    Ledger 127 (iv) had flagged exactly this risk. Five evidence lines
+    (`frameinv/verdict.md`):
+    - **Literature and other software** (strong on axis and magnitude,
+      moderate-strong on sign): Zhu et al. 2019 (Oxford and Bruker share
+      a frame, EDAX's is turned 90 deg about Zs); Britton et al. 2016
+      (Bruker X_s parallel to the tilt axis and X_d); EMsoft 'hkl' adds
+      90 deg to phi1 to get TSL; PyEBSDIndex composes Rz(-90) for EDAX,
+      EMsoft and kikuchipy but not for OXFORD or BRUKER; kikuchipy's own
+      reference-frames tutorial uses `R_sample["OXFORD"] = Rz(-90)`,
+      validated by simulation to under 0.5 deg (maintainer reply on
+      #746, issue #748). No first-party Oxford statement; the H5OINA
+      spec is silent on the CS1 axes.
+    - **Header metadata** (weak to moderate): `Specimen Orientation
+      Euler` = 0 (CS0 = CS1, nothing further to apply); `Scanning
+      Rotation Angle` = pi; a derivation from the file alone (beam frame,
+      SRA as MTEX reads it, PC gradients) gives the same sign; without
+      the SRA step it gives +90, which the oracle refutes (corr -0.557).
+    - **Pattern simulation, absolute, no HREBSD or FM code**
+      (strongest): dynamical (EMsoft Si master pattern), 18 points: -90
+      wins 18 of 18 (12 far-field, 6 deformed); start NCC 0.68 to 0.69
+      far-field and 0.50 to 0.64 deformed against <= 0.18 for every
+      other frame (margin 0.50 to 0.62); start-to-best distance 0.17 to
+      0.50 deg against >= 2.2 deg (about 42 deg for y-flip); also 18 of
+      18 with the reader's detector angles. Kinematical (separate code),
+      8 points: -90 nearest the optimum, median 0.50 deg against 2.2 to
+      3.2 deg. autoECCI Si: 12 of 12 nearest -90 (supportive). Caveat:
+      on the far field the separation is only 2.4 deg (Si [001] is 1.7
+      deg from Z); the deformed points add 3.4 to 12 deg.
+    - **Frame oracle** (confirming, not primary: a choice among frames
+      made after the fact on the test that failed): -90 corr 0.993,
+      slope 0.985, Deming 0.987, median diff 0.05 deg; +90 -0.557, 180
+      0.411, no y flip -0.604.
+    - **The tutorial's MapSweeper strain comparison** (ledgers 80 to 82;
+      independent observable, Fe via M, no xmap): one rigid rotation
+      fits, its matrix identical to q; all 6 slopes positive, all 4
+      resolved components r > 0.9, whole-map rms difference 0.45 mm/m
+      (itself chosen by a search: four candidates tie on |r|).
+    Combined confidence 95% or better for this file. Open: files with
+    SRA other than pi (both local files have SRA = pi), so a fixed
+    Rz(-90) is not yet told apart from "+90 plus the scan rotation";
+    the physical reading favours the fixed Rz(-90). Separate,
+    second-order defect found on the way: the Oxford reader drops the
+    header's detector azimuthal (+0.784 deg) and twist (+0.593 deg),
+    keeping only the tilt (about 0.02 w on the gate twist; parked as a
+    develop reader fix; the records below keep the reader-derived
+    detector so they stay comparable).
+    (iii) **Converted-frame re-evaluation: PASS.** The SAME 445 points
+    and the SAME `"always"` fits (under `"always"` the gate is bypassed
+    and Fe does not depend on the map's orientations, so no re-run),
+    with only the CrystalMap orientations converted as in (ii)
+    (`perfF2/frame_conv.py`). The library gate on the converted map
+    reproduces the as-read "sample z -90" column to 2.0e-14 deg and the
+    oracle's own converted as-read column to 0.0 deg.
+
+    | frame (relative to the converted map) | corr | OLS slope | intercept (deg) | Deming rows0_40 / far256 / delta 1 | median abs diff (deg) | sign agree |
+    |---|---|---|---|---|---|---|
+    | as read (converted) | **0.993** | **0.985** | -0.004 | 0.987 / 0.985 / 0.992 | 0.051 | 445 of 445 |
+    | sample z +90 (= the raw h5oina map) | 0.604 | 0.522 | +0.061 | 0.576 / 0.529 / 0.786 | 0.582 | 320 |
+    | sample z 180 | -0.557 | -0.267 | -0.099 | -0.286 / -0.270 / -0.313 | 1.660 | 105 |
+    | sample z -90 | 0.411 | 0.196 | -0.165 | 0.214 / 0.198 / 0.239 | 1.121 | 260 |
+    | no y flip | -0.993 | -0.985 | +0.004 | -0.987 / -0.985 / -0.992 | 2.349 | 0 |
+
+    Best frame: as read (converted); OLS slope 0.985 in [0.8, 1.25]
+    (reverse regression, fitted on xmap, 1.000); far-field Hough SD of
+    xmap minus fitted twist 0.012 deg (rows 0 to 40) and 0.010 deg
+    (far256). PASS on both criteria of D22.7 once the input is in
+    kikuchipy's sample frame. Over all 57746 converged points the
+    correlation is 0.980 (as read 0.261).
+    (iv) **Sign-off.** Johan accepted the diagnosis and the
+    converted-frame PASS on 2026-10-08 (about 11:15), knowing the input
+    was corrected after the result was seen; the defence is that -90
+    was predicted beforehand by kikuchipy's own reference-frames
+    documentation and #746, and confirmed by the independent dynamical
+    simulation with no HREBSD or FM code (-90 winning 18 of 18 points).
+    He asked for the `"auto"` records to be redone with the converted
+    map, keeping the tutorial's reader-derived detector.
+    (v) **Invalidation.** Every `"auto"` record of the earlier run
+    (`perfF`: GPU `map_gpu_auto_none` and `map_gpu_auto_005`, their
+    compare tables, routed / accepted / retried / converted / worsened
+    counts, wall times and the theta_eff tables) used the as-read
+    routing and is SUPERSEDED. Routed points at FM_GATE_DEG = 1.5 deg,
+    by the engine's own `_fourier_mellin_routes("auto", ...)`: as read
+    336 (bitwise the earlier GPU run's routes), converted **57**; 33 in
+    both, 303 only as read, 24 only converted. Still valid with
+    recomputed twist columns: the `"off"` runs, the `"always"` fits
+    (whole map both cutoffs, far256, patch C) and the D5 anchor census.
+
+144. **V10(m)(2) and FQ11 columns recomputed with the converted map
+    from the still-valid earlier arrays (GPU `"off"` and `"always"`,
+    `perfF/arrays`), no re-run.** `perfF2/arrays/converted_columns.npz`
+    holds, per fitted point (57772, map order): the converted xmap
+    twist and theta_eff (both signs), the converted and as-read routes,
+    the fitted twist and fitted theta_eff of `map_gpu_off_none`,
+    `map_gpu_always_none` and `map_gpu_always_005`, and theta_hat of
+    the two `"always"` runs. theta_eff uses the D5 bounding-box centroid
+    from the reference PC, (xbar, ybar) = (-17.3, 165.8) px (bounds
+    (26, 486, 31, 591), reference PC (328.3, 90.2, 379.4) px).
+    - **Routing the converted gate would make** (1.5 deg): 57 routed,
+      0 NaN twists, rows 88 to 128 and columns 122 to 146 (the indent's
+      deformed lobes; median their CCC 0.51). For comparison 489
+      points have |converted twist| >= 1.0 deg.
+    - **theta_eff against theta_hat** (the FQ1, FQ2 candidate), on the
+      445 selected points: corr(theta_hat, converted theta_eff) 0.997
+      at `(None, None)` and 0.998 at `(0.05, None)`, against 0.987 /
+      0.989 with the converted twist; median |theta_hat - theta_eff|
+      0.146 / 0.134 deg against |theta_hat - twist| 0.551 / 0.526 deg;
+      the other sign of the centroid term gives 0.937 / 0.944. So with
+      the frame corrected, theta_eff (not the twist) is what FM
+      measures, as D22.7 / ledger 116 predicted; under the as-read map
+      the same correlation was 0.493 (alt sign 0.633). Counts at 1.5
+      deg: |theta_eff| 331, |theta_eff alt| 7, |twist| 57; on the 57
+      routed points max |theta_eff - twist| 2.76 deg.
+    - **Fitted twist against converted xmap twist** on each run's own
+      selection: `"off"` (None) 0.990 (447 points), `"always"` (None)
+      0.993 (445), `"always"` (0.05) 0.987 (446). Converged points
+      with |fitted twist| >= 1.5 deg: 50 / 47 / 44.
+    - **FQ11 over the 57 converted-routed points:** |twist| median
+      1.67, p90 2.04, p99 2.66, max 2.68 deg; none above 25 deg (the
+      largest |twist| over all 57772 fitted points is 2.68 deg).
+      |theta_eff| median 2.14, p90 4.34, max 5.44 deg. |theta_hat|
+      from the `"always"` runs over the same 57: median 2.40 / 2.37,
+      p90 4.12 / 11.7, max 24.18 / 24.41 deg; no theta_hat at the
+      window edge (|theta_hat| >= 29.5) anywhere on the map. Note: the
+      maxima are a small cluster of spurious angles near -24 deg at
+      column 130 to 131, rows 102 to 106 (3 routed points at (None,
+      None), 6 at (0.05, None)), where the converted twist is 1.5 to 2.7
+      deg, theta_eff 4.3 to 5.4 deg and the converged fitted twist is
+      within 0.1 deg of 0 (or not converged): wrong FM peaks the
+      acceptance test must reject. FQ11's reopen trigger is not met.
+    - **As-read routed set, for contrast only:** 336 points, |twist|
+      median 1.68, max 2.59 deg.
+
+145. **V10(m) GPU records with the CONVERTED map (ledger 143 (ii) to
+    (v)): set-up.** Snapshot `snapF_b9551c30` (commit b9551c30; every
+    run asserted `kikuchipy.__file__` under it), CuPy overlay
+    (cupy-cuda12x 14.2.0, cuFFT 11.4.1.4, cuBLAS 12.9.2.10, cuSOLVER
+    11.7.5.82, cuSPARSE 12.5.10.65, nvJitLink 12.9.86), NVIDIA RTX 2000
+    Ada Laptop (8 GB). Load recipe of `doc/tutorials/hrebsd_si_indent.ipynb`
+    (per-point PC, binning 2, Si phase, reference (10, 10),
+    max_iterations 500, crater their CCC < 0.35 masked, 57772 fitted
+    points) with ONLY the CrystalMap orientations converted:
+    `Rotation.from_euler(euler_ox) * Rotation.from_axes_angles([0, 0, 1],
+    -90, degrees=True)`. Runner `perfF3/fm_run.py` (the earlier
+    `perfF/fm_run.py` with the conversion and the b9551c30 signatures),
+    log `perfF3/maps.log`, records `perfF3/results.jsonl`, per-point
+    arrays `perfF3/arrays/`. Before every timing nvidia-smi showed 0 %
+    utilisation and no other compute process (whole maps: 0 MiB, no
+    apps; patches: only the run's own process after its warm-up). The
+    host was loaded by the CPU-records workflow (psutil host CPU % in
+    the second before each timing: patches 42 to 62; whole maps 85.9
+    (auto, (None, None)), 58.4 (off, (0.05, None)), 37.7 (auto, (0.05,
+    None)); the reused off (None, None) record had 20.5), so whole-map
+    wall ratios carry a host-load confound of a few percent. The b9551c30
+    source changes against 21351744 touch only the gate's grid mapping
+    (identity on this full map), the retry batch-size plumbing and the
+    information message; the reused `perfF/arrays/map_gpu_off_none.npz`
+    ("off" needs no xmap orientations) stays valid. All runs B = 64,
+    P = 32 (no out-of-memory halving).
+
+146. **V10(m)(2) GPU whole map `"off"` at `filter_cutoffs=(0.05,
+    None)`** (`map_gpu_off_005`; the earlier attempt in `perfF` died
+    silently at 3.5 min and left no record). Wall 746.2 s (77.4
+    points/s), busy 641.6 s, 903 batches, D5 seed share 0.193; 55498
+    converged, **2274 not converged**; iterations median 16, total
+    2,610,454; median residual of converged 0.2021; host RSS peak 14.1
+    GB.
+
+147. **V10(m)(2) GPU whole map `"auto"`, converted map, `(None,
+    None)`** (`map_gpu_auto_none_conv`, against `map_gpu_off_none`;
+    `perfF3/compare_map_gpu_auto_none_conv.json`,
+    `perfF3/arrays/pointwise_map_gpu_auto_none_conv.npz`).
+    - **Routed 57** (as ledger 144 predicted; 0 NaN twists): accepted
+      45 (seed 1), kept h_T 12 (seed 0), retried 87 (every first-pass
+      non-converged point), retry converted 68 (seed 2, all unrouted).
+    - Against "off": converged 57685 -> 57750; **converted 68** (0 by
+      routing, 68 by the retry); **worsened 6, all routed**: 3 lost
+      convergence (rows/cols (92, 136), (93, 136), (94, 138): accepted
+      FM seeds, theta_hat -2.90 / -2.87 / -2.22 deg against theta_eff
+      -2.57 / -2.56 / -2.21, then 500 iterations; "off" had converged at
+      489 / 386 / 171) and 3 accepted points converged with a residual
+      above "off" by 0.9e-5 to 1.7e-5 relative (just outside the parity
+      band 4.5e-6, physically the same fit). 6 residuals lower beyond
+      the band. Unrouted, unretried points: 57647 of 57647 bitwise the
+      "off" homography.
+    - Iterations: routed points 11971 -> 10109; accepted points median
+      106 -> 63; whole map 1,110,801 -> 1,079,027.
+    - Wall 393.6 s against 390.5 s (ratio 1.008, host load 85.9 against
+      20.5); busy 300.9 s against 335.2 s. Device seed share 0.399
+      (off 0.418); FM time 2.49 s, FM share 0.008. Passes: 57772
+      points in 905 batches (20 FM sub-batches), retry 87 points (3
+      FM sub-batches); **FM sub-batches 23, slots 736, routed slots
+      144**. RSS peak 15.0 GB.
+
+148. **V10(m)(2) GPU whole map `"auto"`, converted map, `(0.05,
+    None)`** (`map_gpu_auto_005_conv` against `map_gpu_off_005`;
+    `perfF3/compare_map_gpu_auto_005_conv.json`).
+    - Routed 57: accepted 40, kept h_T 15, routed then retried 2;
+      **retried 2249**, retry converted 2025 (seed 2).
+    - Against "off": converged 55498 -> 57547; **converted 2049** (26
+      routed, 2025 by the retry, 2 of them routed); **worsened 0** (no
+      lost convergence, no residual above the band); 15 residuals lower
+      beyond the band. Routed points converged 26 -> 52. Unrouted,
+      unretried: 55692 of 55692 bitwise "off".
+    - Iterations: routed 18123 -> 9125; accepted median 500 -> 106;
+      whole map 2,610,454 -> 1,709,717 (-35 %).
+    - Wall 821.5 s against 746.2 s (ratio 1.101; host load 37.7 against
+      58.4); first pass 731.8 s, retry pass 83.2 s for 2249 points;
+      busy 684.7 s against 641.6 s; device seed share 0.194 (off
+      0.193), FM time 9.32 s, FM share 0.014; batches 939; **FM
+      sub-batches 91 (20 first pass, 71 retry), slots 2912, routed
+      slots 2306**. RSS peak 15.6 GB.
+
+149. **FQ11 and theta_eff on the converted routed set (both cutoffs;
+    `perfF3/routed_map_gpu_auto_*_conv.txt` / `.json` hold the 57-row
+    table: row, col, seed, conv off/auto, iterations, twist, theta_eff,
+    theta_hat).** theta_eff = twist + centroid term, centroid (-17.3,
+    165.8) px from the reference PC (D22.7, ledger 116).
+    - |twist| over the 57 routed: median 1.67, p90 2.04, p99 2.66, max
+      2.68 deg; none above 25 deg. |theta_eff|: median 2.14, p90 4.34,
+      max 5.44 deg; max |theta_eff - twist| 2.76 deg. Map counts at 1.5
+      deg: |theta_eff| 331, |theta_eff alt sign| 7, |twist| 57.
+    - |theta_hat| over the routed: (None, None) median 2.40, p90 4.12,
+      p99 24.17, max 24.18 deg; (0.05, None) median 2.37, p90 11.7, max
+      24.41. No theta_hat at the window edge (>= 29.5 deg) anywhere.
+      All finite theta_hat on the map: 136 / 2300 points, median 1.43 /
+      0.93 deg.
+    - The maxima are the spurious cluster at rows 102 to 106, columns
+      130 to 131 (3 routed points at (None, None), 6 at (0.05, None),
+      theta_hat -23.6 to -24.4 deg against twist +1.5 to +2.7 and
+      theta_eff +4.3 to +5.4): every one REJECTED (seed 0, h_T kept);
+      the whole 8-point cluster (all routed, all seed 0) stays
+      unconverged under both "off" and "auto" at (None, None) and
+      converges, bitwise as "off", under both at (0.05, None). Including them, corr(theta_hat, theta_eff) on the routed
+      set is -0.22 / -0.74; **excluding |theta_hat| > 10 deg (54 / 51
+      points): corr(theta_hat, theta_eff) 0.993 / 0.980 against
+      corr(theta_hat, twist) 0.983 / 0.957; median |theta_hat -
+      theta_eff| 0.166 / 0.169 deg against |theta_hat - twist| 0.609 /
+      0.517 deg.** Accepted points: median |theta_hat - theta_eff|
+      0.152 / 0.139 deg; rejected 0.72 / 0.82 deg. Every rejected
+      routed point (12 / 15) ends bitwise on the "off" homography. So FM measures
+      theta_eff on the correct frame, and the acceptance test rejects
+      the wrong peaks. FQ11's reopen trigger is not met.
+
+150. **far256 and patch C under `"always"` on the GPU (best of 3 after
+    one warm-up; `"off"` beside it for reference), converted map** (the
+    `"always"` fits do not depend on the map's orientations).
+
+    | patch, cutoffs | n fit | always best (s) | off best (s) | conv always / off | not conv always / off | iterations always / off | seed 0/1/2 | FM sub-batches, slots, routed slots |
+    |---|---|---|---|---|---|---|---|---|
+    | far256 (None, None) | 256 | 4.44 | 2.91 | 256 / 256 | 0 / 0 | 2202 / 2231 | 156/100/0 | 8, 256, 256 |
+    | far256 (0.05, None) | 256 | 5.17 | 3.65 | 256 / 256 | 0 / 0 | 2216 / 2297 | 123/133/0 | 8, 256, 256 |
+    | patch C (None, None) | 618 | 16.69 | 13.28 | 618 / 618 | 0 / 0 | 39273 / 54033 | 37/581/0 | 20, 640, 618 |
+    | patch C (0.05, None) | 618 | 27.31 | 21.87 | 587 / 298 | 31 / 320 | 82336 / 242530 | 91/526/1 | 21, 672, 637 |
+
+    (patch C = rows 115:140, cols 100:130, 750 points minus 132 crater
+    points; patch C (0.05, None) "always" retried 19 points.) Reps
+    spread: far256 always 4.44 to 5.06 s, patch C always 16.69 to 17.21
+    / 27.31 to 27.71 s. Device seed share always / off: far256 0.84 /
+    0.66 and 0.67 / 0.38; patch C 0.35 / 0.14 and 0.21 / 0.19; FM share
+    always: far256 0.40 / 0.32, patch C 0.16 / 0.10. Host load 42 to
+    62 %. "always" costs +53 % (far256, nothing to gain) and +26 % (patch
+    C (None, None), iterations -27 %); at (0.05, None) on patch C it
+    converts 289 more points (298 -> 587) and cuts iterations 66 %.
+
+151. **FQ8 D5 anchor census (GPU, complex128 seed, bitwise skimage's):
+    the fraction of fitted points whose D5 translation seed is exactly
+    zero while the band-limited phase correlation (rho in [0.02, 0.20]
+    cycles/px, integer peak) is not.** Whole map from the still-valid
+    `"always"` captures (`perfF/arrays/map_gpu_always_*.npz`; a retry
+    recapture of 12 / 169 points gave the identical D5 seed), patches
+    from the new runs. `perfF3/census_*.json`.
+
+    | run | D5 exactly zero | band nonzero | **anchored** | anchored not conv under off | its median anchored / other (off) | conv translation error, zero seed / band seed (median px, anchored, conv off) |
+    |---|---|---|---|---|---|---|
+    | map (None, None) | 10083 (17.5 %) | 43486 | **7318 (12.7 %)** | 79 of 87 non-conv | 39 / 14 | 9.03 / 0.91 |
+    | map (0.05, None) | 9511 (16.5 %) | 44477 | **7267 (12.6 %)** | 2179 of 2274 non-conv | 148 / 15 | 6.14 / 0.99 |
+    | far256 (None, None) | 247 (96.5 %) | 0 | 0 | 0 | - / 9 | - |
+    | far256 (0.05, None) | 236 (92.2 %) | 0 | 0 | 0 | - / 9 | - |
+    | patch C (None, None) | 609 (98.5 %) | 600 | **592 (95.8 %)** | 0 | 76 / 97 | 15.9 / 1.61 |
+    | patch C (0.05, None) | 607 (98.2 %) | 608 | **598 (96.8 %)** | 316 of 320 non-conv | 500 / 230 | 3.57 / 16.5 (converged off points near zero shift) |
+
+    Whole map (None, None): anchored band-shift norm median 9.1, p90
+    18.6 px (7236 >= 2 px, 6012 >= 5 px); anchored points lie in rows 54
+    to 175 only (none in the far field rows 0 to 40, where D5 zero is
+    correct: 1841 of 10000 with no band shift); on the 7239 anchored
+    points converged under "off", the band seed is closer than zero for
+    7220. By converged translation: 0 to 1 px 0 anchored; 1 to 3 px 175
+    of 25006; 3 to 6 px 1872 of 2128; 6 to 12 px 2889 of 2955; >= 12 px
+    2303 of 2474. So about 12.7 % of the map (and 93 % of the points
+    whose converged shift exceeds 3 px) start from a zero translation
+    the band-limited correlation would place within about 1 px; at
+    (0.05, None) these anchored points are 96 % of the "off"
+    non-converged points (2179 of 2274).
+
+152. **Summary.** On the Si indent map with the CORRECT (converted)
+    frame, "auto" routes 57 points (the deformed lobes), accepts 45 / 40
+    FM seeds whose angle tracks theta_eff to 0.15 deg and rejects every
+    spurious -24 deg peak; at (None, None) it converts 68 points (all
+    via the retry) and worsens 6 routed points (3 lose convergence), at
+    (0.05, None) it converts 2049 (2025 via the retry) and worsens none,
+    cutting iterations 35 %. Wall time: +1 % / +10 % against "off"
+    (host-load confounded; the 0.05 retry pass alone is 83 s), FM share
+    of device time 0.8 % / 1.4 %. The larger lever on this map is the D5
+    zero-translation anchor (12.7 % of points, 96 % of the 0.05
+    non-converged), which "auto" fixes only through the retry.

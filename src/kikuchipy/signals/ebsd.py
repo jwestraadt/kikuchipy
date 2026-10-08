@@ -3615,16 +3615,22 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
             about the detector normal relative to their grain
             reference, read from the orientations of *xmap*, is at
             least 1.5 degrees (or cannot be read), and ``"always"``
-            seeds every correlated point. A rotation seed is accepted
-            only where its correlation criterion is strictly lower
-            than the translation only guess's, so it never replaces a
-            better start. Under both options every point whose fit
-            from the translation only guess did not converge is then
-            retried once from the rotation seed, and the retry result
-            is kept only if it converged. The estimate is a rotation
-            about the detector normal only, with no scale. Cannot be
-            combined with ``seed_from_neighbors=True``. The returned
-            map carries two further properties,
+            seeds every correlated point. ``"auto"`` therefore needs
+            the orientations of *xmap* in kikuchipy's sample frame:
+            Euler angles from an Oxford H5OINA file are given in a
+            sample frame turned 90 degrees about the surface normal
+            and are converted with ``Rotation.from_euler(euler) *
+            Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)``.
+            A rotation seed is accepted only where its correlation
+            criterion is strictly lower than the translation only
+            guess's, so it never replaces a better start. Under both
+            options every point whose fit from the translation only
+            guess did not converge is then retried once from the
+            rotation seed, and the retry result is kept only if it
+            converged. The estimate is a rotation about the detector
+            normal only, with no scale. Cannot be combined with
+            ``seed_from_neighbors=True``. The returned map carries two
+            further properties,
             ``"fourier_mellin_seed"`` and ``"fourier_mellin_angle"``;
             see the notes below.
         navigation_mask
@@ -3858,7 +3864,10 @@ gpu_memory_per_batch_bytes`) and the measured free device memory
         points to seed from the crystal map before any fit, so
         orientation noise of the input map matters only near the 1.5
         degree threshold, and a point the map mislabels is caught by
-        the retry. Every seed is per point, so nothing propagates
+        the retry. A map in another sample frame, such as the Euler
+        angles of an Oxford H5OINA file read without the conversion
+        given under the parameter, mislabels points systematically
+        rather than near the threshold. Every seed is per point, so nothing propagates
         between neighbours. Two properties record the outcome:
         ``"fourier_mellin_seed"`` is 0 where the stored fit started
         from the translation only guess, 1 where it started from a

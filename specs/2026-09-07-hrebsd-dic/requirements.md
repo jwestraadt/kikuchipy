@@ -3524,6 +3524,40 @@ Stage F gates.
   [0.8, 1.25]; otherwise the stage stops and goes to Johan. The data
   gate (`theta_hat` on every slot) is the recorded alternative (plan
   open question FQ1).
+  **AMENDED 2026-10-08 (frame oracle; ledgers 143 and 144; plan
+  12.8; signed off by Johan): the orientations must be in
+  kikuchipy's sample frame.** The gate assumes that the orientations
+  of `xmap` are given in kikuchipy's (EDAX/TSL) sample frame; the
+  recipe, `M`, the routing and the code are unchanged. Euler angles
+  of an Oxford h5oina file are given in Oxford's CS1 sample frame,
+  which is kikuchipy's turned 90 deg about the surface normal: X1 =
+  +Y_kp (along the tilt axis, parallel to detector X_g), Y1 = -X_kp,
+  Z1 = Z_kp; vectors v_ox = q v_kp with q = [[0, 1, 0], [-1, 0, 0],
+  [0, 0, 1]]. They must be converted before the call:
+  `R_kp = Rotation.from_euler(euler_ox) *
+  Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)`, that is
+  phi1 + 90 deg with Phi and phi2 unchanged (checked against the
+  matrix form to 2.7e-14 deg). Records quote the matrix or the axis
+  statement, never a bare signed angle: the tutorial's "+90 deg
+  rotation of the axes" (ledger 80) and the oracle's "sample z -90"
+  are the same q. Evidence, briefly (ledger 143 (ii); the full
+  verdict is `frameinv/verdict.md` in the session scratchpad):
+  kikuchipy's reference frames tutorial
+  (`doc/tutorials/reference_frames.ipynb`: Oxford sample rotation
+  Rz(-90), validated by simulation; kikuchipy issues #746 and #748),
+  EMsoft's 'hkl' to TSL rule (phi1 + 90 deg) and PyEBSDIndex's vendor
+  frames; dynamical simulation of 18 Si-indent points with no HREBSD
+  or FM code (the converted frame wins 18 of 18, NCC margin 0.50 to
+  0.62); the tutorial's MapSweeper strain comparison (ledgers 80 to
+  82, the same q); and the oracle itself (as read: correlation 0.604,
+  slope 0.522, FAIL; converted: 0.993, slope 0.985, Deming 0.987,
+  PASS). kikuchipy's Oxford reader returns an identity placeholder
+  map and converts nothing; a reader that builds the map in
+  kikuchipy's frame is a parked develop follow-up (plan 12.8). The
+  pre-registered six-frame rule stands; its input is the converted
+  map. A sample-side rotation leaves every crystal-frame
+  misorientation angle unchanged, so segmentation and KAM cannot see
+  a wrong frame; the twist about the detector normal can.
 - **D22.8 The post-fit retry (RECORDED DEFAULT; plan 11.3 (iv))**:
   under `"auto"` and `"always"` alike, after the first pass, ONE
   retry pass over every fitted, unmasked point of a grain with an FM
@@ -3780,6 +3814,16 @@ Stage F gates.
   MARKDOWN cell with the whole-map `"auto"` record and the call as a
   fenced code block, no executed cell and no stored output touched
   (the D21.17 precedent).
+  **AMENDED 2026-10-08 (frame decision, D22.7 amendment; plan
+  12.8).** `hrebsd_si_indent.ipynb` also gains, right after the cell
+  that builds the CrystalMap, a markdown cell on the Oxford CS1
+  convention and ONE gated code cell that converts the orientations
+  (it prints nothing, so nbval stays green; no stored output is
+  touched), and the MapSweeper comparison markdown is reworded
+  convention-first; the `"auto"` markdown cell records the
+  converted-map GPU run (ledger 147). The docstring's
+  `fourier_mellin` entry and Notes state the frame requirement with
+  the orix conversion.
 - **D22.17 Dependencies (FROZEN)**: no new dependency and no new
   import outside the audit's allowed tuple (numpy, scipy and orix
   are already required); the `TestImportAudit` arms of D21.13 cover
