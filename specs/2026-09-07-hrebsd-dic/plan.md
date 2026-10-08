@@ -2239,3 +2239,96 @@ widens only on FM runs.
 |---|---|---|
 | F7 (critic, minor) | OPTION A, no degenerate-crop guard, decided by the main session under Johan's 2026-10-08 go: a constant pattern under the default band-pass preprocesses to rounding noise, so its forced FM row is finite and it is refitted once, failing again with the D2.6 contract (cost: one zero-iteration fit; results unchanged). Option B (a degenerate-crop threshold) was not taken: a new frozen constant that could misjudge real low-contrast patterns. Johan may override. | requirements D22.8 amendment; V10(i) note; `FM_G8_CONSTANT_SECOND_FITS = 1` |
 
+### 12.7 Implementation-review disposition table (2026-10-08)
+
+The fixer pass of plan 12 item 5 on the implementation at 21351744: the nine review findings (fidelity RF-F1 to RF-F3, conventions RC-F-CONV-1 to RC-F-CONV-6), the survivors of the FM1 to FM52 injection (ledger 140, 141), and one row per mutant id. Re-injection used fresh backups of the fixed tree with an md5 restore, never git (scratchpad `fixF\`, `harness3.py`, `mutants3.py`, `results3.jsonl`); ledger 142 has the runs.
+
+**Review findings**
+
+| id | decision | where |
+|---|---|---|
+| RF-F1 (minor) | accepted: the final device B passes per call, never through module state. `_run_chunks_gpu(..., run_state=None)` (keyword, additive) writes `run_state["batch_size"]` only into the caller's dictionary; `run_hrebsd_dic` holds `fm_run_state` locally and reads the retry B from it; `_RUN_STATE`, `_last_batch_size` and `_reset_last_batch_size` deleted (no `threading`, so the D21.13 audit is unchanged). Regression mutant RF1 (retry B read from module state) killed: `[8, 16] != [8, 4]` | `_gpu.py`, `_engine.py`; `NumpySession::test_the_retry_batch_size_is_per_run_not_module_state` (an interleaved "off" runner call at B = 16 between the passes) |
+| RF-F2 (minor) | accepted (test hardening; no production assertion changes): the FM36 float-equality arm now plants a 1e-11 deg twist (`g7_subthreshold_map`, measured 9.95e-12 deg on every point), asserted within [5e-12, 5e-11] and below 1e-9 deg; the constant arm keeps its warn-and-route-nothing assertions without the rounding-residue precondition. FM36b re-injected: killed on the constant AND the subthreshold arms | `test_hrebsd_fourier_mellin.py`: `G7_SUBTHRESHOLD_TWIST_DEG`, `g7_subthreshold_map`, `Gate::test_a_map_without_twists_warns_and_routes_nothing[subthreshold]` |
+| RF-F3 (minor) | accepted: `twist_about_detector_normal(..., *, navigation_shape=None)` (keyword, additive) matches flat map indices to map points through `_segmentation._map_grid` (function-scope import), exactly as `segment_grains`; a position outside the grid or holding no map point gives NaN (fail open, route 1); a one-point map (orix shape `()`) is handled as point 0. The engine passes its `navigation_shape`. Full maps unchanged (every gate pin passed unchanged). The reviewer's `xmap_order.py` now prints NaN at the sliced point instead of `IndexError`. Regression mutant RF3 killed | `_fourier_mellin.py`, `_engine.py` (`_fourier_mellin_routes`); `Gate::test_a_sliced_map_fails_open_where_it_has_no_point` |
+| RC-F-CONV-1 (major) | accepted: the D22.6 refusal contract is now tested on all three routes: CPU (`"always"` and `"auto"`: one build, refused; one `_run_chunks` call, no retry; `_fourier_mellin_seed` never called; props bitwise "off"; seed 0 on fitted points, -1 masked; angle all NaN), numpy session (same bitwise and prop assertions) and device (gated, F6, both device precisions). Line 635 is reached through a planted NaN profile (`fourier_mellin_profiles` seam): the reviewer's real input does not reach it, because `ReferenceState` refuses a zero-contrast reference with `ValueError` first (measured); engine line 1853 is covered by `_cpu_fourier_mellin_state` on the same plant. Regression mutant CONV1 (the CPU `has_state` retry filter dropped) killed | `CpuRoute::test_a_refused_fm_state_runs_the_grain_as_off`, `CpuRoute::test_a_non_finite_reference_profile_is_refused`, `NumpySession::test_a_refused_fm_state_runs_the_grain_as_off`, `GatedFourierMellinContract::test_a_refused_fm_state_runs_the_grain_as_off` |
+| RC-F-CONV-2 (minor) | accepted: `_info_lines(..., *, fourier_mellin=False)` forwards the keyword to both VRAM functions, so the printed model and its warning are the model B was chosen from; `False` is the Stage E block bitwise; the engine passes `fourier_mellin=fm_routed`. Mutants CONV2 (engine not forwarding) and CONV2b (terms ignore the keyword) killed | `_gpu.py`, `_engine.py`; `NumpySession::test_info_lines_take_the_fourier_mellin_keyword`, `NumpySession::test_an_auto_run_without_a_routed_point_keeps_the_off_model` |
+| RC-F-CONV-3 (minor) | accepted: the retry line is printed after the pass and counts the applied (refitted) forced slots, the same on both backends: `"  Fourier-Mellin retry: {n} of {m} pattern(s) re-fitted from the rotation seed"` (FK-MIXED: 2 of 2; with a planted forced-angle failure 1 of 2). The D22.18 information-message line is pinned at 480 x 480 (18.5 MB, 4.0 MB) and 512 x 622 (25.5 MB, 4.3 MB), `False` bitwise the earlier message. Mutants CONV3 (subset counted) and CONV3b (LUT bytes) killed. Note: on the device a refused grain's points still enter the retry subset (the engine cannot see the device refusal); their forced slots are inactive, so results are bitwise and the count now says 0 refits | `_engine.py`; `CpuRoute::test_the_verbose_lines_state_the_fm_memory_and_the_refits`, `CpuRoute::test_the_information_message_states_the_fm_host_memory` |
+| RC-F-CONV-4 (minor) | accepted: a phase without a point group gives the raw-misorientation twist (2.0 deg recovered; the symmetry-equivalent copy reads 77.68 deg, the raw formula to 1e-9) and exactly one UserWarning naming the phase. Mutant CONV4 (such a phase skipped, NaN) killed | `Gate::test_a_phase_without_a_point_group_uses_the_raw_misorientation` |
+| RC-F-CONV-5 (minor) | accepted: (a) the route-shape `ValueError` pinned with its text (mutant CONV5a killed); (b) with `chunksize=None` the runner asks the FM model only for a route with a nonzero entry (all-zero, nonzero, no extras: `[False, True, False]`); (c) the tail-padding branch is reached by patching `_batched.SUB_BATCH_SIZE` to 2 with B = 3 on FK-TWO-GRAIN (a real tail sub-batch carrying routed point 4), the padded slot's route asserted 0 and the props bitwise the B = 2 run; chunksize 40 was not used because the shipped fixtures have no grain above 32 points | `NumpySession::test_the_runner_route_shape_and_default_batch_contract`, `NumpySession::test_the_tail_sub_batch_pads_its_route_with_zeros` |
+| RC-F-CONV-6 (minor) | accepted: the `try/except AttributeError` and its pragma removed from `_context_lut`; a slotted context would now fail loudly | `_fourier_mellin.py` |
+| injector note: FM15a killers | accepted: the mutation map names `EdgeTreatment::test_unrouted_rows_are_bitwise_the_stage_e_rows` and the gated determinism test as FM15a's effective killers | mutation map FM15 |
+| injector note: FM17 on the untilted detector | accepted: both FM17 variants die on both detectors (the sample tilt makes `M` non-symmetric); the Gate docstring and the mutation map corrected. The FM17 note in plan 12 item 4 ("equivalent on an untilted detector because `M M = I`") is superseded by this row | Gate class docstring; mutation map FM17 |
+
+**Surviving mutants of ledgers 140 and 141**
+
+| mutant | decision | where |
+|---|---|---|
+| FM23b | killed (new killer): engine-level arm on `g7_two_grain_map` with its `grain_labels` and references, routes `[0, 1, 1] != [0, 1, 0]` under the mutant, both detectors (point 3 at the -1.5 deg boundary not asserted) | `Gate::test_the_engine_measures_each_point_against_its_grain_reference` (`fk_gate_probe` now passes `reference` and `grain_labels`) |
+| FM28c | killed (new killer): a padded tail slot carrying route 1 | `NumpySession::test_the_tail_sub_batch_pads_its_route_with_zeros` |
+| FM46b | killed (new killer): an `"auto"` run whose every twist is below the gate asks the `"off"` model, `True is False` | `NumpySession::test_an_auto_run_without_a_routed_point_keeps_the_off_model` |
+| FM46c | killed (new killer): the runner's `chunksize=None` branch with an all-zero route | `NumpySession::test_the_runner_route_shape_and_default_batch_contract` |
+| FM52a | killed (new killer): a direct `fourier_mellin_rows` call with a mixed route | `SeedRows::test_the_branch_reports_nan_angles_on_route_zero_slots` |
+| FM50c | killed (new killer, cost-only mutant): a CPU build-count spy on FK-TWO-GRAIN, `2 == 1` | `CpuRoute::test_the_fm_state_is_built_once_and_only_for_a_routed_grain` |
+| FM45c | rejected as equivalent: both runners pass a contiguous int8 route, so the write-back is the same object with the same values | ledger 141 (iii) |
+| FM46a | rejected as equivalent (proven): monotone VRAM model, FM model never below the "off" one, halving ladder; FM46d is the killable variant (killed) | ledger 141 (iii) |
+| FM52b | rejected as equivalent: `fourier_mellin_rows` masks the same angles first; its own killer is now FM52a's | ledger 141 (iii) |
+| FM16b (gated only) | no change: killed in the default suite (numpy session); on the device an all-zero route skips on the host, so the only observable is the `extras == {}` rule, which the numpy-session arm pins | ledger 140 |
+| FM29, FM37, FM48b (gated only) | no change: each killed in the default suite. FM29: the compacted branch is bitwise the full-P one on this card (cuFFT not batch-count sensitive here), the numpy arm kills it; FM37: the complex64 parity band absorbs it, the dtype spy kills it; FM48b: no real OOM on the card, the planted numpy-session OOM kills it | ledger 141 (v) |
+| FM28c, FM46b, FM46c, FM52a (gated) | no change: their new default killers run in the default suite; the device twins are not needed for a host-side rule | this table |
+
+**Every mutant id** (D = default suite, G = gated; "new" = killer added in this pass)
+
+| id | outcome |
+|---|---|
+| FM1 | killed D |
+| FM2 | killed D (only killer: the PC-shift rows band) |
+| FM3 | killed D |
+| FM4 | killed D |
+| FM5 | killed D |
+| FM6 | killed D and G |
+| FM7 | killed D |
+| FM8 | killed D and G |
+| FM9 | killed D |
+| FM10 | killed D |
+| FM11 | killed D |
+| FM12 | killed D |
+| FM13 | killed D |
+| FM14 | killed D |
+| FM15 | killed D (a, b, c) and G (a, c); FM15a's effective killers named in the map |
+| FM16 | killed D (a, b, c); G kills a and c, b equivalent on the device |
+| FM17 | killed D (a, b) on both detectors |
+| FM18 | killed D |
+| FM19 | killed D |
+| FM20 | killed D |
+| FM21 | killed D |
+| FM22 | killed D (a, b) |
+| FM23 | killed D: a by the function arm, b by the new engine arm |
+| FM24 | killed D |
+| FM25 | killed D (a, b, c) |
+| FM26 | killed D (a, b) |
+| FM27 | killed D |
+| FM28 | killed D: a, b; c by the new tail arm |
+| FM29 | killed D; G survives (equivalent on this card) |
+| FM30 | killed D |
+| FM31 | killed D |
+| FM32 | killed D |
+| FM33 | killed D (a, b) |
+| FM34 | killed D |
+| FM35 | killed D |
+| FM36 | killed D (a, b); b now on the planted sub-threshold arm |
+| FM37 | killed D; G survives (parity band) |
+| FM38 | killed D |
+| FM39 | not injectable, reviewed-equivalent (no PC enters the gate) |
+| FM40 | killed D (a, b) |
+| FM41 | killed D |
+| FM42 | killed D |
+| FM43 | killed D |
+| FM44 | killed D |
+| FM45 | killed D and G (a, b); c equivalent |
+| FM46 | a equivalent (proven); b, c killed D by new arms; d killed D and G |
+| FM47 | killed D |
+| FM48 | killed D (a, b) and G (a); b survives G (no real OOM) |
+| FM49 | killed D |
+| FM50 | killed D (a, b); c by the new CPU build-count arm |
+| FM51 | killed D |
+| FM52 | c killed D and G; a by the new direct-branch arm; b equivalent |

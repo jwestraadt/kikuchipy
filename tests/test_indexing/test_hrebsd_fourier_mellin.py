@@ -2300,6 +2300,33 @@ def g7_uniform_map(kind: str = "identity", size: int = 4) -> dict:
     }
 
 
+# The planted sub-threshold twist of :func:`g7_subthreshold_map`, deg:
+# 100x above the 8e-14 deg recovery noise (ledger 137) and 100x below
+# ``FM_ZERO_TWIST_DEG`` (2026-10-08 implementation review, RF-F2)
+G7_SUBTHRESHOLD_TWIST_DEG = 1e-11
+
+
+@functools.lru_cache(maxsize=1)
+def g7_subthreshold_map() -> dict:
+    """Return the G7 sub-threshold map, one row of four points on the
+    default detector: the reference then three points of a planted
+    :data:`G7_SUBTHRESHOLD_TWIST_DEG` twist, NOT exactly zero and below
+    the D22.7 warning trigger by design (the FM36 float-equality
+    killer; it replaces the rounding residue the constant arm relied
+    on, review finding RF-F2, 2026-10-08)."""
+    detector = g7_detector(False)
+    g_r = g_reference_matrix()
+    g_t = gate_orientation(g_r, in_plane_fe(G7_SUBTHRESHOLD_TWIST_DEG), detector)
+    navigation_shape = (1, 4)
+    return {
+        "xmap": gate_xmap(np.stack([g_r, g_t, g_t, g_t]), navigation_shape),
+        "detector": detector,
+        "navigation_shape": navigation_shape,
+        "point_index": np.arange(1, 4),
+        "reference_index": np.zeros(3, dtype=np.int64),
+    }
+
+
 @functools.lru_cache(maxsize=2)
 def g7_noise_map(tilted: bool = False) -> dict:
     """Return the G7 noise population: the reference then
@@ -3701,6 +3728,27 @@ class TestFourierMellinSeedRows:
         assert np.isfinite(angle[[1, 2]]).all()
         assert applied[2]
 
+    def test_the_branch_reports_nan_angles_on_route_zero_slots(self):
+        # FM52 in the branch itself (2026-10-08 injection survivor
+        # FM52a): a DIRECT call with a mixed route; the frozen
+        # docstring promises NaN on route-0 slots, which the masked
+        # full-P branch computed
+        state, targets = self.fixture()
+        seam = numpy_fm_seam(state, targets)
+        h_t = stage_e_rows(state, targets)
+        routes = np.array([ROUTE_NONE, ROUTE_ACCEPT, ROUTE_FORCED], dtype=np.int8)
+        rows, angle, applied = _fourier_mellin.fourier_mellin_rows(
+            seam.ctx, seam.batch, seam.spectra, seam.seed_state, h_t, routes
+        )
+        angle = np.asarray(angle)
+        applied = np.asarray(applied)
+        assert angle.dtype == np.float64 and angle.shape == (3,)
+        assert np.isnan(angle[0])
+        assert not applied[0]
+        assert np.array_equal(np.asarray(rows)[0], h_t[0])
+        assert np.isfinite(angle[1:]).all()
+        assert applied[2]
+
     def test_an_all_zero_route_writes_nothing(self):
         # D22.6: decided on the host, the Stage E rows bitwise, no
         # outputs; likewise a route key with no FM state
@@ -4658,12 +4706,15 @@ def fk_g8_forced(index: int):
     return fk_seam(fk_v8_state(), [target], [ROUTE_FORCED], pattern_index=[index])
 
 
-def fk_gate_probe(gate_map: dict, *, navigation_mask=None) -> tuple:
+def fk_gate_probe(gate_map: dict, *, navigation_mask=None, **kwargs) -> tuple:
     """Run ``run_hrebsd_dic(fourier_mellin="auto")`` on a G7 gate map
     (every pattern grain A's reference, which the gate never reads) and
     stop at the first ``_run_chunks`` call; return ``(captured,
     messages)``: the first pass's ``fit_indices`` and ``fm_route``, and
-    every warning message issued (none silenced)."""
+    every warning message issued (none silenced).  Further keywords
+    (``reference``, default ``(0, 0)``, and ``grain_labels``; added
+    2026-10-08 for the engine-level FM23 arm) pass through."""
+    kwargs.setdefault("reference", (0, 0))
     navigation_shape = gate_map["navigation_shape"]
     size = navigation_shape[0] * navigation_shape[1]
     patterns = np.repeat(np.asarray(g1_reference())[None], size, axis=0)
@@ -4685,10 +4736,10 @@ def fk_gate_probe(gate_map: dict, *, navigation_mask=None) -> tuple:
                     navigation_shape,
                     detector,
                     xmap=gate_map["xmap"],
-                    reference=(0, 0),
                     fourier_mellin="auto",
                     navigation_mask=navigation_mask,
                     verbose=0,
+                    **kwargs,
                 )
     return captured, [str(w.message) for w in caught]
 
@@ -5141,17 +5192,20 @@ class TestFourierMellinGate:
     projection link between the gate and the projected patterns.
 
     Mutants: FM17 (conjugated the wrong way or without the y flip: the
-    sign and value pins on the TILTED detector; on the untilted one
-    ``M M = I`` makes it equivalent), FM18 (symmetry reduction dropped:
+    sign and value pins; both variants die on BOTH detectors, since the
+    sample tilt makes ``M`` non-symmetric even on the untilted detector,
+    measured at the 2026-10-08 injection), FM18 (symmetry reduction dropped:
     the symmetry-equivalent arm, raw angle about 90 deg), FM19 (the
     total misorientation angle gated: the pure out-of-plane arms, total
     3 deg, twist 0), FM20 (the signed twist compared: the negative
     planted twists), FM21 (``>`` instead of ``>=``: the planted
     boundary), FM22 (the gate failing closed: the unindexed, NaN and
     other-phase points, function and engine level), FM23 (every point
-    against the map's first reference: the two-grain arm), FM36 (the
-    warning missing, or triggered by float equality: the all-identity
-    and the constant NON-identity maps).  FM39 (the gate from the
+    against the map's first reference: the two-grain arm, function AND
+    engine level), FM36 (the warning missing, or triggered by float
+    equality: the all-identity, constant NON-identity and planted
+    sub-threshold maps).  Review fixes 2026-10-08: the sliced-map arm
+    (RF-F3) and the no-point-group arm (RC-F-CONV-4).  FM39 (the gate from the
     target's own PC frame) is reviewed-equivalent here: the G7 maps
     carry one projection centre and the twist does not depend on it
     (``M`` is the detector's tilt chain only)."""
@@ -5292,22 +5346,141 @@ class TestFourierMellinGate:
                 continue
             assert int(route[slot]) == int(twist >= FROZEN_GATE_DEG), index
 
-    @pytest.mark.parametrize("kind", ["identity", "constant"])
+    @pytest.mark.parametrize("kind", ["identity", "constant", "subthreshold"])
     def test_a_map_without_twists_warns_and_routes_nothing(self, kind):
-        gate_map = g7_uniform_map(kind)
-        if kind == "constant":
+        if kind == "subthreshold":
             # the FM36 float-equality kill needs twists that are NOT
-            # exactly zero but below the trigger (D22.7: order 1e-15;
-            # critic F6, 2026-10-08; magnitude recorded at the
-            # implementation gate)
+            # exactly zero but below the trigger: PLANTED at 1e-11 deg,
+            # not the constant map's rounding residue (-1.8e-31 deg on
+            # this host, which another BLAS may round to exactly 0;
+            # review finding RF-F2, 2026-10-08)
+            gate_map = g7_subthreshold_map()
             twists = fk_twists(gate_map)
-            assert np.any(twists != 0.0), twists
+            assert np.all(np.abs(twists) >= G7_SUBTHRESHOLD_TWIST_DEG / 2), twists
+            assert np.all(np.abs(twists) <= G7_SUBTHRESHOLD_TWIST_DEG * 5), twists
             assert np.all(np.abs(twists) < FROZEN_ZERO_TWIST_DEG), twists
+        else:
+            gate_map = g7_uniform_map(kind)
         captured, messages = fk_gate_probe(gate_map)
         assert messages.count(FOURIER_MELLIN_NO_TWIST_WARNING) == 1
         route = captured["fm_route"]
         assert route is not None
         assert not route.any()
+
+    @pytest.mark.parametrize("tilted", [False, True])
+    def test_the_engine_measures_each_point_against_its_grain_reference(self, tilted):
+        # FM23 at the engine (2026-10-08 injection survivor FM23b): the
+        # first pass's routes pair every fitted point with ITS grain
+        # reference; against grain A's reference grain B's reference
+        # would route.  Point 3 (-1.5 deg, the exact boundary) rides on
+        # the recovery rounding and is not asserted
+        gate_map = g7_two_grain_map(tilted)
+        captured, _ = fk_gate_probe(
+            gate_map,
+            grain_labels=gate_map["grain_labels"],
+            reference=gate_map["references"],
+        )
+        assert captured["fit_indices"].tolist() == [0, 1, 2, 3]
+        route = captured["fm_route"]
+        assert [int(r) for r in route[:3]] == [0, 1, 0]
+
+    def test_a_sliced_map_fails_open_where_it_has_no_point(self):
+        # D22.7 step 1 (review finding RF-F3, 2026-10-08): flat map
+        # indices are matched through the map's own grid, so a
+        # navigation position holding no map point gives NaN (route 1)
+        # instead of an IndexError, and every other point keeps its twist
+        gate_map = g7_twist_map(False)
+        detector = gate_map["detector"]
+        navigation_shape = gate_map["navigation_shape"]
+        size = navigation_shape[1]
+        missing = 2
+        keep = np.ones(size, dtype=bool)
+        keep[missing] = False
+        sliced = gate_map["xmap"][keep]
+        assert sliced.size == size - 1
+        twist = np.asarray(
+            _fourier_mellin.twist_about_detector_normal(
+                sliced,
+                detector,
+                gate_map["point_index"],
+                gate_map["reference_index"],
+                navigation_shape=navigation_shape,
+            )
+        )
+        expected = np.array(gate_map["expected"], dtype=np.float64)
+        expected[missing - 1] = np.nan
+        assert np.array_equal(np.isnan(twist), np.isnan(expected))
+        finite = np.isfinite(expected)
+        assert_within(
+            float(np.max(np.abs(twist[finite] - expected[finite]))),
+            FM_GATE_TWIST_TOL_DEG,
+            "FM_GATE_TWIST_TOL_DEG",
+        )
+        # a reference the map cannot describe, and positions beyond the
+        # map's grid: NaN everywhere
+        assert np.isnan(
+            _fourier_mellin.twist_about_detector_normal(
+                sliced, detector, [1, 3], [missing, missing]
+            )
+        ).all()
+        assert np.isnan(
+            _fourier_mellin.twist_about_detector_normal(
+                sliced, detector, [size, size + 2], [0, 0], navigation_shape=(1, 12)
+            )
+        ).all()
+        # a one-point map (orix shape ``()``, no row grid) is point 0
+        one = gate_xmap(g_reference_matrix()[None], (1, 1))
+        assert np.isfinite(
+            _fourier_mellin.twist_about_detector_normal(one, detector, [0], [0])
+        ).all()
+        # through the engine: the missing point routes (fail open)
+        captured, _ = fk_gate_probe({**gate_map, "xmap": sliced})
+        assert captured["fit_indices"].tolist() == list(range(size))
+        route = captured["fm_route"]
+        assert int(route[missing]) == ROUTE_ACCEPT
+        all_twists = np.concatenate([[0.0], gate_map["expected"]])
+        for index in range(size):
+            if index == missing or abs(all_twists[index]) == FROZEN_GATE_DEG:
+                continue
+            assert int(route[index]) == int(
+                abs(all_twists[index]) >= FROZEN_GATE_DEG
+            ), index
+
+    def test_a_phase_without_a_point_group_uses_the_raw_misorientation(self):
+        # D22.7 (review finding RC-F-CONV-4, 2026-10-08): no symmetry
+        # reduction, the RAW misorientation's twist, and one UserWarning
+        # naming the phase
+        detector = g7_detector(False)
+        m = sample_to_detector_matrix(detector)
+        g_r = g_reference_matrix()
+        g_t = gate_orientation(g_r, in_plane_fe(2.0), detector)
+        g_s = G7_SYMMETRY_OPERATOR @ g_t
+        phases = PhaseList(Phase(name="bare"))
+        assert phases[0].point_group is None
+        xmap = gate_xmap(np.stack([g_r, g_t, g_s]), (1, 3), phases=phases)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            twist = np.asarray(
+                _fourier_mellin.twist_about_detector_normal(
+                    xmap, detector, [1, 2], [0, 0]
+                )
+            )
+        messages = [
+            str(w.message) for w in caught if issubclass(w.category, UserWarning)
+        ]
+        assert len(messages) == 1
+        assert messages[0].startswith("phase 'bare' carries no point group")
+        assert_within(
+            abs(float(twist[0]) - 2.0), FM_GATE_TWIST_TOL_DEG, "FM_GATE_TWIST_TOL_DEG"
+        )
+        # the symmetry-equivalent copy is NOT reduced: its twist is the
+        # raw formula's, far from 2 deg
+        r_det = m @ (g_s.T @ g_r) @ m.T
+        raw = np.rad2deg(
+            np.arctan2(r_det[1, 0] - r_det[0, 1], r_det[0, 0] + r_det[1, 1])
+        )
+        assert abs(float(twist[1]) - raw) <= 1e-9
+        assert abs(raw - 2.0) > 10.0
 
     def test_a_map_with_twists_does_not_warn(self):
         captured, messages = fk_gate_probe(g7_twist_map(False))
@@ -5688,6 +5861,161 @@ class TestFourierMellinCpuRoute:
         off = fk_mixed_cpu("off")
         assert set(off) == set(_engine.STAGE_A_PROP_NAMES)
 
+    @pytest.mark.parametrize("mode", ["always", "auto"])
+    def test_a_refused_fm_state_runs_the_grain_as_off(self, monkeypatch, mode):
+        # D22.6 refusal contract (review finding RC-F-CONV-1,
+        # 2026-10-08): the state builder refusing the reference leaves
+        # its grain bitwise "off", never through the seam, never retried
+        off = fk_assert_mixed_off_premise()
+        builds = []
+        runs = []
+
+        def refuse(ctx, state, resident):
+            builds.append(state)
+            return None
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("the seam ran for a refused grain")
+
+        real_run_chunks = _engine._run_chunks
+
+        def run_chunks(*args, **kwargs):
+            runs.append(kwargs.get("fm_route"))
+            return real_run_chunks(*args, **kwargs)
+
+        monkeypatch.setattr(_fourier_mellin, "build_fourier_mellin_state", refuse)
+        monkeypatch.setattr(_engine, "_fourier_mellin_seed", forbidden)
+        monkeypatch.setattr(_engine, "_run_chunks", run_chunks)
+        properties = fk_mixed_run(fourier_mellin=mode)
+        assert len(builds) == 1
+        assert len(runs) == 1
+        for name in _engine.STAGE_A_PROP_NAMES:
+            assert fk_bitwise(properties[name], off[name]), name
+        expected = np.full(FK_MIXED_NAVIGATION_SHAPE[1], SEED_TRANSLATION)
+        expected[FK_MIXED_MASKED] = SEED_NONE
+        assert np.asarray(properties["fourier_mellin_seed"]).tolist() == (
+            expected.tolist()
+        )
+        assert np.isnan(np.asarray(properties["fourier_mellin_angle"])).all()
+
+    def test_a_non_finite_reference_profile_is_refused(self, monkeypatch):
+        # D22.6 (RC-F-CONV-1): the builder returns None on a non-finite
+        # profile, and the CPU route's state builder passes it on.  A
+        # zero-contrast reference cannot reach it (``ReferenceState``
+        # refuses it first), so the profile is planted NaN through the
+        # call-time seam
+        state = fk_v8_state()
+        ctx = numpy_seed_context()
+        resident = _batched.build_resident(ctx, state)
+        assert (
+            _fourier_mellin.build_fourier_mellin_state(ctx, state, resident) is not None
+        )
+        monkeypatch.setattr(
+            _fourier_mellin,
+            "fourier_mellin_profiles",
+            lambda xp, spectra, lut: xp.full(
+                (spectra.shape[0], FROZEN_N_THETA), xp.nan
+            ),
+        )
+        assert _fourier_mellin.build_fourier_mellin_state(ctx, state, resident) is None
+        assert _engine._cpu_fourier_mellin_state(state, 16) is None
+
+    def test_the_fm_state_is_built_once_and_only_for_a_routed_grain(self, monkeypatch):
+        # FM50 on the CPU route (2026-10-08 injection survivor FM50c,
+        # cost only): FK-TWO-GRAIN's unrouted grain converges, so its
+        # reference's FM state is never built
+        fk2 = fk_two_grain_map()
+        builds = []
+        real = _fourier_mellin.build_fourier_mellin_state
+
+        def spy(ctx, state, resident):
+            builds.append(state)
+            return real(ctx, state, resident)
+
+        monkeypatch.setattr(_fourier_mellin, "build_fourier_mellin_state", spy)
+        patterns = np.asarray(fk2["patterns"])
+        properties = run_engine(
+            patterns,
+            FK_TWO_GRAIN_NAVIGATION_SHAPE,
+            fk2["detector"],
+            xmap=fk2["xmap"],
+            grain_labels=fk2["grain_labels"],
+            reference=fk2["references"],
+            fourier_mellin="auto",
+            max_iterations=FK_TWO_GRAIN_MAX_ITERATIONS,
+        )
+        converged = np.asarray(properties["converged"])
+        assert converged[list(FK_TWO_GRAIN_UNROUTED_GRAIN)].all()
+        assert len(builds) == 1
+        routed_reference = make_state(
+            patterns[FK_TWO_GRAIN_REFERENCES[1]], fk2["pc_px"]
+        )
+        assert np.array_equal(
+            builds[0].reference_subregion, routed_reference.reference_subregion
+        )
+
+    def test_the_verbose_lines_state_the_fm_memory_and_the_refits(self, capsys):
+        # D22.18 and the retry line (review finding RC-F-CONV-3,
+        # 2026-10-08): the count is of the forced slots actually
+        # re-fitted (applied), out of the retry subset
+        fk_assert_mixed_off_premise()
+        capsys.readouterr()
+        fk_mixed_run(fourier_mellin="auto", verbose=1)
+        lines = capsys.readouterr().out.splitlines()
+        assert FK_INFO_FM_LINE_480 in lines
+        retry = [line for line in lines if "Fourier-Mellin retry" in line]
+        assert retry == [
+            f"  Fourier-Mellin retry: 2 of {len(FK_MIXED_RETRIED)} pattern(s) "
+            "re-fitted from the rotation seed"
+        ]
+        # a forced slot whose estimate fails is not re-fitted (D22.5),
+        # so it is not counted
+        mixed = fk_mixed_map()
+        pairs, _ = fk_spies(
+            np.asarray(mixed["patterns"]),
+            fk_mixed_lookup(),
+            planted_angles=fk_planted_angle_failure(FK_MIXED_MISLABELLED),
+        )
+        with fk_patched(pairs):
+            fk_mixed_run(fourier_mellin="auto", verbose=1)
+        lines = capsys.readouterr().out.splitlines()
+        retry = [line for line in lines if "Fourier-Mellin retry" in line]
+        assert retry == [
+            f"  Fourier-Mellin retry: 1 of {len(FK_MIXED_RETRIED)} pattern(s) "
+            "re-fitted from the rotation seed"
+        ]
+
+    def test_the_information_message_states_the_fm_host_memory(self):
+        # D22.18 (RC-F-CONV-3): the frozen wording and arithmetic of the
+        # Fourier-Mellin line, and False bitwise the earlier message
+        for shape, line in (
+            (SHAPE_480, FK_INFO_FM_LINE_480),
+            (SHAPE_RECT, FK_INFO_FM_LINE_RECT),
+        ):
+            plain = _engine.get_info_message(9, shape, 2, chunksize=4)
+            assert (
+                _engine.get_info_message(9, shape, 2, chunksize=4, fourier_mellin=False)
+                == plain
+            )
+            with_fm = _engine.get_info_message(
+                9, shape, 2, chunksize=4, fourier_mellin=True
+            ).splitlines()
+            assert with_fm[:-1] == plain.splitlines()
+            assert with_fm[-1] == line
+
+
+# The D22.18 Fourier-Mellin line of the information message (measured
+# 2026-10-08, implementation review RC-F-CONV-3): 480 * 480 * (16 + 68)
+# bytes and 360 * 183 * 4 * 16 bytes; 512 * 622 * 84 and 360 * 195 * 64
+FK_INFO_FM_LINE_480 = (
+    "  Fourier-Mellin seed: up to 18.5 MB more per reference with a routed "
+    "point, plus 4.0 MB once for the polar look-up table"
+)
+FK_INFO_FM_LINE_RECT = (
+    "  Fourier-Mellin seed: up to 25.5 MB more per reference with a routed "
+    "point, plus 4.3 MB once for the polar look-up table"
+)
+
 
 # ============================ (k) ================================== #
 
@@ -6023,6 +6351,259 @@ class TestFourierMellinNumpySession:
             assert rec.default_batch, mode
             for call in rec.default_batch:
                 assert bool(call["fourier_mellin"]) is expected, mode
+
+    def test_an_auto_run_without_a_routed_point_keeps_the_off_model(
+        self, monkeypatch, capsys
+    ):
+        # FM46 at the engine (2026-10-08 injection survivor FM46b) and
+        # review finding RC-F-CONV-2: the batch choice AND the printed
+        # VRAM model are the FM ones only when a route flag is nonzero
+        fk_assert_mixed_off_premise()
+        n_pixels = SHAPE_480[0] * SHAPE_480[1]
+        model = _gpu._vram_model_bytes(8, n_pixels, "float64", "complex128")
+        free = int(np.ceil(model / _gpu._FREE_VRAM_FRACTION))
+        mixed = fk_mixed_map()
+        flat = gate_xmap(
+            np.tile(g_reference_matrix(), (FK_MIXED_NAVIGATION_SHAPE[1], 1, 1)),
+            FK_MIXED_NAVIGATION_SHAPE,
+        )
+        real_info = _gpu._info_lines
+        for mode, xmap, expected in (
+            ("auto", flat, False),
+            ("auto", mixed["xmap"], True),
+            ("off", mixed["xmap"], False),
+        ):
+            info = []
+
+            def info_spy(*args, **kwargs):
+                info.append(bool(kwargs.get("fourier_mellin", False)))
+                return real_info(*args, **kwargs)
+
+            pairs, rec = fk_spies()
+            fk_install(monkeypatch, pairs)
+            install_numpy_session(monkeypatch, free_bytes=free)
+            monkeypatch.setattr(_gpu, "_info_lines", info_spy)
+            capsys.readouterr()
+            run_engine(
+                np.asarray(mixed["patterns"]),
+                FK_MIXED_NAVIGATION_SHAPE,
+                mixed["detector"],
+                **fk_mixed_kwargs(
+                    backend="gpu",
+                    device_precision="float64",
+                    chunksize=None,
+                    fourier_mellin=mode,
+                    xmap=xmap,
+                    verbose=1,
+                ),
+            )
+            out = capsys.readouterr().out.splitlines()
+            assert rec.default_batch, mode
+            for call in rec.default_batch:
+                assert bool(call["fourier_mellin"]) is expected, mode
+            assert info == [expected], mode
+            chosen = rec.default_batch[0]["result"]
+            (model_line,) = [
+                line
+                for line in real_info(
+                    chosen,
+                    SHAPE_480,
+                    "float64",
+                    "complex128",
+                    free,
+                    fourier_mellin=expected,
+                )
+                if "VRAM model" in line
+            ]
+            assert model_line in out, mode
+            if xmap is flat:
+                route = rec.run_chunks_gpu[0]["seed_extras"][ROUTE_KEY]
+                assert not route.any()
+
+    def test_info_lines_take_the_fourier_mellin_keyword(self):
+        # RC-F-CONV-2 (2026-10-08): False is the Stage E block bitwise;
+        # True states the FM model and judges the warning on it
+        args = (32, SHAPE_480, "mixed", "complex128")
+        n_pixels = SHAPE_480[0] * SHAPE_480[1]
+        off_model = _gpu._vram_model_bytes(32, n_pixels, "mixed", "complex128")
+        fm_model = _gpu._vram_model_bytes(
+            32, n_pixels, "mixed", "complex128", fourier_mellin=True
+        )
+        assert fm_model > off_model
+        free = (off_model + fm_model) // 2
+        plain = _gpu._info_lines(*args, free, "numpy")
+        assert _gpu._info_lines(*args, free, "numpy", fourier_mellin=False) == plain
+        with_fm = _gpu._info_lines(*args, free, "numpy", fourier_mellin=True)
+        mb = 1024**2
+        assert not any("Warning" in line for line in plain)
+        for lines, fm in ((plain, False), (with_fm, True)):
+            g, p, r = _gpu._vram_model_terms(
+                n_pixels, "mixed", "complex128", fourier_mellin=fm
+            )
+            total = fm_model if fm else off_model
+            assert lines[2] == (
+                f"  VRAM model: {total / mb:.1f} MB = B * {g / mb:.2f} MB + P * "
+                f"{p / mb:.2f} MB + {_gpu.R_MAX} * {r / mb:.2f} MB"
+            )
+        assert with_fm[:2] == plain[:2]
+        assert with_fm[3].startswith(
+            f"  Warning: the VRAM model ({fm_model / mb:.1f} MB) exceeds"
+        )
+
+    def test_the_runner_route_shape_and_default_batch_contract(self, monkeypatch):
+        # Review finding RC-F-CONV-5 (a), (b) and the FM46 runner
+        # variant (2026-10-08 injection survivor FM46c): a route of the
+        # wrong shape raises; with chunksize None the runner asks the
+        # FM model only for a route with a nonzero entry
+        mixed = fk_mixed_map()
+        patterns = np.asarray(mixed["patterns"])
+        fit = np.array(FK_MIXED_FITTED, dtype=np.int64)
+        state_of_point = np.zeros(fit.size, dtype=np.int64)
+        kwargs = dict(
+            progressbar=False,
+            options={},
+            device_precision="float64",
+            seed_precision="complex128",
+            row_slots=dict(ROW_SLOTS_FM),
+        )
+        message = (
+            f"the route of shape ({fit.size - 1},) must have one entry per "
+            f"fitted point, ({fit.size},)"
+        )
+        with pytest.raises(ValueError, match=re.escape(message)):
+            _gpu._run_chunks_gpu(
+                patterns,
+                fit,
+                state_of_point,
+                [],
+                8,
+                seed_extras={ROUTE_KEY: np.zeros(fit.size - 1, dtype=np.int8)},
+                **kwargs,
+            )
+        calls = []
+
+        def chooser(*args, **kw):
+            calls.append(bool(kw.get("fourier_mellin", False)))
+            raise _FkAbort
+
+        monkeypatch.setattr(_gpu, "_free_device_bytes", lambda namespace: 8 * 2**30)
+        monkeypatch.setattr(_gpu, "_default_batch_size", chooser)
+        for extras in (
+            {ROUTE_KEY: np.zeros(fit.size, dtype=np.int8)},
+            {ROUTE_KEY: np.array(FK_MIXED_ROUTES, dtype=np.int8)},
+            None,
+        ):
+            with pytest.raises(_FkAbort):
+                _gpu._run_chunks_gpu(
+                    patterns,
+                    fit,
+                    state_of_point,
+                    [],
+                    None,
+                    seed_extras=extras,
+                    **kwargs,
+                )
+        assert calls == [False, True, False]
+
+    def test_the_tail_sub_batch_pads_its_route_with_zeros(self, monkeypatch):
+        # FM28 tail variant (2026-10-08 injection survivor FM28c) and
+        # review finding RC-F-CONV-5 (c): B = 3 is not a multiple of
+        # P = 2 (patched), so the routed grain's batch (0, 2, 4) ends in
+        # a padded tail sub-batch carrying routed point 4; the padded
+        # slot's route is 0 and the rows are bitwise the B = 2 run's
+        reference, _ = fk_two_grain_session(monkeypatch)
+        monkeypatch.setattr(_batched, "SUB_BATCH_SIZE", 2)
+        pairs, rec = fk_spies()
+        fk_install(monkeypatch, pairs)
+        properties, recorder = fk_two_grain_session(monkeypatch, chunksize=3)
+        assert recorder.sessions
+        assert {session.sub_batch_size for session in recorder.sessions} == {2}
+        tails = [
+            record
+            for record in rec.seams
+            if (record["pattern_index"] < 0).any() and record["route"].any()
+        ]
+        assert tails
+        for record in rec.seams:
+            route = record["route"]
+            index = record["pattern_index"]
+            assert route.shape == index.shape
+            assert not route[index < 0].any()
+            for slot, point in enumerate(index):
+                if point >= 0:
+                    assert int(route[slot]) == FK_TWO_GRAIN_ROUTES[int(point)]
+        assert_properties_bitwise(properties, reference)
+
+    def test_the_retry_batch_size_is_per_run_not_module_state(self, monkeypatch):
+        # Review finding RF-F1 (2026-10-08): another runner call that
+        # completes between this run's two passes (another thread's
+        # run, an "off" run included) does not change this run's retry
+        # B, the first pass's final (halved) B
+        assert not hasattr(_gpu, "_RUN_STATE")
+        fk_assert_mixed_off_premise()
+        install_numpy_session(monkeypatch)
+        inner = _gpu._make_session
+        builds = {"n": 0}
+
+        def flaky(namespace, batch_size, **kwargs):
+            builds["n"] += 1
+            if builds["n"] == 1:
+                raise _batched.NumpyOutOfMemoryError("planted")
+            return inner(namespace, batch_size, **kwargs)
+
+        monkeypatch.setattr(_gpu, "_make_session", flaky)
+        real_runner = _gpu._run_chunks_gpu
+        chunksizes = []
+
+        def runner(*args, **kwargs):
+            chunksizes.append(args[4])
+            packed = real_runner(*args, **kwargs)
+            if len(chunksizes) == 1:
+                # an interleaved "off" call of another caller at B = 16
+                other = dict(kwargs)
+                other.pop("seed_extras", None)
+                other.pop("run_state", None)
+                other["row_slots"] = dict(ROW_SLOTS)
+                real_runner(args[0], args[1][:1], args[2][:1], args[3], 16, **other)
+            return packed
+
+        monkeypatch.setattr(_gpu, "_run_chunks_gpu", runner)
+        mixed = fk_mixed_map()
+        run_engine(
+            np.asarray(mixed["patterns"]),
+            FK_MIXED_NAVIGATION_SHAPE,
+            mixed["detector"],
+            **fk_mixed_kwargs(
+                backend="gpu",
+                device_precision="float64",
+                chunksize=8,
+                fourier_mellin="auto",
+            ),
+        )
+        assert chunksizes == [8, 4]
+
+    @pytest.mark.parametrize("mode", ["always", "auto"])
+    def test_a_refused_fm_state_runs_the_grain_as_off(self, monkeypatch, mode):
+        # D22.6 refusal contract on the device runner (review finding
+        # RC-F-CONV-1, 2026-10-08): the session refuses the grain, so
+        # every result is bitwise the "off" session's and no angle is
+        # reported
+        fk_assert_mixed_off_premise()
+        off = fk_mixed_session_off()
+        monkeypatch.setattr(
+            _fourier_mellin,
+            "build_fourier_mellin_state",
+            lambda ctx, state, resident: None,
+        )
+        properties, _ = fk_mixed_session(monkeypatch, fourier_mellin=mode)
+        for name in _engine.STAGE_A_PROP_NAMES:
+            assert fk_bitwise(properties[name], off[name]), name
+        expected = np.full(FK_MIXED_NAVIGATION_SHAPE[1], SEED_TRANSLATION)
+        expected[FK_MIXED_MASKED] = SEED_NONE
+        assert np.asarray(properties["fourier_mellin_seed"]).tolist() == (
+            expected.tolist()
+        )
+        assert np.isnan(np.asarray(properties["fourier_mellin_angle"])).all()
 
     def test_the_numpy_session_against_the_cpu_route(self, monkeypatch):
         fk_assert_mixed_off_premise()
@@ -6972,6 +7553,41 @@ class TestGatedFourierMellinContract:
         assert runs[0].shape[1] == ROW_SLOTS["width"]
 
     @pytest.mark.parametrize("device_precision", GATED_FM_DEVICE_PRECISIONS)
+    def test_a_refused_fm_state_runs_the_grain_as_off(
+        self, cupy_gpu, monkeypatch, device_precision
+    ):
+        # D22.6 refusal contract on the device (review finding
+        # RC-F-CONV-1, 2026-10-08)
+        f6 = f6_map()
+        kwargs = dict(
+            reference=(0, 0),
+            max_iterations=f6["max_iterations"],
+            chunksize=8,
+            **_gated_fm_kwargs(device_precision),
+        )
+        patterns = np.asarray(f6["patterns"])
+        off = run_engine(patterns, f6["navigation_shape"], f6["detector"], **kwargs)
+        monkeypatch.setattr(
+            _fourier_mellin,
+            "build_fourier_mellin_state",
+            lambda ctx, state, resident: None,
+        )
+        on = run_engine(
+            patterns,
+            f6["navigation_shape"],
+            f6["detector"],
+            fourier_mellin="always",
+            **kwargs,
+        )
+        for name in _engine.STAGE_A_PROP_NAMES:
+            assert fk_bitwise(on[name], off[name]), name
+        size = int(np.prod(f6["navigation_shape"]))
+        assert (
+            np.asarray(on["fourier_mellin_seed"]).tolist() == [SEED_TRANSLATION] * size
+        )
+        assert np.isnan(np.asarray(on["fourier_mellin_angle"])).all()
+
+    @pytest.mark.parametrize("device_precision", GATED_FM_DEVICE_PRECISIONS)
     def test_drift_tripwire_unchanged_under_off(
         self, cupy_gpu, device_precision, record_property
     ):
@@ -7547,7 +8163,10 @@ class TestGatedFourierMellinThroughput:
 #  FM15 [D]:
 #      NumpySession::test_unrouted_slots_and_sub_batches_return_the_stage_e_rows,
 #      CpuRoute::test_unrouted_and_translation_won_points_equal_off,
-#      EdgeTreatment::test_unrouted_rows_are_bitwise_the_stage_e_rows;
+#      EdgeTreatment::test_unrouted_rows_are_bitwise_the_stage_e_rows
+#      (the effective killer of the route-0-as-route-1 variant FM15a:
+#      the NumpySession and CpuRoute arms' unrouted points lose the
+#      acceptance anyway; 2026-10-08 injection);
 #      gated twins
 #      GatedDeterminism::test_unrouted_points_keep_the_off_bits,
 #      GatedContract::test_seam_output_contract
@@ -7556,8 +8175,9 @@ class TestGatedFourierMellinThroughput:
 #      CpuRoute::test_fit_chunk_rows_are_14_wide_on_fm_runs_and_12_on_off;
 #      gated twin GatedContract::test_off_is_the_stage_e_device_path
 #  FM17 [D]:
-#      Gate::test_imposed_twists_are_recovered_with_their_sign[True]
-#      (the tilted detector)
+#      Gate::test_imposed_twists_are_recovered_with_their_sign (BOTH
+#      detectors: the sample tilt makes M non-symmetric; 2026-10-08
+#      injection)
 #  FM18 [D]:
 #      Gate::test_a_symmetry_equivalent_orientation_gives_the_same_twist
 #  FM19 [D]:
@@ -7569,6 +8189,9 @@ class TestGatedFourierMellinThroughput:
 #      Gate::test_the_engine_fails_open_on_unusable_points
 #  FM23 [D]:
 #      Gate::test_each_point_is_measured_against_its_grain_reference
+#      (function level, FM23a),
+#      Gate::test_the_engine_measures_each_point_against_its_grain_reference
+#      (engine level, FM23b; added 2026-10-08)
 #  FM24 [D]: Retry::test_the_unrelated_point_keeps_its_first_result
 #  FM25 [D]: Retry::test_auto_retries_exactly_the_failed_points_once,
 #      Retry::test_converged_and_masked_points_are_never_retried,
@@ -7580,7 +8203,9 @@ class TestGatedFourierMellinThroughput:
 #      (the direct-fit oracle)
 #  FM28 [D]:
 #      NumpySession::test_route_flags_arrive_in_fit_order_with_zero_padding
-#      (FK-TWO-GRAIN)
+#      (FK-TWO-GRAIN),
+#      NumpySession::test_the_tail_sub_batch_pads_its_route_with_zeros
+#      (the B-not-a-multiple-of-P tail, FM28c; added 2026-10-08)
 #  FM29 [D/G]: GatedDeterminism::test_routing_invariance (designed
 #      DEVICE killer);
 #      NumpySession::test_a_routed_row_does_not_depend_on_how_many_slots_are_routed
@@ -7602,8 +8227,10 @@ class TestGatedFourierMellinThroughput:
 #      Switch::test_the_combination_raises_through_the_signal_method
 #  FM35 [D]: Switch::test_auto_without_xmap_raises_at_the_engine
 #  FM36 [D]: Gate::test_a_map_without_twists_warns_and_routes_nothing
-#      (the constant arm asserts its twists nonzero and below 1e-9 deg,
-#      so the float-equality variant dies; critic F6, 2026-10-08),
+#      (the subthreshold arm plants 1e-11 deg twists, asserted nonzero
+#      and below 1e-9 deg, so the float-equality variant dies; it
+#      replaced the constant arm's rounding residue, review RF-F2,
+#      2026-10-08),
 #      Gate::test_a_map_with_twists_does_not_warn
 #  FM37 [D/G]:
 #      NumpySession::test_complex64_keeps_the_fm_arithmetic_in_double;
@@ -7615,9 +8242,9 @@ class TestGatedFourierMellinThroughput:
 #      2026-10-08), Capture::test_the_fm_seed_captures_what_off_misses (weekly
 #      also
 #      Capture::test_wide_border_converges_to_the_exact_seeded_optimum)
-#  FM39 [D]: NO KILLER YET: reviewed-equivalent on the G7 maps (one
-#      projection centre, the twist depends on the detector tilt chain
-#      only; Gate class docstring)
+#  FM39 [D]: NO KILLER: not injectable, reviewed-equivalent (no
+#      projection centre enters the gate: sample_to_detector_matrix
+#      depends on the tilts only, probe at the 2026-10-08 injection)
 #  FM40 [D]:
 #      Retry::test_a_planted_angle_failure_in_the_retry_skips_the_second_fit,
 #      Retry::test_a_constant_pattern_without_band_pass_is_never_refitted,
@@ -7635,7 +8262,11 @@ class TestGatedFourierMellinThroughput:
 #      gated twin GatedContract::test_seam_output_contract
 #  FM46 [D/G]:
 #      NumpySession::test_the_batch_choice_halves_only_when_the_fm_terms_do_not_fit,
-#      NumpySession::test_the_runner_asks_the_fm_model_only_on_routed_runs;
+#      NumpySession::test_the_runner_asks_the_fm_model_only_on_routed_runs,
+#      NumpySession::test_an_auto_run_without_a_routed_point_keeps_the_off_model
+#      (FM46b), NumpySession::test_the_runner_route_shape_and_default_batch_contract
+#      (FM46c); FM46a (the literal FM46) is PROVEN equivalent (the
+#      monotone model and the halving ladder, 2026-10-08 injection);
 #      GatedVram::test_default_batch_size_is_the_off_one (designed
 #      DEVICE killer)
 #  FM47 [D]:
@@ -7643,7 +8274,9 @@ class TestGatedFourierMellinThroughput:
 #      (the subset pinned literally, [unrelated, constant]; critic F3,
 #      2026-10-08)
 #  FM48 [D]:
-#      NumpySession::test_the_retry_runs_at_the_first_pass_batch_size;
+#      NumpySession::test_the_retry_runs_at_the_first_pass_batch_size,
+#      NumpySession::test_the_retry_batch_size_is_per_run_not_module_state
+#      (review RF-F1, 2026-10-08);
 #      gated twins GatedParity::test_retry_routing_parity,
 #      GatedVram::test_default_batch_size_is_the_off_one
 #  FM49 [D]:
@@ -7651,9 +8284,14 @@ class TestGatedFourierMellinThroughput:
 #  FM50 [D]:
 #      NumpySession::test_the_fm_state_is_built_lazily_once_per_routed_grain
 #      (one build per runner pass that fits a routed-grain point;
-#      critic F4, 2026-10-08)
+#      critic F4, 2026-10-08),
+#      CpuRoute::test_the_fm_state_is_built_once_and_only_for_a_routed_grain
+#      (the CPU eager-build variant FM50c; added 2026-10-08)
 #  FM51 [D]:
 #      Acceptance::test_a_nan_translation_criterion_keeps_the_translation_row
 #  FM52 [D]: SeedRows::test_the_outputs_rule,
+#      SeedRows::test_the_branch_reports_nan_angles_on_route_zero_slots
+#      (the branch's own mask, FM52a; added 2026-10-08; FM52b, the
+#      seam's mask alone, is reviewed-equivalent behind the branch's),
 #      NumpySession::test_extras_stay_input_only_and_outputs_follow_the_route;
 #      gated twin GatedContract::test_seam_output_contract

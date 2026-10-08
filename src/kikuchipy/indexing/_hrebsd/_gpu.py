@@ -695,17 +695,32 @@ def _info_lines(
     seed_precision: str,
     free_bytes: int,
     namespace: str = "cupy",
+    *,
+    fourier_mellin: bool = False,
 ) -> list[str]:
     """Return the device block of the information message of
     requirements D21.10.5: the device name, free and total VRAM, B, P,
     the model in MB per term, and a warning line when the model
     exceeds free VRAM.  Called by ``_engine`` with the free VRAM it
-    queried through :func:`_free_device_bytes`."""
+    queried through :func:`_free_device_bytes`.  With
+    *fourier_mellin* the model is the Fourier-Mellin one the run chose
+    B from (D22.18; ``_engine`` passes it when a route flag of the run
+    is nonzero), else the Stage E text bitwise (2026-10-08
+    implementation review, RC-F-CONV-2)."""
     n_pixels = int(signal_shape[0]) * int(signal_shape[1])
     batch_size = int(batch_size)
     sub_batch_size = min(_batched.SUB_BATCH_SIZE, batch_size)
-    g, p, r = _vram_model_terms(n_pixels, device_precision, seed_precision)
-    model = _vram_model_bytes(batch_size, n_pixels, device_precision, seed_precision)
+    fourier_mellin = bool(fourier_mellin)
+    g, p, r = _vram_model_terms(
+        n_pixels, device_precision, seed_precision, fourier_mellin=fourier_mellin
+    )
+    model = _vram_model_bytes(
+        batch_size,
+        n_pixels,
+        device_precision,
+        seed_precision,
+        fourier_mellin=fourier_mellin,
+    )
     name, total = _device_description(namespace)
     mb = 1024**2
     total_text = "unknown" if total is None else f"{total / mb:.0f} MB"
@@ -798,6 +813,7 @@ def _run_chunks_gpu(
     seed_precision: str,
     row_slots: dict,
     seed_extras: dict | None = None,
+    run_state: dict | None = None,
 ):
     """Return the packed results of every fitted point, in fit order,
     computed on the device: the ``_run_chunks`` contract of
@@ -850,6 +866,13 @@ def _run_chunks_gpu(
         behaviour (requirements D22.11).  The Fourier-Mellin seed is
         on if and only if it carries the route key with a nonzero
         entry.
+    run_state
+        A dictionary of the CALLER into which a completed call writes
+        its final device batch size under ``"batch_size"``, or ``None``
+        (requirements D22.8: the retry pass runs at the first pass's
+        final B).  Per call, never module state, so that concurrent
+        runs sharing the device lock cannot overwrite each other's
+        value (2026-10-08 implementation review, finding RF-F1).
 
     Returns
     -------
@@ -931,7 +954,8 @@ def _run_chunks_gpu(
                 )
                 # The final B of this call, which a later retry pass
                 # reuses as its explicit ``chunksize`` (D22.8)
-                _RUN_STATE["batch_size"] = int(batch_size)
+                if run_state is not None:
+                    run_state["batch_size"] = int(batch_size)
                 return packed
             finally:
                 # Per call (D21.9.1): disposed on success, on an
@@ -947,28 +971,6 @@ def _run_chunks_gpu(
                     signal_shape, device_precision, seed_precision
                 ) from error
             batch_size //= 2
-
-
-# The final device batch size of the last :func:`_run_chunks_gpu` call
-# that completed (D22.8: the retry pass runs at the first pass's final
-# B), read through :func:`_last_batch_size`.  A module dictionary, not
-# thread-local storage: the D21.13 import audit allows no
-# ``threading``, and one run's passes are called in sequence from the
-# calling thread, the device itself serialised by its lock
-_RUN_STATE: dict = {}
-
-
-def _last_batch_size(default: int) -> int:
-    """Return the final device batch size of the last
-    :func:`_run_chunks_gpu` call completed, or *default* when there is
-    none (requirements D22.8)."""
-    return int(_RUN_STATE.get("batch_size", default))
-
-
-def _reset_last_batch_size() -> None:
-    """Forget the recorded final batch size, so that a stale value of an
-    earlier run is never reused."""
-    _RUN_STATE.pop("batch_size", None)
 
 
 def _batch_chunks(state_of_point: np.ndarray, batch_size: int) -> tuple[int, ...]:

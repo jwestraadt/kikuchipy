@@ -590,15 +590,13 @@ _CONTEXT_LUTS_ATTRIBUTE: str = "_fourier_mellin_luts"
 def _context_lut(ctx, sr: int, sc: int):
     """Return the look-up table of ``(sr, sc)`` in the namespace of
     *ctx*, uploaded once per context (cached on the context itself, so
-    it lives and dies with it; a context that refuses the attribute
-    uploads per call)."""
+    it lives and dies with it).  A context that refused the attribute
+    would fail loudly here rather than re-upload per call (2026-10-08
+    implementation review, RC-F-CONV-6)."""
     per_context = getattr(ctx, _CONTEXT_LUTS_ATTRIBUTE, None)
     if per_context is None:
         per_context = {}
-        try:
-            setattr(ctx, _CONTEXT_LUTS_ATTRIBUTE, per_context)
-        except AttributeError:  # pragma: no cover - a slotted context
-            pass
+        setattr(ctx, _CONTEXT_LUTS_ATTRIBUTE, per_context)
     key = (int(sr), int(sc))
     if key not in per_context:
         indices, weights = fourier_mellin_lut(sr, sc)
@@ -642,7 +640,9 @@ def build_fourier_mellin_state(ctx, state, resident):
 # --------------------------- The gate (D22.7) ------------------------ #
 
 
-def twist_about_detector_normal(xmap, detector, point_index, reference_index):
+def twist_about_detector_normal(
+    xmap, detector, point_index, reference_index, *, navigation_shape=None
+):
     """Return the ``(n,)`` float64 twist in degrees about the detector
     normal of the symmetry-reduced misorientation of every point in
     *point_index* (flat map indices) from its GRAIN reference in
@@ -658,11 +658,47 @@ def twist_about_detector_normal(xmap, detector, point_index, reference_index):
     uses no symmetry and warns (the ``segment_grains`` precedent).
     The swing-twist split's twist is exact and independent of the
     out-of-plane swing; matrices are used throughout, never a rotation
-    vector (``det M = -1``)."""
+    vector (``det M = -1``).
+
+    Flat map indices are matched to map points exactly as
+    ``segment_grains`` matches them, through the map's own row and
+    column grid (D22.7 step 1): the flat index ``i`` is the grid
+    position ``divmod(i, nx)`` of *navigation_shape* ``(ny, nx)`` (the
+    map grid's own shape when ``None``), and a position outside the
+    grid or holding no map point gives NaN, so a sliced map fails open
+    (2026-10-08 implementation review, RF-F3)."""
+    from kikuchipy.indexing._hrebsd._segmentation import _map_grid
+
     point_index = np.asarray(point_index, dtype=np.int64).ravel()
     reference_index = np.asarray(reference_index, dtype=np.int64).ravel()
     n = int(point_index.size)
     twist = np.full(n, np.nan, dtype=np.float64)
+    if len(tuple(xmap.shape)) == 0:
+        # orix's shape of a one-point map, which has no row grid
+        # (``map_grids`` names it); its one point is flat index 0
+        grid_shape = (1, int(np.asarray(xmap.phase_id).size))
+        grid = np.arange(grid_shape[1], dtype=np.int64).reshape(grid_shape)
+    else:
+        grid, grid_shape = _map_grid(xmap)
+    if navigation_shape is None:
+        navigation_shape = grid_shape
+    ny, nx = (int(i) for i in navigation_shape)
+
+    def map_point(flat_index):
+        row, col = np.divmod(flat_index, nx)
+        inside = (
+            (flat_index >= 0) & (row < min(ny, grid.shape[0])) & (col < grid.shape[1])
+        )
+        point = np.full(flat_index.shape, -1, dtype=np.int64)
+        point[inside] = grid[row[inside], col[inside]]
+        return point
+
+    point_index = map_point(point_index)
+    reference_index = map_point(reference_index)
+    described = (point_index >= 0) & (reference_index >= 0)
+    # unusable positions read point 0 and are masked out below
+    point_index = np.where(described, point_index, 0)
+    reference_index = np.where(described, reference_index, 0)
     size = int(np.asarray(xmap.phase_id).size)
     phase_id = np.asarray(xmap.phase_id).ravel().astype(np.int64)
     indexed = np.asarray(xmap.is_indexed).ravel().astype(bool)
@@ -671,7 +707,8 @@ def twist_about_detector_normal(xmap, detector, point_index, reference_index):
     m = sample_to_detector_matrix(detector)
 
     usable = (
-        indexed[point_index]
+        described
+        & indexed[point_index]
         & indexed[reference_index]
         & finite[point_index]
         & finite[reference_index]

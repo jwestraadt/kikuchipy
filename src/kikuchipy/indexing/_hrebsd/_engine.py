@@ -1317,7 +1317,12 @@ def run_hrebsd_dic(
     fm_route = None
     if use_fm:
         fm_route = _fourier_mellin_routes(
-            fourier_mellin, xmap, detector, fit_indices, reference_index
+            fourier_mellin,
+            xmap,
+            detector,
+            fit_indices,
+            reference_index,
+            navigation_shape=navigation_shape,
         )
     # D22.18: the device batch choice consults the FM terms only when a
     # route flag of the run is nonzero
@@ -1359,8 +1364,16 @@ def run_hrebsd_dic(
                 n_chunks=len(_gpu._batch_chunks(state_of_point, chunksize)),
                 fourier_mellin=use_fm,
             )
+            # D22.18: the device block states the model B was chosen
+            # from, the Fourier-Mellin one when a route flag is nonzero
+            # (2026-10-08 implementation review, RC-F-CONV-2)
             device_block = _gpu._info_lines(
-                chunksize, signal_shape, device_precision, seed_precision, free_bytes
+                chunksize,
+                signal_shape,
+                device_precision,
+                seed_precision,
+                free_bytes,
+                fourier_mellin=fm_routed,
             )
             print("\n".join([message, *device_block]))
     else:
@@ -1445,6 +1458,10 @@ def run_hrebsd_dic(
         fm_angle = np.full(map_size, np.nan, dtype=np.float64)
         fm_states = [None] * len(states)
         fm_built = [False] * len(states)
+        # The device runner writes its final batch size here, per run
+        # and never in module state (D22.8; 2026-10-08 implementation
+        # review, RF-F1)
+        fm_run_state: dict = {}
 
         def cpu_fm_states(positions) -> tuple:
             """Return the numpy ``SeedState`` of every reference, each
@@ -1477,6 +1494,7 @@ def run_hrebsd_dic(
                     seed_precision=seed_precision,
                     row_slots=dict(_ROW_SLOTS_FM),
                     seed_extras={_fourier_mellin.FOURIER_MELLIN_ROUTE_KEY: route},
+                    run_state=fm_run_state,
                 )
             return _run_chunks(
                 patterns,
@@ -1491,14 +1509,10 @@ def run_hrebsd_dic(
             )
 
         # The first pass: every fitted point, route 1 where routed
-        if use_gpu:
-            _gpu._reset_last_batch_size()
         packed = fm_pass(fit_indices, state_of_point, fm_route, chunksize)
         # The retry runs at the first pass's FINAL device batch size
         # (D22.8), which the out-of-memory loop may have halved
-        retry_batch_size = chunksize
-        if use_gpu:
-            retry_batch_size = _gpu._last_batch_size(chunksize)
+        retry_batch_size = int(fm_run_state.get("batch_size", chunksize))
         store(fit_indices, packed)
         applied = packed[:, _SLOT_FM_APPLIED] > 0.5
         fm_seed[fit_indices] = np.where(
@@ -1527,14 +1541,18 @@ def run_hrebsd_dic(
             retry_route = np.full(
                 retry_indices.size, _fourier_mellin.ROUTE_FORCED, dtype=np.int8
             )
-            if verbose >= 1:
-                print(
-                    f"  Fourier-Mellin retry: {retry_indices.size} pattern(s) "
-                    "re-fitted from the rotation seed"
-                )
             retried = fm_pass(
                 retry_indices, retry_states, retry_route, retry_batch_size
             )
+            if verbose >= 1:
+                # Only an applied forced slot is fitted (D22.5); the count
+                # is the same on both backends (2026-10-08 implementation
+                # review, RC-F-CONV-3)
+                n_refitted = int((retried[:, _SLOT_FM_APPLIED] > 0.5).sum())
+                print(
+                    f"  Fourier-Mellin retry: {n_refitted} of {retry_indices.size} "
+                    "pattern(s) re-fitted from the rotation seed"
+                )
             # The most recent estimate is the retry's (D22.9)
             fm_angle[retry_indices] = retried[:, _SLOT_FM_ANGLE]
             # The retry result replaces the first one wholly if and only
@@ -1788,6 +1806,7 @@ def _fourier_mellin_routes(
     detector,
     fit_indices: np.ndarray,
     reference_index: np.ndarray,
+    navigation_shape: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """Return the ``(n_fit,)`` int8 first-pass routes of a
     Fourier-Mellin run in fit order (requirements D22.6, D22.7).
@@ -1812,7 +1831,11 @@ fourier_mellin_routes` at ``FM_GATE_DEG``, both reached through the
     point_reference = np.asarray(reference_index, dtype=np.int64)[fit_indices]
     twist = np.asarray(
         _fourier_mellin.twist_about_detector_normal(
-            xmap, detector, fit_indices, point_reference
+            xmap,
+            detector,
+            fit_indices,
+            point_reference,
+            navigation_shape=navigation_shape,
         ),
         dtype=np.float64,
     ).reshape(n_fit)
