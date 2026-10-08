@@ -9585,3 +9585,89 @@ records follow.
     of device time 0.8 % / 1.4 %. The larger lever on this map is the D5
     zero-translation anchor (12.7 % of points, 96 % of the 0.05
     non-converged), which "auto" fixes only through the retry.
+
+153. **V10(m)(2) CPU whole map under `"auto"` with the CONVERTED map,
+    `filter_cutoffs=(None, None)` (supersedes nothing on the CPU: the
+    earlier run made no CPU `"auto"` record).** Snapshot
+    `snapF_21351744`, `backend="cpu"`, tutorial CPU settings (dask 8
+    workers, rechunk {0: 1, 1: 32}, binning 2, reference (10, 10),
+    `max_iterations=500`, `chunksize=16`, crater masked: 57772 fitted
+    points), CrystalMap orientations converted as in 143 (ii), the
+    reader-derived detector unchanged; `verbose=1`; script
+    `perfF2/fm_cpu.py`, per-point arrays
+    `perfF2/arrays/map_cpu_auto_none.npz`, comparison
+    `perfF2/compare_map_cpu_auto_none.json`. **Loaded host:** a
+    review/bug-injection workflow was running on the same machine (it
+    holds the GPU and CPU); the host CPU% sampled for 1 s before and
+    after was 6.5 / 8.2, which does not capture the load over the run.
+    Wall times are loaded-host figures; counts are unaffected.
+    - **Information message:** "Correlating 57772 pattern(s) of shape
+      (512, 622) against 1 reference(s); Chunking: 3611 chunk(s) of up
+      to 16 pattern(s); Estimated memory per reference: 30.4 MB;
+      Fourier-Mellin seed: up to 25.5 MB more per reference with a
+      routed point, plus 4.3 MB once for the polar look-up table" (the
+      D22.10 model; ledger 138 (v) measured 22.09 MB held + 3.85 MB
+      table at 512x622, so the message is the honest upper bound).
+    - **Wall time (loaded host):** 9259.8 s (2.57 h, 6.24 patterns/s);
+      first pass 9094.0 s, retry pass (87 patterns) 163.9 s. Peak RSS
+      3.53 GB. For scale only (different host load): the tutorial's
+      CPU `"off"` run took 8424 s (6.85 patterns/s).
+    - **Routing:** 57 routed, bitwise the routes predicted in 144
+      (twist column equal to 1.6e-14 deg). Accepted on the first pass
+      (seed code 1): 45; routed and kept h_T (code 0): 12 (4 of them
+      converged); retried: 87; retry results kept (code 2): 68.
+      Seed codes: -1: 0, 0: 57659, 1: 45, 2: 68.
+    - **Against `"off"` -- crossing backends:** the reference is the
+      GPU `"off"` run `perfF/arrays/map_gpu_off_none.npz` (57685
+      converged, 87 not), so every difference below includes the
+      CPU-GPU difference; the residual band is the V9(f) parity band
+      (rtol 4.5e-6, atol 6e-14). Backend baseline on the 57647 points
+      FM never touched (unrouted, not retried): convergence status
+      identical on all, iterations identical on 57641, residual
+      relative difference median 2.6e-9, p99 1.1e-8; 2 points beyond
+      the band ((4, 32) and (182, 153), relative 5e-6 and 7e-6, one
+      iteration apart).
+      - Converged: 57750 under `"auto"` against 57685; **converted 68,
+        all by the retry** (0 by a first-pass route).
+      - **Worsened 8:** 3 routed points lost convergence ((92, 136),
+        (93, 136), (94, 138): accepted FM seed, |twist| 1.7 to 2.1 deg,
+        theta_hat -2.2 to -2.9 deg; converged under `"off"` in 489,
+        386 and 171 iterations, at 500 under `"auto"` with residual 1.69
+        to 1.83 against 0.31 to 0.57); 3 routed accepted points with a
+        higher residual just beyond the band (relative 9e-6 to 1.7e-5,
+        both converged, 30 to 35 fewer iterations under `"auto"`); and
+        the 2 unrouted backend-baseline points above. Lower residual
+        beyond the band: 6.
+      - Iterations: routed points 10109 under `"auto"` against 11971;
+        accepted points median 63 against 106; whole map 1079029
+        against 1110801.
+    - **FQ11 over the 57 routed points:** |twist| median 1.67, p90
+      2.04, max 2.68 deg (none above 25); |theta_eff| median 2.14, max
+      5.44 deg; |theta_hat| median 2.40, p90 4.12, max 24.18 deg; no
+      theta_hat at the window edge (>= 29.5) anywhere. The three
+      |theta_hat| near 24 deg ((102, 130), (103, 130), (106, 130),
+      the spurious cluster of 144) were all rejected by the acceptance
+      (code 0) and stay unconverged (as under `"off"`). Over the other
+      54 routed points theta_hat correlates 0.993 with theta_eff
+      (median |diff| 0.17 deg) and 0.983 with the twist (median |diff|
+      0.61 deg). The 79 retried points with a finite angle have
+      |theta_hat| median 1.16, max 1.54 deg.
+
+154. **V10(m)(2) CPU whole map under `"auto"`, converted map,
+    `filter_cutoffs=(0.05, None)`: STOPPED, not recorded (2026-10-08,
+    Johan's decision).** Same snapshot, settings and script as 153,
+    started 14:00:58 and stopped at 18:43 after 4.7 h of wall time
+    (about 100,000 CPU seconds) with no result written: with the
+    default band-pass about 2250 points fail the first pass (ledger 146:
+    2274 not converged under `"off"`), and the retry pass re-fits each
+    of them from the Fourier-Mellin seed, often for hundreds of
+    iterations, which is the slow tail on the CPU. Johan chose to stop
+    it rather than wait an estimated 1 to 2 more hours. What stands in
+    for it: the (0.05, None) `"auto"` result on the GPU (ledger 148:
+    55498 -> 57547 converged, 2049 converted, none worse); the CPU and
+    GPU routes agree on the (None, None) map (153: convergence status
+    identical on all 57647 points FM never touched, the same 57750
+    converged, the same 57 routes); and the V10(j)/(l) parity tests pin
+    CPU against device per point on synthetic data. The D22.15 CPU
+    timing at (0.05, None) is therefore not recorded; a rerun is a
+    recorded follow-up only if a CPU-only user needs that figure.

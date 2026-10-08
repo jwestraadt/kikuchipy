@@ -323,13 +323,14 @@ the Stage E gates pass AND Johan has reviewed plan 12.4.
   path bitwise unchanged (`fourier_mellin="off"` == no keyword); Stage E
   gated suite green and unchanged; Stage F gated suite 0 skipped under
   KIKUCHIPY_EXPECT_GPU=1; oldest-matrix + full suite green
-- [ ] D22.15 performance record on the Si-indent data (whole map `"off"`
+- [x] D22.15 performance record on the Si-indent data (whole map `"off"`
   against `"auto"` at both filter settings on both backends, far256 and
   patch C under `"always"`, the D5 anchor census of FQ8), with the
   converted map; signed commits pushed to origin/hrebsd-dic (no PR).
-  PARTLY DONE 2026-10-08: the frame oracle and the GPU records are in
-  ledgers 143-152; the CPU whole-map `"auto"` records follow in a later
-  commit
+  DONE 2026-10-08: the frame oracle and the GPU records in ledgers
+  143-152, the CPU (None, None) whole map in 153; the CPU (0.05, None)
+  whole map was stopped after 4.7 h at Johan's decision and is not
+  recorded (154; the GPU result and the CPU-GPU match stand in)
 - [x] docstring (with the frame requirement), CHANGELOG, the
   `hrebsd_dic.ipynb` bullet, the `hrebsd_si_indent.ipynb` markdown cell
   with the converted-map GPU `"auto"` record, plus the Oxford CS1
