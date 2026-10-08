@@ -35,6 +35,9 @@ def orientation_similarity_map(
     from_n_best: int | None = None,
     footprint: np.ndarray | None = None,
     center_index: int = 2,
+    *,
+    grain_id: np.ndarray | None = None,
+    emsoft_compatible: bool = False,
 ) -> np.ndarray:
     r"""Compute an orientation similarity map (OSM) where the ranked
     list of the dictionary indices of the best matching simulated
@@ -65,6 +68,19 @@ def orientation_similarity_map(
     center_index
         Flat index of central navigation point in the truthy values of
         footprint, by default ``2``.
+    grain_id
+        Grain labels of the map's grid shape (n rows, n columns): 0
+        outside grains, 1, 2, ... for the grains, as returned by
+        :func:`~kikuchipy.indexing.segment_grains_kam`. If given, the
+        lists of a point are compared only to those of its four
+        nearest neighbours in the same grain. Cannot be combined with
+        ``from_n_best``, ``footprint`` or ``center_index``.
+    emsoft_compatible
+        Whether to reproduce EMsoft's orientation similarity map, with
+        EMsoft's neighbour bookkeeping and edge multipliers in single
+        precision. Requires every map point to be in the data. Default
+        is ``False``. Cannot be combined with ``from_n_best``,
+        ``footprint`` or ``center_index``.
 
     Returns
     -------
@@ -72,6 +88,20 @@ def orientation_similarity_map(
         Orientation similarity map(s). If ``from_n_best`` is given, the
         returned array has three dimensions, where ``n_best`` is at
         ``osm[:, :, 0]`` and ``from_n_best`` at ``osm[:, :, -1]``.
+        If ``grain_id`` is given or ``emsoft_compatible=True``, the
+        map has the grid shape (n rows, n columns) of ``xmap`` and data
+        type float32, and is never squeezed.
+
+    Raises
+    ------
+    ValueError
+        If ``n_best`` is greater than the number of ranked indices per
+        point; if ``grain_id`` or ``emsoft_compatible=True`` is
+        combined with ``from_n_best``, ``footprint`` or
+        ``center_index``, or with each other; if
+        ``emsoft_compatible=True`` and a map point is not in the data
+        or not indexed; or if ``grain_id`` is not a valid label map of
+        the grid shape.
 
     Notes
     -----
@@ -92,7 +122,23 @@ def orientation_similarity_map(
 
     .. versionchanged:: 0.5
        Default value of ``normalize`` changed to ``False``.
+
+    .. versionchanged:: 0.14
+       Keyword-only ``grain_id`` and ``emsoft_compatible`` added.
     """
+    if grain_id is not None or emsoft_compatible:
+        return _osm_grain_aware_or_emsoft(
+            xmap,
+            n_best=n_best,
+            simulation_indices_prop=simulation_indices_prop,
+            normalize=normalize,
+            from_n_best=from_n_best,
+            footprint=footprint,
+            center_index=center_index,
+            grain_id=grain_id,
+            emsoft_compatible=emsoft_compatible,
+        )
+
     simulation_indices = xmap.prop[simulation_indices_prop]
     nav_size, keep_n = simulation_indices.shape
 
@@ -126,6 +172,72 @@ def orientation_similarity_map(
         )
 
     return osm.squeeze()
+
+
+def _osm_grain_aware_or_emsoft(
+    xmap: CrystalMap,
+    n_best: int | None,
+    simulation_indices_prop: str,
+    normalize: bool,
+    from_n_best: int | None,
+    footprint: np.ndarray | None,
+    center_index: int,
+    grain_id: np.ndarray | None,
+    emsoft_compatible: bool,
+) -> np.ndarray:
+    """Return the grain-aware or the EMsoft compatible orientation
+    similarity map of shape (n rows, n columns) of float32, never
+    squeezed.
+
+    See :func:`orientation_similarity_map` for the parameters.
+    """
+    from kikuchipy.indexing._hrosm._averaging import _check_grain_id
+    from kikuchipy.indexing._hrosm._grains import _map_grid
+    from kikuchipy.indexing._hrosm._osm import _osm_emsoft, _osm_grain_aware
+
+    keywords = "grain_id" if grain_id is not None else "emsoft_compatible"
+    if from_n_best is not None or footprint is not None or center_index != 2:
+        raise ValueError(
+            f"{keywords} cannot be combined with from_n_best, footprint or center_index"
+        )
+    if grain_id is not None and emsoft_compatible:
+        raise ValueError("grain_id cannot be combined with emsoft_compatible=True")
+
+    simulation_indices = np.asarray(xmap.prop[simulation_indices_prop])
+    # A property of one index per point is squeezed by the indexing
+    simulation_indices = simulation_indices.reshape(simulation_indices.shape[0], -1)
+    keep_n = simulation_indices.shape[1]
+    if n_best is None:
+        n_best = keep_n
+    elif n_best > keep_n:
+        raise ValueError(f"n_best {n_best} cannot be greater than keep_n {keep_n}")
+
+    grid, (ny, nx) = _map_grid(xmap)
+    in_data = grid >= 0
+    phase_id = np.full((ny, nx), -1, dtype=np.int64)
+    phase_id[in_data] = np.asarray(xmap.phase_id).ravel()[grid[in_data]]
+    present = in_data & (phase_id >= 0)
+
+    # The lists over all grid points in raster order; points not in
+    # the data hold -1 and are never compared
+    lists = np.full((ny * nx, n_best), -1, dtype=simulation_indices.dtype)
+    lists[in_data.ravel()] = simulation_indices[grid[in_data], :n_best]
+
+    if emsoft_compatible:
+        if not np.all(present):
+            raise ValueError(
+                "emsoft_compatible requires every map point to be in the "
+                "data and indexed"
+            )
+        osm = _osm_emsoft(lists, ny, nx, n_best)
+    else:
+        grain_id = _check_grain_id(grain_id, (ny, nx))
+        osm = _osm_grain_aware(lists, grain_id, present, n_best)
+
+    if normalize:
+        osm = osm / n_best
+
+    return osm
 
 
 def _orientation_similarity_per_pixel(

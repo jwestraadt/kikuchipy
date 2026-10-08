@@ -38,6 +38,7 @@ declare -a NOTEBOOKS=(\
   "hough_indexing.ipynb"\
   "hrebsd_dic.ipynb"\
   "hrebsd_si_indent.ipynb"\
+  "hrosm.ipynb"\
   "hybrid_indexing.ipynb"\
   "mandm2021_sunday_short_course.ipynb"\
   "nlpar.ipynb"\

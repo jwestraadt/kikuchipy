@@ -203,7 +203,10 @@ def segment_grains(
 
     See Also
     --------
-    kikuchipy.signals.EBSD.hrebsd_dic
+    kikuchipy.signals.EBSD.hrebsd_dic,
+    kikuchipy.indexing.segment_grains_kam :
+        HROSM's KAM-based region growing, which segments on the
+        kernel average misorientation rather than on orientations.
     """
     if not isinstance(xmap, CrystalMap):
         raise ValueError(f"xmap must be an orix CrystalMap, not {type(xmap).__name__}")

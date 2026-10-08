@@ -42,6 +42,7 @@ Indexing
 
     hough_indexing
     pattern_matching
+    hrosm
     spherical_indexing
     pseudo_symmetry
     hybrid_indexing
