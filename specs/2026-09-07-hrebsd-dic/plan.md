@@ -358,7 +358,7 @@ keys; docs registration (`doc/tutorials/index.rst`, nbval
    commissioned; the default above stays in force until it is.**
    **SPECIFIED 2026-10-07 (Stage F, section 12; requirements D22,
    validation V10).** Commissioned 2026-10-06; the spec is committed
-   with its plan gate PENDING Johan's review. The default above stays
+   and its plan gate PASSED 2026-10-08 (12.4 approval record). The default above stays
    in force: the FM seed is the opt-in `fourier_mellin` keyword,
    `"off"` by default and bitwise the translation-only seed; a
    default of `"auto"` is FQ3.
@@ -1139,7 +1139,7 @@ E13. **Public precision knobs** (D21.1). In force: engine-only
   (PLANNED after Stage E, Johan decision 1 of 2026-10-06; not
   commissioned).** COMMISSIONED 2026-10-06 and specified
   2026-10-07: section 12, requirements D22, validation V10 (plan
-  gate PENDING Johan's review). Ernould 2020's cascaded
+  gate passed 2026-10-08, 12.4 approval record). Ernould 2020's cascaded
   Fourier-Mellin plus
   cross-correlation seed (plan open question 5; the D5 deferral),
   specified for BOTH backends at once as ONE xp-agnostic
@@ -1498,7 +1498,8 @@ written and committed, then work STOPS before any Stage F failing
 test or code; his 2026-10-06 waiver no longer covers Stage F. No
 task below starts until Johan has reviewed 12.4 and approved or
 changed every item; his decision is then recorded under 12.4 with
-its date, in the 11.4 style.
+its date, in the 11.4 style. PASSED 2026-10-08: Johan approved every
+12.4 item as written ("Go ahead with stage F"; 12.4 approval record).
 
 Deliverables: `fourier_mellin` on `EBSD.hrebsd_dic` and
 `run_hrebsd_dic` (D22.1), forwarded by the public method, with the
@@ -2047,7 +2048,7 @@ FQ14. **FM under the complex64 seed** (D22.12). In force: complex64
 - FM rows for the CPU cascade (FQ10) and the residual-triggered
   retry (FQ7), each its own decision on the whole-map record.
 
-### 12.4 Recorded defaults for Johan's approval (PENDING his review)
+### 12.4 Recorded defaults for Johan's approval (APPROVED 2026-10-08)
 
 Every default below is one a reasonable person might choose
 differently; each stands as written until Johan approves or changes
@@ -2058,6 +2059,15 @@ before any Stage F failing test or code; the 2026-10-06 waiver
 covers Stage F, so NONE of these items is approved. His decision
 will be recorded here with its date, in the 11.4 style, before task
 1 starts. Items 19 to 21 were added at the spec review (12.5).
+
+**APPROVAL RECORD (2026-10-08, about 03:35).** Johan reviewed the
+Stage F summary (the API, the 1.5 deg gate, the retry, the +-30 deg
+window, the seed_from_neighbors raise) and replied "Go ahead with
+stage F" without changes: every item below is APPROVED AS WRITTEN,
+the recommendation taken wherever an item offers an alternative.
+At his choice the same morning, the deferred HROSM fan-out (develop
+into hrebsd-dic, merge c9d2eb98) went first, so Stage F is built on
+top of HROSM.
 
 1. The keyword `fourier_mellin: str = "off"` with values `"off"`,
    `"auto"` and `"always"`, immediately after `seed_from_neighbors`

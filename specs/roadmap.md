@@ -270,8 +270,8 @@ seed, 5.4-5.7x under "float64", convergence counts identical to the CPU.
 Plan open question 5 and the D5 deferral, commissioned 2026-10-06 under
 Johan's extended overnight waiver and specified 2026-10-07; plan section 12
 carries the tasks, open questions FQ1-FQ14 and the recorded defaults,
-PENDING Johan's review (his instruction of 2026-10-07: spec only, then
-stop; the 2026-10-06 waiver no longer covers Stage F). An opt-in
+approved by Johan on 2026-10-08 as written ("Go ahead with stage F";
+plan 12.4 approval record). An opt-in
 `fourier_mellin` keyword (`"off"` default, bitwise unchanged; `"auto"`;
 `"always"`) on `EBSD.hrebsd_dic`: a rotation-only Fourier-Mellin angle from
 the REUSED target spectra (periodic-Hann frequency stencil, log-magnitude,
@@ -298,9 +298,8 @@ sweep to 30 deg and real rotations from -6 to 10 deg. About 0.6 per cent of
 the Si-indent map has an input twist above 1.5 deg. Spec review 2026-10-07:
 45 critic findings, 44 applied, 1 rejected (plan 12.5). Starts only after
 the Stage E gates pass AND Johan has reviewed plan 12.4.
-- [ ] plan approved by Johan: the section 12.4 recorded defaults (PENDING
-  his review; nothing approved yet; his decision recorded in 12.4 with its
-  date)
+- [x] plan approved by Johan: the section 12.4 recorded defaults (approved
+  as written 2026-10-08, "Go ahead with stage F"; recorded in 12.4)
 - [ ] failing tests first: `test_hrebsd_fourier_mellin.py` (default numpy-xp
   suite + gated `cupy_gpu` suite, V10(a)-(l)) incl. the angle, look-up-table,
   edge, row, capture, ramp-rescue, acceptance, gate, projection-link, retry,

@@ -3016,9 +3016,10 @@ User go 2026-10-06: Johan extended his overnight waiver to Stage F
 implementation is done"; plan 11.4 approval record, item 20 carried
 to this spec gate). Narrowed 2026-10-07 by Johan's own instruction:
 the Stage F SPEC is written and committed, then work STOPS before
-any Stage F failing test or code; the Stage F plan gate is PENDING
-his review, and the 2026-10-06 waiver no longer covers it, so no
-item below is approved yet. Motivation, measured: the
+any Stage F failing test or code; the Stage F plan gate was PENDING
+his review (the 2026-10-06 waiver no longer covers it) and PASSED
+2026-10-08: Johan approved every item as written ("Go ahead with
+stage F"; plan 12.4 approval record). Motivation, measured: the
 translation-only phase-XC seed of D5 captures 2.0 deg of pure
 in-plane rotation on
 the 480 px oracle and fails from 2.5 deg at the default budget of 50
@@ -3093,8 +3094,8 @@ tagged with the recipe that produced it where that recipe is not
 the frozen one. Items marked FROZEN are frozen at this spec gate,
 subject like everything here to Johan's review at the plan gate;
 items marked RECORDED DEFAULT stand as written until Johan approves
-or changes them at the Stage F plan gate (plan 12.4; PENDING
-Johan's review, not pre-accepted); MTP numbers are filled at the
+or changes them at the Stage F plan gate (plan 12.4; APPROVED
+as written by Johan on 2026-10-08); MTP numbers are filled at the
 Stage F gates.
 
 - **D22.1 API (FROZEN)**: one new keyword-only parameter on
